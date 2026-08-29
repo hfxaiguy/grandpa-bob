@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+// @ts-ignore — grandma-kat ships no .d.ts files.
+import { createLogger } from "grandma-kat";
 import { config } from "./config.js";
 import { ensureRepo, ensureWorkspaceGitignore } from "./tools/git.js";
 import { ToolRegistry } from "./tools/index.js";
@@ -19,9 +21,18 @@ async function main(): Promise<void> {
   await fs.mkdir(path.join(config.workspaceDir, "logs"), { recursive: true });
   await ensureWorkspaceGitignore(config.workspaceDir, ["logs/grandma-kat.db*"]);
 
-  const tools = new ToolRegistry(config.workspaceDir, config.allowedCommands, config.exaApiKey);
+  const tools = new ToolRegistry(
+    config.workspaceDir,
+    config.allowedCommands,
+    config.exaApiKey,
+    config.sqliteLockPath || undefined,
+  );
   const models = await loadModels();
-  const agent = new Agent({ models, workspace: config.workspaceDir, tools });
+  // Shared SQLite + console logger. Passing a logger object (instead of the
+  // db path string) lets Agent.run() wrap it per-run so the web UI can
+  // stream tree events live.
+  const katLogger = createLogger(path.join(config.workspaceDir, "logs/grandma-kat.db"), "info");
+  const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger });
 
   const modelReachable = await Promise.all(
     Object.entries(models).map(async ([name, m]) => [name, await checkLlmEntry(m.baseURL, m.apiKey, m.protocol)] as const),
@@ -42,9 +53,19 @@ async function main(): Promise<void> {
     );
   }
 
-  // Start admin UI (web interface for credentials, status, logs, patterns, files).
+  // Start the web UI: chat front page (/) + settings page (/settings).
   const adminPort = parseInt(process.env.ADMIN_PORT || "8080", 10);
-  startAdmin({ port: adminPort });
+  startAdmin({
+    port: adminPort,
+    agent,
+    stt: {
+      backend: config.sttBackend,
+      whisperUrl: config.whisperUrl,
+      sherpaUrl: config.sherpaUrl,
+      tmpDir: config.tmpDir,
+      language: config.sttLanguage || undefined,
+    },
+  });
 
   const bot = createBot({
     token: config.telegramToken,

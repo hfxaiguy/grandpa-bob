@@ -2,6 +2,7 @@ import type OpenAI from "openai";
 import { FileTools } from "./files.js";
 import { ShellTools } from "./shell.js";
 import { ExaSearchTools } from "./websearch.js";
+import { SqliteTools } from "./sqlite.js";
 
 type Json = Record<string, unknown>;
 
@@ -9,11 +10,26 @@ export class ToolRegistry {
   private files: FileTools;
   private shell: ShellTools;
   private exa: ExaSearchTools;
+  private sqlite: SqliteTools;
 
-  constructor(workspace: string, allowedCommands: string[], exaApiKey: string = "") {
+  /**
+   * @param workspace        Workspace root (sandbox for file + sql path args).
+   * @param allowedCommands  run_command allowlist.
+   * @param exaApiKey        Exa Search API key (optional — tool errors if unset).
+   * @param sqliteLockedPath Optional absolute path to a single SQLite database
+   *                         the sql_query tool is locked to. When set, the agent
+   *                         can only query that file (the `path` arg is ignored).
+   */
+  constructor(
+    workspace: string,
+    allowedCommands: string[],
+    exaApiKey: string = "",
+    sqliteLockedPath?: string,
+  ) {
     this.files = new FileTools(workspace);
     this.shell = new ShellTools(workspace, allowedCommands);
     this.exa = new ExaSearchTools(exaApiKey);
+    this.sqlite = new SqliteTools({ workspace, lockedPath: sqliteLockedPath });
   }
 
   readonly definitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
@@ -109,6 +125,43 @@ export class ToolRegistry {
     {
       type: "function",
       function: {
+        name: "sql_query",
+        description:
+          "Run a READ-ONLY SQL query against a SQLite database and get structured rows (columns + rows + rowCount). " +
+          "Only SELECT / WITH / EXPLAIN / PRAGMA are accepted; writes are refused. Omit 'path' when the tool is locked " +
+          "to a specific database file. Use for inspecting structured data, notes tables, contact lists, or any .db " +
+          "file in the workspace. For writes, use sql_write instead.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "A single read-only SQL statement" },
+            path: { type: "string", description: "Relative .db file path in the workspace (ignored when locked to a specific database)" },
+          },
+          required: ["query"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "sql_write",
+        description:
+          "Run a read-write SQL statement (INSERT / UPDATE / DELETE / CREATE TABLE / ...) against a SQLite database " +
+          "and report how many rows changed. Use this ONLY when you actually need to modify data — for reading use " +
+          "sql_query. Omit 'path' when the tool is locked to a specific database file.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "A single SQL statement to execute" },
+            path: { type: "string", description: "Relative .db file path in the workspace (ignored when locked to a specific database)" },
+          },
+          required: ["query"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "exa_search",
         description:
           "Search the web via the Exa Search API. Returns structured data: a JSON object with " +
@@ -178,6 +231,16 @@ export class ToolRegistry {
           return await this.shell.runCommand(
             String(args.command ?? ""),
             Array.isArray(args.args) ? (args.args as unknown[]).map(String) : [],
+          );
+        case "sql_query":
+          return this.sqlite.query(
+            String(args.query ?? ""),
+            args.path !== undefined ? String(args.path) : undefined,
+          );
+        case "sql_write":
+          return this.sqlite.write(
+            String(args.query ?? ""),
+            args.path !== undefined ? String(args.path) : undefined,
           );
         case "exa_search":
           return await this.exa.search({

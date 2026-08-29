@@ -8,9 +8,7 @@ const execFileAsync = promisify(execFile);
 
 export type SttBackend = "whisper" | "sherpa" | "parakeet";
 
-export interface SttOptions {
-  /** Direct https://api.telegram.org/file/bot<token>/<file_path> URL */
-  fileUrl: string;
+export interface SttBackendOptions {
   /** Which STT backend to use. */
   backend: SttBackend;
   /** whisper.cpp server URL (used when backend === "whisper"). */
@@ -22,50 +20,154 @@ export interface SttOptions {
   language?: string;
 }
 
-/** Download a Telegram voice note, convert to 16kHz mono WAV, transcribe via the configured backend. */
-export async function transcribeVoice({ fileUrl, backend, whisperUrl, sherpaUrl, tmpDir, language }: SttOptions): Promise<string> {
-  const id = randomUUID();
-  const oggPath = path.join(tmpDir, `${id}.ogg`);
-  const wavPath = path.join(tmpDir, `${id}.wav`);
-  try {
-    const res = await fetch(fileUrl);
-    if (!res.ok) throw new Error(`voice download failed: HTTP ${res.status}`);
-    await fs.writeFile(oggPath, Buffer.from(await res.arrayBuffer()));
+export interface SttOptions extends SttBackendOptions {
+  /** Direct https://api.telegram.org/file/bot<token>/<file_path> URL */
+  fileUrl: string;
+}
 
+/** Download a Telegram voice note, convert to 16kHz mono WAV, transcribe via the configured backend. */
+export async function transcribeVoice({ fileUrl, ...opts }: SttOptions): Promise<string> {
+  const res = await fetch(fileUrl);
+  if (!res.ok) throw new Error(`voice download failed: HTTP ${res.status}`);
+  return transcribeAudioBytes(Buffer.from(await res.arrayBuffer()), { ext: ".ogg", ...opts });
+}
+
+/**
+ * Transcribe raw audio bytes (any format ffmpeg understands: .ogg, .webm,
+ * .mp4, .wav, ...). Converts to 16kHz mono WAV, then dispatches to the
+ * configured backend. Used by the web UI's voice input.
+ */
+export async function transcribeAudioBytes(
+  input: Buffer,
+  { ext = ".ogg", ...opts }: SttBackendOptions & { ext?: string },
+): Promise<string> {
+  const wav = await convertToWav(input, ext, opts.tmpDir);
+  return transcribeWav(wav, opts);
+}
+
+/** Convert any ffmpeg-readable audio container to 16kHz mono PCM WAV. */
+export async function convertToWav(input: Buffer, ext: string, tmpDir: string): Promise<Buffer> {
+  const id = randomUUID();
+  // Distinct stems: a .wav upload would otherwise collide input==output.
+  const inPath = path.join(tmpDir, `${id}-in${ext}`);
+  const wavPath = path.join(tmpDir, `${id}-out.wav`);
+  try {
+    await fs.writeFile(inPath, input);
     await execFileAsync("ffmpeg", [
       "-y", "-hide_banner", "-loglevel", "error",
-      "-i", oggPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wavPath,
+      "-i", inPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wavPath,
     ]);
-
-    const wav = await fs.readFile(wavPath);
-
-return backend === "sherpa"
-        ? await transcribeWithSherpa(wav, sherpaUrl)
-        : backend === "parakeet"
-          ? await transcribeWithParakeet(wav, sherpaUrl)
-          : await transcribeWithWhisper(wav, whisperUrl, language);
+    return await fs.readFile(wavPath);
   } finally {
-    await fs.rm(oggPath, { force: true });
+    await fs.rm(inPath, { force: true });
     await fs.rm(wavPath, { force: true });
   }
 }
 
-async function transcribeWithWhisper(wav: Buffer, whisperUrl: string, language?: string): Promise<string> {
+/** One-shot transcription of a 16kHz mono PCM WAV via the configured backend. */
+export async function transcribeWav(wav: Buffer, { backend, whisperUrl, sherpaUrl, language }: SttBackendOptions): Promise<string> {
+  return backend === "sherpa"
+    ? await transcribeWithSherpa(wav, sherpaUrl)
+    : backend === "parakeet"
+      ? await transcribeWithParakeet(wav, sherpaUrl)
+      : await transcribeWithWhisper(wav, whisperUrl, language);
+}
+
+/**
+ * Streaming transcription of a 16kHz mono PCM WAV. Calls
+ * `onPartial(accumulatedText, processedSeconds?)` as the transcript grows:
+ *   - whisper : audio is sliced into CHUNK_S segments transcribed in order,
+ *               each conditioned on the text so far (whisper-server `prompt`),
+ *               so partials land every few seconds even on long files.
+ *   - sherpa  : the online websocket server's live partials are forwarded.
+ *   - parakeet: offline decoder — a single partial at the end.
+ * Returns the final transcript.
+ */
+export async function transcribeWavStreaming(
+  wav: Buffer,
+  { backend, whisperUrl, sherpaUrl, language }: SttBackendOptions,
+  onPartial?: (text: string, processedSeconds?: number) => void,
+): Promise<string> {
+  if (backend === "sherpa") {
+    return transcribeWithSherpa(wav, sherpaUrl, onPartial ? (t) => onPartial(t) : undefined);
+  }
+  if (backend === "parakeet") {
+    const text = await transcribeWithParakeet(wav, sherpaUrl);
+    onPartial?.(text, wavDurationSeconds(wav));
+    return text;
+  }
+  return transcribeWhisperStreaming(wav, whisperUrl, language, onPartial);
+}
+
+/** Duration of a 16kHz 16-bit mono PCM WAV in whole seconds (0 if unparseable). */
+export function wavDurationSeconds(wav: Buffer): number {
+  try {
+    const { length } = findWavDataChunk(wav);
+    return Math.round(length / (16000 * 2));
+  } catch {
+    return 0;
+  }
+}
+
+/** Seconds of audio per whisper streaming chunk. */
+const WHISPER_CHUNK_S = 20;
+
+async function transcribeWhisperStreaming(
+  wav: Buffer,
+  whisperUrl: string,
+  language: string | undefined,
+  onPartial?: (text: string, processedSeconds?: number) => void,
+): Promise<string> {
+  const { length: dataLength } = findWavDataChunk(wav);
+  const totalSamples = Math.floor(dataLength / 2);
+  const chunkSamples = WHISPER_CHUNK_S * 16000;
+
+  // Short file: single request, same behavior as the one-shot path.
+  if (totalSamples <= chunkSamples) {
+    const text = await transcribeWithWhisper(wav, whisperUrl, language);
+    onPartial?.(text, Math.round(totalSamples / 16000));
+    return text;
+  }
+
+  let text = "";
+  for (let start = 0; start < totalSamples; start += chunkSamples) {
+    const end = Math.min(start + chunkSamples, totalSamples);
+    const slice = wavSlice(wav, start, end);
+    // NOTE: no `prompt` here — whisper.cpp's prompt feature makes greedy
+    // decoding echo the prior text and emit garbage (0xFF) tokens on chunk
+    // boundaries, corrupting the transcript. Independent chunks + plain
+    // concatenation reads clean even across a mid-word cut.
+    const seg = await whisperInference(slice, whisperUrl, language);
+    if (seg) text = text ? `${text} ${seg}` : seg;
+    onPartial?.(text, Math.round(end / 16000));
+  }
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error("transcription came back empty (silent or unintelligible audio?)");
+  return trimmed;
+}
+
+/** One whisper-server /inference call. Returns "" on empty transcript (no throw). */
+async function whisperInference(wav: Buffer, whisperUrl: string, language?: string, prompt?: string): Promise<string> {
   const form = new FormData();
   form.append("file", new Blob([Uint8Array.from(wav)], { type: "audio/wav" }), "audio.wav");
   form.append("response_format", "json");
   form.append("temperature", "0.0");
   if (language) form.append("language", language);
+  if (prompt) form.append("prompt", prompt);
 
   const wr = await fetch(`${whisperUrl}/inference`, { method: "POST", body: form });
   if (!wr.ok) throw new Error(`whisper-server failed: HTTP ${wr.status} — ${(await wr.text()).slice(0, 300)}`);
   const json = (await wr.json()) as { text?: string };
-  const text = (json.text ?? "").trim();
+  return (json.text ?? "").trim();
+}
+
+async function transcribeWithWhisper(wav: Buffer, whisperUrl: string, language?: string): Promise<string> {
+  const text = await whisperInference(wav, whisperUrl, language);
   if (!text) throw new Error("transcription came back empty (silent or unintelligible audio?)");
   return text;
 }
 
-async function transcribeWithSherpa(wav: Buffer, sherpaUrl: string): Promise<string> {
+async function transcribeWithSherpa(wav: Buffer, sherpaUrl: string, onPartial?: (text: string) => void): Promise<string> {
   // sherpa-onnx-online-websocket-server protocol (see online-websocket-server-impl.cc):
   // (1) connect via WebSocket
   // (2) send binary frames: raw float32 samples (LE), normalized to [-1, 1]
@@ -115,8 +217,14 @@ async function transcribeWithSherpa(wav: Buffer, sherpaUrl: string): Promise<str
         if (json.is_final) {
           const segment = json.text.trim();
           if (segment) finished += (finished ? " " : "") + segment;
+          lastPartial = "";
         } else {
           lastPartial = json.text;
+        }
+        // Live preview: finalized segments + current segment preview.
+        if (onPartial) {
+          const preview = (finished + (finished && lastPartial ? " " : "") + lastPartial).trim();
+          if (preview) onPartial(truecase(preview));
         }
       } catch {
         // ignore non-JSON messages
@@ -204,23 +312,48 @@ function truecase(text: string): string {
   return out;
 }
 
-/** Convert a 16-bit PCM WAV into a Float32Array of normalized samples in [-1, 1]. */
-function wavToFloat32Samples(wav: Buffer): Float32Array {
+/** Locate the PCM data chunk in a WAV file. */
+function findWavDataChunk(wav: Buffer): { offset: number; length: number } {
   let offset = 12;
-  let dataOffset = -1;
-  let dataLength = 0;
   while (offset + 8 <= wav.length) {
     const id = wav.toString("ascii", offset, offset + 4);
     const size = wav.readUInt32LE(offset + 4);
     if (id === "data") {
-      dataOffset = offset + 8;
-      dataLength = size;
-      break;
+      return { offset: offset + 8, length: Math.min(size, wav.length - offset - 8) };
     }
     offset += 8 + size;
   }
-  if (dataOffset < 0) throw new Error("sherpa-onnx: WAV has no data chunk");
+  throw new Error("WAV has no data chunk");
+}
 
+/**
+ * Cut samples [startSample, endSample) out of a 16kHz 16-bit mono PCM WAV
+ * and wrap them in a fresh minimal WAV header. Used to feed whisper long
+ * files in chunks so partials stream back while the file is processed.
+ */
+function wavSlice(wav: Buffer, startSample: number, endSample: number): Buffer {
+  const { offset } = findWavDataChunk(wav);
+  const pcm = wav.subarray(offset + startSample * 2, offset + endSample * 2);
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0, "ascii");
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8, "ascii");
+  header.write("fmt ", 12, "ascii");
+  header.writeUInt32LE(16, 16); // fmt chunk size
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt32LE(16000, 24); // sample rate
+  header.writeUInt32LE(16000 * 2, 28); // byte rate
+  header.writeUInt16LE(2, 32); // block align
+  header.writeUInt16LE(16, 34); // bits per sample
+  header.write("data", 36, "ascii");
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+/** Convert a 16-bit PCM WAV into a Float32Array of normalized samples in [-1, 1]. */
+function wavToFloat32Samples(wav: Buffer): Float32Array {
+  const { offset: dataOffset, length: dataLength } = findWavDataChunk(wav);
   const sampleCount = Math.floor(dataLength / 2);
   const samples = new Float32Array(sampleCount);
   for (let i = 0; i < sampleCount; i++) {

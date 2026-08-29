@@ -6,6 +6,9 @@ every change it makes is **git-committed automatically**.
 
 - **Telegram**: long polling via grammY. Works in DMs and in **forum-topic groups** —
   each topic is an independent conversation with its own history.
+- **Web UI**: chat front page at `http://<host>:8080` — talk to the agent by
+  text or voice and watch every step of the tree execute live. Settings
+  (credentials, sync, logs, patterns, files) live at `/settings`.
 - **Voice → text**: voice notes are transcribed locally by
   [whisper.cpp](https://github.com/ggml-org/whisper.cpp) built with the **Vulkan**
   backend, running on the AMD RX 570. No audio leaves the machine.
@@ -111,8 +114,9 @@ src/
   config.ts       .env loading/validation (non-model config only)
   models.ts       models.json loader, built-in transforms
   bot.ts          grammY bot: auth gate, forum topics, text/voice/photo, queues
+  admin.ts        web UI: chat front page (/) + settings page (/settings)
   agent.ts        continuation storage, tree runner (grandma-kat pause/resume)
-  stt.ts          Telegram voice download → ffmpeg → whisper-server
+  stt.ts          audio (Telegram voice / web upload) → ffmpeg → STT backend
   patterns/
     shared.ts     types (KatPromptRecord), memory-view accessors, history helpers
     classify.ts   classify branch — cheap model: "tools" or "direct"
@@ -123,6 +127,7 @@ src/
     index.ts      tool schemas (OpenAI format) + dispatcher
     files.ts      list/read/write/edit/delete, sandboxed, auto-committing
     shell.ts      run_command with allowlist + git deny-list
+    sqlite.ts     sql_query (read) + sql_write (write) — SQLite tools, lockable
     git.ts        repo init + auto-commit + workspace .gitignore helpers
   util/paths.ts   workspace path sandbox
 scripts/
@@ -144,7 +149,7 @@ file tools, enabling self-modification.
 
 To change the agent's behavior:
 
-1. Edit `workspace/patterns/agent.mjs` (via the admin UI, a text editor, or
+1. Edit `workspace/patterns/agent.mjs` (via the settings page, a text editor, or
    the agent itself).
 2. The next conversation turn uses the updated pattern.
 
@@ -222,6 +227,34 @@ Useful checks: `npm run typecheck`, `npm run smoke` (offline tool/git tests),
   - `/clear` — drops the conversation continuation for this topic. The next message starts a fresh tree (new system prompt, empty history). Per-topic: each forum topic has its own continuation. The checkpoint in SQLite is orphaned but not deleted.
   - `/status` — shows workspace path, git status, LLM models, STT backend.
 
+## Web UI
+
+The admin server (port `ADMIN_PORT`, default 8080) serves two pages:
+
+- **`/` — chat front page.** Talk to the agent by **text** or **voice**. Voice is
+  recorded in the browser (MediaRecorder), uploaded, and transcribed locally by the
+  same ffmpeg → whisper/sherpa pipeline as Telegram voice notes — no audio leaves the
+  machine. A **📎 button transcribes an audio file** (`.ogg`, `.webm`, `.mp3`, `.m4a`,
+  `.wav`, …): the transcript **streams live** as the file is processed — a progress
+  card shows `12s / 47s` plus the growing text, then the final transcript lands in the
+  input box for you to review and send. As the agent runs, **every grandma-kat tree
+  event streams live** (SSE) and is rendered as labeled steps under your message
+  (human → memory → gate/classify → llm → tool calls/results → emit), with the final
+  answer shown below. Each step expands to its full payload. The last 20 turns are kept
+  so a page reload restores the conversation. "clear conversation" starts a fresh tree.
+  - Streaming detail: with the `whisper` backend the file is sliced into 20s chunks
+    transcribed in order (partials flow after each chunk); with `sherpa` the online
+    decoder's live partials are forwarded directly.
+  - Note: browser microphone access needs a **secure context** — voice works on
+    `http://localhost:8080` but not on a plain-HTTP LAN IP (text and file upload still
+    work there).
+- **`/settings` — admin page.** Credentials & `.env` editor, bot/sherpa status +
+  restart, log tails, workspace git sync/commit, tree-pattern editor, and the
+  workspace file browser.
+
+The chat page runs the agent under a single `web:chat` conversation key, serialized
+so turns never interleave; Telegram topics are unaffected.
+
 ## Git integration (summary)
 
 `WORKSPACE_DIR` is a git repository (auto-initialized on first start), kept outside
@@ -258,7 +291,7 @@ Edit `GIT_DAEMON_IP` in the service file to match your LAN IP.
 git -C ~/grandma-workspace remote add sync git://<desktop-ip>/grandma-workspace.git
 ```
 
-**Syncing** — use the admin UI buttons at `http://<phone-ip>:8080`, or manually:
+**Syncing** — use the buttons on the settings page (`http://<phone-ip>:8080/settings`), or manually:
 
 ```sh
 # Pull from desktop
@@ -489,6 +522,17 @@ Not through its tools: `.env` lives outside the workspace and file tools can't
 reach it. Be careful what you add to `ALLOWED_COMMANDS` though — something like
 `env` or a shell would punch a hole (which is why they're not in the defaults).
 
+**What can the `sql_query` and `sql_write` tools touch?**
+There are two separate SQLite tools, so reads and writes can't be confused:
+`sql_query` is **read-only** (only `SELECT / WITH / EXPLAIN / PRAGMA`, and the
+database is opened with the engine's `readOnly` flag, so writes are refused at
+the lowest level). `sql_write` is the explicit read-write tool for
+INSERT/UPDATE/DELETE/DDL — the model only reaches writes by calling that tool.
+Both resolve their `path` argument inside the workspace sandbox, *unless* you
+set `SQLITE_LOCK_PATH` to an absolute path: then the tool is locked to that one
+file and `path` is ignored entirely, so the agent can never reach another
+database.
+
 **Why does the bot ignore updates older than two minutes?**
 So a backlog of messages sent while it was offline doesn't trigger a burst of
 agent runs (and LLM spend) on startup.
@@ -499,6 +543,9 @@ agent runs (and LLM spend) on startup.
 - File tools cannot escape `WORKSPACE_DIR` (`..` and absolute paths are rejected).
 - `run_command` uses no shell (no pipes/redirection), only runs allowlisted
   binaries, and refuses destructive/remote git subcommands.
+- `sql_query` is read-only (SELECT/WITH/EXPLAIN/PRAGMA, engine-opened read-only);
+  writes only happen via the separate `sql_write` tool. Set `SQLITE_LOCK_PATH`
+  to restrict both to a single database file.
 - The allowlist is a guardrail, not a security boundary — run the bot as your own
   user, keep the workspace non-critical, and review `git log` if you're curious.
 - Keep `.env` out of the workspace; the workspace dir is the only thing the

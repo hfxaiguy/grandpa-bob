@@ -35,6 +35,16 @@ export interface AgentRunResult {
   continuation: string;
 }
 
+export interface AgentRunOptions {
+  /**
+   * Receive every grandma-kat event logged during this run (llm_call,
+   * tool_call, tool_result, flow, emit, human, ...). Used by the web UI
+   * to show the tree executing live. Requires a custom logger object in
+   * AgentDeps (a string db path can't be intercepted).
+   */
+  onEvent?: (event: unknown) => void;
+}
+
 /**
  * Ping the LLM endpoint to check reachability. Returns true on any 2xx,
  * false on transport error or non-2xx. Used at startup so a missing
@@ -81,6 +91,7 @@ export class Agent {
    * @param key         Conversation key (e.g. "chatId:threadId").
    * @param humanInput  The user's message text.
    * @param onEmit      Callback for non-blocking output (`.emit()` calls).
+   * @param opts        Optional: `onEvent` streams grandma-kat tree events.
    * @returns           `{ status: "waiting", continuation }` — store the
    *                    continuation for the next run.
    */
@@ -88,6 +99,7 @@ export class Agent {
     key: string,
     humanInput: string | unknown[],
     onEmit?: (value: unknown) => void | Promise<void>,
+    opts?: AgentRunOptions,
   ): Promise<AgentRunResult> {
     const cont = this.continuations.get(key);
     const katTools = this.deps.tools.toKatTools();
@@ -100,7 +112,7 @@ export class Agent {
     const runtime: Record<string, unknown> = {
       models: this.deps.models,
       tools: allTools,
-      logger: this.deps.logger ?? this.logDb,
+      logger: this.wrapLogger(opts?.onEvent),
       onEmit,
       // Only set logLevel when using the default (string path) logger.
       // When a custom logger is provided, it already handles console output.
@@ -141,6 +153,37 @@ export class Agent {
     // Shouldn't happen with the agent pattern (it always pauses at .human()),
     // but handle gracefully.
     throw new Error("agent tree completed unexpectedly — should loop at .human()");
+  }
+
+  /**
+   * Wrap the configured logger so each logged event also reaches
+   * `onEvent` (per-run telemetry for the web UI). Checkpoint operations
+   * are delegated to the base logger untouched; the shared logger is
+   * never closed by the wrapper. Without `onEvent` (or with a plain
+   * db-path string logger) the original logger is returned as-is.
+   */
+  private wrapLogger(onEvent?: (event: unknown) => void): unknown {
+    const base = this.deps.logger as
+      | { log?: (e: unknown) => number | void; [k: string]: unknown }
+      | undefined;
+    if (!onEvent || !base || typeof base.log !== "function") {
+      return this.deps.logger ?? this.logDb;
+    }
+    return {
+      log(event: unknown): number | void {
+        try {
+          onEvent(event);
+        } catch {
+          // telemetry must never break a run
+        }
+        return base.log!(event);
+      },
+      close() {},
+      saveCheckpoint: (...a: unknown[]) => (base.saveCheckpoint as Function | undefined)?.(...a),
+      getCheckpoint: (...a: unknown[]) => (base.getCheckpoint as Function | undefined)?.(...a),
+      deleteCheckpoint: (...a: unknown[]) => (base.deleteCheckpoint as Function | undefined)?.(...a),
+      getEvents: (...a: unknown[]) => (base.getEvents as Function | undefined)?.(...a),
+    };
   }
 
   /**

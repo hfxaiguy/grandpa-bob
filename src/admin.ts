@@ -1,25 +1,40 @@
 // src/admin.ts
 //
-// Web admin UI for grandma-bob. Starts an HTTP server on ADMIN_PORT
-// (default 8080) that serves a single-page app for:
-//   - editing .env credentials and all .env keys (via the browser)
-//   - viewing bot/sherpa tmux status
-//   - tailing bot.log / sherpa.log
-//   - restarting the bot tmux session
-//   - managing tree-runtime patterns (.mjs files)
-//   - browsing, uploading, downloading workspace files
+// Web UI for grandma-bob. Starts an HTTP server on ADMIN_PORT (default
+// 8080) with two pages:
+//
+//   /          — chat front page: talk to the agent by text or voice
+//                (audio is recorded in the browser and transcribed
+//                locally via the configured STT backend). Every grandma-
+//                kat tree event streams live over SSE and is rendered as
+//                steps under the message.
+//   /settings  — admin page: .env credentials, bot/sherpa tmux status,
+//                log tails, bot restart, workspace git sync, tree
+//                patterns, workspace file browser.
 //
 // Access from the phone's browser:
 //   http://127.0.0.1:8080
 // Or from the laptop (same Wi-Fi):
 //   http://<phone-ip>:8080
+//
+// Note: browser microphone access (voice input) requires a secure
+// context — it works on http://localhost but not on plain-http LAN IPs.
 
 import http from "node:http";
 import { readFile, writeFile, readdir, stat, mkdir, unlink } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
+import type { Agent } from "./agent.js";
+import {
+  transcribeAudioBytes,
+  convertToWav,
+  transcribeWavStreaming,
+  wavDurationSeconds,
+  type SttBackendOptions,
+} from "./stt.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -298,20 +313,177 @@ function readBody(req: http.IncomingMessage) {
   });
 }
 
+// ── web chat: turns, events, SSE ─────────────────────────────────────
+// The chat front page talks to the agent under a single conversation key.
+// Turns are strictly serialized (like the bot's per-topic queue) and every
+// grandma-kat event logged during a turn is sanitized (the raw events embed
+// the full message history — far too big to stream), kept in a small
+// in-memory history, and broadcast to connected browsers over SSE.
+
+const WEB_KEY = "web:chat";
+const MAX_TURNS_KEPT = 20;
+const MAX_EVENT_STR = 400;
+
+interface SanitizedEvent {
+  kind: string;
+  branch_path: string;
+  iteration: number;
+  content: Record<string, unknown> | null;
+  ts: number;
+}
+
+interface TurnRecord {
+  turnId: string;
+  input: string;
+  startedAt: number;
+  endedAt: number | null;
+  status: "running" | "done" | "error";
+  error: string | null;
+  output: string | null;
+  events: SanitizedEvent[];
+}
+
+const turns: TurnRecord[] = [];
+const sseClients = new Set<http.ServerResponse>();
+let webQueue: Promise<void> = Promise.resolve();
+let activeTurns = 0;
+let pendingTurns = 0;
+
+function broadcast(msg: unknown): void {
+  const data = `data: ${JSON.stringify(msg)}\n\n`;
+  for (const res of sseClients) {
+    try { res.write(data); } catch { /* client went away */ }
+  }
+}
+
+function truncStr(s: string): string {
+  return s.length > MAX_EVENT_STR ? s.slice(0, MAX_EVENT_STR) + "…" : s;
+}
+
+/** Recursively cap string length and long arrays so events stay streamable. */
+function sanitizeValue(v: unknown, depth = 0): unknown {
+  if (typeof v === "string") return truncStr(v);
+  if (v === null || typeof v !== "object") return v;
+  if (depth > 4) return "…";
+  if (Array.isArray(v)) {
+    if (v.length > 6) {
+      return { _summary: `${v.length} items`, last: sanitizeValue(v[v.length - 1], depth + 1) };
+    }
+    return v.map((x) => sanitizeValue(x, depth + 1));
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    out[k] = sanitizeValue(val, depth + 1);
+  }
+  return out;
+}
+
+function sanitizeEvent(e: { kind?: string; branch_path?: string; iteration?: number; content?: Record<string, unknown> | null }): SanitizedEvent {
+  const content: Record<string, unknown> = { ...(e.content ?? {}) };
+  // llm_call embeds the entire prompt history — replace with a summary.
+  if (Array.isArray(content.messages)) {
+    const msgs = content.messages as { role?: string; content?: unknown }[];
+    const last = msgs[msgs.length - 1];
+    content.messages = {
+      count: msgs.length,
+      last: last
+        ? { role: last.role, content: sanitizeValue(typeof last.content === "string" ? last.content : JSON.stringify(last.content)) }
+        : null,
+    };
+  }
+  return {
+    kind: e.kind ?? "unknown",
+    branch_path: e.branch_path ?? "",
+    iteration: e.iteration ?? 0,
+    content: sanitizeValue(content) as Record<string, unknown>,
+    ts: Date.now(),
+  };
+}
+
+function enqueueChat(agent: Agent, text: string): { turnId: string; queued: boolean } {
+  const turnId = randomUUID();
+  pendingTurns++;
+  // "queued" = another turn is running OR ahead in the queue, so the UI
+  // shows a pending bubble until this turn's turn_start arrives.
+  const queued = activeTurns > 0 || pendingTurns > 1;
+  webQueue = webQueue
+    .then(() => runTurn(agent, turnId, text))
+    .catch((err) => console.error("[web-chat]", err));
+  return { turnId, queued };
+}
+
+async function runTurn(agent: Agent, turnId: string, text: string): Promise<void> {
+  pendingTurns--;
+  activeTurns++;
+  const record: TurnRecord = {
+    turnId,
+    input: text,
+    startedAt: Date.now(),
+    endedAt: null,
+    status: "running",
+    error: null,
+    output: null,
+    events: [],
+  };
+  turns.push(record);
+  while (turns.length > MAX_TURNS_KEPT) turns.shift();
+  broadcast({ type: "turn_start", turnId, input: text, ts: record.startedAt });
+
+  const onEvent = (e: unknown) => {
+    const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0]);
+    record.events.push(s);
+    broadcast({ type: "event", turnId, event: s });
+  };
+
+  try {
+    // First message of the conversation: grow the tree (pauses at .human()).
+    if (!agent.hasContinuation(WEB_KEY)) {
+      await agent.run(WEB_KEY, "", () => {}, { onEvent });
+    }
+    await agent.run(
+      WEB_KEY,
+      text,
+      (value) => {
+        const t = typeof value === "string" ? value : JSON.stringify(value);
+        if (t) record.output = record.output ? record.output + "\n\n" + t : t;
+      },
+      { onEvent },
+    );
+    record.status = "done";
+  } catch (err) {
+    record.status = "error";
+    record.error = err instanceof Error ? err.message : String(err);
+    console.error("[web-chat]", err);
+  } finally {
+    activeTurns--;
+    record.endedAt = Date.now();
+    broadcast({
+      type: "turn_end",
+      turnId,
+      status: record.status,
+      error: record.error,
+      output: record.output,
+      ts: record.endedAt,
+    });
+  }
+}
+
 // ── HTML ──────────────────────────────────────────────────────────────
-function buildHtml(config: AdminConfig): string {
+function buildSettingsHtml(config: AdminConfig): string {
   const PORT = config.port;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>grandma-bob admin</title>
+<title>grandma-bob settings</title>
 <style>
   :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; }
   * { box-sizing: border-box; }
   body { font: 14px/1.5 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); margin: 0; padding: 16px; max-width: 900px; margin: 0 auto; }
-  h1 { font-size: 20px; margin: 0 0 16px; }
+  .topnav { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+  .topnav a { color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 600; margin-left: auto; }
+  h1 { font-size: 20px; margin: 0; }
   h2 { font-size: 16px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
   .card { background: var(--card); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -340,7 +512,10 @@ function buildHtml(config: AdminConfig): string {
 </style>
 </head>
 <body>
-<h1>grandma-bob admin</h1>
+<div class="topnav">
+  <h1>grandma-bob settings</h1>
+  <a href="/">&larr; chat</a>
+</div>
 
 <div class="card">
   <div class="row">
@@ -793,10 +968,570 @@ filesBrowse();
 `;
 }
 
+// ── chat front page ───────────────────────────────────────────────────
+function buildChatHtml(config: AdminConfig, sttLabel: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>grandma-bob</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; --border:#334155; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); display: flex; flex-direction: column; height: 100dvh; }
+  header { display: flex; align-items: baseline; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: #0b1224; }
+  header h1 { font-size: 17px; margin: 0; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header nav { margin-left: auto; }
+  header nav a { color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 600; }
+  main { flex: 1; overflow-y: auto; padding: 16px; }
+  .inner { max-width: 860px; margin: 0 auto; }
+  .empty { color: var(--muted); text-align: center; margin-top: 18vh; font-size: 15px; }
+  .turn { margin-bottom: 20px; }
+  .msg-user { display: flex; justify-content: flex-end; margin: 6px 0; }
+  .msg-user .bubble { background: #1d4ed8; color: #fff; padding: 8px 14px; border-radius: 14px 14px 4px 14px; max-width: 85%; white-space: pre-wrap; word-break: break-word; }
+  .msg-user .qtag { align-self: center; margin-right: 8px; font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 1px 8px; }
+  .heard { color: var(--muted); font-size: 12.5px; font-style: italic; margin: 6px 2px; }
+  .steps { background: var(--card); border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; }
+  .steps > summary { cursor: pointer; padding: 8px 12px; color: var(--muted); font-size: 12px; display: flex; gap: 8px; align-items: center; list-style: none; }
+  .steps > summary::-webkit-details-marker { display: none; }
+  .steps .count { margin-left: auto; font-family: ui-monospace, monospace; }
+  .spinner { width: 12px; height: 12px; flex: none; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .step-list { margin: 0; padding: 4px 12px 10px; list-style: none; border-top: 1px solid var(--border); }
+  .step { font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .step details > summary { cursor: pointer; padding: 3px 0; display: flex; gap: 8px; align-items: baseline; list-style: none; }
+  .step details > summary::-webkit-details-marker { display: none; }
+  .badge { flex: none; min-width: 58px; text-align: center; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 4px; background: #334155; color: var(--fg); text-transform: uppercase; }
+  .spath { color: #64748b; font-size: 11px; flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stext { color: #cbd5e1; word-break: break-word; }
+  .step pre { margin: 2px 0 8px 66px; padding: 8px; background: #0b1224; border-radius: 6px; font-size: 11px; white-space: pre-wrap; word-break: break-all; color: #94a3b8; max-height: 240px; overflow: auto; }
+  .k-llm .badge { background: #155e75; }
+  .k-tool .badge { background: #713f12; }
+  .k-result .badge { background: #14532d; }
+  .k-emit .badge { background: #065f46; color: #6ee7b7; }
+  .k-emit .stext { color: #a7f3d0; font-weight: 600; }
+  .k-human .badge { background: #374151; color: #fff; }
+  .k-flow .badge { background: #1e3a8a; }
+  .k-check .badge { background: #4a044e; }
+  .k-loop .badge { background: #4a044e; }
+  .k-memory .badge { background: #312e81; }
+  .k-err .badge { background: #7f1d1d; }
+  .k-err .stext { color: #fca5a5; }
+  .k-dim .badge { background: #1f2937; color: var(--muted); }
+  .k-dim .stext { color: var(--muted); }
+  .msg-answer { display: flex; gap: 8px; margin: 8px 0; align-items: flex-start; }
+  .msg-answer .who { flex: none; font-size: 12px; font-weight: 700; color: var(--green); padding-top: 10px; }
+  .msg-answer .bubble { background: var(--card); border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; padding: 10px 14px; max-width: 90%; white-space: pre-wrap; word-break: break-word; }
+  .msg-error { color: #fca5a5; border: 1px solid #7f1d1d; background: #450a0a; border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-size: 13px; white-space: pre-wrap; }
+  footer { border-top: 1px solid var(--border); background: #0b1224; padding: 10px 16px 12px; }
+  .input-row { display: flex; gap: 8px; max-width: 860px; margin: 0 auto; align-items: flex-end; }
+  textarea { flex: 1; resize: none; padding: 10px 12px; background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; font: 15px system-ui; max-height: 140px; }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  button { background: var(--accent); color: #fff; border: none; padding: 10px 18px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button.secondary { background: #475569; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #mic-btn { background: #475569; font-size: 16px; padding: 8px 14px; }
+  #mic-btn.recording { background: var(--red); animation: pulse 1.2s ease-in-out infinite; }
+  #file-btn { background: #475569; font-size: 15px; padding: 8px 14px; }
+  @keyframes pulse { 50% { opacity: 0.6; } }
+  #mic-timer { align-self: center; font-size: 12px; color: var(--muted); min-width: 28px; }
+  .file-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+  .file-card .fc-head { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+  .file-card .fc-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-card .fc-status { margin-left: auto; color: var(--muted); font-size: 12px; flex: none; }
+  .file-card .fc-text { margin-top: 6px; font-size: 13.5px; color: #cbd5e1; white-space: pre-wrap; word-break: break-word; }
+  .file-card.done .fc-text { color: var(--fg); }
+  .file-card.err { border-color: #7f1d1d; }
+  .file-card.err .fc-text { color: #fca5a5; }
+  .foot-note { max-width: 860px; margin: 6px auto 0; font-size: 11px; color: #64748b; display: flex; gap: 10px; }
+  .foot-note .right { margin-left: auto; }
+  .toast { position: fixed; top: 16px; right: 16px; background: var(--green); color: #fff; padding: 10px 16px; border-radius: 6px; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 10; }
+  .toast.show { opacity: 1; }
+  .toast.err { background: var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <h1>grandma-bob</h1>
+  <span class="sub">${sttLabel}</span>
+  <nav><a href="/settings">settings</a></nav>
+</header>
+<main id="main"><div class="inner" id="conversation"></div></main>
+<footer>
+  <div class="input-row">
+    <button id="mic-btn" title="hold a conversation by voice">&#127908;</button>
+    <span id="mic-timer"></span>
+    <button id="file-btn" title="transcribe an audio file (streams as it goes)">&#128206;</button>
+    <input id="file-input" type="file" accept="audio/*,.ogg,.oga,.opus,.webm,.mp3,.m4a,.mp4,.wav,.flac" style="display:none">
+    <textarea id="input" rows="1" placeholder="type a message&hellip;" enterkeyhint="send"></textarea>
+    <button id="send-btn">Send</button>
+  </div>
+  <div class="foot-note">
+    <span>Enter to send &middot; Shift+Enter for a new line</span>
+    <span class="right"><button id="clear-btn" class="secondary" style="padding:2px 10px;font-size:12px">clear conversation</button></span>
+  </div>
+</footer>
+<div id="toast" class="toast"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+const conv = $("conversation");
+const mainEl = $("main");
+const blocks = new Map(); // turnId -> live turn block
+
+function toast(msg, isErr, ms) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast show" + (isErr ? " err" : "");
+  setTimeout(() => (t.className = "toast" + (isErr ? " err" : "")), ms || (isErr ? 6000 : 3000));
+}
+
+function short(s, n) {
+  if (s === null || s === undefined) return "";
+  s = String(s).replace(/\\s+/g, " ");
+  return s.length > n ? s.slice(0, n) + "\\u2026" : s;
+}
+function jshort(v, n) { return short(typeof v === "string" ? v : JSON.stringify(v), n ?? 120); }
+
+function maybeScroll(force) {
+  const nearBottom = mainEl.scrollHeight - mainEl.scrollTop - mainEl.clientHeight < 140;
+  if (force || nearBottom) mainEl.scrollTop = mainEl.scrollHeight;
+}
+
+function hideEmpty() {
+  const hint = $("empty-hint");
+  if (hint) hint.remove();
+}
+function showEmpty() {
+  if (conv.querySelector(".turn, .msg-user, .heard")) return;
+  const hint = document.createElement("div");
+  hint.className = "empty";
+  hint.id = "empty-hint";
+  hint.textContent = "Say something \\u2014 type it, or tap the mic. Every step the tree takes appears under your message.";
+  conv.appendChild(hint);
+}
+
+function describeEvent(ev) {
+  const c = ev.content || {};
+  const iter = ev.iteration > 1 ? " #" + ev.iteration : "";
+  switch (ev.kind) {
+    case "human":
+      return { badge: "human", cls: "k-human", text: (c.child ?? "?") + " \\u2014 paused, waiting for input" };
+    case "llm_call": {
+      let t = (c.model ?? "?") + (c.round > 1 ? " round " + c.round : "") + iter;
+      if (Array.isArray(c.toolCalls) && c.toolCalls.length) {
+        t += " \\u2192 tool calls: " + c.toolCalls.map((tc) => tc.name ?? tc.function?.name ?? "?").join(", ");
+      } else if (c.content) {
+        t += " \\u2192 " + jshort(c.content, 160);
+      }
+      return { badge: "llm", cls: "k-llm", text: t };
+    }
+    case "llm_error":
+      return { badge: "llm-err", cls: "k-err", text: (c.model ?? "?") + " failed: " + jshort(c.error, 160) };
+    case "tool_call":
+      return {
+        badge: "tool", cls: "k-tool",
+        text: (c.tool ?? "?") + (c.args ? "(" + jshort(JSON.stringify(c.args), 80) + ")" : "") +
+          (c.result !== undefined ? " \\u2192 " + jshort(c.result, 100) : ""),
+      };
+    case "tool_result":
+      return {
+        badge: c.isError ? "error" : "result", cls: c.isError ? "k-err" : "k-result",
+        text: (c.tool ?? "?") + " \\u2192 " + jshort(c.result, 160),
+      };
+    case "tool_error":
+      return { badge: "error", cls: "k-err", text: (c.tool ?? "?") + " failed: " + jshort(c.error, 160) };
+    case "check":
+      return { badge: "check", cls: c.pass ? "k-check" : "k-err", text: (c.child ?? "?") + (c.pass ? " \\u2014 pass" : " \\u2014 FAIL: " + jshort(c.feedback, 120)) };
+    case "until":
+      return { badge: "until", cls: c.pass ? "k-check" : "k-loop", text: (c.child ?? "?") + (c.pass ? " \\u2014 done" : " \\u2014 loop: " + jshort(c.feedback, 120)) };
+    case "gate":
+      return { badge: "gate", cls: "k-flow", text: (c.child ?? "?") + " \\u2192 " + jshort(c.result, 80) };
+    case "flow":
+      return {
+        badge: "flow", cls: "k-flow",
+        text: (c.type ?? "?") + (c.n ? "(" + c.n + ")" : "") + (c.child ? " from " + c.child : "") + (c.used ? " (" + c.used + "/" + (c.max ?? "?") + ")" : ""),
+      };
+    case "memory":
+      return { badge: "memory", cls: "k-memory", text: (c.child ?? "?") + " = " + jshort(c.value, 100) };
+    case "emit":
+      return { badge: "emit", cls: "k-emit", text: jshort(c.value, 200) };
+    case "record":
+      return { badge: "record", cls: "k-dim", text: (c.child ?? "?") + " = " + jshort(c.value, 80) };
+    case "scope_init":
+      return { badge: "scope", cls: "k-dim", text: "#" + c.scopeId + (c.parentScopeId != null ? " (parent #" + c.parentScopeId + ")" : "") };
+    case "map":
+      return { badge: "map", cls: "k-dim", text: (c.child ?? "?") + " \\u2014 " + c.count + " item(s)" };
+    case "map_item":
+      return { badge: "map", cls: "k-dim", text: (c.child ?? "?") + "[" + c.index + "] = " + jshort(c.value, 80) };
+    case "return":
+      return { badge: "return", cls: "k-dim", text: (c.child ?? "?") + " = " + jshort(c.value, 80) };
+    default:
+      return { badge: ev.kind, cls: "k-dim", text: jshort(JSON.stringify(c), 120) };
+  }
+}
+
+function startTurn(turnId, input) {
+  hideEmpty();
+  const pending = conv.querySelector('.msg-user.pending[data-turnid="' + turnId + '"]');
+  const turn = document.createElement("div");
+  turn.className = "turn";
+
+  const userMsg = document.createElement("div");
+  userMsg.className = "msg-user";
+  const bub = document.createElement("div");
+  bub.className = "bubble";
+  bub.textContent = input;
+  userMsg.appendChild(bub);
+  turn.appendChild(userMsg);
+
+  const steps = document.createElement("details");
+  steps.className = "steps";
+  steps.open = true;
+  const sum = document.createElement("summary");
+  const spin = document.createElement("span");
+  spin.className = "spinner";
+  const lab = document.createElement("span");
+  lab.textContent = "running tree\\u2026";
+  const cnt = document.createElement("span");
+  cnt.className = "count";
+  sum.append(spin, lab, cnt);
+  const list = document.createElement("ol");
+  list.className = "step-list";
+  steps.append(sum, list);
+  turn.appendChild(steps);
+
+  if (pending) pending.replaceWith(turn);
+  else conv.appendChild(turn);
+
+  const block = { turn, list, spin, lab, cnt, count: 0 };
+  blocks.set(turnId, block);
+  maybeScroll(true);
+  return block;
+}
+
+function addStep(turnId, ev) {
+  const block = blocks.get(turnId);
+  if (!block) return;
+  const d = describeEvent(ev);
+  const li = document.createElement("li");
+  li.className = "step " + d.cls;
+  const det = document.createElement("details");
+  const sum = document.createElement("summary");
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.textContent = d.badge;
+  const sp = document.createElement("span");
+  sp.className = "spath";
+  sp.textContent = ev.branch_path ? "[" + ev.branch_path + "]" : "";
+  const txt = document.createElement("span");
+  txt.className = "stext";
+  txt.textContent = d.text;
+  sum.append(badge, sp, txt);
+  const pre = document.createElement("pre");
+  pre.textContent = JSON.stringify(ev.content, null, 2);
+  det.append(sum, pre);
+  li.appendChild(det);
+  block.list.appendChild(li);
+  block.count++;
+  block.cnt.textContent = block.count + (block.count === 1 ? " step" : " steps");
+  maybeScroll(false);
+}
+
+function endTurn(turnId, status, error, output) {
+  const block = blocks.get(turnId);
+  if (!block) return;
+  blocks.delete(turnId);
+  block.spin.remove();
+  block.lab.textContent = status === "error" ? "tree failed" : "tree steps";
+  if (status === "error") {
+    const errEl = document.createElement("div");
+    errEl.className = "msg-error";
+    errEl.textContent = "Something went wrong: " + (error || "unknown error");
+    block.turn.appendChild(errEl);
+  }
+  if (output) {
+    const ans = document.createElement("div");
+    ans.className = "msg-answer";
+    const who = document.createElement("div");
+    who.className = "who";
+    who.textContent = "bob";
+    const bub = document.createElement("div");
+    bub.className = "bubble";
+    bub.textContent = output;
+    ans.append(who, bub);
+    block.turn.appendChild(ans);
+  }
+  maybeScroll(true);
+}
+
+function addPending(turnId, text) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg-user pending";
+  wrap.dataset.turnid = turnId;
+  const tag = document.createElement("span");
+  tag.className = "qtag";
+  tag.textContent = "queued";
+  const bub = document.createElement("div");
+  bub.className = "bubble";
+  bub.textContent = text;
+  wrap.append(tag, bub);
+  conv.appendChild(wrap);
+  maybeScroll(true);
+}
+
+async function sendText(text) {
+  try {
+    const r = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(d.error || "send failed", true); return; }
+    if (d.queued) addPending(d.turnId, text);
+    hideEmpty();
+  } catch (e) {
+    toast("send failed: " + e.message, true);
+  }
+}
+
+// ---- input box ----
+const input = $("input");
+$("send-btn").onclick = doSend;
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); }
+});
+input.addEventListener("input", () => {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 140) + "px";
+});
+function doSend() {
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  input.style.height = "auto";
+  sendText(text);
+}
+
+// ---- voice input (MediaRecorder -> /api/transcribe -> auto-send) ----
+const micBtn = $("mic-btn");
+const micTimer = $("mic-timer");
+const canMic = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+if (!canMic) {
+  micBtn.disabled = true;
+  micBtn.title = "voice input needs a secure context (localhost or https)";
+}
+let rec = null, recStream = null, recChunks = [], recInt = null, recSecs = 0;
+
+micBtn.onclick = async () => {
+  if (rec && rec.state === "recording") { rec.stop(); return; }
+  try {
+    recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    toast("microphone unavailable: " + e.message, true, 8000);
+    return;
+  }
+  const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"]
+    .find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  rec = new MediaRecorder(recStream, mime ? { mimeType: mime } : undefined);
+  recChunks = [];
+  rec.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
+  rec.onstop = onRecStop;
+  rec.start();
+  recSecs = 0;
+  micBtn.classList.add("recording");
+  micTimer.textContent = "0s";
+  recInt = setInterval(() => { recSecs++; micTimer.textContent = recSecs + "s"; }, 1000);
+};
+
+async function onRecStop() {
+  clearInterval(recInt);
+  micBtn.classList.remove("recording");
+  micTimer.textContent = "";
+  if (recStream) { recStream.getTracks().forEach((t) => t.stop()); recStream = null; }
+  const mimeType = rec.mimeType || "audio/webm";
+  const blob = new Blob(recChunks, { type: mimeType });
+  rec = null;
+  if (!blob.size) return;
+  if (recSecs < 1) { toast("recording too short", true); return; }
+  toast("transcribing\\u2026", false, 2000);
+  const fd = new FormData();
+  fd.append("file", blob, "voice" + (mimeType.includes("mp4") ? ".mp4" : ".webm"));
+  try {
+    const r = await fetch("/api/transcribe", { method: "POST", body: fd });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(d.error || "transcription failed", true, 8000); return; }
+    hideEmpty();
+    const heard = document.createElement("div");
+    heard.className = "heard";
+    heard.textContent = 'heard: "' + d.text + '"';
+    conv.appendChild(heard);
+    maybeScroll(true);
+    sendText(d.text);
+  } catch (e) {
+    toast("transcription failed: " + e.message, true, 8000);
+  }
+}
+
+// ---- audio file upload with streaming transcription ----
+$("file-btn").onclick = () => $("file-input").click();
+$("file-input").addEventListener("change", () => {
+  const file = $("file-input").files[0];
+  $("file-input").value = "";
+  if (file) transcribeFile(file);
+});
+
+async function transcribeFile(file) {
+  hideEmpty();
+  const card = document.createElement("div");
+  card.className = "file-card";
+  const head = document.createElement("div");
+  head.className = "fc-head";
+  const spin = document.createElement("span");
+  spin.className = "spinner";
+  const name = document.createElement("span");
+  name.className = "fc-name";
+  name.textContent = file.name;
+  const status = document.createElement("span");
+  status.className = "fc-status";
+  status.textContent = "uploading\\u2026";
+  head.append(spin, name, status);
+  const textEl = document.createElement("div");
+  textEl.className = "fc-text";
+  card.append(head, textEl);
+  conv.appendChild(card);
+  maybeScroll(true);
+
+  const fd = new FormData();
+  fd.append("file", file);
+  let duration = 0, finalText = "";
+  try {
+    const res = await fetch("/api/transcribe-stream", { method: "POST", body: fd });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error || "HTTP " + res.status);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\\n\\n")) >= 0) {
+        const chunk = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of chunk.split("\\n")) {
+          if (!line.startsWith("data: ")) continue;
+          let msg;
+          try { msg = JSON.parse(line.slice(6)); } catch { continue; }
+          if (msg.type === "info") {
+            duration = msg.duration || 0;
+            status.textContent = duration ? "0s / " + duration + "s" : "transcribing\\u2026";
+          } else if (msg.type === "partial") {
+            textEl.textContent = msg.text;
+            if (duration && msg.at != null) status.textContent = Math.min(msg.at, duration) + "s / " + duration + "s";
+            maybeScroll(false);
+          } else if (msg.type === "done") {
+            finalText = msg.text;
+          } else if (msg.type === "error") {
+            throw new Error(msg.error || "transcription failed");
+          }
+        }
+      }
+    }
+    if (!finalText) throw new Error("transcription came back empty");
+    spin.remove();
+    card.classList.add("done");
+    status.textContent = "transcribed" + (duration ? " (" + duration + "s)" : "");
+    textEl.textContent = finalText;
+    input.value = finalText;
+    input.dispatchEvent(new Event("input"));
+    input.focus();
+    toast("transcript ready \\u2014 review and press Send");
+  } catch (e) {
+    spin.remove();
+    card.classList.add("err");
+    status.textContent = "failed";
+    textEl.textContent = e.message;
+    toast("transcription failed: " + e.message, true, 8000);
+  }
+  maybeScroll(true);
+}
+
+// ---- clear ----
+$("clear-btn").onclick = async () => {
+  if (!confirm("Clear this conversation? The next message starts a fresh tree.")) return;
+  try {
+    const r = await fetch("/api/clear", { method: "POST" });
+    if (!r.ok) toast("clear failed", true);
+  } catch (e) { toast("clear failed: " + e.message, true); }
+};
+
+// ---- live events over SSE ----
+function connect() {
+  const es = new EventSource("/api/events");
+  es.onmessage = (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type === "turn_start") startTurn(msg.turnId, msg.input);
+    else if (msg.type === "event") addStep(msg.turnId, msg.event);
+    else if (msg.type === "turn_end") endTurn(msg.turnId, msg.status, msg.error, msg.output);
+    else if (msg.type === "cleared") { conv.innerHTML = ""; blocks.clear(); showEmpty(); }
+  };
+}
+
+// ---- history on load ----
+async function loadHistory() {
+  try {
+    const r = await fetch("/api/turns");
+    const d = await r.json();
+    for (const t of d.turns || []) {
+      startTurn(t.turnId, t.input);
+      for (const ev of t.events || []) addStep(t.turnId, ev);
+      endTurn(t.turnId, t.status, t.error, t.output);
+    }
+  } catch { /* server restarted mid-load, etc. */ }
+}
+
+showEmpty();
+loadHistory();
+connect();
+</script>
+</body>
+</html>
+`;
+}
+
 // ── server ────────────────────────────────────────────────────────────
-export function startAdmin(cfg?: Partial<AdminConfig>): http.Server {
-  const config = { ...defaultConfig(), ...cfg };
-  const HTML = buildHtml(config);
+export interface AdminOptions extends Partial<AdminConfig> {
+  /** The agent instance — required for the chat front page. */
+  agent?: Agent;
+  /** STT backend options — required for voice input on the chat page. */
+  stt?: SttBackendOptions;
+}
+
+export function startAdmin(cfg?: AdminOptions): http.Server {
+  const config: AdminConfig = { ...defaultConfig(), ...cfg };
+  const agent = cfg?.agent;
+  const stt = cfg?.stt;
+  const SETTINGS_HTML = buildSettingsHtml(config);
+  const sttLabel = stt
+    ? `voice: ${stt.backend} @ ${new URL(stt.backend === "sherpa" || stt.backend === "parakeet" ? stt.sherpaUrl : stt.whisperUrl).host}`
+    : "voice: not configured";
+  const CHAT_HTML = buildChatHtml(config, sttLabel);
+
+  // Keep SSE connections alive through proxies/idle timeouts.
+  const heartbeat = setInterval(() => {
+    for (const res of sseClients) {
+      try { res.write(": ping\n\n"); } catch { /* ignore */ }
+    }
+  }, 25000);
+  heartbeat.unref();
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -804,7 +1539,174 @@ export function startAdmin(cfg?: Partial<AdminConfig>): http.Server {
 
       if (req.method === "GET" && url.pathname === "/") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        res.end(HTML);
+        res.end(CHAT_HTML);
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/settings") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(SETTINGS_HTML);
+        return;
+      }
+
+      // --- web chat ---
+
+      if (req.method === "GET" && url.pathname === "/api/events") {
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          "connection": "keep-alive",
+          "x-accel-buffering": "no",
+        });
+        res.write("retry: 2000\n\n");
+        sseClients.add(res);
+        req.on("close", () => sseClients.delete(res));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/turns") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ turns }));
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/chat") {
+        if (!agent) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end('{"error":"agent not available"}');
+          return;
+        }
+        const body = await readBody(req);
+        if (body.length > 64 * 1024) {
+          res.writeHead(413, { "content-type": "application/json" });
+          res.end('{"error":"message too large"}');
+          return;
+        }
+        let text: unknown;
+        try {
+          text = JSON.parse(body).text;
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"invalid JSON body"}');
+          return;
+        }
+        if (typeof text !== "string" || !text.trim()) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"text is required"}');
+          return;
+        }
+        const { turnId, queued } = enqueueChat(agent, text.trim());
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, turnId, queued }));
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/transcribe") {
+        if (!stt) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end('{"error":"STT backend not configured"}');
+          return;
+        }
+        const contentType = req.headers["content-type"] || "";
+        if (!contentType.includes("multipart/form-data")) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"multipart required"}');
+          return;
+        }
+        const boundary = contentType.split("boundary=")[1];
+        if (!boundary) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"no boundary"}');
+          return;
+        }
+        const parts = await readMultipart(req, boundary);
+        const file = parts.file;
+        if (!file || !file.content || !file.content.length) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"no audio file"}');
+          return;
+        }
+        if (file.content.length > 25 * 1024 * 1024) {
+          res.writeHead(413, { "content-type": "application/json" });
+          res.end('{"error":"audio too large"}');
+          return;
+        }
+        try {
+          const ext = path.extname(file.filename || "") || ".webm";
+          const text = await transcribeAudioBytes(file.content, { ext, ...stt });
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ text }));
+        } catch (e: any) {
+          res.writeHead(502, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: `transcription failed: ${e.message}` }));
+        }
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/transcribe-stream") {
+        if (!stt) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end('{"error":"STT backend not configured"}');
+          return;
+        }
+        const contentType = req.headers["content-type"] || "";
+        if (!contentType.includes("multipart/form-data")) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"multipart required"}');
+          return;
+        }
+        const boundary = contentType.split("boundary=")[1];
+        if (!boundary) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"no boundary"}');
+          return;
+        }
+        const parts = await readMultipart(req, boundary);
+        const file = parts.file;
+        if (!file || !file.content || !file.content.length) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"no audio file"}');
+          return;
+        }
+        if (file.content.length > 100 * 1024 * 1024) {
+          res.writeHead(413, { "content-type": "application/json" });
+          res.end('{"error":"audio too large (max 100 MB)"}');
+          return;
+        }
+
+        // SSE response: info → partial* → done | error.
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          "connection": "keep-alive",
+          "x-accel-buffering": "no",
+        });
+        const send = (obj: unknown) => {
+          try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* client left */ }
+        };
+        try {
+          const ext = path.extname(file.filename || "") || ".webm";
+          const wav = await convertToWav(file.content, ext, stt.tmpDir);
+          const duration = wavDurationSeconds(wav);
+          if (duration > 1800) throw new Error("audio too long (max 30 minutes)");
+          send({ type: "info", duration });
+          const text = await transcribeWavStreaming(wav, stt, (partial, at) =>
+            send({ type: "partial", text: partial, ...(at !== undefined ? { at } : {}) }),
+          );
+          send({ type: "done", text });
+        } catch (e: any) {
+          send({ type: "error", error: e.message });
+        }
+        res.end();
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/clear") {
+        agent?.clear(WEB_KEY);
+        turns.length = 0;
+        broadcast({ type: "cleared" });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
         return;
       }
 
@@ -959,6 +1861,8 @@ export function startAdmin(cfg?: Partial<AdminConfig>): http.Server {
   server.listen(config.port, "0.0.0.0", () => {
     console.log(`admin UI : http://0.0.0.0:${config.port} (bound on all interfaces)`);
   });
+
+  server.on("close", () => clearInterval(heartbeat));
 
   return server;
 }

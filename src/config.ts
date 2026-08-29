@@ -40,6 +40,14 @@ export const config = {
   sttLanguage: process.env.STT_LANGUAGE ?? process.env.WHISPER_LANGUAGE ?? "",
   /** Exa Search API key for the exa_search web search tool (optional — tool errors if unset). */
   exaApiKey: process.env.EXO_API_KEY ?? "",
+  /**
+   * Absolute path to a single SQLite database the agent's sql tools
+   * (sql_query read-only, sql_write read-write) are locked to. When set, the
+   * agent can only touch that one file and can never reach any other
+   * database. Leave empty for free choice of any .db inside the workspace
+   * (sql_query is always read-only regardless).
+   */
+  sqliteLockPath: process.env.SQLITE_LOCK_PATH ? path.resolve(process.env.SQLITE_LOCK_PATH) : "",
   allowedCommands: (process.env.ALLOWED_COMMANDS ?? DEFAULT_COMMANDS.join(","))
     .split(",")
     .map((s) => s.trim())
