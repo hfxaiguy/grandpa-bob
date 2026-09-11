@@ -35,6 +35,8 @@ import {
   wavDurationSeconds,
   type SttBackendOptions,
 } from "./stt.js";
+import { TreeLogReader, logDbPath } from "./treeLog.js";
+import { DEFAULT_PATTERN } from "./pattern-loader.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -241,6 +243,24 @@ async function writePattern(workspaceDir: string, name: string, content: string)
 
 async function deletePattern(workspaceDir: string, name: string) {
   try { await unlink(path.join(workspaceDir, PATTERNS_DIR_NAME, `${name}.mjs`)); } catch {}
+}
+
+// ── active tree pattern ───────────────────────────────────────────────
+// Which patterns/*.mjs the agent loads on each turn. Kept in process
+// memory (mutable at runtime without a restart) and persisted to .env as
+// TREE_PATTERN so it survives restarts. The Telegram bot and the web chat
+// both resolve the pattern through getSelectedPattern(), so a switch takes
+// effect on the next turn of both.
+let selectedPattern = process.env.TREE_PATTERN || DEFAULT_PATTERN;
+
+/** Current active tree pattern name (filename without .mjs). */
+export function getSelectedPattern(): string {
+  return selectedPattern;
+}
+
+/** Set the active tree pattern name (in memory; persists via /api/pattern). */
+export function setSelectedPattern(name: string): void {
+  selectedPattern = name;
 }
 
 // ── file browser ──────────────────────────────────────────────────────
@@ -591,7 +611,7 @@ function buildSettingsHtml(config: AdminConfig): string {
 
 <div class="card">
   <h2 style="margin-top:0">Tree patterns</h2>
-  <p style="margin:4px 0"><small>grandma-kat Tree patterns (<code>.mjs</code>) in <code>workspace/patterns/</code>. The agent loads <code>agent.mjs</code> on each turn — edit it to change behavior without restarting. The agent can also modify its own patterns using file tools.</small></p>
+  <p style="margin:4px 0"><small>grandma-kat Tree patterns (<code>.mjs</code>) in <code>workspace/patterns/</code>. The agent re-reads the active pattern on each turn — edit it to change behavior without restarting. The agent can also modify its own patterns using file tools. <b>Which one runs</b> is selected from the dropdown on the <a href="/" style="color:var(--accent)">chat page</a> (persisted as <code>TREE_PATTERN</code> in <code>.env</code>).</small></p>
   <div id="pattern-list">(loading...)</div>
   <div class="actions">
     <button class="secondary" onclick="refreshPatterns()">Refresh</button>
@@ -986,6 +1006,7 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   header .sub { color: var(--muted); font-size: 12px; }
   header nav { margin-left: auto; }
   header nav a { color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 600; }
+  #pattern-sel { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; padding: 3px 6px; }
   main { flex: 1; overflow-y: auto; padding: 16px; }
   .inner { max-width: 860px; margin: 0 auto; }
   .empty { color: var(--muted); text-align: center; margin-top: 18vh; font-size: 15px; }
@@ -1057,6 +1078,7 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
 <header>
   <h1>grandma-bob</h1>
   <span class="sub">${sttLabel}</span>
+  <select id="pattern-sel" title="tree pattern to run (patterns/*.mjs)"></select>
   <nav><a href="/settings">settings</a></nav>
 </header>
 <main id="main"><div class="inner" id="conversation"></div></main>
@@ -1501,6 +1523,43 @@ async function loadHistory() {
 showEmpty();
 loadHistory();
 connect();
+
+// ---- pattern selector -------------------------------------------------
+async function loadPatternSelect() {
+  try {
+    const r = await fetch("/api/pattern");
+    const d = await r.json();
+    const sel = document.getElementById("pattern-sel");
+    sel.innerHTML = "";
+    for (const p of d.patterns || []) {
+      const o = document.createElement("option");
+      o.value = p.name;
+      o.textContent = p.name;
+      if (p.name === d.current) o.selected = true;
+      sel.appendChild(o);
+    }
+    if (!d.patterns || !d.patterns.length) {
+      sel.appendChild(new Option("(no patterns)", "", false, false));
+    }
+  } catch { /* pattern API unreachable — selector just stays empty */ }
+}
+async function setPattern(name) {
+  if (!name) return;
+  try {
+    const r = await fetch("/api/pattern", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(d.error || "pattern switch failed", true); return; }
+    toast("pattern: " + d.pattern + " — conversation cleared");
+  } catch (e) {
+    toast("pattern switch failed: " + e.message, true);
+  }
+}
+document.getElementById("pattern-sel").addEventListener("change", (e) => setPattern(e.target.value));
+loadPatternSelect();
 </script>
 </body>
 </html>
@@ -1532,6 +1591,33 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
     }
   }, 25000);
   heartbeat.unref();
+
+  // --- grandma-kat tree log: read-only SSE for apps ---
+  // Opens the workspace's grandma-kat.db read-only. Nodes running a turn
+  // broadcast new events to /api/tree/events subscribers on a poll cadence.
+  const treeDbPath = logDbPath(config.workspaceDir);
+  let treeReader: TreeLogReader;
+  let treeReaderErr: string | null = null;
+  try {
+    treeReader = new TreeLogReader(treeDbPath);
+  } catch (e: any) {
+    treeReaderErr = e.message;
+    console.warn(`[admin] grandma-kat log unavailable at ${treeDbPath}: ${e.message}`);
+  }
+  const treeClients: { res: http.ServerResponse; since: number }[] = [];
+  const treePoll = setInterval(() => {
+    if (!treeReader) return;
+    let max = treeReader.maxSeq();
+    for (const c of treeClients) {
+      if (max <= c.since) continue;
+      const events = treeReader.eventsSince(c.since);
+      for (const ev of events) {
+        try { c.res.write(`data: ${JSON.stringify({ type: "event", event: ev })}\n\n`); } catch { /* client left */ }
+      }
+      c.since = max;
+    }
+  }, 1000);
+  treePoll.unref();
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -1806,6 +1892,38 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         return;
       }
 
+      // --- active pattern selection ---
+      // GET returns the current pattern + the available list; POST switches
+      // the pattern (and clears the web conversation — the tree pause state
+      // is pattern-specific, so it can't be resumed under a different tree).
+      if (req.method === "GET" && url.pathname === "/api/pattern") {
+        const patterns = await listPatterns(config.workspaceDir);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ current: getSelectedPattern(), patterns }));
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/pattern") {
+        const body = await readBody(req);
+        let name: unknown;
+        try { name = JSON.parse(body).name; } catch { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid JSON body"}'); return; }
+        if (typeof name !== "string" || !name) { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"name is required"}'); return; }
+        const patterns = await listPatterns(config.workspaceDir);
+        if (!patterns.some((p) => p.name === name)) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: `pattern not found: ${name}` }));
+          return;
+        }
+        setSelectedPattern(name);
+        try { await writeEnv(config.envPath, { TREE_PATTERN: name }); } catch { /* persist best-effort */ }
+        agent?.clear(WEB_KEY);
+        turns.length = 0;
+        broadcast({ type: "cleared" });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, pattern: name }));
+        return;
+      }
+
       // --- file browser ---
       if (req.method === "GET" && url.pathname === "/api/files") {
         const dir = url.searchParams.get("path") || "";
@@ -1850,6 +1968,46 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         return;
       }
 
+      // --- grandma-kat tree log (read-only, for apps) ---
+
+      if (req.method === "GET" && url.pathname === "/api/tree/runs") {
+        if (treeReaderErr) { res.writeHead(503, { "content-type": "application/json" }); res.end(JSON.stringify({ error: treeReaderErr })); return; }
+        const runs = treeReader.listRuns(Number(url.searchParams.get("limit") || "50"));
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ runs }));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/api/tree/run/")) {
+        if (treeReaderErr) { res.writeHead(503, { "content-type": "application/json" }); res.end(JSON.stringify({ error: treeReaderErr })); return; }
+        const runId = decodeURIComponent(url.pathname.slice("/api/tree/run/".length));
+        const run = treeReader.run(runId);
+        if (!run.events.length) { res.writeHead(404, { "content-type": "application/json" }); res.end('{"error":"run not found"}'); return; }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(run));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/tree/events") {
+        if (treeReaderErr) { res.writeHead(503, { "content-type": "application/json" }); res.end(JSON.stringify({ error: treeReaderErr })); return; }
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          "connection": "keep-alive",
+          "x-accel-buffering": "no",
+        });
+        res.write("retry: 1500\n\n");
+        const emit = (obj: unknown) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* client left */ } };
+        emit({ type: "runs", runs: treeReader.listRuns(50) });
+        const last = treeReader.maxSeq();
+        treeClients.push({ res, since: last });
+        req.on("close", () => {
+          const i = treeClients.findIndex((c) => c.res === res);
+          if (i >= 0) treeClients.splice(i, 1);
+        });
+        return;
+      }
+
       res.writeHead(404, { "content-type": "text/plain" });
       res.end("not found");
     } catch (e: any) {
@@ -1862,7 +2020,11 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
     console.log(`admin UI : http://0.0.0.0:${config.port} (bound on all interfaces)`);
   });
 
-  server.on("close", () => clearInterval(heartbeat));
+  server.on("close", () => {
+    clearInterval(heartbeat);
+    clearInterval(treePoll);
+    treeReader?.close();
+  });
 
   return server;
 }

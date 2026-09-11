@@ -26,6 +26,12 @@ export interface AgentDeps {
   logger?: unknown;
   /** Log level for grandma-kat. Default: "info". */
   logLevel?: "none" | "info" | "debug";
+  /**
+   * Which patterns/*.mjs tree to run, by name (filename without .mjs).
+   * A getter is used so it stays mutable at runtime (the admin UI can
+   * switch the active pattern without a process restart).
+   */
+  patternName?: () => string;
 }
 
 export interface AgentRunResult {
@@ -103,7 +109,7 @@ export class Agent {
   ): Promise<AgentRunResult> {
     const cont = this.continuations.get(key);
     const katTools = this.deps.tools.toKatTools();
-    const pattern = await loadPattern(this.deps.workspace);
+    const pattern = await loadPattern(this.deps.workspace, this.deps.patternName?.() ?? "agent");
 
     // Merge built-in tools with comms tools.
     const commsToolMap = Object.fromEntries(commsTools.map((t: { name: string }) => [t.name, t]));

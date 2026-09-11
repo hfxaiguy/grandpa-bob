@@ -13,7 +13,7 @@ import { pathToFileURL } from "node:url";
 import { Tree, when, goback, goto, max } from "grandma-kat";
 
 const PATTERN_DIR = "patterns";
-const DEFAULT_PATTERN = "agent";
+export const DEFAULT_PATTERN = "agent";
 
 /** Args passed to every pattern function. */
 export interface PatternContext {

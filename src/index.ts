@@ -9,7 +9,7 @@ import { Agent, checkLlmEntry } from "./agent.js";
 import { loadModels } from "./models.js";
 import { createBot } from "./bot.js";
 import { checkStt } from "./stt.js";
-import { startAdmin } from "./admin.js";
+import { startAdmin, getSelectedPattern } from "./admin.js";
 
 async function main(): Promise<void> {
   await fs.mkdir(config.workspaceDir, { recursive: true });
@@ -32,7 +32,8 @@ async function main(): Promise<void> {
   // db path string) lets Agent.run() wrap it per-run so the web UI can
   // stream tree events live.
   const katLogger = createLogger(path.join(config.workspaceDir, "logs/grandma-kat.db"), "info");
-  const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger });
+  // patternName is a getter so the admin UI's dropdown can switch it at runtime.
+  const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger, patternName: getSelectedPattern });
 
   const modelReachable = await Promise.all(
     Object.entries(models).map(async ([name, m]) => [name, await checkLlmEntry(m.baseURL, m.apiKey, m.protocol)] as const),
@@ -85,7 +86,7 @@ async function main(): Promise<void> {
 
   await bot.start({
     onStart: (me) => {
-      console.log(`grandma-bot up as @${me.username}`);
+      console.log(`grandpa-bob-bot up as @${me.username}`);
       console.log(`workspace : ${config.workspaceDir} (git auto-commit on)`);
       for (const [name, m] of Object.entries(models)) {
         const reachable = modelReachable.find(([n]) => n === name)?.[1];
