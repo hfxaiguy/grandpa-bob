@@ -34,8 +34,8 @@ if [ ! -d "$WORKSPACE/.git" ]; then
   warn "no git repo at $WORKSPACE — initialising"
   mkdir -p "$WORKSPACE"
   git -C "$WORKSPACE" init
-  git -C "$WORKSPACE" config user.name "grandma-bot"
-  git -C "$WORKSPACE" config user.email "grandma-bot@localhost"
+  git -C "$WORKSPACE" config user.name "grandpa-bob-bot"
+  git -C "$WORKSPACE" config user.email "grandpa-bob-bot@localhost"
 fi
 
 # ---------- point the sync remote at the desktop ----------

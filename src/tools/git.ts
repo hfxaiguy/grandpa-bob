@@ -22,8 +22,8 @@ export async function ensureRepo(dir: string): Promise<void> {
     await git(dir, ["config", "user.name"]);
     await git(dir, ["config", "user.email"]);
   } catch {
-    await git(dir, ["config", "user.name", "grandma-bot"]);
-    await git(dir, ["config", "user.email", "grandma-bot@localhost"]);
+    await git(dir, ["config", "user.name", "grandpa-bob-bot"]);
+    await git(dir, ["config", "user.email", "grandpa-bob-bot@localhost"]);
   }
 }
 

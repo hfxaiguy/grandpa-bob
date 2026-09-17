@@ -1,4 +1,6 @@
-# grandma-bot
+# Grandpa Bob Bot
+
+_BOB = **B**etter **O**rganizational **B**ot_
 
 A local agent harness you chat with from Telegram — text, voice, or photos. It can
 read, write and organize files on this machine inside a sandboxed workspace, and
@@ -329,8 +331,8 @@ result and can tell you.
 *global* git config — so no repo-local identity is set and commits are yours. To
 distinguish bot commits:
 ```sh
-git -C ~/grandma-workspace config user.name grandma-bot
-git -C ~/grandma-workspace config user.email grandma-bot@localhost
+git -C ~/grandma-workspace config user.name grandpa-bob-bot
+git -C ~/grandma-workspace config user.email grandpa-bob-bot@localhost
 ```
 
 **What happens if I delete the workspace directory?**

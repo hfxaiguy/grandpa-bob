@@ -3,6 +3,7 @@ import { FileTools } from "./files.js";
 import { ShellTools } from "./shell.js";
 import { ExaSearchTools } from "./websearch.js";
 import { SqliteTools } from "./sqlite.js";
+import { OpencodeTools } from "./opencode.js";
 
 type Json = Record<string, unknown>;
 
@@ -11,6 +12,7 @@ export class ToolRegistry {
   private shell: ShellTools;
   private exa: ExaSearchTools;
   private sqlite: SqliteTools;
+  private opencode: OpencodeTools;
 
   /**
    * @param workspace        Workspace root (sandbox for file + sql path args).
@@ -30,6 +32,7 @@ export class ToolRegistry {
     this.shell = new ShellTools(workspace, allowedCommands);
     this.exa = new ExaSearchTools(exaApiKey);
     this.sqlite = new SqliteTools({ workspace, lockedPath: sqliteLockedPath });
+    this.opencode = new OpencodeTools();
   }
 
   readonly definitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
@@ -195,6 +198,28 @@ export class ToolRegistry {
         },
       },
     },
+    {
+      type: "function",
+      function: {
+        name: "opencode",
+        description:
+          "Delegate a prompt to an opencode coding-agent session and return its output (workspace files, shell commands, code edits) as text. " +
+          "Continue a specific session with 'session' (an opencode session id) or the latest session with 'continueLast'. " +
+          "The returned text is everything opencode produced since the last time this session was queried.",
+        parameters: {
+          type: "object",
+          properties: {
+            input: { type: "string", description: "The task/prompt to send to opencode" },
+            session: { type: "string", description: "opencode session id to continue (mutually exclusive with continueLast)" },
+            continueLast: { type: "boolean", description: "Continue the most recent opencode session" },
+            model: { type: "string", description: "Model in 'provider/model' form (optional)" },
+            agent: { type: "string", description: "opencode agent name to use (optional)" },
+            dir: { type: "string", description: "Working directory for opencode (optional, defaults to workspace)" },
+          },
+          required: ["input"],
+        },
+      },
+    },
   ];
 
   /** Execute a tool call; returns a string (errors included) or a plain
@@ -255,6 +280,22 @@ export class ToolRegistry {
               args.startPublishedDate !== undefined ? String(args.startPublishedDate) : undefined,
             endPublishedDate: args.endPublishedDate !== undefined ? String(args.endPublishedDate) : undefined,
           });
+        case "opencode": {
+          const result = await this.opencode.run({
+            input: String(args.input ?? ""),
+            session: args.session !== undefined ? String(args.session) : undefined,
+            continueLast: (args.continueLast as boolean) ?? false,
+            model: args.model !== undefined ? String(args.model) : undefined,
+            agent: args.agent !== undefined ? String(args.agent) : undefined,
+            dir: args.dir !== undefined ? String(args.dir) : undefined,
+          });
+          if (!result.ok) return `error: ${result.error}`;
+          return {
+            ok: true,
+            sessionId: result.sessionId,
+            text: result.text,
+          };
+        }
         default:
           return `error: unknown tool ${name}`;
       }

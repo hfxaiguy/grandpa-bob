@@ -3,10 +3,10 @@
 # Does everything: install, update, sync. Idempotent.
 #
 # First run (install):
-#   sh /sdcard/Download/grandma-bob-deploy/install.sh
+#   sh /sdcard/Download/grandpa-bob-bot-deploy/install.sh
 #
 # Later runs (update):
-#   sh /sdcard/Download/grandpa-bob-deploy/install.sh
+#   sh /sdcard/Download/grandpa-bob-bot-deploy/install.sh
 set -eu
 
 # ---------- paths ----------

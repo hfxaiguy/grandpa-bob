@@ -9,9 +9,9 @@ SHERPA_VERSION="${SHERPA_VERSION:-v1.12.13}"
 STT_PORT="${STT_PORT:-8178}"
 ADMIN_PORT="${ADMIN_PORT:-8080}"
 PHONE_TERMUX_HOME="/data/data/com.termux/files/home"
-PHONE_PROJECT_DIR="grandma-bob"
+PHONE_PROJECT_DIR="grandpa-bob-bot"
 MODEL_DIR_NAME="sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8"
-STAGE_DIR="/sdcard/Download/grandpa-bob-deploy"
+STAGE_DIR="/sdcard/Download/grandpa-bob-bot-deploy"
 GRANDMA_KAT_URL="${GRANDMA_KAT_URL:-https://github.com/hfxaiguy/grandma-kat.git}"
 DESKTOP_IP="${DESKTOP_IP:-192.168.2.10}"
 
@@ -152,7 +152,7 @@ rm /tmp/gbot-install.sh
 # ---------- run install on the phone ----------
 note "staged — run this on the phone:"
 echo
-echo "  sh /sdcard/Download/grandma-bob-deploy/install.sh"
+echo "  sh /sdcard/Download/grandpa-bob-bot-deploy/install.sh"
 echo
 
 # ---------- summary ----------
@@ -166,7 +166,7 @@ admin : http://${DEVICE_IP:-<phone-ip>}:$ADMIN_PORT  (starts with the bot)
 
 $(printf '\033[1;33m')Next: open Termux on the phone and run:$(printf '\033[0m')
 
-  sh /sdcard/Download/grandma-bob-deploy/install.sh
+  sh /sdcard/Download/grandpa-bob-bot-deploy/install.sh
 
 It will:
   - fix DNS (so git/npm work)

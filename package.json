@@ -1,5 +1,5 @@
 {
-  "name": "grandma-bot",
+  "name": "grandpa-bob-bot",
   "version": "0.1.0",
   "private": true,
   "description": "Local Telegram agent harness: forum topics, voice-to-text on Vulkan GPU, file editing with git auto-commit",
@@ -10,16 +10,19 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.ts",
+    "test:patterns": "tsx scripts/patterns-test.ts",
+    "test:tree": "tsx scripts/tree-serialize-test.ts",
+    "test:agent-done": "tsx scripts/agent-done-test.ts",
     "agent:mock": "tsx scripts/agent-mock-test.ts",
     "whisper:up": "sh -c 'set -a; . ./.env 2>/dev/null; set +a; exec vendor/whisper.cpp/build/bin/whisper-server --host 127.0.0.1 --port 8178 -m vendor/whisper.cpp/models/${WHISPER_MODEL:-ggml-base.bin}'",
     "ollama:up": "sh -c 'curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && echo \"ollama already running at :11434\" || exec ollama serve'",
     "repl": "tsx src/debug/repl.ts"
   },
   "dependencies": {
+    "communications": "file:../communications",
     "dotenv": "^17.4.2",
     "grammy": "^1.45.1",
-    "grandma-kat": "file:../grandma-knits",
-    "communications": "file:../communications",
+    "grandma-kat": "file:../grandma-kat",
     "openai": "^6.48.0"
   },
   "devDependencies": {
