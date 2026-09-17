@@ -34,12 +34,19 @@ export interface AgentDeps {
   patternName?: () => string;
 }
 
-export interface AgentRunResult {
-  /** "waiting" = tree paused at .human(), continuation stored. */
-  status: "waiting";
-  /** Continuation token (checkpoint ID). Store for next run. */
-  continuation: string;
-}
+export type AgentRunResult =
+  | {
+      /** "waiting" = tree paused at .human(), continuation stored. */
+      status: "waiting";
+      /** Continuation token (checkpoint ID). Store for next run. */
+      continuation: string;
+    }
+  | {
+      /** "done" = tree completed (not every pattern loops at .human()). */
+      status: "done";
+      /** The tree's final result value, if any. */
+      result?: unknown;
+    };
 
 export interface AgentRunOptions {
   /**
@@ -125,14 +132,14 @@ export class Agent {
       ...(this.deps.logger ? {} : { logLevel: this.deps.logLevel ?? "info" }),
     };
 
-    let outcome: { status?: string; continuation?: string };
+    let outcome: { status?: string; continuation?: string; result?: unknown };
 
     if (cont) {
       // Resume from checkpoint. The reply is passed raw — grandma-kat's
       // resume() routes it into whatever .human() slot the checkpoint says
       // is paused (e.g. the knowledge branch's verify_search), so the
       // caller never names the slot. See injectHumanInput in
-      // grandma-knits/src/knit.mjs.
+      // grandma-kat/src/knit.mjs.
       outcome = await grandma.knit(pattern, {
         ...runtime,
         _continuation: cont,
@@ -156,9 +163,11 @@ export class Agent {
       return { status: "waiting", continuation: outcome.continuation };
     }
 
-    // Shouldn't happen with the agent pattern (it always pauses at .human()),
-    // but handle gracefully.
-    throw new Error("agent tree completed unexpectedly — should loop at .human()");
+    // The tree ran to completion. Not every pattern loops at .human()
+    // (e.g. one-shot trees like person-scan), so this is a normal outcome:
+    // drop any stale continuation so the next message starts a fresh tree.
+    this.continuations.delete(key);
+    return { status: "done", result: outcome.result };
   }
 
   /**

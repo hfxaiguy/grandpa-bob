@@ -142,11 +142,18 @@ export function createBot(deps: BotDeps): Bot {
     }, 4500);
     await ctx.api.sendChatAction(ctx.chat!.id, "typing", threadOpts(ctx)).catch(() => {});
     try {
-      await deps.agent.run(key, content, async (value) => {
+      let emitted = false;
+      const res = await deps.agent.run(key, content, async (value) => {
         // onEmit: send each emitted value to Telegram immediately.
         const text = typeof value === "string" ? value : JSON.stringify(value);
-        if (text) await reply(ctx, text);
+        if (text) { emitted = true; await reply(ctx, text); }
       });
+      // Non-looping trees complete instead of pausing at .human() — send
+      // their final result as the reply when nothing was emitted.
+      if (res.status === "done" && !emitted && res.result != null) {
+        const text = typeof res.result === "string" ? res.result : JSON.stringify(res.result);
+        if (text) await reply(ctx, text);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[agent]", err);

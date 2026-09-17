@@ -89,7 +89,7 @@ async function main(): Promise<void> {
 
   // Banner.
   process.stderr.write("\n");
-  process.stderr.write(`\x1b[1mgrandma-bob debug REPL\x1b[0m\n`);
+  process.stderr.write(`\x1b[1mgrandpa-bob debug REPL\x1b[0m\n`);
   process.stderr.write(`workspace : ${config.workspaceDir}\n`);
   process.stderr.write(`log level : ${debugLevel}\n`);
   for (const [name, m] of Object.entries(models)) {

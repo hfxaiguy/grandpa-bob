@@ -1,6 +1,6 @@
 // src/admin.ts
 //
-// Web UI for grandma-bob. Starts an HTTP server on ADMIN_PORT (default
+// Web UI for grandpa-bob. Starts an HTTP server on ADMIN_PORT (default
 // 8080) with two pages:
 //
 //   /          — chat front page: talk to the agent by text or voice
@@ -36,7 +36,8 @@ import {
   type SttBackendOptions,
 } from "./stt.js";
 import { TreeLogReader, logDbPath } from "./treeLog.js";
-import { DEFAULT_PATTERN } from "./pattern-loader.js";
+import { DEFAULT_PATTERN, loadPattern } from "./pattern-loader.js";
+import { serializeTree } from "./tree-serialize.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -55,7 +56,7 @@ export interface AdminConfig {
 
 function defaultConfig(): AdminConfig {
   const HOME = process.env.HOME || "/data/data/com.termux/files/home";
-  const PROJECT_DIR = process.env.PROJECT_DIR || `${HOME}/grandma-bob`;
+  const PROJECT_DIR = process.env.PROJECT_DIR || `${HOME}/grandpa-bob-bot`;
   const WORKSPACE_DIR = process.env.WORKSPACE_DIR || `${HOME}/grandma-workspace`;
   return {
     port: parseInt(process.env.ADMIN_PORT || "8080", 10),
@@ -204,13 +205,14 @@ async function gitCommitAll(workspaceDir: string, message: string) {
 // ── pattern registry ──────────────────────────────────────────────────
 const PATTERNS_DIR_NAME = "patterns";
 
-async function listPatterns(workspaceDir: string) {
+export async function listPatterns(workspaceDir: string) {
   const patternsDir = path.join(workspaceDir, PATTERNS_DIR_NAME);
   try {
     const files = await readdir(patternsDir);
     const out: { file: string; name: string; description: string }[] = [];
     for (const f of files) {
       if (!f.endsWith(".mjs")) continue;
+      if (f.endsWith(".test.mjs")) continue; // smoke tests, not runnable patterns
       try {
         const content = await readFile(path.join(patternsDir, f), "utf8");
         const m = content.match(/^\/\/\s*(\S+\.mjs)\s*[—–-]\s*(.+)/m);
@@ -460,7 +462,7 @@ async function runTurn(agent: Agent, turnId: string, text: string): Promise<void
     if (!agent.hasContinuation(WEB_KEY)) {
       await agent.run(WEB_KEY, "", () => {}, { onEvent });
     }
-    await agent.run(
+    const res = await agent.run(
       WEB_KEY,
       text,
       (value) => {
@@ -469,6 +471,12 @@ async function runTurn(agent: Agent, turnId: string, text: string): Promise<void
       },
       { onEvent },
     );
+    // Non-looping trees complete instead of pausing at .human() — show
+    // their final result as the reply when nothing was emitted.
+    if (res.status === "done" && !record.output && res.result != null) {
+      const t = typeof res.result === "string" ? res.result : JSON.stringify(res.result);
+      if (t) record.output = t;
+    }
     record.status = "done";
   } catch (err) {
     record.status = "error";
@@ -496,7 +504,7 @@ function buildSettingsHtml(config: AdminConfig): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>grandma-bob settings</title>
+<title>grandpa-bob settings</title>
 <style>
   :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; }
   * { box-sizing: border-box; }
@@ -533,7 +541,7 @@ function buildSettingsHtml(config: AdminConfig): string {
 </head>
 <body>
 <div class="topnav">
-  <h1>grandma-bob settings</h1>
+  <h1>grandpa-bob settings</h1>
   <a href="/">&larr; chat</a>
 </div>
 
@@ -995,7 +1003,7 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>grandma-bob</title>
+<title>grandpa-bob</title>
 <style>
   :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; --border:#334155; }
   * { box-sizing: border-box; }
@@ -1072,13 +1080,46 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   .toast { position: fixed; top: 16px; right: 16px; background: var(--green); color: #fff; padding: 10px 16px; border-radius: 6px; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 10; }
   .toast.show { opacity: 1; }
   .toast.err { background: var(--red); }
+  #tree-btn { background: #475569; font-size: 12px; padding: 4px 10px; }
+  #tree-panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(430px, 92vw); background: #0b1224; border-left: 1px solid var(--border); transform: translateX(105%); transition: transform 0.22s ease; z-index: 21; display: flex; flex-direction: column; }
+  #tree-panel.open { transform: none; box-shadow: 0 0 40px rgba(0,0,0,0.5); }
+  .tp-head-row { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .tp-head-row h2 { font-size: 14px; margin: 0; }
+  .tp-head-row .tp-cur { color: var(--muted); font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tree-close { background: #475569; padding: 4px 10px; font-size: 12px; }
+  #tree-body { flex: 1; overflow: auto; padding: 10px 12px; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .tp-meta { color: #64748b; font-size: 11px; margin: 4px 0 8px; white-space: pre-wrap; }
+  .tp-children { list-style: none; margin: 0; padding-left: 14px; border-left: 1px dashed #334155; }
+  .tp-node { margin: 2px 0; border-radius: 6px; }
+  .tp-node > details > summary, .tp-row { display: flex; gap: 6px; align-items: baseline; padding: 2px 4px; border-radius: 5px; list-style: none; }
+  .tp-node > details > summary { cursor: pointer; }
+  .tp-node > details > summary::-webkit-details-marker { display: none; }
+  .tp-badge { flex: none; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; background: #334155; padding: 1px 5px; border-radius: 4px; min-width: 52px; text-align: center; }
+  .tp-name { color: #e2e8f0; font-weight: 600; }
+  .tp-gate { color: #94a3b8; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tp-body { margin: 2px 0 6px 8px; }
+  .tp-info { display: flex; gap: 6px; margin: 2px 0; }
+  .tp-k { flex: none; color: #64748b; font-size: 10px; text-transform: uppercase; min-width: 48px; }
+  .tp-v { margin: 0; color: #94a3b8; font-size: 11px; white-space: pre-wrap; word-break: break-word; flex: 1; max-height: 160px; overflow: auto; }
+  .tp-node.k-prompt .tp-badge { background: #155e75; }
+  .tp-node.k-human .tp-badge { background: #374151; color: #fff; }
+  .tp-node.k-emit .tp-badge { background: #065f46; color: #6ee7b7; }
+  .tp-node.k-branch .tp-badge, .tp-node.k-map .tp-badge { background: #1e3a8a; }
+  .tp-node.k-until .tp-badge, .tp-node.k-check .tp-badge { background: #4a044e; }
+  .tp-node.k-memory .tp-badge, .tp-node.k-memoryUpdate .tp-badge { background: #312e81; }
+  .tp-node.k-call .tp-badge { background: #713f12; }
+  .tp-node.tp-visited .tp-badge { background: #14532d; }
+  .tp-node.tp-active { background: rgba(30,58,138,0.35); outline: 1px solid var(--accent); }
+  .tp-node.tp-active > details > summary .tp-badge, .tp-node.tp-active > .tp-row .tp-badge { background: var(--accent); }
+  .tp-empty { color: var(--muted); }
 </style>
 </head>
 <body>
 <header>
-  <h1>grandma-bob</h1>
+  <h1>grandpa-bob</h1>
   <span class="sub">${sttLabel}</span>
   <select id="pattern-sel" title="tree pattern to run (patterns/*.mjs)"></select>
+  <button id="tree-btn" title="show the structure of the active tree">tree</button>
   <nav><a href="/settings">settings</a></nav>
 </header>
 <main id="main"><div class="inner" id="conversation"></div></main>
@@ -1097,6 +1138,14 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   </div>
 </footer>
 <div id="toast" class="toast"></div>
+<aside id="tree-panel" aria-label="tree structure">
+  <div class="tp-head-row">
+    <h2>tree</h2>
+    <span class="tp-cur" id="tp-pattern"></span>
+    <button id="tree-close">close</button>
+  </div>
+  <div id="tree-body"><div class="tp-empty">loading&hellip;</div></div>
+</aside>
 <script>
 const $ = (id) => document.getElementById(id);
 const conv = $("conversation");
@@ -1494,15 +1543,172 @@ $("clear-btn").onclick = async () => {
   } catch (e) { toast("clear failed: " + e.message, true); }
 };
 
+// ---- tree structure side panel ----
+const treePanel = $("tree-panel");
+const treeBody = $("tree-body");
+let treeLoadedFor = null;
+const treeVisited = new Set(); // node paths hit during the current turn
+let treeActive = null;         // node path of the latest event
+
+function tpEl(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+// Open/closed state persists across reloads; the drawer defaults to open.
+const TREE_OPEN_KEY = "treePanelOpen";
+// Last selected pattern, mirrored client-side so it survives reloads even
+// if the server restarts without TREE_PATTERN persisted in .env.
+const TREE_PATTERN_KEY = "treePattern";
+function setTreePanelOpen(open) {
+  // Non-modal: no backdrop, the chat stays usable while the drawer is open.
+  treePanel.classList.toggle("open", open);
+  try { localStorage.setItem(TREE_OPEN_KEY, open ? "1" : "0"); } catch { /* private mode */ }
+  if (open) loadTreePanel();
+}
+$("tree-btn").onclick = () => setTreePanelOpen(!treePanel.classList.contains("open"));
+$("tree-close").onclick = () => setTreePanelOpen(false);
+try {
+  if (localStorage.getItem(TREE_OPEN_KEY) !== "0") setTreePanelOpen(true);
+} catch { setTreePanelOpen(true); }
+
+async function loadTreePanel(force) {
+  const name = $("pattern-sel").value;
+  if (!force && treeLoadedFor && treeLoadedFor === name) return;
+  treeBody.innerHTML = "";
+  treeBody.appendChild(tpEl("div", "tp-empty", "loading\\u2026"));
+  try {
+    const r = await fetch("/api/tree" + (name ? "?pattern=" + encodeURIComponent(name) : ""));
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || "load failed");
+    treeLoadedFor = d.pattern;
+    $("tp-pattern").textContent = d.pattern;
+    treeBody.innerHTML = "";
+    treeBody.appendChild(renderTreeNode(d.tree, true));
+    applyTreeMarks();
+  } catch (e) {
+    treeBody.innerHTML = "";
+    treeBody.appendChild(tpEl("div", "tp-empty", "could not load tree: " + e.message));
+  }
+}
+
+// One info row inside a node's expanded body.
+function tpInfo(body, key, value) {
+  if (value == null || value === "") return;
+  const row = tpEl("div", "tp-info");
+  row.append(tpEl("span", "tp-k", key), tpEl("pre", "tp-v", String(value)));
+  body.appendChild(row);
+}
+
+// Render a serialized tree ({kind:"tree",...}) or a child node. The tree
+// header carries model/tools/needs rules; children nest underneath.
+function renderTreeNode(n, isRoot) {
+  const wrap = tpEl("div", "tp-tree");
+  if (isRoot) {
+    const head = tpEl("div", "tp-row");
+    head.append(tpEl("span", "tp-badge", "tree"), tpEl("span", "tp-name", n.name || "(anon)"));
+    head.dataset.path = n.path;
+    wrap.appendChild(head);
+    const meta = [];
+    for (const m of n.models || []) meta.push("model: " + m.value + (m.when ? "   [" + m.when + "]" : ""));
+    for (const t of n.tools || []) meta.push("tools: " + t.value.join(", ") + (t.when ? "   [" + t.when + "]" : ""));
+    if (n.needs && n.needs.length) meta.push("needs: " + n.needs.join(", "));
+    if (meta.length) wrap.appendChild(tpEl("pre", "tp-meta", meta.join("\\n")));
+  }
+  const ul = tpEl("ul", "tp-children");
+  for (const c of n.children || []) ul.appendChild(renderTreeChild(c));
+  wrap.appendChild(ul);
+  return wrap;
+}
+
+function renderTreeChild(c) {
+  const li = tpEl("li", "tp-node k-" + c.kind);
+  li.dataset.path = c.path;
+
+  const body = tpEl("div", "tp-body");
+  if (c.text != null) tpInfo(body, "prompt", c.text);
+  if (c.messages) tpInfo(body, "messages", c.messages.map((m) => m.role + ": " + m.content).join("\\n\\n"));
+  if (c.fn) tpInfo(body, "fn", c.fn);
+  if (c.tool) tpInfo(body, "tool", c.tool);
+  if (c.argsFn) tpInfo(body, "args", c.argsFn);
+  if (c.tools) tpInfo(body, "tools", c.tools.join(", "));
+  if (c.check) tpInfo(body, "check", c.check);
+  if (c.flow) tpInfo(body, "on fail", c.flow);
+  if (c.loop) tpInfo(body, "loop", c.loop);
+  if (c.contextFn) tpInfo(body, "context", c.contextFn);
+  if (c.tree) body.appendChild(renderTreeNode(c.tree, true));
+
+  const summary = document.createElement(body.childNodes.length ? "summary" : "div");
+  if (!body.childNodes.length) summary.className = "tp-row";
+  summary.append(
+    tpEl("span", "tp-badge", c.kind),
+    tpEl("span", "tp-name", c.name || ""),
+  );
+  if (c.gate) summary.appendChild(tpEl("span", "tp-gate", c.gate));
+  else if (c.kind === "prompt" && c.text != null) summary.appendChild(tpEl("span", "tp-gate", short(c.text, 60)));
+
+  if (body.childNodes.length) {
+    const det = document.createElement("details");
+    if (c.kind === "branch" || c.kind === "map") det.open = true;
+    det.append(summary, body);
+    li.appendChild(det);
+  } else {
+    li.appendChild(summary);
+  }
+  return li;
+}
+
+// ---- live progress marks (driven by the same SSE events as the steps) ----
+function applyTreeMarks() {
+  let activeEl = null;
+  for (const el of treeBody.querySelectorAll("[data-path]")) {
+    const p = el.dataset.path;
+    const isActive = treeActive != null && p === treeActive;
+    el.classList.toggle("tp-active", isActive);
+    el.classList.toggle("tp-visited", treeVisited.has(p));
+    if (isActive) activeEl = el;
+  }
+  if (activeEl && treePanel.classList.contains("open")) {
+    // Expand ancestors so the active node is actually visible, then scroll to it.
+    let p = activeEl.parentElement;
+    while (p && p !== treeBody) {
+      if (p.tagName === "DETAILS") p.open = true;
+      p = p.parentElement;
+    }
+    activeEl.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function treeOnEvent(ev) {
+  const c = ev.content || {};
+  let p = ev.branch_path || "";
+  if (c.child) p = p ? p + "/" + c.child : String(c.child);
+  if (!p) return;
+  treeVisited.add(p);
+  treeActive = p;
+  applyTreeMarks();
+}
+function treeOnTurnStart() {
+  treeVisited.clear();
+  treeActive = null;
+  applyTreeMarks();
+}
+function treeOnTurnEnd() {
+  treeActive = null;
+  applyTreeMarks();
+}
+
 // ---- live events over SSE ----
 function connect() {
   const es = new EventSource("/api/events");
   es.onmessage = (e) => {
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
-    if (msg.type === "turn_start") startTurn(msg.turnId, msg.input);
-    else if (msg.type === "event") addStep(msg.turnId, msg.event);
-    else if (msg.type === "turn_end") endTurn(msg.turnId, msg.status, msg.error, msg.output);
+    if (msg.type === "turn_start") { startTurn(msg.turnId, msg.input); treeOnTurnStart(); }
+    else if (msg.type === "event") { addStep(msg.turnId, msg.event); treeOnEvent(msg.event); }
+    else if (msg.type === "turn_end") { endTurn(msg.turnId, msg.status, msg.error, msg.output); treeOnTurnEnd(); }
     else if (msg.type === "cleared") { conv.innerHTML = ""; blocks.clear(); showEmpty(); }
   };
 }
@@ -1541,6 +1747,21 @@ async function loadPatternSelect() {
     if (!d.patterns || !d.patterns.length) {
       sel.appendChild(new Option("(no patterns)", "", false, false));
     }
+    // Restore the last locally-selected pattern if the server no longer
+    // has it (e.g. restarted without TREE_PATTERN persisted in .env).
+    let saved = null;
+    try { saved = localStorage.getItem(TREE_PATTERN_KEY); } catch { /* private mode */ }
+    const names = (d.patterns || []).map((p) => p.name);
+    if (saved && names.includes(saved) && saved !== d.current) {
+      const rr = await fetch("/api/pattern", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: saved }),
+      });
+      if (rr.ok) sel.value = saved;
+    }
+    // The drawer may have loaded before the select was populated — resync.
+    if (treePanel.classList.contains("open")) loadTreePanel(true);
   } catch { /* pattern API unreachable — selector just stays empty */ }
 }
 async function setPattern(name) {
@@ -1554,6 +1775,11 @@ async function setPattern(name) {
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { toast(d.error || "pattern switch failed", true); return; }
     toast("pattern: " + d.pattern + " — conversation cleared");
+    try { localStorage.setItem(TREE_PATTERN_KEY, name); } catch { /* private mode */ }
+    treeLoadedFor = null;
+    treeVisited.clear();
+    treeActive = null;
+    if (treePanel.classList.contains("open")) loadTreePanel(true);
   } catch (e) {
     toast("pattern switch failed: " + e.message, true);
   }
@@ -1862,6 +2088,23 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         const patterns = await listPatterns(config.workspaceDir);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ patterns }));
+        return;
+      }
+
+      // --- tree structure for the chat page's side panel ---
+      // Loads the pattern (default: the active one) and serializes its Tree
+      // definition to JSON. Node paths match runtime branch_path values so
+      // the UI can highlight live progress.
+      if (req.method === "GET" && url.pathname === "/api/tree") {
+        const name = url.searchParams.get("pattern") || getSelectedPattern();
+        try {
+          const tree = await loadPattern(config.workspaceDir, name);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ pattern: name, tree: serializeTree(tree) }));
+        } catch (e: any) {
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
         return;
       }
 
