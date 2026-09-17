@@ -12,10 +12,21 @@
       "Shell(ls ~/grandma-workspace/patterns/person-scan.* 2>/dev/null; git -C ~/grandpa-bob-bot log --oneline -3)",
       "Shell(git -C /home/love/Documents/Code/grandpa-bob-bot log --oneline -3 2>/dev/null; git status 2>/dev/null | head -20)",
       "Shell(git:*)",
-      "Shell(git commit -F - <<'EOF' feat: tree structure side panel + agent completion + pattern tests - Add GET /api/tree endpoint serializing the selected pattern's Tree definition to JSON (full detail: gates, model/tool rules, prompts, check/until flows, memory writes). Node paths match runtime branch_path values so the UI can highlight live progress. - Non-modal drawer in the chat page, default open, toggled by the \"tree\" button in the header. Persists open/close state and last selected pattern across reloads via localStorage; syncs with the pattern dropdown when it populates. - Live highlighting from the same SSE events that feed the step list: visited nodes (green), active node (blue), auto-expand ancestors. - Fix Agent.run to treat tree completion as a normal outcome instead of throwing — not every pattern loops at .human() (e.g. person-scan). Web chat and Telegram bot both surface the final result when nothing was emitted. - Add tests: listPatterns skips *.test.mjs, tree-serializer shape + real person-scan workspace pattern, agent.run \"done\" path. All pass alongside typecheck. Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)",
+      "Shell(git commit -F - <<'EOF' feat: tree structure side panel + agent completion + pattern tests
+Add GET /api/tree endpoint serializing the selected pattern's Tree definition to JSON (full detail: gates, model/tool rules, prompts, check/until flows, memory writes). Node paths match runtime branch_path values so the UI can highlight live progress.
+Non-modal drawer in the chat page, default open, toggled by the \"tree\" button in the header. Persists open/close state and last selected pattern across reloads via localStorage; syncs with the pattern dropdown when it populates.
+Live highlighting from the same SSE events that feed the step list: visited nodes (green), active node (blue), auto-expand ancestors.
+Fix Agent.run to treat tree completion as a normal outcome instead of throwing — not every pattern loops at .human() (e.g. person-scan). Web chat and Telegram bot both surface the final result when nothing was emitted.
+Add tests: listPatterns skips *.test.mjs, tree-serializer shape + real person-scan workspace pattern, agent.run \"done\" path. All pass alongside typecheck.
+
+Co-authored-by: CommandCodeBot <noreply@commandcode.ai>
+EOF)",
       "Shell(git diff HEAD^..HEAD --name-only 2>/dev/null; echo \"---staged---\"; git diff --cached --name-only 2>/dev/null)",
       "Shell(git diff --cached --name-only 2>/dev/null; git status --short)",
-      "Shell(git add .commandcode/taste/taste.md .commandcode/settings.json && git commit -F - <<'EOF' chore: update settings/taste for grandpa-bob-bot identity Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)"
+      "Shell(git add .commandcode/taste/taste.md .commandcode/settings.json && git commit -F - <<'EOF' chore: update settings/taste for grandpa-bob-bot identity
+
+Co-authored-by: CommandCodeBot <noreply@commandcode.ai>
+EOF)"
     ],
     "deny": [],
     "defaultMode": "default"
