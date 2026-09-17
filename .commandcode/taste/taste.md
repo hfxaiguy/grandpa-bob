@@ -5,3 +5,4 @@
 - When co-located tests exist, wants runtime file discovery (e.g. glob-based loaders, dropdown/registry listings) to explicitly skip test files so they are never surfaced or executed as real artifacts — fixed in the loader, not by relocating the tests. Confidence: 0.7
 - Expects every code change to be accompanied by tests, and those tests to actually be run to verify they pass — treat writing and running tests as a mandatory part of the task, not an optional follow-up. Confidence: 0.9
 - Wants auxiliary UI panels (side panels/drawers for structure, logs, live progress) to stay visible alongside the main view by default rather than hidden behind a toggle — keep them open, non-modal/non-blocking so the primary content stays usable, and preserve that open state across reloads. Confidence: 0.6
+- Always write tests for code changes, and run them to verify they pass. Confidence: 0.9
