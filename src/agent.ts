@@ -102,7 +102,7 @@ export class Agent {
    * full tree state (memory, history, scope chain) in the SQLite log.
    *
    * @param key         Conversation key (e.g. "chatId:threadId").
-   * @param humanInput  The user's message text.
+   * @param humanInput  The user's message or another JSON-serializable human input.
    * @param onEmit      Callback for non-blocking output (`.emit()` calls).
    * @param opts        Optional: `onEvent` streams grandma-kat tree events.
    * @returns           `{ status: "waiting", continuation }` — store the
@@ -110,7 +110,7 @@ export class Agent {
    */
   async run(
     key: string,
-    humanInput: string | unknown[],
+    humanInput: unknown,
     onEmit?: (value: unknown) => void | Promise<void>,
     opts?: AgentRunOptions,
   ): Promise<AgentRunResult> {

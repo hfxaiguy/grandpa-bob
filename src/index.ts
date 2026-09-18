@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   // root — it contains user prompts/responses. Create the dir up front and
   // exclude it from the workspace's git history.
   await fs.mkdir(path.join(config.workspaceDir, "logs"), { recursive: true });
-  await ensureWorkspaceGitignore(config.workspaceDir, ["logs/grandma-kat.db*"]);
+  await ensureWorkspaceGitignore(config.workspaceDir, ["logs/grandma-kat.db*", "assets/inbox/"]);
 
   const tools = new ToolRegistry(
     config.workspaceDir,

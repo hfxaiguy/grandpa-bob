@@ -38,6 +38,7 @@ import {
 import { TreeLogReader, logDbPath } from "./treeLog.js";
 import { DEFAULT_PATTERN, loadPattern } from "./pattern-loader.js";
 import { serializeTree } from "./tree-serialize.js";
+import { attachmentPrompt, saveAttachment, MAX_ATTACHMENT_BYTES } from "./attachments.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -422,24 +423,24 @@ function sanitizeEvent(e: { kind?: string; branch_path?: string; iteration?: num
   };
 }
 
-function enqueueChat(agent: Agent, text: string): { turnId: string; queued: boolean } {
+function enqueueChat(agent: Agent, content: unknown, displayText: string): { turnId: string; queued: boolean } {
   const turnId = randomUUID();
   pendingTurns++;
   // "queued" = another turn is running OR ahead in the queue, so the UI
   // shows a pending bubble until this turn's turn_start arrives.
   const queued = activeTurns > 0 || pendingTurns > 1;
   webQueue = webQueue
-    .then(() => runTurn(agent, turnId, text))
+    .then(() => runTurn(agent, turnId, content, displayText))
     .catch((err) => console.error("[web-chat]", err));
   return { turnId, queued };
 }
 
-async function runTurn(agent: Agent, turnId: string, text: string): Promise<void> {
+async function runTurn(agent: Agent, turnId: string, content: unknown, displayText: string): Promise<void> {
   pendingTurns--;
   activeTurns++;
   const record: TurnRecord = {
     turnId,
-    input: text,
+    input: displayText,
     startedAt: Date.now(),
     endedAt: null,
     status: "running",
@@ -449,7 +450,7 @@ async function runTurn(agent: Agent, turnId: string, text: string): Promise<void
   };
   turns.push(record);
   while (turns.length > MAX_TURNS_KEPT) turns.shift();
-  broadcast({ type: "turn_start", turnId, input: text, ts: record.startedAt });
+  broadcast({ type: "turn_start", turnId, input: displayText, ts: record.startedAt });
 
   const onEvent = (e: unknown) => {
     const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0]);
@@ -464,7 +465,7 @@ async function runTurn(agent: Agent, turnId: string, text: string): Promise<void
     }
     const res = await agent.run(
       WEB_KEY,
-      text,
+      content,
       (value) => {
         const t = typeof value === "string" ? value : JSON.stringify(value);
         if (t) record.output = record.output ? record.output + "\n\n" + t : t;
@@ -1127,8 +1128,8 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   <div class="input-row">
     <button id="mic-btn" title="hold a conversation by voice">&#127908;</button>
     <span id="mic-timer"></span>
-    <button id="file-btn" title="transcribe an audio file (streams as it goes)">&#128206;</button>
-    <input id="file-input" type="file" accept="audio/*,.ogg,.oga,.opus,.webm,.mp3,.m4a,.mp4,.wav,.flac" style="display:none">
+    <button id="file-btn" title="attach a file">&#128206;</button>
+    <input id="file-input" type="file" style="display:none">
     <textarea id="input" rows="1" placeholder="type a message&hellip;" enterkeyhint="send"></textarea>
     <button id="send-btn">Send</button>
   </div>
@@ -1369,6 +1370,25 @@ async function sendText(text) {
   }
 }
 
+async function uploadAttachment(file) {
+  const caption = input.value.trim();
+  const fd = new FormData();
+  fd.append("file", file);
+  if (caption) fd.append("caption", caption);
+  try {
+    const r = await fetch("/api/chat/upload", { method: "POST", body: fd });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(d.error || "upload failed", true); return; }
+    const display = caption ? caption + "\n[attached: " + file.name + "]" : "[attached: " + file.name + "]";
+    if (d.queued) addPending(d.turnId, display);
+    input.value = "";
+    input.dispatchEvent(new Event("input"));
+    hideEmpty();
+  } catch (e) {
+    toast("upload failed: " + e.message, true);
+  }
+}
+
 // ---- input box ----
 const input = $("input");
 $("send-btn").onclick = doSend;
@@ -1452,7 +1472,12 @@ $("file-btn").onclick = () => $("file-input").click();
 $("file-input").addEventListener("change", () => {
   const file = $("file-input").files[0];
   $("file-input").value = "";
-  if (file) transcribeFile(file);
+  if (!file) return;
+  if (file.type.startsWith("audio/") || /\.(ogg|oga|opus|webm|mp3|m4a|mp4|wav|flac)$/i.test(file.name)) {
+    transcribeFile(file);
+  } else {
+    uploadAttachment(file);
+  }
 });
 
 async function transcribeFile(file) {
@@ -1907,9 +1932,55 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           res.end('{"error":"text is required"}');
           return;
         }
-        const { turnId, queued } = enqueueChat(agent, text.trim());
+        const message = text.trim();
+        const { turnId, queued } = enqueueChat(agent, message, message);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, turnId, queued }));
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/chat/upload") {
+        if (!agent) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end('{"error":"agent not available"}');
+          return;
+        }
+        const contentType = req.headers["content-type"] || "";
+        if (!contentType.includes("multipart/form-data")) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"multipart required"}');
+          return;
+        }
+        const boundary = contentType.split("boundary=")[1];
+        if (!boundary) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"no boundary"}');
+          return;
+        }
+        const parts = await readMultipart(req, boundary);
+        const file = parts.file;
+        if (!file?.content?.length) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"no file"}');
+          return;
+        }
+        if (file.content.length > MAX_ATTACHMENT_BYTES) {
+          res.writeHead(413, { "content-type": "application/json" });
+          res.end('{"error":"attachment too large (max 50 MB)"}');
+          return;
+        }
+        const attachment = await saveAttachment(
+          config.workspaceDir,
+          file.filename || "upload",
+          file.content,
+          file.contentType || "application/octet-stream",
+        );
+        const caption = typeof parts.caption === "string" ? parts.caption.trim() : "";
+        const content = attachmentPrompt(attachment, caption);
+        const display = caption ? `${caption}\n[attached: ${attachment.filename}]` : `[attached: ${attachment.filename}]`;
+        const { turnId, queued } = enqueueChat(agent, content, display);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, turnId, queued, attachment }));
         return;
       }
 

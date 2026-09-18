@@ -1,9 +1,11 @@
 import { Bot } from "grammy";
 import type { Context } from "grammy";
+import path from "node:path";
 import type { Agent } from "./agent.js";
 import type { ModelRegistry } from "./models.js";
 import { transcribeVoice, type SttBackend } from "./stt.js";
 import { git } from "./tools/git.js";
+import { attachmentPrompt, saveAttachment } from "./attachments.js";
 
 export interface BotDeps {
   token: string;
@@ -128,7 +130,7 @@ export function createBot(deps: BotDeps): Bot {
    * `onEmit` (which sends them to Telegram) and pauses at `.human()`
    * for the next message. The continuation is stored automatically.
    */
-  const handleUserContent = async (ctx: Context, content: string | unknown[]): Promise<void> => {
+  const handleUserContent = async (ctx: Context, content: unknown): Promise<void> => {
     const key = convKey(ctx);
     // First message from this conversation: initialize the tree.
     // It pauses at .human() immediately. Without this, the user's
@@ -232,6 +234,30 @@ export function createBot(deps: BotDeps): Bot {
       }
       await reply(ctx, `heard: "${text}"`);
       await handleUserContent(ctx, text);
+    });
+  });
+
+  bot.on("message:document", async (ctx) => {
+    if (Math.floor(Date.now() / 1000) - ctx.message.date > MAX_MESSAGE_AGE_S) return;
+    const key = convKey(ctx);
+    enqueue(key, async () => {
+      try {
+        const file = await ctx.api.getFile(ctx.message.document.file_id);
+        if (!file.file_path) throw new Error("Telegram returned no file_path");
+        const response = await fetch(`https://api.telegram.org/file/bot${deps.token}/${file.file_path}`);
+        if (!response.ok) throw new Error(`file download failed: HTTP ${response.status}`);
+        const attachment = await saveAttachment(
+          deps.workspace,
+          ctx.message.document.file_name || path.basename(file.file_path),
+          Buffer.from(await response.arrayBuffer()),
+          ctx.message.document.mime_type || "application/octet-stream",
+        );
+        await handleUserContent(ctx, attachmentPrompt(attachment, ctx.message.caption || ""));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[document]", err);
+        await reply(ctx, `Could not save that file: ${msg}`);
+      }
     });
   });
 

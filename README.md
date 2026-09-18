@@ -2,7 +2,7 @@
 
 _BOB = **B**etter **O**rganizational **B**ot_
 
-A local agent harness you chat with from Telegram — text, voice, or photos. It can
+A local agent harness you chat with from Telegram — text, voice, photos, or files. It can
 read, write and organize files on this machine inside a sandboxed workspace, and
 every change it makes is **git-committed automatically**.
 
@@ -16,12 +16,15 @@ every change it makes is **git-committed automatically**.
   backend, running on the AMD RX 570. No audio leaves the machine.
 - **Brain**: any OpenAI-compatible endpoint (default: Hugging Face router running
   Gemma 4), switchable via `.env`.
+- **Attachments**: Telegram documents and non-audio web uploads are stored under
+  `assets/inbox/` and passed to the tree as workspace-relative paths. They are
+  excluded from workspace Git history.
 - **Tools**: sandboxed file tools + an allowlist of shell commands.
 
 ## Architecture
 
 ```
- Telegram app (you: text / voice note / photo)
+  Telegram app (you: text / voice note / photo / file)
       │
       ▼  getUpdates, long polling (grammY)
 ┌─────────────────────────────────────────────────────────────┐
@@ -115,7 +118,8 @@ src/
   index.ts        entry point: workspace + git init, wiring, bot startup
   config.ts       .env loading/validation (non-model config only)
   models.ts       models.json loader, built-in transforms
-  bot.ts          grammY bot: auth gate, forum topics, text/voice/photo, queues
+  bot.ts          grammY bot: auth gate, forum topics, text/voice/photo/file, queues
+  attachments.ts  bounded upload storage under workspace/assets/inbox/
   admin.ts        web UI: chat front page (/) + settings page (/settings)
   agent.ts        continuation storage, tree runner (grandma-kat pause/resume)
   stt.ts          audio (Telegram voice / web upload) → ffmpeg → STT backend
