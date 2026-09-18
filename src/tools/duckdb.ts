@@ -27,7 +27,7 @@ export class DuckdbTools {
    * or access another workspace file through the DuckDB connection.
    */
   async query(sql: string, csvPath: string): Promise<Record<string, unknown>> {
-    const statement = sql.trim();
+    const statement = sql.trim().replace(/;\s*$/, "");
     if (!statement) throw new Error("no SQL query provided");
     if (!READ_ONLY.test(statement)) {
       throw new Error("duckdb_query is read-only: use SELECT, WITH, DESCRIBE, EXPLAIN, or PRAGMA");
