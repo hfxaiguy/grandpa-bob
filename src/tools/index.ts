@@ -4,6 +4,7 @@ import { ShellTools } from "./shell.js";
 import { ExaSearchTools } from "./websearch.js";
 import { SqliteTools } from "./sqlite.js";
 import { OpencodeTools } from "./opencode.js";
+import { DuckdbTools } from "./duckdb.js";
 
 type Json = Record<string, unknown>;
 
@@ -13,6 +14,7 @@ export class ToolRegistry {
   private exa: ExaSearchTools;
   private sqlite: SqliteTools;
   private opencode: OpencodeTools;
+  private duckdb: DuckdbTools;
 
   /**
    * @param workspace        Workspace root (sandbox for file + sql path args).
@@ -33,6 +35,7 @@ export class ToolRegistry {
     this.exa = new ExaSearchTools(exaApiKey);
     this.sqlite = new SqliteTools({ workspace, lockedPath: sqliteLockedPath });
     this.opencode = new OpencodeTools();
+    this.duckdb = new DuckdbTools(workspace);
   }
 
   readonly definitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
@@ -201,6 +204,24 @@ export class ToolRegistry {
     {
       type: "function",
       function: {
+        name: "duckdb_query",
+        description:
+          "Run a read-only DuckDB SQL query against a CSV or TSV file in the workspace. " +
+          "The file is exposed as the relation `csv`; use DESCRIBE SELECT * FROM csv to inspect columns. " +
+          "Results include columns, rows, rowCount, and truncated. Only one SELECT/WITH/DESCRIBE/EXPLAIN/PRAGMA statement is allowed.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Read-only SQL using the `csv` relation" },
+            path: { type: "string", description: "Relative .csv or .tsv path in the workspace" },
+          },
+          required: ["query", "path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "opencode",
         description:
           "Delegate a prompt to an opencode coding-agent session and return its output (workspace files, shell commands, code edits) as text. " +
@@ -267,6 +288,8 @@ export class ToolRegistry {
             String(args.query ?? ""),
             args.path !== undefined ? String(args.path) : undefined,
           );
+        case "duckdb_query":
+          return await this.duckdb.query(String(args.query ?? ""), String(args.path ?? ""));
         case "exa_search":
           return await this.exa.search({
             query: String(args.query ?? ""),
