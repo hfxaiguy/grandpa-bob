@@ -1,8 +1,6 @@
 import path from "node:path";
 // @ts-ignore — grandma-kat ships no .d.ts files.
 import grandma from "grandma-kat";
-// @ts-ignore — communications ships no .d.ts files.
-import { tools as commsTools } from "communications/src/tools.mjs";
 import type { ToolRegistry } from "./tools/index.js";
 import type { ModelRegistry } from "./models.js";
 import { loadPattern } from "./pattern-loader.js";
@@ -118,12 +116,7 @@ export class Agent {
     const katTools = this.deps.tools.toKatTools();
     const pattern = await loadPattern(this.deps.workspace, this.deps.patternName?.() ?? "agent");
 
-    // Merge built-in tools with comms tools.
-    const commsToolMap = Object.fromEntries(commsTools.map((t: { name: string }) => [t.name, t]));
-    // Workspace app tools take precedence over legacy communications tools
-    // when an app intentionally exposes the same name (for example,
-    // contacts' richer log_message implementation).
-    const allTools = { ...commsToolMap, ...katTools };
+    const allTools = katTools;
 
     const runtime: Record<string, unknown> = {
       models: this.deps.models,
