@@ -10,6 +10,7 @@ import { loadModels } from "./models.js";
 import { createBot } from "./bot.js";
 import { checkStt } from "./stt.js";
 import { startAdmin, getSelectedPattern } from "./admin.js";
+import { loadAppTools } from "./app-tools.js";
 
 async function main(): Promise<void> {
   await fs.mkdir(config.workspaceDir, { recursive: true });
@@ -21,11 +22,14 @@ async function main(): Promise<void> {
   await fs.mkdir(path.join(config.workspaceDir, "logs"), { recursive: true });
   await ensureWorkspaceGitignore(config.workspaceDir, ["logs/grandma-kat.db*", "assets/inbox/"]);
 
+  const appTools = await loadAppTools(config.workspaceDir);
+  console.log(`[app-tools] loaded ${appTools.length} tool(s) from workspace apps`);
   const tools = new ToolRegistry(
     config.workspaceDir,
     config.allowedCommands,
     config.exaApiKey,
     config.sqliteLockPath || undefined,
+    appTools,
   );
   const models = await loadModels();
   // Shared SQLite + console logger. Passing a logger object (instead of the

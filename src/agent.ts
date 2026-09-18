@@ -120,7 +120,10 @@ export class Agent {
 
     // Merge built-in tools with comms tools.
     const commsToolMap = Object.fromEntries(commsTools.map((t: { name: string }) => [t.name, t]));
-    const allTools = { ...katTools, ...commsToolMap };
+    // Workspace app tools take precedence over legacy communications tools
+    // when an app intentionally exposes the same name (for example,
+    // contacts' richer log_message implementation).
+    const allTools = { ...commsToolMap, ...katTools };
 
     const runtime: Record<string, unknown> = {
       models: this.deps.models,

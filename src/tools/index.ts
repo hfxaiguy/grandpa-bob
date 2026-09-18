@@ -5,8 +5,20 @@ import { ExaSearchTools } from "./websearch.js";
 import { SqliteTools } from "./sqlite.js";
 import { OpencodeTools } from "./opencode.js";
 import { DuckdbTools } from "./duckdb.js";
+import type { AppTool } from "../app-tools.js";
 
 type Json = Record<string, unknown>;
+
+function toOpenAiDefinition(tool: AppTool): OpenAI.Chat.Completions.ChatCompletionTool {
+  return {
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description ?? "",
+      parameters: tool.parameters ?? { type: "object", properties: {} },
+    },
+  };
+}
 
 export class ToolRegistry {
   private files: FileTools;
@@ -15,6 +27,7 @@ export class ToolRegistry {
   private sqlite: SqliteTools;
   private opencode: OpencodeTools;
   private duckdb: DuckdbTools;
+  private appTools: Map<string, AppTool>;
 
   /**
    * @param workspace        Workspace root (sandbox for file + sql path args).
@@ -29,6 +42,7 @@ export class ToolRegistry {
     allowedCommands: string[],
     exaApiKey: string = "",
     sqliteLockedPath?: string,
+    appTools: AppTool[] = [],
   ) {
     this.files = new FileTools(workspace);
     this.shell = new ShellTools(workspace, allowedCommands);
@@ -36,6 +50,8 @@ export class ToolRegistry {
     this.sqlite = new SqliteTools({ workspace, lockedPath: sqliteLockedPath });
     this.opencode = new OpencodeTools();
     this.duckdb = new DuckdbTools(workspace);
+    this.appTools = new Map(appTools.map((tool) => [tool.name, tool]));
+    this.definitions.push(...appTools.map(toOpenAiDefinition));
   }
 
   readonly definitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
@@ -254,6 +270,13 @@ export class ToolRegistry {
       return `error: invalid JSON arguments for ${name}`;
     }
     try {
+      const appTool = this.appTools.get(name);
+      if (appTool) {
+        const result = await appTool.execute(args);
+        if (typeof result === "string") return result;
+        if (result && typeof result === "object") return result as Json;
+        return String(result ?? "");
+      }
       switch (name) {
         case "list_files":
           return await this.files.listFiles(

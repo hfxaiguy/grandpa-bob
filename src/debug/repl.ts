@@ -11,6 +11,7 @@ import { loadModels } from "../models.js";
 import { createLogger } from "grandma-kat";
 import { EventLogger, type KatEvent } from "./event-logger.js";
 import { formatEvent, formatAgentOutput } from "./format.js";
+import { loadAppTools } from "../app-tools.js";
 
 const CONV_KEY = "cli:repl";
 
@@ -46,7 +47,8 @@ async function main(): Promise<void> {
   await fs.mkdir(path.join(config.workspaceDir, "logs"), { recursive: true });
   await ensureWorkspaceGitignore(config.workspaceDir, ["logs/grandma-kat.db*"]);
 
-  const tools = new ToolRegistry(config.workspaceDir, config.allowedCommands, config.exaApiKey);
+  const appTools = await loadAppTools(config.workspaceDir);
+  const tools = new ToolRegistry(config.workspaceDir, config.allowedCommands, config.exaApiKey, undefined, appTools);
   const models = await loadModels();
 
   // Grandma-kat handles SQLite persistence. Console output via EventLogger below.
