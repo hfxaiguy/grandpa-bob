@@ -51,7 +51,13 @@ function truncateCell(value: unknown): unknown {
 }
 
 function resolveDatabase(workspace: string, lockedPath: string | undefined, pathArg?: string): string {
-  return lockedPath ?? resolveInWorkspace(workspace, pathArg ?? "");
+  if (lockedPath) return lockedPath;
+  if (!pathArg) {
+    throw new Error(
+      "path is required: no database is locked, so pass a workspace-relative .db file (e.g. \"contacts.db\")",
+    );
+  }
+  return resolveInWorkspace(workspace, pathArg);
 }
 
 export class SqliteTools {
