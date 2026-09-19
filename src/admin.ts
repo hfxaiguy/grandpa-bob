@@ -344,6 +344,12 @@ function readBody(req: http.IncomingMessage) {
 // in-memory history, and broadcast to connected browsers over SSE.
 
 const WEB_KEY = "web:chat";
+// Current memory values for the web chat's tree, resolved by scope. A slot
+// is identified by (scope_id, name): .memoryUpdate() deep in a branch writes
+// to the slot's *declaring* scope, so keying by scope_id collapses updates
+// onto the .memory() node instead of leaving it stuck at its seed value.
+const webMemoryValues = new Map<string, unknown>(); // `${scopeId}/${name}` -> value
+const webMemoryPaths = new Map<string, Set<string>>(); // slot key -> node paths that write to it
 const MAX_TURNS_KEPT = 20;
 const MAX_EVENT_STR = 400;
 
@@ -403,22 +409,18 @@ function sanitizeValue(v: unknown, depth = 0): unknown {
 
 function sanitizeEvent(e: { kind?: string; branch_path?: string; iteration?: number; content?: Record<string, unknown> | null }): SanitizedEvent {
   const content: Record<string, unknown> = { ...(e.content ?? {}) };
-  // llm_call embeds the entire prompt history — replace with a summary.
-  if (Array.isArray(content.messages)) {
-    const msgs = content.messages as { role?: string; content?: unknown }[];
-    const last = msgs[msgs.length - 1];
-    content.messages = {
-      count: msgs.length,
-      last: last
-        ? { role: last.role, content: sanitizeValue(typeof last.content === "string" ? last.content : JSON.stringify(last.content)) }
-        : null,
-    };
-  }
+  // Keep the prompt input exactly as sent: attach it raw after generic
+  // sanitization, which would otherwise truncate strings and collapse the
+  // message array into a summary.
+  const messages = Array.isArray(content.messages) ? content.messages : null;
+  delete content.messages;
+  const clean = sanitizeValue(content) as Record<string, unknown>;
+  if (messages) clean.messages = messages;
   return {
     kind: e.kind ?? "unknown",
     branch_path: e.branch_path ?? "",
     iteration: e.iteration ?? 0,
-    content: sanitizeValue(content) as Record<string, unknown>,
+    content: clean,
     ts: Date.now(),
   };
 }
@@ -453,6 +455,21 @@ async function runTurn(agent: Agent, turnId: string, content: unknown, displayTe
   broadcast({ type: "turn_start", turnId, input: displayText, ts: record.startedAt });
 
   const onEvent = (e: unknown) => {
+    const raw = e as {
+      run_id?: string; scope_id?: number | null; branch_path?: string; kind?: string;
+      content?: { child?: unknown; value?: unknown };
+    };
+    if (raw?.kind === "memory" && raw.scope_id != null) {
+      const child = typeof raw.content?.child === "string" ? raw.content.child : "";
+      const slotKey = `${raw.scope_id}/${child}`;
+      if (raw.content && "value" in raw.content) webMemoryValues.set(slotKey, raw.content.value);
+      const nodePath = (raw.branch_path ?? "") + (child ? "/" + child : "");
+      if (nodePath) {
+        let paths = webMemoryPaths.get(slotKey);
+        if (!paths) { paths = new Set(); webMemoryPaths.set(slotKey, paths); }
+        paths.add(nodePath);
+      }
+    }
     const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0]);
     record.events.push(s);
     broadcast({ type: "event", turnId, event: s });
@@ -1028,6 +1045,8 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   .steps > summary { cursor: pointer; padding: 8px 12px; color: var(--muted); font-size: 12px; display: flex; gap: 8px; align-items: center; list-style: none; }
   .steps > summary::-webkit-details-marker { display: none; }
   .steps .count { margin-left: auto; font-family: ui-monospace, monospace; }
+  .steps .copy-log { flex: none; font: inherit; font-size: 11px; color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: 5px; padding: 1px 8px; cursor: pointer; }
+  .steps .copy-log:hover { color: var(--fg); border-color: var(--accent); }
   .spinner { width: 12px; height: 12px; flex: none; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .step-list { margin: 0; padding: 4px 12px 10px; list-style: none; border-top: 1px solid var(--border); }
@@ -1035,6 +1054,7 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   .step details > summary { cursor: pointer; padding: 3px 0; display: flex; gap: 8px; align-items: baseline; list-style: none; }
   .step details > summary::-webkit-details-marker { display: none; }
   .badge { flex: none; min-width: 58px; text-align: center; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 4px; background: #334155; color: var(--fg); text-transform: uppercase; }
+  .step-id { color: #94a3b8; font-size: 11px; flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .spath { color: #64748b; font-size: 11px; flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .stext { color: #cbd5e1; word-break: break-word; }
   .step pre { margin: 2px 0 8px 66px; padding: 8px; background: #0b1224; border-radius: 6px; font-size: 11px; white-space: pre-wrap; word-break: break-all; color: #94a3b8; max-height: 240px; overflow: auto; }
@@ -1113,6 +1133,15 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   .tp-node.tp-active { background: rgba(30,58,138,0.35); outline: 1px solid var(--accent); }
   .tp-node.tp-active > details > summary .tp-badge, .tp-node.tp-active > .tp-row .tp-badge { background: var(--accent); }
   .tp-empty { color: var(--muted); }
+  .tp-mem-btn { text-align: left; background: none; border: none; padding: 0; font: inherit; cursor: pointer; color: #a5b4fc; }
+  .tp-mem-btn:hover { text-decoration: underline; }
+  #mem-popup { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; background: rgba(2,6,23,0.72); }
+  #mem-popup .mem-box { width: min(720px, 94vw); max-height: 84vh; display: flex; flex-direction: column; background: #0b1224; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  #mem-popup .mem-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  #mem-popup .mem-head h3 { font-size: 13px; margin: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #mem-popup .mem-head button { background: #475569; padding: 3px 10px; font-size: 12px; border: 0; border-radius: 5px; color: #e2e8f0; cursor: pointer; }
+  #mem-popup .mem-body { flex: 1; overflow: auto; padding: 12px 14px; }
+  #mem-popup pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #cbd5e1; }
 </style>
 </head>
 <body>
@@ -1193,6 +1222,7 @@ function describeEvent(ev) {
       return { badge: "human", cls: "k-human", text: (c.child ?? "?") + " \\u2014 paused, waiting for input" };
     case "llm_call": {
       let t = (c.model ?? "?") + (c.round > 1 ? " round " + c.round : "") + iter;
+      if (c.messages?.count) t += " (input: " + c.messages.count + " msgs)";
       if (Array.isArray(c.toolCalls) && c.toolCalls.length) {
         t += " \\u2192 tool calls: " + c.toolCalls.map((tc) => tc.name ?? tc.function?.name ?? "?").join(", ");
       } else if (c.content) {
@@ -1245,6 +1275,52 @@ function describeEvent(ev) {
   }
 }
 
+function turnLogText(turn) {
+  const lines = [];
+  const input = turn.querySelector(".msg-user .bubble");
+  if (input) lines.push("[user] " + input.textContent, "");
+  const list = turn.querySelector(".step-list");
+  for (const li of list ? Array.from(list.children) : []) {
+    const sum = li.querySelector("summary");
+    if (sum) {
+      const badge = sum.querySelector(".badge")?.textContent ?? "?";
+      const id = sum.querySelector(".step-id")?.textContent ?? "";
+      const path = sum.querySelector(".spath")?.textContent ?? "";
+      const text = sum.querySelector(".stext")?.textContent ?? "";
+      lines.push([badge, id, path, text].filter(Boolean).join(" "));
+    }
+    const pre = li.querySelector("pre");
+    if (pre?.textContent) {
+      lines.push(...pre.textContent.split("\\n").map((line) => "    " + line));
+    }
+    lines.push("");
+  }
+  const answer = turn.querySelector(".msg-answer .bubble");
+  if (answer) lines.push("[bob] " + answer.textContent);
+  const err = turn.querySelector(".msg-error");
+  if (err) lines.push("[error] " + err.textContent);
+  return lines.join("\\n").trim();
+}
+
+async function copyTurnLog(turn, btn) {
+  const text = turnLogText(turn);
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  const old = btn.textContent;
+  btn.textContent = "copied";
+  setTimeout(() => (btn.textContent = old), 1200);
+}
+
 function startTurn(turnId, input) {
   hideEmpty();
   const pending = conv.querySelector('.msg-user.pending[data-turnid="' + turnId + '"]');
@@ -1269,7 +1345,17 @@ function startTurn(turnId, input) {
   lab.textContent = "running tree\\u2026";
   const cnt = document.createElement("span");
   cnt.className = "count";
-  sum.append(spin, lab, cnt);
+  const copy = document.createElement("button");
+  copy.className = "copy-log";
+  copy.type = "button";
+  copy.textContent = "copy";
+  copy.title = "Copy the full conversation log for this turn";
+  copy.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    copyTurnLog(turn, copy);
+  });
+  sum.append(spin, lab, cnt, copy);
   const list = document.createElement("ol");
   list.className = "step-list";
   steps.append(sum, list);
@@ -1295,13 +1381,19 @@ function addStep(turnId, ev) {
   const badge = document.createElement("span");
   badge.className = "badge";
   badge.textContent = d.badge;
+  const content = ev.content || {};
+  const identity = content.child ?? content.name ??
+    (content.scopeId != null ? "#" + content.scopeId : "");
+  const id = document.createElement("span");
+  id.className = "step-id";
+  id.textContent = identity ? String(identity) : "";
   const sp = document.createElement("span");
   sp.className = "spath";
   sp.textContent = ev.branch_path ? "[" + ev.branch_path + "]" : "";
   const txt = document.createElement("span");
   txt.className = "stext";
   txt.textContent = d.text;
-  sum.append(badge, sp, txt);
+  sum.append(badge, id, sp, txt);
   const pre = document.createElement("pre");
   pre.textContent = JSON.stringify(ev.content, null, 2);
   det.append(sum, pre);
@@ -1379,7 +1471,7 @@ async function uploadAttachment(file) {
     const r = await fetch("/api/chat/upload", { method: "POST", body: fd });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { toast(d.error || "upload failed", true); return; }
-    const display = caption ? caption + "\n[attached: " + file.name + "]" : "[attached: " + file.name + "]";
+    const display = caption ? caption + "\\n[attached: " + file.name + "]" : "[attached: " + file.name + "]";
     if (d.queued) addPending(d.turnId, display);
     input.value = "";
     input.dispatchEvent(new Event("input"));
@@ -1574,6 +1666,11 @@ const treeBody = $("tree-body");
 let treeLoadedFor = null;
 const treeVisited = new Set(); // node paths hit during the current turn
 let treeActive = null;         // node path of the latest event
+// Current memory values, keyed by node path. Seeded/refreshed from
+// /api/tree/memory (full values); the per-node DOM buttons are tracked in
+// treeMemBtns so live SSE events can update them without re-rendering.
+const treeMemory = new Map();
+const treeMemBtns = new Map();
 
 function tpEl(tag, cls, text) {
   const e = document.createElement(tag);
@@ -1611,8 +1708,11 @@ async function loadTreePanel(force) {
     treeLoadedFor = d.pattern;
     $("tp-pattern").textContent = d.pattern;
     treeBody.innerHTML = "";
+    treeMemory.clear();
+    treeMemBtns.clear();
     treeBody.appendChild(renderTreeNode(d.tree, true));
     applyTreeMarks();
+    refreshTreeMemory();
   } catch (e) {
     treeBody.innerHTML = "";
     treeBody.appendChild(tpEl("div", "tp-empty", "could not load tree: " + e.message));
@@ -1656,6 +1756,17 @@ function renderTreeChild(c) {
   if (c.text != null) tpInfo(body, "prompt", c.text);
   if (c.messages) tpInfo(body, "messages", c.messages.map((m) => m.role + ": " + m.content).join("\\n\\n"));
   if (c.fn) tpInfo(body, "fn", c.fn);
+  if (c.kind === "memory" || c.kind === "memoryUpdate") {
+    const row = tpEl("div", "tp-info");
+    row.appendChild(tpEl("span", "tp-k", "value"));
+    const btn = tpEl("button", "tp-v tp-mem-btn", shortValue(treeMemory.get(c.path)));
+    btn.dataset.path = c.path;
+    btn.title = "click for full value";
+    btn.addEventListener("click", () => openMemoryPopup(c.path, c.name));
+    row.appendChild(btn);
+    body.appendChild(row);
+    treeMemBtns.set(c.path, btn);
+  }
   if (c.tool) tpInfo(body, "tool", c.tool);
   if (c.argsFn) tpInfo(body, "args", c.argsFn);
   if (c.tools) tpInfo(body, "tools", c.tools.join(", "));
@@ -1683,6 +1794,75 @@ function renderTreeChild(c) {
     li.appendChild(summary);
   }
   return li;
+}
+
+// ---- memory values ----
+
+// One-line, truncated rendering of a memory value for the inline display.
+function shortValue(v) {
+  if (v === undefined) return "(no value)";
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  return short(s, 120);
+}
+
+// Update the inline (truncated) value shown on a memory node's button.
+function updateMemoryNode(path, value) {
+  const btn = treeMemBtns.get(path);
+  if (btn) btn.textContent = shortValue(value);
+}
+
+// Popup showing a memory slot's full value, lazy-loaded from the server so
+// nothing large is shipped unless the user asks for it.
+function openMemoryPopup(path, label) {
+  document.getElementById("mem-popup")?.remove();
+  const overlay = tpEl("div", "", null);
+  overlay.id = "mem-popup";
+  const box = tpEl("div", "mem-box");
+  const head = tpEl("div", "mem-head");
+  head.appendChild(tpEl("h3", "", label || path));
+  const close = tpEl("button", "", "close");
+  close.addEventListener("click", () => overlay.remove());
+  head.appendChild(close);
+  const body = tpEl("div", "mem-body");
+  const pre = document.createElement("pre");
+  pre.textContent = "loading\u2026";
+  body.appendChild(pre);
+  box.append(head, body);
+  overlay.appendChild(box);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+
+  fetch("/api/tree/memory?path=" + encodeURIComponent(path))
+    .then((r) => r.json())
+    .then((d) => {
+      const v = d.value;
+      pre.textContent =
+        v === undefined ? "undefined" : typeof v === "string" ? v : JSON.stringify(v, null, 2);
+    })
+    .catch((e) => { pre.textContent = "failed to load: " + e.message; });
+}
+
+// Refresh the current memory values from the log DB (full values) and update
+// every memory node's inline display. Called on panel load and at turn end.
+async function refreshTreeMemory() {
+  try {
+    const r = await fetch("/api/tree/memory");
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.values) return;
+    for (const [p, v] of Object.entries(d.values)) {
+      treeMemory.set(p, v);
+      updateMemoryNode(p, v);
+    }
+  } catch { /* memory view is best-effort */ }
+}
+
+// Debounce live memory refreshes: a turn writes several memory slots in quick
+// succession, and each write should update every node bound to that slot (the
+// declaring .memory() node included), so we just re-fetch the resolved map.
+let memRefreshTimer = null;
+function scheduleMemoryRefresh() {
+  if (memRefreshTimer) return;
+  memRefreshTimer = setTimeout(() => { memRefreshTimer = null; refreshTreeMemory(); }, 150);
 }
 
 // ---- live progress marks (driven by the same SSE events as the steps) ----
@@ -1713,6 +1893,7 @@ function treeOnEvent(ev) {
   if (!p) return;
   treeVisited.add(p);
   treeActive = p;
+  if (ev.kind === "memory") scheduleMemoryRefresh();
   applyTreeMarks();
 }
 function treeOnTurnStart() {
@@ -1723,6 +1904,7 @@ function treeOnTurnStart() {
 function treeOnTurnEnd() {
   treeActive = null;
   applyTreeMarks();
+  refreshTreeMemory();
 }
 
 // ---- live events over SSE ----
@@ -1734,7 +1916,7 @@ function connect() {
     if (msg.type === "turn_start") { startTurn(msg.turnId, msg.input); treeOnTurnStart(); }
     else if (msg.type === "event") { addStep(msg.turnId, msg.event); treeOnEvent(msg.event); }
     else if (msg.type === "turn_end") { endTurn(msg.turnId, msg.status, msg.error, msg.output); treeOnTurnEnd(); }
-    else if (msg.type === "cleared") { conv.innerHTML = ""; blocks.clear(); showEmpty(); }
+    else if (msg.type === "cleared") { conv.innerHTML = ""; blocks.clear(); showEmpty(); treeMemory.clear(); for (const btn of treeMemBtns.values()) btn.textContent = "(no value)"; }
   };
 }
 
@@ -2086,6 +2268,8 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
 
       if (req.method === "POST" && url.pathname === "/api/clear") {
         agent?.clear(WEB_KEY);
+        webMemoryValues.clear();
+        webMemoryPaths.clear();
         turns.length = 0;
         broadcast({ type: "cleared" });
         res.writeHead(200, { "content-type": "application/json" });
@@ -2231,6 +2415,8 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         setSelectedPattern(name);
         try { await writeEnv(config.envPath, { TREE_PATTERN: name }); } catch { /* persist best-effort */ }
         agent?.clear(WEB_KEY);
+        webMemoryValues.clear();
+        webMemoryPaths.clear();
         turns.length = 0;
         broadcast({ type: "cleared" });
         res.writeHead(200, { "content-type": "application/json" });
@@ -2319,6 +2505,29 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           const i = treeClients.findIndex((c) => c.res === res);
           if (i >= 0) treeClients.splice(i, 1);
         });
+        return;
+      }
+
+      // --- current memory values for the tree side panel ---
+      // Returns the last-written value for every memory/memoryUpdate node,
+      // keyed by node path. Because values are resolved by scope (see
+      // webMemoryPaths), a .memoryUpdate() deep in a branch updates the
+      // declaring .memory() node's value too. `?path=` returns one full value
+      // (used by the popup); without it, the full map (used for inline values).
+      if (req.method === "GET" && url.pathname === "/api/tree/memory") {
+        const values: Record<string, unknown> = {};
+        for (const [slotKey, paths] of webMemoryPaths) {
+          const v = webMemoryValues.get(slotKey);
+          if (v === undefined) continue;
+          for (const p of paths) values[p] = v;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        const pathParam = url.searchParams.get("path");
+        if (pathParam) {
+          res.end(JSON.stringify({ path: pathParam, value: values[pathParam] ?? null }));
+        } else {
+          res.end(JSON.stringify({ values }));
+        }
         return;
       }
 
