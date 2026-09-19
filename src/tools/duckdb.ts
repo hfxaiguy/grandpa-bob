@@ -8,6 +8,7 @@ const MAX_CELL = 500;
 const READ_ONLY = /^(SELECT|WITH|DESCRIBE|EXPLAIN|PRAGMA)\b/i;
 
 function truncate(value: unknown): unknown {
+  if (typeof value === "bigint") return Number(value);
   if (typeof value === "string" && value.length > MAX_CELL) {
     return value.slice(0, MAX_CELL) + "…";
   }
