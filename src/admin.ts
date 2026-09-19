@@ -39,6 +39,7 @@ import { TreeLogReader, logDbPath } from "./treeLog.js";
 import { DEFAULT_PATTERN, loadPattern } from "./pattern-loader.js";
 import { serializeTree } from "./tree-serialize.js";
 import { attachmentPrompt, saveAttachment, MAX_ATTACHMENT_BYTES } from "./attachments.js";
+import { emitText } from "./util/emit-text.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -484,7 +485,8 @@ async function runTurn(agent: Agent, turnId: string, content: unknown, displayTe
       WEB_KEY,
       content,
       (value) => {
-        const t = typeof value === "string" ? value : JSON.stringify(value);
+        // Trees emit { text } objects; the chat shows the text, not the JSON.
+        const t = emitText(value);
         if (t) record.output = record.output ? record.output + "\n\n" + t : t;
       },
       { onEvent },
@@ -492,7 +494,7 @@ async function runTurn(agent: Agent, turnId: string, content: unknown, displayTe
     // Non-looping trees complete instead of pausing at .human() — show
     // their final result as the reply when nothing was emitted.
     if (res.status === "done" && !record.output && res.result != null) {
-      const t = typeof res.result === "string" ? res.result : JSON.stringify(res.result);
+      const t = emitText(res.result);
       if (t) record.output = t;
     }
     record.status = "done";

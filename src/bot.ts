@@ -6,6 +6,7 @@ import type { ModelRegistry } from "./models.js";
 import { transcribeVoice, type SttBackend } from "./stt.js";
 import { git } from "./tools/git.js";
 import { attachmentPrompt, saveAttachment } from "./attachments.js";
+import { emitText } from "./util/emit-text.js";
 
 export interface BotDeps {
   token: string;
@@ -146,14 +147,15 @@ export function createBot(deps: BotDeps): Bot {
     try {
       let emitted = false;
       const res = await deps.agent.run(key, content, async (value) => {
-        // onEmit: send each emitted value to Telegram immediately.
-        const text = typeof value === "string" ? value : JSON.stringify(value);
+        // onEmit: send each emitted value to Telegram immediately. Trees emit
+        // { text } objects; show the text, never the JSON wrapper.
+        const text = emitText(value);
         if (text) { emitted = true; await reply(ctx, text); }
       });
       // Non-looping trees complete instead of pausing at .human() — send
       // their final result as the reply when nothing was emitted.
       if (res.status === "done" && !emitted && res.result != null) {
-        const text = typeof res.result === "string" ? res.result : JSON.stringify(res.result);
+        const text = emitText(res.result);
         if (text) await reply(ctx, text);
       }
     } catch (err) {

@@ -12,6 +12,7 @@ import { createLogger } from "grandma-kat";
 import { EventLogger, type KatEvent } from "./event-logger.js";
 import { formatEvent, formatAgentOutput } from "./format.js";
 import { loadAppTools } from "../app-tools.js";
+import { emitText } from "../util/emit-text.js";
 
 const CONV_KEY = "cli:repl";
 
@@ -82,10 +83,11 @@ async function main(): Promise<void> {
     }
   });
 
-  // Collect agent output from onEmit.
+  // Collect agent output from onEmit. Trees emit { text } objects; show the
+  // text, never the JSON wrapper.
   let lastOutput = "";
   const onEmit = (value: unknown) => {
-    const text = typeof value === "string" ? value : JSON.stringify(value);
+    const text = emitText(value);
     if (text) lastOutput = text;
   };
 
