@@ -19,7 +19,7 @@
 //   undefined (default) — OpenAI-compatible /chat/completions
 //   "ollama"            — Ollama native /api/chat (for https://ollama.com)
 //
-// The pattern in workspace/patterns/agent.mjs references named slots "cheap" and
+// The pattern in workspace/patterns/trunk.mjs references named slots "cheap" and
 // "strong"; both must be present in models.json.
 
 import fs from "node:fs/promises";

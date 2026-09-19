@@ -114,7 +114,7 @@ export class Agent {
   ): Promise<AgentRunResult> {
     const cont = this.continuations.get(key);
     const katTools = this.deps.tools.toKatTools();
-    const pattern = await loadPattern(this.deps.workspace, this.deps.patternName?.() ?? "agent");
+    const pattern = await loadPattern(this.deps.workspace, this.deps.patternName?.() ?? "trunk");
 
     const allTools = katTools;
 

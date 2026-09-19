@@ -13,7 +13,7 @@ import { pathToFileURL } from "node:url";
 import { Tree, when, goback, goto, max } from "grandma-kat";
 
 const PATTERN_DIR = "patterns";
-export const DEFAULT_PATTERN = "agent";
+export const DEFAULT_PATTERN = "trunk";
 
 /** Args passed to every pattern function. */
 export interface PatternContext {
@@ -29,7 +29,7 @@ export interface PatternContext {
  * default function that receives `PatternContext` and returns a Tree.
  *
  * @param workspaceDir  The workspace root (e.g. ~/grandma-workspace)
- * @param name          Pattern name (filename without .mjs, default "agent")
+ * @param name          Pattern name (filename without .mjs, default "trunk")
  */
 export async function loadPattern(
   workspaceDir: string,
