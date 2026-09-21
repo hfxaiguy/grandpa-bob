@@ -231,6 +231,60 @@ export async function listPatterns(workspaceDir: string) {
   }
 }
 
+/**
+ * App trees: every `app/<dir>/tree.mjs` is runnable as a top-level tree, the
+ * same way a `patterns/<name>.mjs` is. The directory name is the selector
+ * value (loadPattern resolves it).
+ */
+export async function listAppTrees(workspaceDir: string) {
+  const appDir = path.join(workspaceDir, "app");
+  try {
+    const entries = await readdir(appDir, { withFileTypes: true });
+    const out: { file: string; name: string; description: string; group: string }[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dir = path.join(appDir, entry.name);
+      try {
+        await readFile(path.join(dir, "tree.mjs"), "utf8");
+      } catch {
+        continue; // apps without a tree are tools-only
+      }
+      out.push({
+        file: `app/${entry.name}/tree.mjs`,
+        name: entry.name,
+        description: await appTreeDescription(dir),
+        group: "app",
+      });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  } catch {
+    return [];
+  }
+}
+
+/** First prose line of the app's tree.md, falling back to its README. */
+async function appTreeDescription(appDir: string): Promise<string> {
+  for (const file of ["tree.md", "README.md"]) {
+    try {
+      const content = await readFile(path.join(appDir, file), "utf8");
+      const line = content
+        .split("\n")
+        .map((l) => l.trim())
+        .find((l) => l && !l.startsWith("#") && !l.startsWith("```"));
+      if (line) return line.replace(/\*\*/g, "");
+    } catch {
+      // try the next file
+    }
+  }
+  return "(app tree)";
+}
+
+/** Everything the tree selector can run: patterns first, then app trees. */
+export async function listTreeSources(workspaceDir: string) {
+  const patterns = (await listPatterns(workspaceDir)).map((p) => ({ ...p, group: "patterns" }));
+  return [...patterns, ...(await listAppTrees(workspaceDir))];
+}
+
 async function readPattern(workspaceDir: string, name: string) {
   try {
     return await readFile(path.join(workspaceDir, PATTERNS_DIR_NAME, `${name}.mjs`), "utf8");
@@ -374,30 +428,57 @@ interface TurnRecord {
   events: SanitizedEvent[];
 }
 
-const turns: TurnRecord[] = [];
-// Persisted copy of `turns` so the chat history survives bot restarts.
+// Every web session (`web:<id>`) owns a label and a bounded turn buffer.
+// Sessions are NEVER auto-resumed after a restart: `activeSession` starts
+// null and the chat page shows a session picker until the user explicitly
+// resumes one (loads its history + arms the stored continuation for the
+// next message) or starts a new one. This keeps a stale/broken checkpoint
+// from hanging the first turn after a refresh.
+interface WebSession {
+  label: string;
+  /** Tree pattern this session last ran under (for the picker). */
+  pattern: string;
+  updatedAt: number;
+  turns: TurnRecord[];
+}
+const sessionTurns = new Map<string, WebSession>();
+let activeSession: string | null = null;
+const MAX_SESSIONS_KEPT = 10;
+
+// Persisted copy of `sessionTurns` so chat history survives bot restarts.
 // Set inside startAdmin (config isn't available at module scope).
 let webTurnsPath = "";
+
+function slimTurn(t: TurnRecord): TurnRecord {
+  return {
+    ...t,
+    // Live raw `messages` attached to events (full prompt + system text)
+    // are session telemetry already in grandma-kat.db — no reason to
+    // duplicate them on disk.
+    events: t.events.map((ev) => {
+      if (!ev.content || !("messages" in ev.content)) return ev;
+      const content = { ...ev.content };
+      delete content.messages;
+      return { ...ev, content };
+    }),
+  };
+}
 
 function saveTurns(): void {
   if (!webTurnsPath) return;
   try {
     fs.mkdirSync(path.dirname(webTurnsPath), { recursive: true });
-    // Persist only what the UI needs to re-render after a restart. The
-    // live raw `messages` attached to events (full prompt + system text)
-    // are session telemetry already in grandma-kat.db — no reason to
-    // duplicate them on disk.
-    const slim = turns.map((t) => ({
-      ...t,
-      events: t.events.map((ev) => {
-        if (!ev.content || !("messages" in ev.content)) return ev;
-        const content = { ...ev.content };
-        delete content.messages;
-        return { ...ev, content };
-      }),
-    }));
+    const out: Record<string, { label: string; pattern: string; updatedAt: number; turns: unknown[] }> = {};
+    for (const [key, s] of sessionTurns) {
+      out[key] = {
+        label: s.label,
+        pattern: s.pattern,
+        updatedAt: s.updatedAt,
+        turns: s.turns.filter((t) => t.status !== "running").map(slimTurn),
+      };
+    }
     const tmp = webTurnsPath + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(slim));
+    fs.writeFileSync(tmp, JSON.stringify(out));
     fs.renameSync(tmp, webTurnsPath);
   } catch (e) {
     console.warn("[admin] failed to save web turns:", e instanceof Error ? e.message : e);
@@ -408,14 +489,49 @@ function loadTurns(): void {
   if (!webTurnsPath) return;
   try {
     const raw = JSON.parse(fs.readFileSync(webTurnsPath, "utf8"));
-    if (!Array.isArray(raw)) return;
-    // "running" turns were interrupted by the restart — drop them.
-    const restored = raw.filter((t: TurnRecord) => t && t.status !== "running");
-    turns.length = 0;
-    turns.push(...restored.slice(-MAX_TURNS_KEPT));
-    if (turns.length) console.log(`[admin] restored ${turns.length} web chat turn(s) from disk`);
+    // v1 was a bare array of turns for the single implicit `web:chat`
+    // session; v2 is a map of sessions. Migrate transparently.
+    const entries: [string, unknown][] = Array.isArray(raw)
+      ? [[WEB_KEY, { label: "", pattern: "", updatedAt: 0, turns: raw }]]
+      : raw && typeof raw === "object"
+        ? Object.entries(raw)
+        : [];
+    for (const [key, val] of entries) {
+      const v = val as Partial<WebSession>;
+      const turns = Array.isArray(v?.turns)
+        ? v.turns.filter((t: TurnRecord) => t && t.status !== "running").slice(-MAX_TURNS_KEPT)
+        : [];
+      if (!turns.length && !v?.label) continue;
+      sessionTurns.set(String(key), {
+        label: typeof v?.label === "string" ? v.label : "",
+        pattern: typeof v?.pattern === "string" ? v.pattern : "",
+        updatedAt: Number(v?.updatedAt) || (turns.at(-1)?.endedAt ?? turns.at(-1)?.startedAt) || 0,
+        turns,
+      });
+    }
+    if (sessionTurns.size) console.log(`[admin] restored ${sessionTurns.size} web chat session(s) from disk`);
   } catch {
     // no persisted history yet
+  }
+}
+
+function newSessionKey(): string {
+  return `web:${randomUUID().slice(0, 8)}`;
+}
+
+function sessionList() {
+  return [...sessionTurns.entries()]
+    .map(([key, s]) => ({ key, label: s.label, pattern: s.pattern, updatedAt: s.updatedAt, turns: s.turns.length }))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/** Drop the least recently active sessions past the cap (and their trees). */
+function pruneSessions(agent: Agent | undefined): void {
+  if (sessionTurns.size <= MAX_SESSIONS_KEPT) return;
+  const keys = sessionList().map((s) => s.key).filter((k) => k !== activeSession);
+  for (const key of keys.slice(MAX_SESSIONS_KEPT)) {
+    sessionTurns.delete(key);
+    agent?.clear(key);
   }
 }
 
@@ -472,21 +588,31 @@ function sanitizeEvent(e: { kind?: string; branch_path?: string; iteration?: num
   };
 }
 
-function enqueueChat(agent: Agent, content: unknown, displayText: string): { turnId: string; queued: boolean } {
+function enqueueChat(agent: Agent, key: string, content: unknown, displayText: string): { turnId: string; queued: boolean } {
   const turnId = randomUUID();
   pendingTurns++;
   // "queued" = another turn is running OR ahead in the queue, so the UI
   // shows a pending bubble until this turn's turn_start arrives.
   const queued = activeTurns > 0 || pendingTurns > 1;
   webQueue = webQueue
-    .then(() => runTurn(agent, turnId, content, displayText))
+    .then(() => runTurn(agent, key, turnId, content, displayText))
     .catch((err) => console.error("[web-chat]", err));
   return { turnId, queued };
 }
 
-async function runTurn(agent: Agent, turnId: string, content: unknown, displayText: string): Promise<void> {
+async function runTurn(agent: Agent, key: string, turnId: string, content: unknown, displayText: string): Promise<void> {
   pendingTurns--;
   activeTurns++;
+  const session = sessionTurns.get(key);
+  if (!session) {
+    console.warn(`[web-chat] dropped turn for unknown session ${key}`);
+    activeTurns--;
+    return;
+  }
+  if (!session.label && displayText) session.label = displayText.slice(0, 60);
+  // Stamp the tree this session is actually running under (the pattern is
+  // global, but a session may have been created before a switch).
+  session.pattern = getSelectedPattern();
   const record: TurnRecord = {
     turnId,
     input: displayText,
@@ -497,9 +623,9 @@ async function runTurn(agent: Agent, turnId: string, content: unknown, displayTe
     output: null,
     events: [],
   };
-  turns.push(record);
-  while (turns.length > MAX_TURNS_KEPT) turns.shift();
-  broadcast({ type: "turn_start", turnId, input: displayText, ts: record.startedAt });
+  session.turns.push(record);
+  while (session.turns.length > MAX_TURNS_KEPT) session.turns.shift();
+  broadcast({ type: "turn_start", turnId, session: key, input: displayText, ts: record.startedAt });
 
   const onEvent = (e: unknown) => {
     const raw = e as {
@@ -528,12 +654,16 @@ async function runTurn(agent: Agent, turnId: string, content: unknown, displayTe
   };
 
   try {
-    // First message of the conversation: grow the tree (pauses at .human()).
-    if (!agent.hasContinuation(WEB_KEY)) {
-      await agent.run(WEB_KEY, "", () => {}, { onEvent });
+    // First message of the conversation: grow trunk-style trees to their
+    // first .human(). Input-driven app trees (they declare `input`) consume
+    // the message directly, so they get no grow pass. Explicit session
+    // selection guarantees this only ever runs for a session the user chose
+    // — never automatically after a restart.
+    if (!agent.hasContinuation(key) && !(await agent.consumesInputDirectly())) {
+      await agent.run(key, "", () => {}, { onEvent });
     }
     const res = await agent.run(
-      WEB_KEY,
+      key,
       content,
       (value) => {
         // Trees emit { text } objects; the chat shows the text, not the JSON.
@@ -561,6 +691,7 @@ async function runTurn(agent: Agent, turnId: string, content: unknown, displayTe
   } finally {
     activeTurns--;
     record.endedAt = Date.now();
+    session.updatedAt = record.endedAt;
     broadcast({
       type: "turn_end",
       turnId,
@@ -1092,6 +1223,9 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   header nav { margin-left: auto; }
   header nav a { color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 600; }
   #pattern-sel { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; padding: 3px 6px; }
+  #session-bar { display: flex; gap: 8px; align-items: center; padding: 8px 16px; background: #263449; border-bottom: 1px solid var(--border); font-size: 13px; }
+  #session-bar select { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; padding: 4px 8px; max-width: 340px; }
+  #input:disabled, #send-btn:disabled, #mic-btn:disabled, #file-btn:disabled { opacity: 0.4; }
   main { flex: 1; overflow-y: auto; padding: 16px; }
   .inner { max-width: 860px; margin: 0 auto; }
   .empty { color: var(--muted); text-align: center; margin-top: 18vh; font-size: 15px; }
@@ -1214,11 +1348,17 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
 <header>
   <h1>grandpa-bob</h1>
   <span class="sub">${sttLabel}</span>
-  <select id="pattern-sel" title="tree pattern to run (patterns/*.mjs)"></select>
+  <select id="pattern-sel" title="tree to run (patterns/*.mjs or app/*/tree.mjs)"></select>
   <button id="tree-btn" title="show the structure of the active tree">tree</button>
   <button id="internals-btn" title="show runtime bookkeeping steps (record, scope)">internals</button>
   <nav><a href="/settings">settings</a></nav>
 </header>
+<div id="session-bar" hidden>
+  <span>Select a session to resume:</span>
+  <select id="session-sel"></select>
+  <button id="session-resume">resume</button>
+  <button id="session-new" class="secondary">new chat</button>
+</div>
 <main id="main"><div class="inner" id="conversation"></div></main>
 <footer>
   <div class="input-row">
@@ -1699,6 +1839,7 @@ function addPending(turnId, text) {
 }
 
 async function sendText(text) {
+  if (!sessionActive) { toast("select or start a session first", true); return; }
   try {
     const r = await fetch("/api/chat", {
       method: "POST",
@@ -2199,22 +2340,91 @@ function connect() {
     else if (msg.type === "event") { addStep(msg.turnId, msg.event); treeOnEvent(msg.event); }
     else if (msg.type === "emit") { emitToTurn(msg.turnId, msg.text); }
     else if (msg.type === "turn_end") { endTurn(msg.turnId, msg.status, msg.error, msg.output); treeOnTurnEnd(); }
-    else if (msg.type === "cleared") { conv.innerHTML = ""; blocks.clear(); showEmpty(); treeMemory.clear(); for (const btn of treeMemBtns.values()) btn.textContent = "(no value)"; }
+    else if (msg.type === "cleared") {
+      conv.innerHTML = ""; blocks.clear(); showEmpty(); treeMemory.clear(); for (const btn of treeMemBtns.values()) btn.textContent = "(no value)";
+      // Re-check whether a session is still active (deleting the active
+      // one drops us back to the picker).
+      refreshSessionOptions().then((d) => setSessionUi(!!d.active)).catch(() => setSessionUi(false));
+    }
   };
 }
 
-// ---- history on load ----
+// ---- history + session selection on load ----
+// A restart never auto-resumes: the server reports active=null and the
+// session bar stays up until "resume" or "new chat" is clicked.
+let sessionActive = false;
+
+function renderTurns(list) {
+  for (const t of list || []) {
+    startTurn(t.turnId, t.input);
+    for (const ev of t.events || []) addStep(t.turnId, ev);
+    endTurn(t.turnId, t.status, t.error, t.output);
+  }
+}
+
+function setSessionUi(active) {
+  sessionActive = active;
+  $("session-bar").hidden = active;
+  $("input").disabled = !active;
+  $("send-btn").disabled = !active;
+  $("mic-btn").disabled = !active;
+  $("file-btn").disabled = !active;
+  $("input").placeholder = active ? "type a message\\u2026" : "select or start a session above";
+}
+
+async function refreshSessionOptions() {
+  const r = await fetch("/api/session");
+  const d = await r.json();
+  const sel = $("session-sel");
+  sel.innerHTML = "";
+  for (const s of d.sessions || []) {
+    const o = document.createElement("option");
+    o.value = s.key;
+    const when = s.updatedAt ? new Date(s.updatedAt).toLocaleString() : "";
+    const parts = [(s.label || "untitled")];
+    if (s.pattern) parts.push("[" + s.pattern + "]");
+    if (when) parts.push(when);
+    parts.push(s.turns + " turn" + (s.turns === 1 ? "" : "s"));
+    o.textContent = parts.join(" \\u00b7 ");
+    sel.appendChild(o);
+  }
+  return d;
+}
+
 async function loadHistory() {
   try {
-    const r = await fetch("/api/turns");
-    const d = await r.json();
-    for (const t of d.turns || []) {
-      startTurn(t.turnId, t.input);
-      for (const ev of t.events || []) addStep(t.turnId, ev);
-      endTurn(t.turnId, t.status, t.error, t.output);
-    }
-  } catch { /* server restarted mid-load, etc. */ }
+    const d = await refreshSessionOptions();
+    if (d.active) renderTurns(d.turns);
+    setSessionUi(!!d.active);
+  } catch {
+    setSessionUi(false); // server unreachable — input stays locked
+  }
 }
+
+async function chooseSession(body) {
+  try {
+    const r = await fetch("/api/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(d.error || "session failed", true); return; }
+    conv.innerHTML = "";
+    blocks.clear();
+    showEmpty();
+    renderTurns(d.turns);
+    setSessionUi(true);
+    treeLoadedFor = null;
+    treeVisited.clear();
+    treeActive = null;
+    if (treePanel.classList.contains("open")) loadTreePanel(true);
+  } catch (e) {
+    toast("session failed: " + e.message, true);
+  }
+}
+$("session-resume").onclick = () => { const k = $("session-sel").value; if (k) chooseSession({ key: k }); };
+$("session-new").onclick = () => chooseSession({ new: true });
 
 showEmpty();
 loadHistory();
@@ -2227,12 +2437,23 @@ async function loadPatternSelect() {
     const d = await r.json();
     const sel = document.getElementById("pattern-sel");
     sel.innerHTML = "";
+    // Patterns and app trees, grouped under optgroup headings.
+    const groups = new Map();
     for (const p of d.patterns || []) {
+      const label = p.group === "app" ? "apps" : "patterns";
+      let g = groups.get(label);
+      if (!g) {
+        g = document.createElement("optgroup");
+        g.label = label;
+        sel.appendChild(g);
+        groups.set(label, g);
+      }
       const o = document.createElement("option");
       o.value = p.name;
       o.textContent = p.name;
+      if (p.description) o.title = p.description;
       if (p.name === d.current) o.selected = true;
-      sel.appendChild(o);
+      g.appendChild(o);
     }
     if (!d.patterns || !d.patterns.length) {
       sel.appendChild(new Option("(no patterns)", "", false, false));
@@ -2304,6 +2525,18 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
   // polls /api/turns).
   webTurnsPath = path.resolve(config.workspaceDir, "logs", "web-turns.json");
   loadTurns();
+  // Restore history from disk but never re-arm a session automatically:
+  // activeSession starts null so the chat page demands an explicit pick
+  // after a restart. Only a true first boot (no sessions at all) opens a
+  // fresh one immediately.
+  if (sessionTurns.size === 0) {
+    const key = newSessionKey();
+    sessionTurns.set(key, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
+    activeSession = key;
+    saveTurns();
+  } else {
+    console.log(`[admin] ${sessionTurns.size} web session(s) on disk awaiting explicit selection`);
+  }
 
   // Keep SSE connections alive through proxies/idle timeouts.
   const heartbeat = setInterval(() => {
@@ -2372,8 +2605,71 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       }
 
       if (req.method === "GET" && url.pathname === "/api/turns") {
+        const turns = activeSession ? sessionTurns.get(activeSession)?.turns ?? [] : [];
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ turns }));
+        res.end(JSON.stringify({ turns, session: activeSession }));
+        return;
+      }
+
+      // --- web sessions ---
+      // Nothing resumes automatically after a restart: until the user
+      // picks a session here (or starts a new one), /api/chat is refused
+      // and no stored checkpoint is touched.
+      if (req.method === "GET" && url.pathname === "/api/session") {
+        const active = activeSession ? sessionTurns.get(activeSession) : null;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          active: activeSession,
+          sessions: sessionList(),
+          turns: active ? active.turns.map(slimTurn) : null,
+        }));
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/session") {
+        const body = await readBody(req);
+        let sel: { key?: unknown; new?: unknown; delete?: unknown };
+        try { sel = JSON.parse(body); } catch { res.writeHead(400); res.end('{"error":"invalid JSON body"}'); return; }
+
+        if (sel.new === true) {
+          const key = newSessionKey();
+          sessionTurns.set(key, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
+          pruneSessions(agent);
+          activeSession = key;
+          webMemoryValues.clear();
+          webMemoryPaths.clear();
+          saveTurns();
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, active: key, turns: [] }));
+          return;
+        }
+        if (typeof sel.delete === "string") {
+          if (!sessionTurns.has(sel.delete)) { res.writeHead(404); res.end('{"error":"no such session"}'); return; }
+          sessionTurns.delete(sel.delete);
+          agent?.clear(sel.delete);
+          if (activeSession === sel.delete) {
+            activeSession = null;
+            broadcast({ type: "cleared" });
+          }
+          saveTurns();
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, active: activeSession, sessions: sessionList() }));
+          return;
+        }
+        if (typeof sel.key === "string") {
+          const s = sessionTurns.get(sel.key);
+          if (!s) { res.writeHead(404); res.end('{"error":"no such session"}'); return; }
+          activeSession = sel.key;
+          // Memory slots belong to the selected tree; the panel must not
+          // show the previous session's values until this one logs again.
+          webMemoryValues.clear();
+          webMemoryPaths.clear();
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, active: sel.key, turns: s.turns.map(slimTurn) }));
+          return;
+        }
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end('{"error":"key, new, or delete required"}');
         return;
       }
 
@@ -2381,6 +2677,11 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         if (!agent) {
           res.writeHead(503, { "content-type": "application/json" });
           res.end('{"error":"agent not available"}');
+          return;
+        }
+        if (!activeSession) {
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end('{"error":"no session selected — resume one or start a new chat"}');
           return;
         }
         const body = await readBody(req);
@@ -2403,7 +2704,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           return;
         }
         const message = text.trim();
-        const { turnId, queued } = enqueueChat(agent, message, message);
+        const { turnId, queued } = enqueueChat(agent, activeSession, message, message);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, turnId, queued }));
         return;
@@ -2413,6 +2714,11 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         if (!agent) {
           res.writeHead(503, { "content-type": "application/json" });
           res.end('{"error":"agent not available"}');
+          return;
+        }
+        if (!activeSession) {
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end('{"error":"no session selected — resume one or start a new chat"}');
           return;
         }
         const contentType = req.headers["content-type"] || "";
@@ -2448,7 +2754,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         const caption = typeof parts.caption === "string" ? parts.caption.trim() : "";
         const content = attachmentPrompt(attachment, caption);
         const display = caption ? `${caption}\n[attached: ${attachment.filename}]` : `[attached: ${attachment.filename}]`;
-        const { turnId, queued } = enqueueChat(agent, content, display);
+        const { turnId, queued } = enqueueChat(agent, activeSession, content, display);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, turnId, queued, attachment }));
         return;
@@ -2555,14 +2861,18 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       }
 
       if (req.method === "POST" && url.pathname === "/api/clear") {
-        agent?.clear(WEB_KEY);
+        // Wipe the ACTIVE session's history + tree, but stay on it (fresh
+        // start under the same key). Session removal lives in /api/session.
+        if (activeSession) {
+          agent?.clear(activeSession);
+          sessionTurns.set(activeSession, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
+          saveTurns();
+        }
         webMemoryValues.clear();
         webMemoryPaths.clear();
-        turns.length = 0;
-        saveTurns();
         broadcast({ type: "cleared" });
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true }));
+        res.end(JSON.stringify({ ok: true, active: activeSession }));
         return;
       }
 
@@ -2684,7 +2994,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       // the pattern (and clears the web conversation — the tree pause state
       // is pattern-specific, so it can't be resumed under a different tree).
       if (req.method === "GET" && url.pathname === "/api/pattern") {
-        const patterns = await listPatterns(config.workspaceDir);
+        const patterns = await listTreeSources(config.workspaceDir);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ current: getSelectedPattern(), patterns }));
         return;
@@ -2695,7 +3005,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         let name: unknown;
         try { name = JSON.parse(body).name; } catch { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid JSON body"}'); return; }
         if (typeof name !== "string" || !name) { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"name is required"}'); return; }
-        const patterns = await listPatterns(config.workspaceDir);
+        const patterns = await listTreeSources(config.workspaceDir);
         if (!patterns.some((p) => p.name === name)) {
           res.writeHead(404, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: `pattern not found: ${name}` }));
@@ -2703,10 +3013,17 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         }
         setSelectedPattern(name);
         try { await writeEnv(config.envPath, { TREE_PATTERN: name }); } catch { /* persist best-effort */ }
-        agent?.clear(WEB_KEY);
+        // Pause state is pattern-specific: no stored continuation can be
+        // resumed under a different tree. The active session is wiped (and
+        // the page told via "cleared"); every other session's stale token is
+        // dropped too — its history stays, and the next message under it
+        // grows a fresh tree.
+        if (activeSession) {
+          sessionTurns.set(activeSession, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
+        }
+        for (const key of sessionTurns.keys()) agent?.clear(key);
         webMemoryValues.clear();
         webMemoryPaths.clear();
-        turns.length = 0;
         saveTurns();
         broadcast({ type: "cleared" });
         res.writeHead(200, { "content-type": "application/json" });

@@ -1,13 +1,17 @@
 /**
- * Web chat turn persistence — <workspace>/logs/web-turns.json.
+ * Web chat session persistence + explicit selection — logs/web-turns.json.
  *
- *   1. A completed turn is persisted after turn_end (mock agent, no LLM).
- *   2. A fresh admin "boot" (cache-busted re-import = simulated restart)
- *      restores the history via /api/turns and drops interrupted "running"
- *      turns.
- *   3. POST /api/clear empties the file.
+ *   1. First boot (no disk state) auto-opens a fresh session; a completed
+ *      turn persists under its `web:<id>` key with label, and prompt
+ *      messages are stripped from the on-disk copy.
+ *   2. Restart: NOTHING is active. /api/chat is refused (409) until the
+ *      user explicitly resumes a session; resume restores its history
+ *      (interrupted "running" turns dropped) and enables chat.
+ *   3. "New chat" opens a second, empty session; the old history survives.
+ *   4. clear wipes the active session's history but keeps it active.
+ *   5. delete removes a session from disk.
  *
- * Run: npm run test:webturns
+ * Mock model handler, no network. Run: npm run test:webturns
  */
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -56,9 +60,18 @@ async function api(port: number, method: string, p: string, body?: unknown) {
   return { status: res.status, json: (await res.json()) as any };
 }
 
-// ── 1. first boot: one turn runs and is persisted ──
+async function waitDone(port: number, turnId: string) {
+  for (let i = 0; i < 100; i++) {
+    const s = await api(port, "GET", "/api/session");
+    const t = (s.json.turns || []).find((x: any) => x.turnId === turnId);
+    if (t && t.status !== "running") return t;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error("turn never finished");
+}
+
 let restarts = 0;
-const boot = async () => {
+async function boot() {
   const mod = await import(`../src/admin.ts${restarts++ ? `?restart=${restarts}` : ""}`);
   const port = await freePort();
   const server = mod.startAdmin({ port, workspaceDir: ws, agent: mockAgent() });
@@ -66,63 +79,110 @@ const boot = async () => {
   return { port, server };
 }
 
+// ── 1. first boot: auto new session, chat works, v2 store persisted ──
+let firstKey = "";
 {
   const { port, server } = await boot();
+  const s0 = await api(port, "GET", "/api/session");
+  assert.ok(s0.json.active, "first boot opens a session automatically");
+  firstKey = s0.json.active;
+  assert.match(firstKey, /^web:/);
+
   const { status, json } = await api(port, "POST", "/api/chat", { text: "hi" });
   assert.equal(status, 200);
-  const turnId = json.turnId;
-
-  let turns: any[] = [];
-  for (let i = 0; i < 50; i++) {
-    turns = (await api(port, "GET", "/api/turns")).json.turns;
-    if (turns.find((t) => t.turnId === turnId)?.status !== "running") break;
-    await new Promise((r) => setTimeout(r, 20));
-  }
-  assert.equal(turns.length, 1, "one turn recorded");
-  assert.equal(turns[0].status, "done");
-  assert.equal(turns[0].input, "hi");
-  assert.equal(turns[0].output, "echo:hi");
+  const done = await waitDone(port, json.turnId);
+  assert.equal(done.status, "done");
+  assert.equal(done.output, "echo:hi");
 
   const onDisk = JSON.parse(await fs.readFile(turnsFile, "utf8"));
-  assert.equal(onDisk.length, 1, "turn persisted to web-turns.json");
-  assert.equal(onDisk[0].output, "echo:hi");
+  assert.equal(typeof onDisk, "object");
+  assert.ok(!Array.isArray(onDisk), "v2 store is a per-session map");
+  const sess = onDisk[firstKey];
+  assert.equal(sess.turns.length, 1);
+  assert.equal(sess.label, "hi", "label derived from first message");
 
-  // Live view keeps the raw prompt for the open session; the persisted
-  // copy must not duplicate it (grandma-kat.db is the audit trail).
-  const liveEvents = (await api(port, "GET", "/api/turns")).json.turns[0].events;
+  const liveEvents = sess.turns[0].events;
+  const onDiskStr = JSON.stringify(onDisk);
+  const turns = (await api(port, "GET", "/api/turns")).json.turns;
   assert.ok(
-    JSON.stringify(liveEvents).includes("SECRET-PROMPT"),
+    JSON.stringify(turns[0].events).includes("SECRET-PROMPT"),
     "live /api/turns keeps raw prompt messages",
   );
-  assert.ok(
-    !JSON.stringify(onDisk[0].events).includes("SECRET-PROMPT"),
-    "persisted events have prompt messages stripped",
-  );
-  assert.equal(onDisk[0].events[0].kind, "llm_call", "event metadata kept");
-  assert.equal(onDisk[0].events[0].content.model, "cheap");
+  assert.ok(!onDiskStr.includes("SECRET-PROMPT"), "persisted copy strips prompt messages");
+  assert.equal(liveEvents[0].kind, "llm_call", "event metadata kept");
   server.close();
-  console.log("1. completed turn written to web-turns.json");
+  console.log("1. first boot: auto-session, turn persisted (prompts stripped)");
+}
 
-  // ── 2. restart restores history, drops interrupted turns ──
-  onDisk.push({
+// ── 2. restart: nothing active; explicit resume required and restores ──
+{
+  // inject a "running" ghost turn (simulates a crash mid-turn)
+  const onDisk = JSON.parse(await fs.readFile(turnsFile, "utf8"));
+  onDisk[firstKey].turns.push({
     turnId: "ghost", input: "interrupted", startedAt: Date.now(),
     endedAt: null, status: "running", error: null, output: null, events: [],
   });
   await fs.writeFile(turnsFile, JSON.stringify(onDisk));
 
-  const { port: port2, server: server2 } = await boot(); // fresh module state
-  const restored = (await api(port2, "GET", "/api/turns")).json.turns;
-  assert.equal(restored.length, 1, "only completed turns restored");
-  assert.equal(restored[0].input, "hi");
-  assert.ok(!restored.find((t: any) => t.turnId === "ghost"), "running turn dropped");
-  console.log("2. restart restored history, dropped interrupted turn");
+  const { port, server } = await boot(); // fresh module state = restart
+  const s1 = await api(port, "GET", "/api/session");
+  assert.equal(s1.json.active, null, "no session is armed automatically after restart");
+  assert.equal(s1.json.sessions.length, 1);
+  assert.equal(s1.json.sessions[0].key, firstKey);
+  assert.equal(s1.json.sessions[0].pattern, "trunk", "session records its tree name");
 
-  // ── 3. clear empties the persisted file ──
-  await api(port2, "POST", "/api/clear");
-  assert.deepEqual(JSON.parse(await fs.readFile(turnsFile, "utf8")), []);
-  assert.equal((await api(port2, "GET", "/api/turns")).json.turns.length, 0);
-  server2.close();
-  console.log("3. /api/clear emptied web-turns.json");
+  const refused = await api(port, "POST", "/api/chat", { text: "not yet" });
+  assert.equal(refused.status, 409, "chat refused until a session is selected");
+
+  const sel = await api(port, "POST", "/api/session", { key: firstKey });
+  assert.equal(sel.status, 200);
+  assert.equal(sel.json.active, firstKey);
+  assert.equal(sel.json.turns.length, 1, "interrupted turn dropped, history restored");
+  assert.equal(sel.json.turns[0].input, "hi");
+
+  const ok = await api(port, "POST", "/api/chat", { text: "again" });
+  assert.equal(ok.status, 200, "chat works after explicit resume");
+  await waitDone(port, ok.json.turnId);
+  server.close();
+  console.log("2. restart: refuses chat, explicit resume restores history");
+}
+
+// ── 3. new chat: second session, first one's history intact ──
+{
+  const { port, server } = await boot();
+  const s = await api(port, "GET", "/api/session");
+  assert.equal(s.json.sessions.length, 1);
+  const n = await api(port, "POST", "/api/session", { new: true });
+  assert.equal(n.status, 200);
+  assert.notEqual(n.json.active, firstKey);
+  assert.deepEqual(n.json.turns, []);
+  const { json } = await api(port, "POST", "/api/chat", { text: "brand new" });
+  await waitDone(port, json.turnId);
+  const list = (await api(port, "GET", "/api/session")).json.sessions;
+  assert.equal(list.length, 2, "both sessions recorded");
+  const old = list.find((x: any) => x.key === firstKey);
+  assert.ok(old.turns >= 2, "old session history untouched");
+  server.close();
+  console.log("3. new chat: independent session, history preserved");
+
+  // ── 4. clear wipes ACTIVE session only ──
+  const { port: p4, server: srv4 } = await boot();
+  await api(p4, "POST", "/api/session", { key: firstKey });
+  const c = await api(p4, "POST", "/api/clear");
+  assert.equal(c.json.active, firstKey, "clear keeps the session active");
+  const after = await api(p4, "GET", "/api/session");
+  assert.equal(after.json.turns.length, 0, "active history cleared");
+  const other = after.json.sessions.find((x: any) => x.key !== firstKey);
+  assert.ok(other.turns > 0, "other sessions unaffected");
+
+  // ── 5. delete removes from disk ──
+  const del = await api(p4, "POST", "/api/session", { delete: other.key });
+  assert.equal(del.status, 200);
+  assert.ok(!(await api(p4, "GET", "/api/session")).json.sessions.find((x: any) => x.key === other.key));
+  const disk = JSON.parse(await fs.readFile(turnsFile, "utf8"));
+  assert.ok(!(other.key in disk), "deleted session gone from web-turns.json");
+  srv4.close();
+  console.log("4+5. clear scoped to active; delete purges from disk");
 }
 
 console.log("web-turns-test: all assertions passed");

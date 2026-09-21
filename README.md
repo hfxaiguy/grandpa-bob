@@ -261,10 +261,12 @@ The admin server (port `ADMIN_PORT`, default 8080) serves two pages:
   restart, log tails, workspace git sync/commit, tree-pattern editor, and the
   workspace file browser.
 
-The chat page runs the agent under a single `web:chat` conversation key, serialized
-so turns never interleave; Telegram topics are unaffected. Chat history is persisted
-to `<workspace>/logs/web-turns.json` and reloaded on boot, so the transcript and the
-resumable tree both survive a bot restart.
+The chat page runs the agent under `web:<id>` conversation keys, serialized
+so turns never interleave; Telegram topics are unaffected. Chat histories
+persist to `<workspace>/logs/web-turns.json` and survive bot restarts —
+but **nothing auto-resumes**: after a restart the page shows a session bar
+and the next message goes to the stored tree only after you explicitly
+pick *resume* (or start a *new chat*). Telegram keeps auto-resuming.
 
 ## Git integration (summary)
 

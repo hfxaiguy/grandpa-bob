@@ -54,6 +54,9 @@ assert.ok(checked >= 2, "expected scripts on both pages");
 const chatHtml = await (await fetch(`http://127.0.0.1:${port}/`)).text();
 assert.match(chatHtml, /<select id="pattern-sel"/, "pattern select present");
 assert.match(chatHtml, /loadPatternSelect\(\);/, "dropdown is populated on load");
+assert.match(chatHtml, /<div id="session-bar"/, "session picker present");
+assert.match(chatHtml, /id="session-resume"/, "resume button present");
+assert.match(chatHtml, /id="session-new"/, "new-session button present");
 
 server.close();
 console.log("page-scripts-test: all assertions passed");
