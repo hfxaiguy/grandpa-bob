@@ -74,8 +74,10 @@ async function main(): Promise<void> {
   eventLogger.on("event", (event: KatEvent) => {
     // Filter by level: debug shows everything, info shows a subset.
     if (debugLevel === "info") {
-      const INFO_KINDS = new Set(["llm_call", "tool_call", "tool_result", "flow", "memory", "emit", "human"]);
-      if (!INFO_KINDS.has(event.kind)) return;
+      const INFO_KINDS = new Set(["llm_call", "tool_call", "tool_result", "flow", "emit", "human"]);
+      const op = (event.content as { op?: unknown } | undefined)?.op;
+      const memWrite = event.kind === "record" && (op === "memory" || op === "memoryUpdate");
+      if (!INFO_KINDS.has(event.kind) && !memWrite) return;
     }
     const lines = formatEvent(event);
     for (const line of lines) {

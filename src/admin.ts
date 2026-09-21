@@ -374,6 +374,37 @@ interface TurnRecord {
 }
 
 const turns: TurnRecord[] = [];
+// Persisted copy of `turns` so the chat history survives bot restarts.
+// Set inside startAdmin (config isn't available at module scope).
+let webTurnsPath = "";
+
+function saveTurns(): void {
+  if (!webTurnsPath) return;
+  try {
+    fs.mkdirSync(path.dirname(webTurnsPath), { recursive: true });
+    const tmp = webTurnsPath + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(turns));
+    fs.renameSync(tmp, webTurnsPath);
+  } catch (e) {
+    console.warn("[admin] failed to save web turns:", e instanceof Error ? e.message : e);
+  }
+}
+
+function loadTurns(): void {
+  if (!webTurnsPath) return;
+  try {
+    const raw = JSON.parse(fs.readFileSync(webTurnsPath, "utf8"));
+    if (!Array.isArray(raw)) return;
+    // "running" turns were interrupted by the restart — drop them.
+    const restored = raw.filter((t: TurnRecord) => t && t.status !== "running");
+    turns.length = 0;
+    turns.push(...restored.slice(-MAX_TURNS_KEPT));
+    if (turns.length) console.log(`[admin] restored ${turns.length} web chat turn(s) from disk`);
+  } catch {
+    // no persisted history yet
+  }
+}
+
 const sseClients = new Set<http.ServerResponse>();
 let webQueue: Promise<void> = Promise.resolve();
 let activeTurns = 0;
@@ -458,9 +489,14 @@ async function runTurn(agent: Agent, turnId: string, content: unknown, displayTe
   const onEvent = (e: unknown) => {
     const raw = e as {
       run_id?: string; scope_id?: number | null; branch_path?: string; kind?: string;
-      content?: { child?: unknown; value?: unknown };
+      content?: { child?: unknown; value?: unknown; op?: unknown };
     };
-    if (raw?.kind === "memory" && raw.scope_id != null) {
+    // Memory writes are record events with op memory/memoryUpdate; older
+    // runs logged them as their own "memory" kind.
+    const memWrite =
+      raw?.kind === "memory" ||
+      (raw?.kind === "record" && (raw.content?.op === "memory" || raw.content?.op === "memoryUpdate"));
+    if (memWrite && raw.scope_id != null) {
       const child = typeof raw.content?.child === "string" ? raw.content.child : "";
       const slotKey = `${raw.scope_id}/${child}`;
       if (raw.content && "value" in raw.content) webMemoryValues.set(slotKey, raw.content.value);
@@ -513,6 +549,7 @@ async function runTurn(agent: Agent, turnId: string, content: unknown, displayTe
       output: record.output,
       ts: record.endedAt,
     });
+    saveTurns();
   }
 }
 
@@ -1104,6 +1141,9 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   .toast.show { opacity: 1; }
   .toast.err { background: var(--red); }
   #tree-btn { background: #475569; font-size: 12px; padding: 4px 10px; }
+  #internals-btn { background: #475569; font-size: 12px; padding: 4px 10px; }
+  #internals-btn.on { background: #2563eb; color: #fff; }
+  body:not(.show-internals) .step.k-internals { display: none; }
   #tree-panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(430px, 92vw); background: #0b1224; border-left: 1px solid var(--border); transform: translateX(105%); transition: transform 0.22s ease; z-index: 21; display: flex; flex-direction: column; }
   #tree-panel.open { transform: none; box-shadow: 0 0 40px rgba(0,0,0,0.5); }
   .tp-head-row { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
@@ -1152,6 +1192,7 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   <span class="sub">${sttLabel}</span>
   <select id="pattern-sel" title="tree pattern to run (patterns/*.mjs)"></select>
   <button id="tree-btn" title="show the structure of the active tree">tree</button>
+  <button id="internals-btn" title="show runtime bookkeeping steps (record, scope)">internals</button>
   <nav><a href="/settings">settings</a></nav>
 </header>
 <main id="main"><div class="inner" id="conversation"></div></main>
@@ -1263,9 +1304,13 @@ function describeEvent(ev) {
     case "emit":
       return { badge: "emit", cls: "k-emit", text: jshort(c.value, 200) };
     case "record":
-      return { badge: "record", cls: "k-dim", text: (c.child ?? "?") + " = " + jshort(c.value, 80) };
+      // Memory writes are record rows with an op flag; they stay visible.
+      if (c.op === "memory" || c.op === "memoryUpdate") {
+        return { badge: "memory", cls: "k-memory", text: (c.child ?? "?") + " = " + jshort(c.value, 100) };
+      }
+      return { badge: "record", cls: "k-dim", internals: true, text: (c.child ?? "?") + " = " + jshort(c.value, 80) };
     case "scope_init":
-      return { badge: "scope", cls: "k-dim", text: "#" + c.scopeId + (c.parentScopeId != null ? " (parent #" + c.parentScopeId + ")" : "") };
+      return { badge: "scope", cls: "k-dim", internals: true, text: "#" + c.scopeId + (c.parentScopeId != null ? " (parent #" + c.parentScopeId + ")" : "") };
     case "map":
       return { badge: "map", cls: "k-dim", text: (c.child ?? "?") + " \\u2014 " + c.count + " item(s)" };
     case "map_item":
@@ -1366,7 +1411,7 @@ function startTurn(turnId, input) {
   if (pending) pending.replaceWith(turn);
   else conv.appendChild(turn);
 
-  const block = { turn, list, spin, lab, cnt, count: 0 };
+  const block = { turn, list, spin, lab, cnt };
   blocks.set(turnId, block);
   maybeScroll(true);
   return block;
@@ -1400,9 +1445,9 @@ function addStep(turnId, ev) {
   pre.textContent = JSON.stringify(ev.content, null, 2);
   det.append(sum, pre);
   li.appendChild(det);
+  if (d.internals) li.classList.add("k-internals");
   block.list.appendChild(li);
-  block.count++;
-  block.cnt.textContent = block.count + (block.count === 1 ? " step" : " steps");
+  updateCount(block);
   maybeScroll(false);
 }
 
@@ -1694,6 +1739,26 @@ function setTreePanelOpen(open) {
 }
 $("tree-btn").onclick = () => setTreePanelOpen(!treePanel.classList.contains("open"));
 $("tree-close").onclick = () => setTreePanelOpen(false);
+
+// Runtime bookkeeping rows (record, scope_init) are for debugging the tree,
+// not for reading a conversation: hidden by default, revealed on demand.
+const INTERNALS_KEY = "gb_show_internals";
+function updateCount(block) {
+  const show = document.body.classList.contains("show-internals");
+  const n = block.list.querySelectorAll(show ? "li.step" : "li.step:not(.k-internals)").length;
+  block.cnt.textContent = n + (n === 1 ? " step" : " steps");
+}
+function setInternals(on) {
+  document.body.classList.toggle("show-internals", on);
+  $("internals-btn").classList.toggle("on", on);
+  for (const block of blocks.values()) updateCount(block);
+  try { localStorage.setItem(INTERNALS_KEY, on ? "1" : "0"); } catch { /* private mode */ }
+}
+$("internals-btn").onclick = () =>
+  setInternals(!document.body.classList.contains("show-internals"));
+try {
+  setInternals(localStorage.getItem(INTERNALS_KEY) === "1");
+} catch { setInternals(false); }
 try {
   if (localStorage.getItem(TREE_OPEN_KEY) !== "0") setTreePanelOpen(true);
 } catch { setTreePanelOpen(true); }
@@ -1895,7 +1960,10 @@ function treeOnEvent(ev) {
   if (!p) return;
   treeVisited.add(p);
   treeActive = p;
-  if (ev.kind === "memory") scheduleMemoryRefresh();
+  const op = (ev.content as { op?: unknown } | undefined)?.op;
+  if (ev.kind === "memory" || (ev.kind === "record" && (op === "memory" || op === "memoryUpdate"))) {
+    scheduleMemoryRefresh();
+  }
   applyTreeMarks();
 }
 function treeOnTurnStart() {
@@ -2018,6 +2086,11 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
     ? `voice: ${stt.backend} @ ${new URL(stt.backend === "sherpa" || stt.backend === "parakeet" ? stt.sherpaUrl : stt.whisperUrl).host}`
     : "voice: not configured";
   const CHAT_HTML = buildChatHtml(config, sttLabel);
+
+  // Restore the web chat history from the previous run (before any browser
+  // polls /api/turns).
+  webTurnsPath = path.resolve(config.workspaceDir, "logs", "web-turns.json");
+  loadTurns();
 
   // Keep SSE connections alive through proxies/idle timeouts.
   const heartbeat = setInterval(() => {
@@ -2273,6 +2346,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         webMemoryValues.clear();
         webMemoryPaths.clear();
         turns.length = 0;
+        saveTurns();
         broadcast({ type: "cleared" });
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
@@ -2420,6 +2494,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         webMemoryValues.clear();
         webMemoryPaths.clear();
         turns.length = 0;
+        saveTurns();
         broadcast({ type: "cleared" });
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, pattern: name }));

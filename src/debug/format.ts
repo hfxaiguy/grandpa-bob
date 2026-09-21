@@ -146,7 +146,9 @@ export function formatEvent(event: KatEvent): string[] {
   const c = event.content ?? {};
   const path = event.branch_path ? ` ${C.dim}[${event.branch_path}]${C.reset}` : "";
   const iter = event.iteration > 1 ? ` #${event.iteration}` : "";
-  return formatContent(event.kind, c, path, iter);
+  // Memory writes are record rows with an op flag; render them as memory.
+  const memWrite = event.kind === "record" && (c.op === "memory" || c.op === "memoryUpdate");
+  return formatContent(memWrite ? "memory" : event.kind, c, path, iter);
 }
 
 /**
