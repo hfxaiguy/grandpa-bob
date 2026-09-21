@@ -50,11 +50,28 @@ export class DuckdbTools {
     const connection = await instance.connect();
     try {
       const delimiter = path.extname(absolutePath).toLowerCase() === ".tsv" ? "\t" : ",";
+      const readExpr = `read_csv_auto('${sqlPath(absolutePath)}', delim = '${delimiter}')`;
       // Materialize the file before disabling DuckDB's external access. A view
       // would defer CSV reading until the user's query runs.
-      await connection.run(
-        `CREATE OR REPLACE TEMP TABLE csv AS SELECT * FROM read_csv_auto('${sqlPath(absolutePath)}', delim = '${delimiter}')`,
-      );
+      //
+      // Header sanitization: exporters sometimes embed a BOM (or stray
+      // padding) mid-header, and node-api strips leading U+FEFF from every
+      // VARCHAR it returns — so duckdb_columns() reports the clean name
+      // while the binder still demands the dirty one. Round-trips are
+      // impossible unless the stored names match the reported ones: alias
+      // such columns to their sanitized names at creation time.
+      const probe = await connection.runAndReadAll(`SELECT * FROM ${readExpr} LIMIT 0`);
+      const rawNames = probe.columnNames().map(String);
+      const cleanNames = rawNames.map((n) => n.replace(/^\uFEFF+/, "").trim());
+      const needsRename = rawNames.some((n, i) => n !== cleanNames[i]);
+      const unique = new Set(cleanNames).size === cleanNames.length;
+      const projection =
+        needsRename && unique
+          ? rawNames
+              .map((orig, i) => `"${orig.replaceAll('"', '""')}" AS "${cleanNames[i].replaceAll('"', '""')}"`)
+              .join(", ")
+          : "*";
+      await connection.run(`CREATE OR REPLACE TEMP TABLE csv AS SELECT ${projection} FROM ${readExpr}`);
       await connection.run("SET enable_external_access = false");
       const reader = await connection.runAndReadAll(statement);
       await reader.readAll();
