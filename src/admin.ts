@@ -382,8 +382,21 @@ function saveTurns(): void {
   if (!webTurnsPath) return;
   try {
     fs.mkdirSync(path.dirname(webTurnsPath), { recursive: true });
+    // Persist only what the UI needs to re-render after a restart. The
+    // live raw `messages` attached to events (full prompt + system text)
+    // are session telemetry already in grandma-kat.db — no reason to
+    // duplicate them on disk.
+    const slim = turns.map((t) => ({
+      ...t,
+      events: t.events.map((ev) => {
+        if (!ev.content || !("messages" in ev.content)) return ev;
+        const content = { ...ev.content };
+        delete content.messages;
+        return { ...ev, content };
+      }),
+    }));
     const tmp = webTurnsPath + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(turns));
+    fs.writeFileSync(tmp, JSON.stringify(slim));
     fs.renameSync(tmp, webTurnsPath);
   } catch (e) {
     console.warn("[admin] failed to save web turns:", e instanceof Error ? e.message : e);
@@ -523,7 +536,12 @@ async function runTurn(agent: Agent, turnId: string, content: unknown, displayTe
       (value) => {
         // Trees emit { text } objects; the chat shows the text, not the JSON.
         const t = emitText(value);
-        if (t) record.output = record.output ? record.output + "\n\n" + t : t;
+        if (t) {
+          record.output = record.output ? record.output + "\n\n" + t : t;
+          // Stream it now; turn_end still carries the final text, so the UI
+          // can overwrite whatever a rewound/retried branch emitted.
+          broadcast({ type: "emit", turnId, text: t });
+        }
       },
       { onEvent },
     );
@@ -1445,9 +1463,30 @@ function addStep(turnId, ev) {
   pre.textContent = JSON.stringify(ev.content, null, 2);
   det.append(sum, pre);
   li.appendChild(det);
-  if (d.internals) li.classList.add("k-internals");
+  if ((d as { internals?: boolean }).internals) li.classList.add("k-internals");
   block.list.appendChild(li);
   updateCount(block);
+  maybeScroll(false);
+}
+
+function emitToTurn(turnId, text) {
+  const block = blocks.get(turnId);
+  if (!block) return;
+  if (!block.answerBub) {
+    const ans = document.createElement("div");
+    ans.className = "msg-answer";
+    const who = document.createElement("div");
+    who.className = "who";
+    who.textContent = "bob";
+    const bub = document.createElement("div");
+    bub.className = "bubble";
+    ans.append(who, bub);
+    block.turn.appendChild(ans);
+    block.answerBub = bub;
+  }
+  block.answerBub.textContent = block.answerBub.textContent
+    ? block.answerBub.textContent + "\\n\\n" + text
+    : text;
   maybeScroll(false);
 }
 
@@ -1464,16 +1503,22 @@ function endTurn(turnId, status, error, output) {
     block.turn.appendChild(errEl);
   }
   if (output) {
-    const ans = document.createElement("div");
-    ans.className = "msg-answer";
-    const who = document.createElement("div");
-    who.className = "who";
-    who.textContent = "bob";
-    const bub = document.createElement("div");
-    bub.className = "bubble";
-    bub.textContent = output;
-    ans.append(who, bub);
-    block.turn.appendChild(ans);
+    if (block.answerBub) {
+      // The bubble streamed live; settle on the server's final text so
+      // anything a rewound branch emitted disappears again.
+      block.answerBub.textContent = output;
+    } else {
+      const ans = document.createElement("div");
+      ans.className = "msg-answer";
+      const who = document.createElement("div");
+      who.className = "who";
+      who.textContent = "bob";
+      const bub = document.createElement("div");
+      bub.className = "bubble";
+      bub.textContent = output;
+      ans.append(who, bub);
+      block.turn.appendChild(ans);
+    }
   }
   maybeScroll(true);
 }
@@ -1985,6 +2030,7 @@ function connect() {
     try { msg = JSON.parse(e.data); } catch { return; }
     if (msg.type === "turn_start") { startTurn(msg.turnId, msg.input); treeOnTurnStart(); }
     else if (msg.type === "event") { addStep(msg.turnId, msg.event); treeOnEvent(msg.event); }
+    else if (msg.type === "emit") { emitToTurn(msg.turnId, msg.text); }
     else if (msg.type === "turn_end") { endTurn(msg.turnId, msg.status, msg.error, msg.output); treeOnTurnEnd(); }
     else if (msg.type === "cleared") { conv.innerHTML = ""; blocks.clear(); showEmpty(); treeMemory.clear(); for (const btn of treeMemBtns.values()) btn.textContent = "(no value)"; }
   };

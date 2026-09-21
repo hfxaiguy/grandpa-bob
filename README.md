@@ -86,8 +86,11 @@ Tree.name("agent")
 ```
 
 - **`.human()`** pauses the tree and saves a checkpoint to SQLite. The
-  continuation token is stored per conversation. On the next message,
-  `grandma.knit()` resumes from the checkpoint with the new input.
+  continuation token is stored per conversation — and persisted to
+  `<workspace>/logs/sessions.json`, so chat sessions survive bot restarts.
+  On the next message, `grandma.knit()` resumes from the checkpoint with
+  the new input. If the active pattern's shape changed (or the checkpoint
+  is missing), the session is dropped and a fresh tree starts instead.
 - **`.emit()`** sends output to Telegram without stopping the tree. The
   bot wires `onEmit` to `ctx.reply()`.
 - **History** lives in the tree's `messages` memory slot — no external
@@ -121,7 +124,7 @@ src/
   bot.ts          grammY bot: auth gate, forum topics, text/voice/photo/file, queues
   attachments.ts  bounded upload storage under workspace/assets/inbox/
   admin.ts        web UI: chat front page (/) + settings page (/settings)
-  agent.ts        continuation storage, tree runner (grandma-kat pause/resume)
+  agent.ts        continuation storage (persisted to logs/sessions.json), tree runner (grandma-kat pause/resume)
   stt.ts          audio (Telegram voice / web upload) → ffmpeg → STT backend
   patterns/
     shared.ts     types (KatPromptRecord), memory-view accessors, history helpers
@@ -259,7 +262,9 @@ The admin server (port `ADMIN_PORT`, default 8080) serves two pages:
   workspace file browser.
 
 The chat page runs the agent under a single `web:chat` conversation key, serialized
-so turns never interleave; Telegram topics are unaffected.
+so turns never interleave; Telegram topics are unaffected. Chat history is persisted
+to `<workspace>/logs/web-turns.json` and reloaded on boot, so the transcript and the
+resumable tree both survive a bot restart.
 
 ## Git integration (summary)
 
@@ -307,7 +312,9 @@ git -C ~/grandma-workspace pull sync master
 git -C ~/grandma-workspace push sync master
 ```
 
-The `logs/` directory (grandma-kat SQLite log) is gitignored and stays local.
+The runtime state under `logs/` (`grandma-kat.db*`, `sessions.json`,
+`web-turns.json`) holds your prompts and conversation text, so `index.ts`
+gitignores it on boot — it stays local and out of the audit trail.
 
 ## FAQ
 

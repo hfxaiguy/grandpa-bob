@@ -1,4 +1,6 @@
 import path from "node:path";
+import fs from "node:fs";
+import crypto from "node:crypto";
 // @ts-ignore — grandma-kat ships no .d.ts files.
 import grandma from "grandma-kat";
 import type { ToolRegistry } from "./tools/index.js";
@@ -89,9 +91,65 @@ export async function checkLlmEntry(
 export class Agent {
   private logDb: string;
   private continuations = new Map<string, string>();
+  private sessionsPath: string;
+  private sessionPatterns = new Map<string, string>(); // key → pattern definition hash
 
   constructor(private deps: AgentDeps) {
     this.logDb = path.resolve(deps.workspace, "logs/grandma-kat.db");
+    this.sessionsPath = path.resolve(deps.workspace, "logs", "sessions.json");
+    this.loadSessions();
+  }
+
+  /**
+   * Restore conversation continuations from `<workspace>/logs/sessions.json`
+   * so chat sessions survive bot restarts. Missing or corrupt files are
+   * ignored (first run starts clean).
+   */
+  private loadSessions(): void {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.sessionsPath, "utf8")) as Record<
+        string,
+        { continuation?: unknown; pattern?: unknown } | null
+      >;
+      if (!raw || typeof raw !== "object") return;
+      for (const [key, val] of Object.entries(raw)) {
+        if (typeof val?.continuation === "string") {
+          this.continuations.set(key, val.continuation);
+          if (typeof val.pattern === "string") this.sessionPatterns.set(key, val.pattern);
+        }
+      }
+    } catch {
+      // no persisted sessions yet
+    }
+  }
+
+  /** Atomically persist the continuation map (write tmp, rename). */
+  private saveSessions(): void {
+    const out: Record<string, { continuation: string; pattern: string | null }> = {};
+    for (const [key, continuation] of this.continuations) {
+      out[key] = { continuation, pattern: this.sessionPatterns.get(key) ?? null };
+    }
+    try {
+      fs.mkdirSync(path.dirname(this.sessionsPath), { recursive: true });
+      const tmp = this.sessionsPath + ".tmp";
+      fs.writeFileSync(tmp, JSON.stringify(out, null, 2));
+      fs.renameSync(tmp, this.sessionsPath);
+    } catch (e) {
+      console.warn("[agent] failed to save sessions:", e instanceof Error ? e.message : e);
+    }
+  }
+
+  /**
+   * Structural hash of a tree definition — mirrors grandma-kat's internal
+   * `definitionId` (not exported from the package). Functions become stable
+   * name placeholders so the hash tracks structure, not closures.
+   */
+  static definitionHash(tree: unknown): string {
+    const def = (tree as { def?: unknown } | null)?.def ?? tree;
+    const json = JSON.stringify(def, (_k, v) =>
+      typeof v === "function" ? "[fn:" + ((v as Function).name || "anon") + "]" : v,
+    );
+    return crypto.createHash("sha256").update(json).digest("hex").slice(0, 8);
   }
 
   /**
@@ -112,9 +170,20 @@ export class Agent {
     onEmit?: (value: unknown) => void | Promise<void>,
     opts?: AgentRunOptions,
   ): Promise<AgentRunResult> {
-    const cont = this.continuations.get(key);
+    let cont = this.continuations.get(key);
     const katTools = this.deps.tools.toKatTools();
     const pattern = await loadPattern(this.deps.workspace, this.deps.patternName?.() ?? "trunk");
+    const defId = Agent.definitionHash(pattern);
+
+    // A checkpoint was grown under a specific tree shape; if the active
+    // pattern changed (or the pattern file was edited), the stored pause
+    // point no longer maps to any `.human()` slot — start fresh.
+    if (cont && this.sessionPatterns.get(key) !== defId) {
+      this.continuations.delete(key);
+      this.sessionPatterns.delete(key);
+      this.saveSessions();
+      cont = undefined;
+    }
 
     const allTools = katTools;
 
@@ -128,6 +197,18 @@ export class Agent {
       ...(this.deps.logger ? {} : { logLevel: this.deps.logLevel ?? "info" }),
     };
 
+    const freshRun = () =>
+      grandma.knit(pattern, {
+        ...runtime,
+        // First run: inject system prompt and start the tree.
+        // The tree pauses immediately at .human() — no LLM call yet.
+        memory: {
+          messages: [],
+          workspace: this.deps.workspace,
+          main_input: humanInput,
+        },
+      });
+
     let outcome: { status?: string; continuation?: string; result?: unknown };
 
     if (cont) {
@@ -136,26 +217,31 @@ export class Agent {
       // is paused (e.g. the knowledge branch's verify_search), so the
       // caller never names the slot. See injectHumanInput in
       // grandma-kat/src/knit.mjs.
-      outcome = await grandma.knit(pattern, {
-        ...runtime,
-        _continuation: cont,
-        humanInput,
-      });
+      try {
+        outcome = await grandma.knit(pattern, {
+          ...runtime,
+          _continuation: cont,
+          humanInput,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Missing checkpoint (e.g. the log DB was cleared under us): drop
+        // the dead continuation and grow a fresh tree instead of failing.
+        if (!/checkpoint/i.test(msg)) throw err;
+        console.warn(`[agent] stale checkpoint for '${key}' (${msg}) — starting fresh tree`);
+        this.continuations.delete(key);
+        this.sessionPatterns.delete(key);
+        this.saveSessions();
+        outcome = await freshRun();
+      }
     } else {
-      // First run: inject system prompt and start the tree.
-      // The tree pauses immediately at .human() — no LLM call yet.
-      outcome = await grandma.knit(pattern, {
-        ...runtime,
-        memory: {
-          messages: [],
-          workspace: this.deps.workspace,
-          main_input: humanInput,
-        },
-      });
+      outcome = await freshRun();
     }
 
     if (outcome.status === "waiting" && outcome.continuation) {
       this.continuations.set(key, outcome.continuation);
+      this.sessionPatterns.set(key, defId);
+      this.saveSessions();
       return { status: "waiting", continuation: outcome.continuation };
     }
 
@@ -163,6 +249,8 @@ export class Agent {
     // (e.g. one-shot trees like person-scan), so this is a normal outcome:
     // drop any stale continuation so the next message starts a fresh tree.
     this.continuations.delete(key);
+    this.sessionPatterns.delete(key);
+    this.saveSessions();
     return { status: "done", result: outcome.result };
   }
 
@@ -212,5 +300,7 @@ export class Agent {
    */
   clear(key: string): void {
     this.continuations.delete(key);
+    this.sessionPatterns.delete(key);
+    this.saveSessions();
   }
 }
