@@ -199,15 +199,27 @@ export class Agent {
       ...(this.deps.logger ? {} : { logLevel: this.deps.logLevel ?? "info" }),
     };
 
+    // Trees that declare `input` (app trees: contacts, caller-list) consume
+    // the message directly on a fresh run — they do work before their first
+    // `.human()`, so there is no grow pass to skip and nothing to deliver
+    // into a pause. Trees like trunk open with `.human("main_input")` and
+    // pause before the message is delivered.
+    const patternDef = (pattern as { def?: { needs?: string[] }; needs?: string[] } | null)?.def
+      ?? (pattern as { needs?: string[] } | null);
+    const needsInput = (patternDef?.needs ?? []).includes("input");
+
     const freshRun = () =>
       grandma.knit(pattern, {
         ...runtime,
         // First run: inject system prompt and start the tree.
-        // The tree pauses immediately at .human() — no LLM call yet.
+        // A tree that opens with `.human()` pauses immediately — no LLM call
+        // yet. An input-driven tree starts with `input` seeded from the
+        // message and runs until its own first pause/completion.
         memory: {
           messages: [],
           workspace: this.deps.workspace,
           main_input: humanInput,
+          ...(needsInput ? { input: humanInput } : {}),
         },
       });
 
@@ -245,8 +257,9 @@ export class Agent {
     // still owes the caller this turn. Now that the fresh tree is paused at
     // its first `.human()`, deliver the message the way a normal turn does —
     // otherwise the seeded input is never consumed and the turn ends with
-    // just the tree's startup output.
-    if (droppedContinuation && outcome.status === "waiting" && outcome.continuation) {
+    // just the tree's startup output. Input-driven trees already consumed
+    // the message in freshRun above.
+    if (droppedContinuation && !needsInput && outcome.status === "waiting" && outcome.continuation) {
       outcome = await grandma.knit(pattern, {
         ...runtime,
         _continuation: outcome.continuation,
@@ -306,6 +319,22 @@ export class Agent {
    */
   hasContinuation(key: string): boolean {
     return this.continuations.has(key);
+  }
+
+  /**
+   * True when a fresh run of the active tree consumes the message directly
+   * (the tree declares `input`). Callers must skip their
+   * grow-at-the-first-`.human()` pass for these trees: app trees
+   * (contacts, caller-list) start with work, not with a pause, so a grow
+   * pass would run them on an empty message and swallow the real one as
+   * the first human's reply. Trunk-style trees return false.
+   */
+  async consumesInputDirectly(): Promise<boolean> {
+    const pattern = (await loadPattern(
+      this.deps.workspace,
+      this.deps.patternName?.() ?? "trunk",
+    )) as { def?: { needs?: string[] }; needs?: string[] } | null;
+    return ((pattern?.def ?? pattern)?.needs ?? []).includes("input");
   }
 
   /**

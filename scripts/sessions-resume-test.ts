@@ -9,6 +9,8 @@
  *   4. A stale/missing checkpoint falls back to a fresh run instead of
  *      throwing — the message is delivered, never swallowed by the pause.
  *   5. clear() empties sessions.json.
+ *   6. An input-driven tree (declares `input`) consumes the message on its
+ *      fresh run — callers skip the grow pass via consumesInputDirectly().
  *
  * Mock model handler, no network. Run: npm run test:sessions
  */
@@ -37,8 +39,8 @@ await fs.writeFile(path.join(ws, "patterns", "relay.mjs"), PATTERN);
 const handler = async () => ({ content: "mock-answer", reasoning: null, tool_calls: [] });
 const models = { cheap: { model: "cheap", handler } } as any;
 const tools = new ToolRegistry(ws, ["ls"]);
-const mkAgent = () =>
-  new Agent({ models, workspace: ws, tools, patternName: () => "relay" });
+const mkAgent = (patternName = "relay") =>
+  new Agent({ models, workspace: ws, tools, patternName: () => patternName });
 const readSessions = async () =>
   JSON.parse(await fs.readFile(sessionsFile, "utf8"));
 
@@ -104,6 +106,24 @@ const readSessions = async () =>
   const s = await readSessions();
   assert.equal(s.k, undefined);
   console.log("5. clear() emptied sessions.json");
+}
+
+// ── 6. input-driven trees consume the message on the fresh run ──
+{
+  assert.equal(await mkAgent().consumesInputDirectly(), false, "relay is trunk-shaped");
+  await fs.writeFile(
+    path.join(ws, "patterns", "ask.mjs"),
+    `export default function ({ Tree }) {
+  return Tree.name("ask").needs("input").emit((m) => ({ text: "I:" + String(m.input) })).human("go");
+}\n`,
+  );
+  const agent = mkAgent("ask");
+  assert.equal(await agent.consumesInputDirectly(), true, "ask declares input");
+  const emitted: unknown[] = [];
+  const r = await agent.run("ask", "hi", (v) => emitted.push(v));
+  assert.equal(r.status, "waiting", "paused at its own .human()");
+  assert.deepEqual(emitted, [{ text: "I:hi" }], "the fresh run consumed the message itself");
+  console.log("6. input-driven tree ran the message directly");
 }
 
 console.log("sessions-resume-test: all assertions passed");

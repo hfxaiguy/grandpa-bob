@@ -136,7 +136,9 @@ export function createBot(deps: BotDeps): Bot {
     // First message from this conversation: initialize the tree.
     // It pauses at .human() immediately. Without this, the user's
     // first message would be consumed by tree setup with no response.
-    if (!deps.agent.hasContinuation(key)) {
+    // Trunk-style trees grow to their first .human(); input-driven app
+    // trees (they declare `input`) consume the message directly.
+    if (!deps.agent.hasContinuation(key) && !(await deps.agent.consumesInputDirectly())) {
       await deps.agent.run(key, "", async () => {});
     }
     // keep the "typing…" indicator alive while the agent works
