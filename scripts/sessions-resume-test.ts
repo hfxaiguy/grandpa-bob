@@ -4,8 +4,10 @@
  *   1. A waiting conversation persists to <workspace>/logs/sessions.json.
  *   2. A *new* Agent (simulated restart) resumes mid-tree: the checkpoint
  *      routes the next input into the paused .human() slot, not a fresh tree.
- *   3. Switching the pattern file shape drops the stored session (fresh tree).
- *   4. A stale/missing checkpoint falls back to a fresh run instead of throwing.
+ *   3. Switching the pattern file shape drops the stored session (fresh tree)
+ *      and still delivers the message into the new tree.
+ *   4. A stale/missing checkpoint falls back to a fresh run instead of
+ *      throwing — the message is delivered, never swallowed by the pause.
  *   5. clear() empties sessions.json.
  *
  * Mock model handler, no network. Run: npm run test:sessions
@@ -71,8 +73,10 @@ const readSessions = async () =>
   await new Promise((r) => setTimeout(r, 5)); // bust the import cache-buster
   const agent = mkAgent();
   const before = (await readSessions()).k.pattern;
-  const r = await agent.run("k", "again");
+  const emitted: unknown[] = [];
+  const r = await agent.run("k", "again", (v) => emitted.push(v));
   assert.equal(r.status, "waiting");
+  assert.deepEqual(emitted, [{ text: "A:again" }], "message delivered into the fresh tree");
   const after = (await readSessions()).k.pattern;
   assert.notEqual(after, before, "pattern hash updated after session was dropped");
   console.log("3. edited pattern started a fresh tree, old session dropped");
@@ -85,10 +89,12 @@ const readSessions = async () =>
   await fs.writeFile(sessionsFile, JSON.stringify(s));
   const agent = mkAgent();
   assert.equal(agent.hasContinuation("stale"), true);
-  const r = await agent.run("stale", "hi");
+  const emitted: unknown[] = [];
+  const r = await agent.run("stale", "hi", (v) => emitted.push(v));
   assert.equal(r.status, "waiting", "stale checkpoint recovered as fresh tree");
+  assert.deepEqual(emitted, [{ text: "A:hi" }], "the message is delivered, not swallowed");
   assert.notEqual((await readSessions()).stale.continuation, "2099-01-01_00-00-00-9:99");
-  console.log("4. missing checkpoint caught, fresh tree started");
+  console.log("4. missing checkpoint caught, fresh tree started, message delivered");
 }
 
 // ── 5. clear() persists an empty session map ──

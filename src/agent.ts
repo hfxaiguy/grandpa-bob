@@ -171,6 +171,7 @@ export class Agent {
     opts?: AgentRunOptions,
   ): Promise<AgentRunResult> {
     let cont = this.continuations.get(key);
+    let droppedContinuation = false;
     const katTools = this.deps.tools.toKatTools();
     const pattern = await loadPattern(this.deps.workspace, this.deps.patternName?.() ?? "trunk");
     const defId = Agent.definitionHash(pattern);
@@ -183,6 +184,7 @@ export class Agent {
       this.sessionPatterns.delete(key);
       this.saveSessions();
       cont = undefined;
+      droppedContinuation = true;
     }
 
     const allTools = katTools;
@@ -232,10 +234,24 @@ export class Agent {
         this.continuations.delete(key);
         this.sessionPatterns.delete(key);
         this.saveSessions();
+        droppedContinuation = true;
         outcome = await freshRun();
       }
     } else {
       outcome = await freshRun();
+    }
+
+    // A continuation that died under us (pattern edited, checkpoint gone)
+    // still owes the caller this turn. Now that the fresh tree is paused at
+    // its first `.human()`, deliver the message the way a normal turn does —
+    // otherwise the seeded input is never consumed and the turn ends with
+    // just the tree's startup output.
+    if (droppedContinuation && outcome.status === "waiting" && outcome.continuation) {
+      outcome = await grandma.knit(pattern, {
+        ...runtime,
+        _continuation: outcome.continuation,
+        humanInput,
+      });
     }
 
     if (outcome.status === "waiting" && outcome.continuation) {
