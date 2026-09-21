@@ -67,20 +67,20 @@ function maxText(max: { count?: number } | null | undefined): string | null {
   return `max ${max.count}`;
 }
 
-function serializeChild(child: any, parentPath: string): SerializedNode {
-  const name: string | null = child?.name ?? null;
+function serializeChild(child: any, parentPath: string, fallbackName: string | null = null): SerializedNode {
+  const name: string | null = child?.name ?? fallbackName ?? null;
   // Children without a name (emit/check/until/return, anonymous prompts)
   // keep the parent's path — the runtime logs them under content.child or
-  // the enclosing tree's branch_path.
+  // the enclosing tree's branch_path. Unnamed branch/map subtrees get the
+  // runtime's auto name via fallbackName so panel paths match branch_path.
   const path = name ? (parentPath ? `${parentPath}/${name}` : name) : parentPath;
   const base: SerializedNode = { kind: String(child?.kind ?? "?"), name, path, gate: gateText(child?.gate) };
 
   switch (child?.kind) {
     case "branch":
-      // The branch child and its inner tree share a name (the builder
-      // enforces it), so seed the inner tree with the *parent* path to
-      // avoid "x/y/y" doubling.
-      return { ...base, tree: serializeTree(child.tree, parentPath) } as SerializedNode;
+      // The branch child and its inner tree share a name, so seed the inner
+      // tree with the *parent* path to avoid "x/y/y" doubling.
+      return { ...base, tree: serializeTree(child.tree, parentPath, name) } as SerializedNode;
     case "prompt": {
       const v = promptValue(child.prompt);
       const node: SerializedNode = { ...base, ...v };
@@ -114,7 +114,8 @@ function serializeChild(child: any, parentPath: string): SerializedNode {
       return { ...base, check: fnSnippet(child.check), loop: max ? `${jump} ${max}` : jump };
     }
     case "map":
-      return { ...base, tree: serializeTree(child.tree, parentPath) } as SerializedNode;
+      // An unnamed map subtree takes the collection name at runtime.
+      return { ...base, tree: serializeTree(child.tree, parentPath, name) } as SerializedNode;
     case "memory":
     case "memoryUpdate":
       return { ...base, fn: fnSnippet(child.fn) };
@@ -135,10 +136,10 @@ function serializeChild(child: any, parentPath: string): SerializedNode {
  * `basePath` seeds node paths; top-level calls should leave it empty so
  * the root tree's name becomes the path root (matching branch_path).
  */
-export function serializeTree(tree: any, basePath = ""): SerializedTree {
+export function serializeTree(tree: any, basePath = "", fallbackName: string | null = null): SerializedTree {
   const def = tree?.def ?? tree;
   if (!def || def.kind !== "tree") throw new TypeError("serializeTree: expected a Tree definition");
-  const name: string | null = def.name ?? null;
+  const name: string | null = def.name ?? fallbackName ?? null;
   const path = name ? (basePath ? `${basePath}/${name}` : name) : basePath;
   return {
     kind: "tree",
@@ -147,6 +148,11 @@ export function serializeTree(tree: any, basePath = ""): SerializedTree {
     models: (def.models ?? []).map((r: any) => ({ when: gateText(r.cond), value: String(r.value) })),
     tools: (def.tools ?? []).map((r: any) => ({ when: gateText(r.cond), value: [...(r.value ?? [])] })),
     needs: [...(def.needs ?? [])],
-    children: (def.children ?? []).map((c: any) => serializeChild(c, path)),
+    children: (def.children ?? []).map((c: any, idx: number) => {
+      // Same rule as knit()'s autoname: an unnamed branch subtree takes
+      // `${parentName}#${k}` (k = 1-based child position).
+      const fallback = c?.kind === "branch" && c?.name == null ? `${name}#${idx + 1}` : null;
+      return serializeChild(c, path, fallback);
+    }),
   };
 }
