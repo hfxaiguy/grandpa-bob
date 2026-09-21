@@ -1463,7 +1463,7 @@ function addStep(turnId, ev) {
   pre.textContent = JSON.stringify(ev.content, null, 2);
   det.append(sum, pre);
   li.appendChild(det);
-  if ((d as { internals?: boolean }).internals) li.classList.add("k-internals");
+  if (d.internals) li.classList.add("k-internals");
   block.list.appendChild(li);
   updateCount(block);
   maybeScroll(false);
@@ -2005,7 +2005,7 @@ function treeOnEvent(ev) {
   if (!p) return;
   treeVisited.add(p);
   treeActive = p;
-  const op = (ev.content as { op?: unknown } | undefined)?.op;
+  const op = ev.content && ev.content.op;
   if (ev.kind === "memory" || (ev.kind === "record" && (op === "memory" || op === "memoryUpdate"))) {
     scheduleMemoryRefresh();
   }

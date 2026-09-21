@@ -15,6 +15,7 @@
     "test:agent-done": "tsx scripts/agent-done-test.ts",
     "test:sessions": "tsx scripts/sessions-resume-test.ts",
     "test:webturns": "tsx scripts/web-turns-test.ts",
+    "test:pages": "tsx scripts/page-scripts-test.ts",
     "test:attachments": "tsx scripts/attachments-test.ts",
     "agent:mock": "tsx scripts/agent-mock-test.ts",
     "whisper:up": "sh -c 'set -a; . ./.env 2>/dev/null; set +a; exec vendor/whisper.cpp/build/bin/whisper-server --host 127.0.0.1 --port 8178 -m vendor/whisper.cpp/models/${WHISPER_MODEL:-ggml-base.bin}'",
