@@ -358,6 +358,7 @@ interface SanitizedEvent {
   kind: string;
   branch_path: string;
   iteration: number;
+  scope_id: number | null;
   content: Record<string, unknown> | null;
   ts: number;
 }
@@ -452,7 +453,7 @@ function sanitizeValue(v: unknown, depth = 0): unknown {
   return out;
 }
 
-function sanitizeEvent(e: { kind?: string; branch_path?: string; iteration?: number; content?: Record<string, unknown> | null }): SanitizedEvent {
+function sanitizeEvent(e: { kind?: string; branch_path?: string; iteration?: number; scope_id?: number | null; content?: Record<string, unknown> | null }): SanitizedEvent {
   const content: Record<string, unknown> = { ...(e.content ?? {}) };
   // Keep the prompt input exactly as sent: attach it raw after generic
   // sanitization, which would otherwise truncate strings and collapse the
@@ -465,6 +466,7 @@ function sanitizeEvent(e: { kind?: string; branch_path?: string; iteration?: num
     kind: e.kind ?? "unknown",
     branch_path: e.branch_path ?? "",
     iteration: e.iteration ?? 0,
+    scope_id: e.scope_id ?? null,
     content: clean,
     ts: Date.now(),
   };
@@ -1129,6 +1131,10 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   .k-err .stext { color: #fca5a5; }
   .k-dim .badge { background: #1f2937; color: var(--muted); }
   .k-dim .stext { color: var(--muted); }
+  .k-map .badge { background: #3730a3; }
+  .k-map .stext { color: #c7d2fe; }
+  .k-map-item .badge { background: #1e1b4b; }
+  .step-list.nested { border-top: none; padding: 0 0 6px 12px; }
   .msg-answer { display: flex; gap: 8px; margin: 8px 0; align-items: flex-start; }
   .msg-answer .who { flex: none; font-size: 12px; font-weight: 700; color: var(--green); padding-top: 10px; }
   .msg-answer .bubble { background: var(--card); border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; padding: 10px 14px; max-width: 90%; white-space: pre-wrap; word-break: break-word; }
@@ -1340,26 +1346,33 @@ function describeEvent(ev) {
   }
 }
 
-function turnLogText(turn) {
-  const lines = [];
-  const input = turn.querySelector(".msg-user .bubble");
-  if (input) lines.push("[user] " + input.textContent, "");
-  const list = turn.querySelector(".step-list");
-  for (const li of list ? Array.from(list.children) : []) {
-    const sum = li.querySelector("summary");
+function collectStepLines(list, depth, lines) {
+  for (const li of Array.from(list.children)) {
+    if (!li.classList || !li.classList.contains("step")) continue;
+    const sum = li.querySelector(":scope > details > summary");
     if (sum) {
       const badge = sum.querySelector(".badge")?.textContent ?? "?";
       const id = sum.querySelector(".step-id")?.textContent ?? "";
       const path = sum.querySelector(".spath")?.textContent ?? "";
       const text = sum.querySelector(".stext")?.textContent ?? "";
-      lines.push([badge, id, path, text].filter(Boolean).join(" "));
+      lines.push("    ".repeat(depth) + [badge, id, path, text].filter(Boolean).join(" "));
     }
-    const pre = li.querySelector("pre");
+    const pre = li.querySelector(":scope > details > pre");
     if (pre?.textContent) {
-      lines.push(...pre.textContent.split("\\n").map((line) => "    " + line));
+      lines.push(...pre.textContent.split("\\n").map((line) => "    ".repeat(depth + 1) + line));
     }
+    const nested = li.querySelector(":scope > details > .step-list");
+    if (nested) collectStepLines(nested, depth + 1, lines);
     lines.push("");
   }
+}
+
+function turnLogText(turn) {
+  const lines = [];
+  const input = turn.querySelector(".msg-user .bubble");
+  if (input) lines.push("[user] " + input.textContent, "");
+  const list = turn.querySelector(".step-list");
+  if (list) collectStepLines(list, 0, lines);
   const answer = turn.querySelector(".msg-answer .bubble");
   if (answer) lines.push("[bob] " + answer.textContent);
   const err = turn.querySelector(".msg-error");
@@ -1435,9 +1448,7 @@ function startTurn(turnId, input) {
   return block;
 }
 
-function addStep(turnId, ev) {
-  const block = blocks.get(turnId);
-  if (!block) return;
+function renderStepLi(ev) {
   const d = describeEvent(ev);
   const li = document.createElement("li");
   li.className = "step " + d.cls;
@@ -1464,7 +1475,156 @@ function addStep(turnId, ev) {
   det.append(sum, pre);
   li.appendChild(det);
   if (d.internals) li.classList.add("k-internals");
+  return li;
+}
+
+// ---- map runs ----------------------------------------------------------
+// A .map() runs its subtree once per item, so an import logs thousands of
+// rows. Each map run collapses into one block; its items become one row each
+// (all of the item's events live in that row's details).
+
+// Walk a scope's parents (scope_init events) looking for an ancestor.
+function inScope(block, scopeId, ancestorId) {
+  if (scopeId == null || ancestorId == null) return false;
+  let s = scopeId;
+  for (let i = 0; i < 64; i++) {
+    if (s === ancestorId) return true;
+    s = block.scopeParent.get(s);
+    if (s == null) return false;
+  }
+  return false;
+}
+
+function mapItemLi(events, item) {
+  const li = document.createElement("li");
+  li.className = "step k-map-item";
+  const det = document.createElement("details");
+  const sum = document.createElement("summary");
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  const tool = events.find((e) => e.kind === "tool_call");
+  badge.textContent = tool?.content?.tool ? String(tool.content.tool) : "map";
+  const id = document.createElement("span");
+  id.className = "step-id";
+  id.textContent = "[" + (item.content?.index ?? "?") + "]";
+  const txt = document.createElement("span");
+  txt.className = "stext";
+  txt.textContent = jshort(item.content?.value, 120);
+  sum.append(badge, id, txt);
+  const pre = document.createElement("pre");
+  pre.textContent = [...events, item]
+    .map((e) => "// " + e.kind + (e.branch_path ? " [" + e.branch_path + "]" : "") +
+      "\\n" + JSON.stringify(e.content, null, 2))
+    .join("\\n\\n");
+  det.append(sum, pre);
+  li.appendChild(det);
+  return li;
+}
+
+function openMapGroup(block, scopeId, child) {
+  const li = document.createElement("li");
+  li.className = "step k-map";
+  const det = document.createElement("details");
+  const sum = document.createElement("summary");
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.textContent = "map";
+  const id = document.createElement("span");
+  id.className = "step-id";
+  id.textContent = child;
+  const txt = document.createElement("span");
+  txt.className = "stext";
+  txt.textContent = "running\\u2026";
+  sum.append(badge, id, txt);
+  const body = document.createElement("ol");
+  body.className = "step-list nested";
+  det.append(sum, body);
+  li.appendChild(det);
   block.list.appendChild(li);
+  const group = { scopeId, child, body, txt, buffer: [], count: 0 };
+  block.maps.push(group);
+  return group;
+}
+
+function flushMapItem(block, group, item) {
+  group.body.appendChild(mapItemLi(group.buffer, item));
+  group.buffer = [];
+  group.count++;
+  group.txt.textContent = group.count + " item(s)";
+  updateCount(block);
+  maybeScroll(false);
+}
+
+function finishMap(block, group, ev) {
+  for (const e of group.buffer) group.body.appendChild(renderStepLi(e));
+  group.buffer = [];
+  group.txt.textContent = group.count + " item(s)";
+  if (block.maps[block.maps.length - 1] === group) block.maps.pop();
+  updateCount(block);
+  maybeScroll(false);
+}
+
+// Map items stream their events before the closing map/map_item event, so the
+// first item's rows were already rendered. Move them into the group buffer.
+function adoptRendered(block, group) {
+  const adopted = [];
+  for (let i = block.rendered.length - 1; i >= 0; i--) {
+    const r = block.rendered[i];
+    if (!inScope(block, r.ev.scope_id, group.scopeId)) break;
+    r.li.remove();
+    adopted.push(r.ev);
+    block.rendered.splice(i, 1);
+  }
+  adopted.reverse();
+  group.buffer = adopted.concat(group.buffer);
+}
+
+function addStep(turnId, ev) {
+  const block = blocks.get(turnId);
+  if (!block) return;
+  if (!block.scopeParent) block.scopeParent = new Map();
+  if (!block.rendered) block.rendered = [];
+  if (!block.maps) block.maps = [];
+
+  if (ev.kind === "scope_init" && ev.content && ev.content.scopeId != null) {
+    block.scopeParent.set(ev.content.scopeId, ev.content.parentScopeId ?? null);
+  }
+
+  const top = block.maps[block.maps.length - 1];
+  // Events persisted before scope_id was logged have none; render them flat
+  // rather than grouping them half-way.
+  const ownMapEvent = top && ev.scope_id != null && ev.scope_id === top.scopeId;
+
+  if (ownMapEvent && ev.kind === "map" && ev.content?.child === top.child) {
+    finishMap(block, top, ev);
+    return;
+  }
+  if (ownMapEvent && ev.kind === "map_item") {
+    flushMapItem(block, top, ev);
+    return;
+  }
+  if (top && inScope(block, ev.scope_id, top.scopeId)) {
+    top.buffer.push(ev);
+    return;
+  }
+  if (ev.kind === "map_item" && ev.scope_id != null) {
+    // First item of a map run: open the block, adopt its already-rendered
+    // events, then add its row.
+    const group = openMapGroup(block, ev.scope_id, ev.content?.child ?? "?");
+    adoptRendered(block, group);
+    flushMapItem(block, group, ev);
+    return;
+  }
+  if (ev.kind === "map" && ev.scope_id != null) {
+    const group = openMapGroup(block, ev.scope_id, ev.content?.child ?? "?");
+    adoptRendered(block, group);
+    finishMap(block, group, ev);
+    return;
+  }
+
+  const li = renderStepLi(ev);
+  block.list.appendChild(li);
+  block.rendered.push({ ev, li });
   updateCount(block);
   maybeScroll(false);
 }
@@ -1790,7 +1950,14 @@ $("tree-close").onclick = () => setTreePanelOpen(false);
 const INTERNALS_KEY = "gb_show_internals";
 function updateCount(block) {
   const show = document.body.classList.contains("show-internals");
-  const n = block.list.querySelectorAll(show ? "li.step" : "li.step:not(.k-internals)").length;
+  // Only top-level rows count; a collapsed map block is one step, and its
+  // item rows belong to it.
+  let n = 0;
+  for (const li of block.list.children) {
+    if (!li.classList.contains("step")) continue;
+    if (!show && li.classList.contains("k-internals")) continue;
+    n++;
+  }
   block.cnt.textContent = n + (n === 1 ? " step" : " steps");
 }
 function setInternals(on) {
