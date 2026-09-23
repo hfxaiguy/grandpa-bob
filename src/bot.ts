@@ -7,6 +7,7 @@ import { transcribeVoice, type SttBackend } from "./stt.js";
 import { git } from "./tools/git.js";
 import { attachmentPrompt, saveAttachment } from "./attachments.js";
 import { emitText } from "./util/emit-text.js";
+import { telegramHtml } from "./util/telegram-text.js";
 
 export interface BotDeps {
   token: string;
@@ -23,6 +24,10 @@ export interface BotDeps {
 }
 
 const MAX_TG_MESSAGE = 4000;
+// Telegram's hard cap is 4096. Replies go out as HTML (escaping can grow the
+// text and tel: links add ~30 chars each), so chunk the plain text below the
+// cap before converting.
+const MAX_TG_HTML = 3600;
 /** Ignore messages older than this (e.g. delivered while the bot was down). */
 const MAX_MESSAGE_AGE_S = 120;
 
@@ -79,8 +84,8 @@ export function createBot(deps: BotDeps): Bot {
   };
 
   const reply = async (ctx: Context, text: string): Promise<void> => {
-    for (const part of chunk(text)) {
-      await ctx.reply(part, threadOpts(ctx));
+    for (const part of chunk(text, MAX_TG_HTML)) {
+      await ctx.reply(telegramHtml(part), { ...threadOpts(ctx), parse_mode: "HTML" });
     }
   };
 

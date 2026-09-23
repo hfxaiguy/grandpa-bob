@@ -16,6 +16,7 @@
     "test:sessions": "tsx scripts/sessions-resume-test.ts",
     "test:webturns": "tsx scripts/web-turns-test.ts",
     "test:pages": "tsx scripts/page-scripts-test.ts",
+    "test:telegram-text": "tsx scripts/telegram-text-test.ts",
     "test:duckdb": "tsx scripts/duckdb-bom-test.ts",
     "test:attachments": "tsx scripts/attachments-test.ts",
     "agent:mock": "tsx scripts/agent-mock-test.ts",
