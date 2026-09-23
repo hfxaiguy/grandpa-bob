@@ -85,7 +85,20 @@ export function createBot(deps: BotDeps): Bot {
 
   const reply = async (ctx: Context, text: string): Promise<void> => {
     for (const part of chunk(text, MAX_TG_HTML)) {
-      await ctx.reply(telegramHtml(part), { ...threadOpts(ctx), parse_mode: "HTML" });
+      const html = telegramHtml(part);
+      // Rich messages (Bot API 10.1+) render tel: links as real phone links;
+      // classic messages only link http(s)/tg, so the numbers would be dead
+      // text. Try rich first, fall back to a classic HTML send if the API
+      // rejects the payload.
+      try {
+        await ctx.api.sendRichMessage(ctx.chat!.id, { html }, threadOpts(ctx));
+      } catch (err) {
+        console.warn(
+          "[telegram] rich message failed, sending classic:",
+          err instanceof Error ? err.message : err,
+        );
+        await ctx.reply(html, { ...threadOpts(ctx), parse_mode: "HTML" });
+      }
     }
   };
 
