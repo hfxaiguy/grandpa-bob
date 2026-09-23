@@ -28,6 +28,8 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
 import type { Agent } from "./agent.js";
+import { checkLlmEntry } from "./agent.js";
+import { loadModels } from "./models.js";
 import {
   transcribeAudioBytes,
   convertToWav,
@@ -135,6 +137,97 @@ async function writeEnv(envPath: string, updates: Record<string, string | null>)
     if (v !== null) out.push(`${k}=${v}`); // new keys
   }
   await writeFile(envPath, out.join("\n").replace(/\n+$/, "") + "\n", { mode: 0o600 });
+}
+
+// ── service health ────────────────────────────────────────────────────
+// Real reachability probes instead of the old tmux-session guesswork
+// (the desktop runs have no tmux at all). Each probe answers
+// up | down | "n/a" (not configured) plus a one-line detail.
+export interface ServiceState {
+  name: string;
+  up: boolean | null;
+  detail: string;
+}
+
+async function fetchProbe(url: string, headers: Record<string, string>, timeoutMs = 3000): Promise<number | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers });
+    return res.status;
+  } catch {
+    return null;
+  }
+}
+
+async function probeTelegram(token: string): Promise<ServiceState> {
+  if (!token) return { name: "telegram", up: null, detail: "no bot token configured" };
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    const data = (await res.json().catch(() => null)) as { ok?: boolean; result?: { username?: string } } | null;
+    return data?.ok
+      ? { name: "telegram", up: true, detail: "@" + (data.result?.username ?? "?") }
+      : { name: "telegram", up: false, detail: `getMe failed (HTTP ${res.status})` };
+  } catch (e) {
+    return { name: "telegram", up: false, detail: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+async function probeVoice(stt: SttBackendOptions | undefined): Promise<ServiceState> {
+  if (!stt) return { name: "voice", up: null, detail: "not configured" };
+  const base = (stt.backend === "sherpa" || stt.backend === "parakeet" ? stt.sherpaUrl : stt.whisperUrl).replace(/\/$/, "");
+  const host = new URL(base).host;
+  // Any HTTP answer at all (even 404) means the server is listening.
+  for (const p of ["/health", "/v1/models", "/"]) {
+    const status = await fetchProbe(base + p, {}, 2500);
+    if (status !== null) return { name: "voice", up: true, detail: `${stt.backend} @ ${host}` };
+  }
+  return { name: "voice", up: false, detail: `${stt.backend} @ ${host} unreachable` };
+}
+
+let modelsWarned = false;
+async function probeLlm(projectDir: string): Promise<ServiceState> {
+  let registry: Record<string, { baseURL: string; apiKey: string; protocol?: string }> = {};
+  try {
+    registry = await loadModels(projectDir);
+  } catch (e) {
+    if (!modelsWarned) { modelsWarned = true; console.warn("[status] models.json unreadable:", e); }
+    return { name: "llm", up: null, detail: "models not configured" };
+  }
+  const bases = [...new Map(Object.values(registry).map((m) => [m.baseURL, m])).entries()];
+  if (!bases.length) return { name: "llm", up: null, detail: "no models configured" };
+  const results = await Promise.all(
+    bases.map(async ([baseURL, m]) => ({
+      host: new URL(baseURL).host,
+      ok: await checkLlmEntry(baseURL, m.apiKey, m.protocol, 3000),
+    })),
+  );
+  const bad = results.filter((r) => !r.ok);
+  return {
+    name: "llm",
+    up: bad.length === 0,
+    detail: bad.length
+      ? `${results.length - bad.length}/${results.length} reachable — down: ${bad.map((b) => b.host).join(", ")}`
+      : `${results.length} endpoint${results.length === 1 ? "" : "s"} reachable: ${results.map((r) => r.host).join(", ")}`,
+  };
+}
+
+let servicesCache: { at: number; services: ServiceState[] } | null = null;
+
+async function serviceStatus(
+  config: AdminConfig,
+  stt: SttBackendOptions | undefined,
+  env: Record<string, string>,
+): Promise<ServiceState[]> {
+  if (servicesCache && Date.now() - servicesCache.at < 5000) return servicesCache.services;
+  const [telegram, voice, llm] = await Promise.all([
+    probeTelegram(env.TELEGRAM_BOT_TOKEN || ""),
+    probeVoice(stt),
+    probeLlm(config.projectDir),
+  ]);
+  const services = [telegram, voice, llm];
+  servicesCache = { at: Date.now(), services };
+  return services;
 }
 
 // ── tmux status ───────────────────────────────────────────────────────
@@ -727,6 +820,7 @@ function buildSettingsHtml(config: AdminConfig): string {
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
   .dot.on { background: var(--green); }
   .dot.off { background: var(--red); }
+  .dot.na { background: var(--muted); }
   label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
   input[type=text], input[type=password], textarea, select { width: 100%; padding: 10px 12px; background: #0b1224; color: var(--fg); border: 1px solid #334155; border-radius: 6px; font: 14px ui-monospace, monospace; }
   input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
@@ -755,9 +849,8 @@ function buildSettingsHtml(config: AdminConfig): string {
 
 <div class="card">
   <div class="row">
-    <span class="status"><span id="dot-bot" class="dot"></span> bot</span>
-    <span class="status"><span id="dot-sherpa" class="dot"></span> sherpa-onnx</span>
-    <span class="status"><span id="dot-admin" class="dot on"></span> admin (this)</span>
+    <span id="service-dots" class="row" style="gap:14px"></span>
+    <span class="status"><span class="dot on"></span> admin (this)</span>
     <span style="margin-left:auto"><small id="uptime"></small></span>
   </div>
   <div class="actions">
@@ -871,6 +964,9 @@ function buildSettingsHtml(config: AdminConfig): string {
 <script>
 const $ = (id) => document.getElementById(id);
 let startedAt = Date.now();
+// Wall-clock start of the bot process, derived from server-reported uptime.
+// Null until the first status response; falls back to the page clock.
+let botUptimeBase = null;
 let envRows = []; // { key, orig, value, removed } — orig = key as loaded from .env
 let currentDir = "";
 
@@ -897,8 +993,21 @@ async function api(path, opts) {
 
 async function refreshStatus() {
   const s = await api("/api/status");
-  $("dot-bot").className = "dot " + (s.bot ? "on" : "off");
-  $("dot-sherpa").className = "dot " + (s.sherpa ? "on" : "off");
+  // Service health: telegram / voice / llm dots with detail tooltips,
+  // probed server-side (getMe, HTTP health endpoints, model reachability).
+  const dots = $("service-dots");
+  dots.innerHTML = "";
+  for (const svc of s.services || []) {
+    const el = document.createElement("span");
+    el.className = "status";
+    el.title = svc.detail;
+    const dot = document.createElement("span");
+    dot.className = "dot " + (svc.up === true ? "on" : svc.up === false ? "off" : "na");
+    el.append(dot, " " + svc.name);
+    dots.appendChild(el);
+  }
+  botUptimeBase = typeof s.uptimeSec === "number" ? Date.now() - s.uptimeSec * 1000 : null;
+  if (s.pid) $("uptime").title = "bot process pid " + s.pid;
   const env = s.env || {};
   $("cur-token").textContent  = env.TELEGRAM_BOT_TOKEN ? "current: " + env.TELEGRAM_BOT_TOKEN.slice(0,8) + "..." : "(unset)";
   $("cur-uid").textContent    = env.ALLOWED_USER_IDS    ? "current: " + env.ALLOWED_USER_IDS : "(unset)";
@@ -1190,10 +1299,17 @@ async function uploadFile(input) {
 }
 
 setInterval(() => {
-  const sec = Math.floor((Date.now() - startedAt) / 1000);
-  const m = Math.floor(sec / 60), s = sec % 60;
-  $("uptime").textContent = \`uptime: \${m}m \${s}s\`;
+  const base = botUptimeBase || startedAt;
+  const sec = Math.floor((Date.now() - base) / 1000);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  $("uptime").textContent = \`uptime: \${h ? h + "h " : ""}\${m}m \${s}s\`;
 }, 1000);
+
+setInterval(() => {
+  // Don't hammer the probes while the tab is hidden or an env edit is open.
+  if (document.hidden) return;
+  refreshStatus().catch(() => {});
+}, 10000);
 
 refreshStatus();
 refreshPatterns();
@@ -2877,9 +2993,19 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       }
 
       if (req.method === "GET" && url.pathname === "/api/status") {
-        const [env, status] = await Promise.all([readEnv(config.envPath), tmuxStatus(config.botSession, config.sherpaSession)]);
+        const env = await readEnv(config.envPath);
+        const [status, services] = await Promise.all([
+          tmuxStatus(config.botSession, config.sherpaSession),
+          serviceStatus(config, stt, env || {}),
+        ]);
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ env: env || {}, ...status }));
+        res.end(JSON.stringify({
+          env: env || {},
+          ...status,
+          services,
+          uptimeSec: Math.round(process.uptime()),
+          pid: process.pid,
+        }));
         return;
       }
 
