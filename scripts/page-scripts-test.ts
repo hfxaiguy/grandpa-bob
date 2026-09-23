@@ -66,6 +66,7 @@ assert.match(chatHtml, /id="session-resume"/, "resume button present");
 assert.match(chatHtml, /id="session-new"/, "new-session button present");
 assert.match(chatHtml, /id="health-dots"/, "chat header carries service health dots");
 assert.match(chatHtml, /loadHealth\(\);/, "health dots are populated on load");
+assert.match(chatHtml, /function checkFollow\(\)/, "follow watcher present");
 
 // /api/status must report real service health (telegram / voice / llm),
 // each a tri-state (up/down/n-a) with a detail line — the old dots were a
@@ -94,6 +95,7 @@ assert.match(chatHtml, /loadHealth\(\);/, "health dots are populated on load");
 
 const settingsHtml = await (await fetch(`http://127.0.0.1:${port}/settings`)).text();
 assert.match(settingsHtml, /id="service-dots"/, "settings page renders the service-dots host");
+assert.match(settingsHtml, /id="follow-chk"/, "settings follow toggle present");
 
 server.close();
 console.log("page-scripts-test: all assertions passed");

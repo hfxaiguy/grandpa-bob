@@ -75,10 +75,14 @@ async function waitDone(port: number, turnId: string) {
 }
 
 let restarts = 0;
-async function boot() {
+async function boot(opts?: { wsDir?: string; agent?: any }) {
   const mod = await import(`../src/admin.ts${restarts++ ? `?restart=${restarts}` : ""}`);
   const port = await freePort();
-  const server = mod.startAdmin({ port, workspaceDir: ws, agent: mockAgent() });
+  const server = mod.startAdmin({
+    port,
+    workspaceDir: opts?.wsDir ?? ws,
+    agent: opts?.agent ?? mockAgent(),
+  });
   await events.once(server, "listening");
   return { port, server };
 }
@@ -206,6 +210,55 @@ let firstKey = "";
   assert.ok(!(other.key in disk), "deleted session gone from web-turns.json");
   srv4.close();
   console.log("4+5. clear scoped to active; delete purges from disk");
+}
+
+// ── 6. auto-follow: the webui pins itself to the live telegram chat ──
+{
+  const ws6 = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-follow-"));
+  await fs.mkdir(path.join(ws6, "logs"), { recursive: true });
+  const meta: { key: string; updatedAt: number }[] = [
+    { key: "777:0", updatedAt: Date.now() - 5000 },
+    { key: "web:stale", updatedAt: Date.now() }, // newer, but must NOT be followed
+  ];
+  const agent6 = {
+    sessionMeta: () => meta,
+    sessionKeys: () => meta.map((m) => m.key),
+    hasContinuation: () => true,
+    async run(key: string, _content: unknown, onEmit: (v: unknown) => void) {
+      usedKeys.push(key);
+      onEmit({ text: "ok" });
+      return { status: "waiting", continuation: "mock:1" };
+    },
+    clear() {},
+  } as any;
+
+  const { port, server } = await boot({ wsDir: ws6, agent: agent6 });
+  const s = await api(port, "GET", "/api/session");
+  assert.equal(s.json.follow, true, "follow defaults to ON");
+  assert.equal(s.json.active, "777:0", "boot adopts the freshest TELEGRAM key");
+  await api(port, "POST", "/api/chat", { text: "via web" });
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(usedKeys.at(-1), "777:0", "web messages run the telegram conversation");
+
+  // A newer telegram conversation appears → the webui jumps to it.
+  meta.unshift({ key: "888:3", updatedAt: Date.now() + 1000 });
+  const s2 = await api(port, "GET", "/api/session");
+  assert.equal(s2.json.active, "888:3", "follow retargets to the newer conversation");
+  assert.ok(s2.json.sessions.some((x: any) => x.key === "777:0"), "the old conversation remains selectable");
+
+  // Turning follow OFF freezes the choice — new telegram activity is ignored.
+  await api(port, "POST", "/api/session", { follow: false });
+  meta[0] = { key: "999:9", updatedAt: Date.now() + 9999 };
+  const s3 = await api(port, "GET", "/api/session");
+  assert.equal(s3.json.active, "888:3", "no retargeting while off");
+  const s4 = await api(port, "POST", "/api/session", { new: true });
+  assert.equal(s4.json.follow, false, "new chat keeps following off");
+
+  // Back ON → jumps to the newest.
+  const s5 = await api(port, "POST", "/api/session", { follow: true });
+  assert.equal(s5.json.active, "999:9", "re-enabling follow adopts the newest conversation");
+  server.close();
+  console.log("6. auto-follow telegram (one-way): adopt, retarget, opt out, re-enable");
 }
 
 console.log("web-turns-test: all assertions passed");

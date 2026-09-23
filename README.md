@@ -263,10 +263,19 @@ The admin server (port `ADMIN_PORT`, default 8080) serves two pages:
 
 The chat page runs the agent under `web:<id>` conversation keys, serialized
 so turns never interleave; Telegram topics are unaffected. Chat histories
-persist to `<workspace>/logs/web-turns.json` and survive bot restarts —
-but **nothing auto-resumes**: after a restart the page shows a session bar
-and the next message goes to the stored tree only after you explicitly
-pick *resume* (or start a *new chat*). Telegram keeps auto-resuming.
+persist to `<workspace>/logs/web-turns.json` and survive bot restarts.
+
+**The webui follows Telegram, one-way.** By default the browser page keeps
+itself pinned to whichever conversation is live on Telegram (the freshest
+non-`web:` continuation in `sessions.json`): open it after chatting on your
+phone and the next message continues *that* conversation — and when a new
+Telegram conversation starts, the page jumps to it. The per-key run queue in
+`Agent.run` makes this sharing safe (a web turn and a Telegram turn can never
+resume the same checkpoint at once). Telegram never follows the webui. The
+checkbox on `/settings` ("webui follows telegram") turns it off; choosing a
+local web session or starting a *new chat* turns it off automatically too.
+With follow off, restarts never auto-resume — a session picker demands an
+explicit choice, exactly to avoid a stale tree hanging the first turn.
 
 ## Git integration (summary)
 
@@ -315,7 +324,7 @@ git -C ~/grandma-workspace push sync master
 ```
 
 The runtime state under `logs/` (`grandma-kat.db*`, `sessions.json`,
-`web-turns.json`) holds your prompts and conversation text, so `index.ts`
+`web-turns.json`, `web-settings.json`) holds your prompts and conversation text, so `index.ts`
 gitignores it on boot — it stays local and out of the audit trail.
 
 ## FAQ

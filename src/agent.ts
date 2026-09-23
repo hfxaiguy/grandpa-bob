@@ -93,6 +93,7 @@ export class Agent {
   private continuations = new Map<string, string>();
   private sessionsPath: string;
   private sessionPatterns = new Map<string, string>(); // key → pattern definition hash
+  private sessionTimes = new Map<string, number>(); // key → last activity (wall clock)
   // One run at a time per conversation key. Web and Telegram may both
   // drive the SAME key (the web "follow" feature), and two concurrent
   // resumes of one checkpoint would race on its load/save — the queue
@@ -115,6 +116,17 @@ export class Agent {
   }
 
   /**
+   * Live sessions with their last-activity wall clock. The web UI uses
+   * this to FOLLOW the most recently used Telegram conversation.
+   */
+  sessionMeta(): { key: string; updatedAt: number }[] {
+    return [...this.continuations.keys()].map((key) => ({
+      key,
+      updatedAt: this.sessionTimes.get(key) ?? 0,
+    }));
+  }
+
+  /**
    * Restore conversation continuations from `<workspace>/logs/sessions.json`
    * so chat sessions survive bot restarts. Missing or corrupt files are
    * ignored (first run starts clean).
@@ -123,13 +135,14 @@ export class Agent {
     try {
       const raw = JSON.parse(fs.readFileSync(this.sessionsPath, "utf8")) as Record<
         string,
-        { continuation?: unknown; pattern?: unknown } | null
+        { continuation?: unknown; pattern?: unknown; updatedAt?: unknown } | null
       >;
       if (!raw || typeof raw !== "object") return;
       for (const [key, val] of Object.entries(raw)) {
         if (typeof val?.continuation === "string") {
           this.continuations.set(key, val.continuation);
           if (typeof val.pattern === "string") this.sessionPatterns.set(key, val.pattern);
+          if (typeof val.updatedAt === "number") this.sessionTimes.set(key, val.updatedAt);
         }
       }
     } catch {
@@ -139,9 +152,13 @@ export class Agent {
 
   /** Atomically persist the continuation map (write tmp, rename). */
   private saveSessions(): void {
-    const out: Record<string, { continuation: string; pattern: string | null }> = {};
+    const out: Record<string, { continuation: string; pattern: string | null; updatedAt?: number }> = {};
     for (const [key, continuation] of this.continuations) {
-      out[key] = { continuation, pattern: this.sessionPatterns.get(key) ?? null };
+      out[key] = {
+        continuation,
+        pattern: this.sessionPatterns.get(key) ?? null,
+        updatedAt: this.sessionTimes.get(key),
+      };
     }
     try {
       fs.mkdirSync(path.dirname(this.sessionsPath), { recursive: true });
@@ -218,6 +235,7 @@ export class Agent {
     if (cont && this.sessionPatterns.get(key) !== defId) {
       this.continuations.delete(key);
       this.sessionPatterns.delete(key);
+      this.sessionTimes.delete(key);
       this.saveSessions();
       cont = undefined;
       droppedContinuation = true;
@@ -281,6 +299,7 @@ export class Agent {
         console.warn(`[agent] stale checkpoint for '${key}' (${msg}) — starting fresh tree`);
         this.continuations.delete(key);
         this.sessionPatterns.delete(key);
+        this.sessionTimes.delete(key);
         this.saveSessions();
         droppedContinuation = true;
         outcome = await freshRun();
@@ -306,6 +325,7 @@ export class Agent {
     if (outcome.status === "waiting" && outcome.continuation) {
       this.continuations.set(key, outcome.continuation);
       this.sessionPatterns.set(key, defId);
+      this.sessionTimes.set(key, Date.now());
       this.saveSessions();
       return { status: "waiting", continuation: outcome.continuation };
     }
@@ -315,6 +335,7 @@ export class Agent {
     // drop any stale continuation so the next message starts a fresh tree.
     this.continuations.delete(key);
     this.sessionPatterns.delete(key);
+    this.sessionTimes.delete(key);
     this.saveSessions();
     return { status: "done", result: outcome.result };
   }
@@ -382,6 +403,7 @@ export class Agent {
   clear(key: string): void {
     this.continuations.delete(key);
     this.sessionPatterns.delete(key);
+    this.sessionTimes.delete(key);
     this.saveSessions();
   }
 }

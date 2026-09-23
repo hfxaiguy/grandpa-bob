@@ -612,6 +612,62 @@ function newSessionKey(): string {
   return `web:${randomUUID().slice(0, 8)}`;
 }
 
+// ── auto-follow: the webui mirrors the live Telegram conversation ─────
+// One-way by design. Telegram always runs its own conversation keys
+// ("chatId:threadId", see bot.ts) and NEVER adopts a web key — there is
+// no code path from bot.ts into the web session store. The webui, in
+// contrast, resolves its active session to the freshest Telegram key on
+// every /api/session read, so whatever grandma is discussing on her
+// phone is what the browser continues typing into. Explicitly picking a
+// local web session (or starting a new chat) turns following off until
+// it's re-enabled in settings.
+let autoFollowTelegram = true;
+let webSettingsPath = "";
+
+function loadFollowSetting(): void {
+  try {
+    const raw = JSON.parse(fs.readFileSync(webSettingsPath, "utf8"));
+    if (typeof raw?.followTelegram === "boolean") autoFollowTelegram = raw.followTelegram;
+  } catch { /* first boot — default on */ }
+}
+
+function saveFollowSetting(): void {
+  if (!webSettingsPath) return;
+  try {
+    fs.mkdirSync(path.dirname(webSettingsPath), { recursive: true });
+    fs.writeFileSync(webSettingsPath, JSON.stringify({ followTelegram: autoFollowTelegram }));
+  } catch (e) {
+    console.warn("[admin] failed to save follow setting:", e);
+  }
+}
+
+/** Freshest live Telegram conversation key, or null when none exists. */
+function followTarget(agent?: Agent): string | null {
+  const meta = agent?.sessionMeta?.() ?? [];
+  const tg = meta
+    .filter((s) => !String(s.key).startsWith("web:") && s.updatedAt > 0)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+  return tg.length ? tg[0].key : null;
+}
+
+function resolveFollow(agent?: Agent): void {
+  if (!autoFollowTelegram) return;
+  const target = followTarget(agent);
+  if (!target) return; // no Telegram conversation to follow yet — keep current state
+  if (!sessionTurns.has(target)) {
+    sessionTurns.set(target, {
+      label: describeForeignKey(target), pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [],
+    });
+    saveTurns();
+  }
+  if (activeSession !== target) {
+    activeSession = target;
+    webMemoryValues.clear();
+    webMemoryPaths.clear();
+    broadcast({ type: "follow", key: target, label: sessionTurns.get(target)?.label ?? target });
+  }
+}
+
 function sessionList(agent?: Agent) {
   const local = [...sessionTurns.entries()].map(([key, s]) => ({
     key, label: s.label, pattern: s.pattern, updatedAt: s.updatedAt, turns: s.turns.length, remote: false,
@@ -869,6 +925,12 @@ function buildSettingsHtml(config: AdminConfig): string {
     <span id="service-dots" class="row" style="gap:14px"></span>
     <span class="status"><span class="dot on"></span> admin (this)</span>
     <span style="margin-left:auto"><small id="uptime"></small></span>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <label class="status" title="The webui automatically continues whichever conversation is live on Telegram. Telegram never picks up web chats.">
+      <input type="checkbox" id="follow-chk" style="margin:0 6px 0 0"> webui follows telegram
+    </label>
+    <small style="color:var(--muted)">one-way: telegram never follows the webui</small>
   </div>
   <div class="actions">
     <button onclick="restartBot()">Restart bot</button>
@@ -1327,6 +1389,23 @@ setInterval(() => {
   if (document.hidden) return;
   refreshStatus().catch(() => {});
 }, 10000);
+
+// Follow toggle: reflect server state, persist changes.
+async function syncFollowChk() {
+  try {
+    const d = await (await fetch("/api/session")).json();
+    $("follow-chk").checked = !!d.follow;
+  } catch { /* keep current */ }
+}
+$("follow-chk").onchange = async (e) => {
+  try {
+    await api("/api/session", { method: "POST", body: JSON.stringify({ follow: e.target.checked }) });
+    toast(e.target.checked ? "webui follows telegram from now on" : "stopped following telegram");
+  } catch {
+    e.target.checked = !e.target.checked;
+  }
+};
+syncFollowChk();
 
 refreshStatus();
 refreshPatterns();
@@ -2485,13 +2564,16 @@ function connect() {
       // one drops us back to the picker).
       refreshSessionOptions().then((d) => setSessionUi(!!d.active)).catch(() => setSessionUi(false));
     }
+    else if (msg.type === "follow") { checkFollow(); }
   };
 }
 
 // ---- history + session selection on load ----
-// A restart never auto-resumes: the server reports active=null and the
-// session bar stays up until "resume" or "new chat" is clicked.
+// With auto-follow ON (default) the server keeps the page pinned to the
+// live Telegram conversation. Without it, a restart never auto-resumes:
+// active=null and the session bar stays up until "resume"/"new chat".
 let sessionActive = false;
+let trackedActive = null;
 
 function renderTurns(list) {
   for (const t of list || []) {
@@ -2535,11 +2617,29 @@ async function loadHistory() {
   try {
     const d = await refreshSessionOptions();
     if (d.active) renderTurns(d.turns);
+    trackedActive = d.active || null;
     setSessionUi(!!d.active);
   } catch {
     setSessionUi(false); // server unreachable — input stays locked
   }
 }
+
+// Re-read the followed session; swap the transcript when the server
+// re-targeted it (a newer Telegram conversation became current).
+async function checkFollow() {
+  try {
+    const d = await refreshSessionOptions();
+    if ((d.active || null) === trackedActive) { setSessionUi(!!d.active); return; }
+    trackedActive = d.active || null;
+    conv.innerHTML = "";
+    blocks.clear();
+    showEmpty();
+    if (d.active) { renderTurns(d.turns); hideEmpty(); }
+    setSessionUi(!!d.active);
+    if (d.active) toast("now following: " + (d.label || d.active));
+  } catch { /* transient */ }
+}
+setInterval(() => { if (!document.hidden) checkFollow(); }, 7000);
 
 async function chooseSession(body) {
   try {
@@ -2554,6 +2654,7 @@ async function chooseSession(body) {
     blocks.clear();
     showEmpty();
     renderTurns(d.turns);
+    trackedActive = d.active || null;
     setSessionUi(true);
     treeLoadedFor = null;
     treeVisited.clear();
@@ -2693,18 +2794,25 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
   // Restore the web chat history from the previous run (before any browser
   // polls /api/turns).
   webTurnsPath = path.resolve(config.workspaceDir, "logs", "web-turns.json");
+  webSettingsPath = path.resolve(config.workspaceDir, "logs", "web-settings.json");
+  loadFollowSetting();
   loadTurns();
-  // Restore history from disk but never re-arm a session automatically:
-  // activeSession starts null so the chat page demands an explicit pick
-  // after a restart. Only a true first boot (no sessions at all) opens a
-  // fresh one immediately.
-  if (sessionTurns.size === 0) {
-    const key = newSessionKey();
-    sessionTurns.set(key, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
-    activeSession = key;
-    saveTurns();
-  } else {
-    console.log(`[admin] ${sessionTurns.size} web session(s) on disk awaiting explicit selection`);
+  // By default the webui follows the live Telegram conversation; only when
+  // there is nothing to follow does the classic rule apply — never re-arm
+  // a stored session automatically after a restart (picker), except on a
+  // true first boot, which opens a fresh chat.
+  if (autoFollowTelegram) resolveFollow(agent);
+  if (!activeSession) {
+    if (sessionTurns.size === 0) {
+      const key = newSessionKey();
+      sessionTurns.set(key, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
+      activeSession = key;
+      saveTurns();
+    } else {
+      console.log(`[admin] ${sessionTurns.size} web session(s) on disk awaiting explicit selection`);
+    }
+  } else if (autoFollowTelegram) {
+    console.log(`[admin] webui follows telegram conversation ${activeSession}`);
   }
 
   // Keep SSE connections alive through proxies/idle timeouts.
@@ -2785,10 +2893,13 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       // picks a session here (or starts a new one), /api/chat is refused
       // and no stored checkpoint is touched.
       if (req.method === "GET" && url.pathname === "/api/session") {
+        resolveFollow(agent);
         const active = activeSession ? sessionTurns.get(activeSession) : null;
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
           active: activeSession,
+          label: active?.label || "",
+          follow: autoFollowTelegram,
           sessions: sessionList(agent),
           turns: active ? active.turns.map(slimTurn) : null,
         }));
@@ -2797,10 +2908,22 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
 
       if (req.method === "POST" && url.pathname === "/api/session") {
         const body = await readBody(req);
-        let sel: { key?: unknown; new?: unknown; delete?: unknown };
+        let sel: { key?: unknown; new?: unknown; delete?: unknown; follow?: unknown };
         try { sel = JSON.parse(body); } catch { res.writeHead(400); res.end('{"error":"invalid JSON body"}'); return; }
 
+        if (typeof sel.follow === "boolean") {
+          autoFollowTelegram = sel.follow;
+          saveFollowSetting();
+          if (autoFollowTelegram) resolveFollow(agent);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, active: activeSession, follow: autoFollowTelegram, sessions: sessionList(agent) }));
+          return;
+        }
+
         if (sel.new === true) {
+          // Taking the deliberate step of a private web chat ends the
+          // telegram-follow until it's switched back on in settings.
+          if (autoFollowTelegram) { autoFollowTelegram = false; saveFollowSetting(); }
           const key = newSessionKey();
           sessionTurns.set(key, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
           pruneSessions(agent);
@@ -2809,7 +2932,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           webMemoryPaths.clear();
           saveTurns();
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, active: key, turns: [] }));
+          res.end(JSON.stringify({ ok: true, active: key, follow: autoFollowTelegram, turns: [] }));
           return;
         }
         if (typeof sel.delete === "string") {
@@ -2837,13 +2960,16 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
             saveTurns();
           }
           if (!s) { res.writeHead(404); res.end('{"error":"no such session"}'); return; }
+          // Pinning a local web session also releases the telegram-follow;
+          // selecting a telegram key by hand is compatible with staying on.
+          if (autoFollowTelegram && sel.key.startsWith("web:")) { autoFollowTelegram = false; saveFollowSetting(); }
           activeSession = sel.key;
           // Memory slots belong to the selected tree; the panel must not
           // show the previous session's values until this one logs again.
           webMemoryValues.clear();
           webMemoryPaths.clear();
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, active: sel.key, turns: s.turns.map(slimTurn) }));
+          res.end(JSON.stringify({ ok: true, active: sel.key, follow: autoFollowTelegram, turns: s.turns.map(slimTurn) }));
           return;
         }
         res.writeHead(400, { "content-type": "application/json" });

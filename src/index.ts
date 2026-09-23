@@ -24,6 +24,7 @@ async function main(): Promise<void> {
     "logs/grandma-kat.db*",
     "logs/sessions.json",
     "logs/web-turns.json",
+    "logs/web-settings.json",
     "assets/inbox/",
   ]);
 
