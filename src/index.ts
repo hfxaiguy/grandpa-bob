@@ -9,7 +9,7 @@ import { Agent, checkLlmEntry } from "./agent.js";
 import { loadModels } from "./models.js";
 import { createBot } from "./bot.js";
 import { checkStt } from "./stt.js";
-import { startAdmin, getSelectedPattern } from "./admin.js";
+import { startAdmin, getSelectedPattern, recordRemoteTurn } from "./admin.js";
 import { loadAppTools } from "./app-tools.js";
 
 async function main(): Promise<void> {
@@ -88,6 +88,7 @@ async function main(): Promise<void> {
 
   const bot = createBot({
     token: config.telegramToken,
+    recordTurn: recordRemoteTurn,
     allowedUserIds: config.allowedUserIds,
     workspace: config.workspaceDir,
     envPath,

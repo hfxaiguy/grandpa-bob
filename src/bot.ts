@@ -22,6 +22,8 @@ export interface BotDeps {
   whisperUrl: string;
   sherpaUrl: string;
   sttLanguage: string;
+  /** Mirror handled turns into the web session store (admin's recordRemoteTurn). */
+  recordTurn?: (key: string, input: string, output: string, ok?: boolean) => void;
   /** Named model registry; the bot's /status command shows all entries. */
   models: ModelRegistry;
   agent: Agent;
@@ -232,6 +234,8 @@ export function createBot(deps: BotDeps): Bot {
    */
   const handleUserContent = async (ctx: Context, content: unknown): Promise<void> => {
     const key = convKey(ctx);
+    const display = typeof content === "string" ? content : "[attachment]";
+    const turnOutput: string[] = [];
     // First message from this conversation: initialize the tree.
     // It pauses at .human() immediately. Without this, the user's
     // first message would be consumed by tree setup with no response.
@@ -251,17 +255,19 @@ export function createBot(deps: BotDeps): Bot {
         // onEmit: send each emitted value to Telegram immediately. Trees emit
         // { text } objects; show the text, never the JSON wrapper.
         const text = emitText(value);
-        if (text) { emitted = true; await reply(ctx, text); }
+        if (text) { emitted = true; turnOutput.push(text); await reply(ctx, text); }
       });
       // Non-looping trees complete instead of pausing at .human() — send
       // their final result as the reply when nothing was emitted.
       if (res.status === "done" && !emitted && res.result != null) {
         const text = emitText(res.result);
-        if (text) await reply(ctx, text);
+        if (text) { turnOutput.push(text); await reply(ctx, text); }
       }
+      deps.recordTurn?.(key, display, turnOutput.join("\n\n"));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[agent]", err);
+      deps.recordTurn?.(key, display, msg, false);
       const backendList = Object.entries(deps.models)
         .map(([n, m]) => `${n}=${m.baseURL}`)
         .join(", ");

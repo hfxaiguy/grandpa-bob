@@ -84,7 +84,7 @@ async function boot(opts?: { wsDir?: string; agent?: any }) {
     agent: opts?.agent ?? mockAgent(),
   });
   await events.once(server, "listening");
-  return { port, server };
+  return { port, server, mod };
 }
 
 // ── 1. first boot: auto new session, chat works, v2 store persisted ──
@@ -232,13 +232,24 @@ let firstKey = "";
     clear() {},
   } as any;
 
-  const { port, server } = await boot({ wsDir: ws6, agent: agent6 });
+  const { port, server, mod } = await boot({ wsDir: ws6, agent: agent6 });
   const s = await api(port, "GET", "/api/session");
   assert.equal(s.json.follow, true, "follow defaults to ON");
   assert.equal(s.json.active, "777:0", "boot adopts the freshest TELEGRAM key");
   await api(port, "POST", "/api/chat", { text: "via web" });
   await new Promise((r) => setTimeout(r, 120));
   assert.equal(usedKeys.at(-1), "777:0", "web messages run the telegram conversation");
+
+  // Telegram-side turns mirror into the followed transcript, and a turn on
+  // an unfollowed key surfaces that key as its own selectable session.
+  mod.recordRemoteTurn("777:0", "on the phone", "answer from grandma's tree");
+  const sm = await api(port, "GET", "/api/session");
+  assert.ok(sm.json.turns.some((t: any) => t.input === "on the phone" && t.output === "answer from grandma's tree"),
+    "telegram turn appears in the followed web transcript");
+  mod.recordRemoteTurn("555:0", "other chat", "other reply");
+  const sm2 = await api(port, "GET", "/api/session");
+  assert.ok(sm2.json.sessions.some((x: any) => x.key === "555:0" && x.turns === 1),
+    "mirrored turn on an inactive key creates its session entry");
 
   // A newer telegram conversation appears → the webui jumps to it.
   meta.unshift({ key: "888:3", updatedAt: Date.now() + 1000 });

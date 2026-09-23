@@ -668,6 +668,47 @@ function resolveFollow(agent?: Agent): void {
   }
 }
 
+// Module handle on the agent so remote turns can prune the store too.
+let adminAgent: Agent | undefined;
+
+/**
+ * Mirror a conversation turn that ran on another transport (Telegram)
+ * into the web session store, so a followed browser actually SHOWS the
+ * chat instead of an empty transcript. bot.ts calls this after every
+ * handled message via the `recordTurn` dep. Web-run turns are recorded by
+ * runTurn itself; this never double-books them (keys starting "web:" are
+ * skipped). Live pages get the exchange over SSE as a plain two-bubble
+ * turn (no tree events — those streamed to whoever ran the turn).
+ */
+export function recordRemoteTurn(key: string, input: string, output: string, ok = true): void {
+  if (!key || key.startsWith("web:")) return;
+  let s = sessionTurns.get(key);
+  if (!s) {
+    s = { label: describeForeignKey(key), pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] };
+    sessionTurns.set(key, s);
+  }
+  const turnId = randomUUID();
+  const now = Date.now();
+  s.turns.push({
+    turnId,
+    input,
+    startedAt: now,
+    endedAt: now,
+    status: ok ? "done" : "error",
+    error: ok ? null : output || "agent error",
+    output: ok ? output || null : null,
+    events: [],
+  });
+  while (s.turns.length > MAX_TURNS_KEPT) s.turns.shift();
+  s.updatedAt = now;
+  pruneSessions(adminAgent);
+  saveTurns();
+  if (activeSession === key) {
+    broadcast({ type: "turn_start", turnId, session: key, input, ts: now });
+    broadcast({ type: "turn_end", turnId, status: ok ? "done" : "error", error: ok ? null : output, output: ok ? output : null, ts: now });
+  }
+}
+
 function sessionList(agent?: Agent) {
   const local = [...sessionTurns.entries()].map(([key, s]) => ({
     key, label: s.label, pattern: s.pattern, updatedAt: s.updatedAt, turns: s.turns.length, remote: false,
@@ -2784,6 +2825,7 @@ export interface AdminOptions extends Partial<AdminConfig> {
 export function startAdmin(cfg?: AdminOptions): http.Server {
   const config: AdminConfig = { ...defaultConfig(), ...cfg };
   const agent = cfg?.agent;
+  adminAgent = agent;
   const stt = cfg?.stt;
   const SETTINGS_HTML = buildSettingsHtml(config);
   const sttLabel = stt
