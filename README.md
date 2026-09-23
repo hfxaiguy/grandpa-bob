@@ -271,11 +271,20 @@ non-`web:` continuation in `sessions.json`): open it after chatting on your
 phone and the next message continues *that* conversation — and when a new
 Telegram conversation starts, the page jumps to it. The per-key run queue in
 `Agent.run` makes this sharing safe (a web turn and a Telegram turn can never
-resume the same checkpoint at once). Telegram never follows the webui. The
-checkbox on `/settings` ("webui follows telegram") turns it off; choosing a
-local web session or starting a *new chat* turns it off automatically too.
-With follow off, restarts never auto-resume — a session picker demands an
-explicit choice, exactly to avoid a stale tree hanging the first turn.
+resume the same checkpoint at once).
+
+The exchange stays visible on both ends. A Telegram turn streams into the
+followed transcript live — bubbles *and* tree steps (bot.ts feeds
+`remoteTurnStart/Event/End`). A webui turn that runs into a Telegram
+conversation is posted back to the phone with a `💻` prefix, so the chat
+there keeps making sense. What Telegram never does is *adopt* a web
+conversation key: its chats always stay its own.
+
+The checkbox on `/settings` ("webui follows telegram") turns following off;
+choosing a local web session or starting a *new chat* turns it off
+automatically too. With follow off, restarts never auto-resume — a session
+picker demands an explicit choice, exactly to avoid a stale tree hanging the
+first turn.
 
 ## Git integration (summary)
 

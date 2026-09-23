@@ -22,8 +22,16 @@ export interface BotDeps {
   whisperUrl: string;
   sherpaUrl: string;
   sttLanguage: string;
-  /** Mirror handled turns into the web session store (admin's recordRemoteTurn). */
-  recordTurn?: (key: string, input: string, output: string, ok?: boolean) => void;
+  /**
+   * Live mirror of handled turns into the web session store (admin's
+   * remoteTurn* trio): start on receipt, event per tree step, end on
+   * completion. A followed browser then shows bubbles AND tree steps.
+   */
+  turnRecorder?: {
+    start: (key: string, input: string) => void;
+    event: (key: string, event: unknown) => void;
+    end: (key: string, output: string, ok?: boolean) => void;
+  };
   /** Named model registry; the bot's /status command shows all entries. */
   models: ModelRegistry;
   agent: Agent;
@@ -236,13 +244,17 @@ export function createBot(deps: BotDeps): Bot {
     const key = convKey(ctx);
     const display = typeof content === "string" ? content : "[attachment]";
     const turnOutput: string[] = [];
+    const rec = deps.turnRecorder;
+    rec?.start(key, display);
     // First message from this conversation: initialize the tree.
     // It pauses at .human() immediately. Without this, the user's
     // first message would be consumed by tree setup with no response.
     // Trunk-style trees grow to their first .human(); input-driven app
     // trees (they declare `input`) consume the message directly.
     if (!deps.agent.hasContinuation(key) && !(await deps.agent.consumesInputDirectly())) {
-      await deps.agent.run(key, "", async () => {});
+      await deps.agent.run(key, "", async () => {}, {
+        onEvent: (e) => rec?.event(key, e),
+      });
     }
     // keep the "typing…" indicator alive while the agent works
     const typing = setInterval(() => {
@@ -256,6 +268,8 @@ export function createBot(deps: BotDeps): Bot {
         // { text } objects; show the text, never the JSON wrapper.
         const text = emitText(value);
         if (text) { emitted = true; turnOutput.push(text); await reply(ctx, text); }
+      }, {
+        onEvent: (e) => rec?.event(key, e),
       });
       // Non-looping trees complete instead of pausing at .human() — send
       // their final result as the reply when nothing was emitted.
@@ -263,11 +277,11 @@ export function createBot(deps: BotDeps): Bot {
         const text = emitText(res.result);
         if (text) { turnOutput.push(text); await reply(ctx, text); }
       }
-      deps.recordTurn?.(key, display, turnOutput.join("\n\n"));
+      rec?.end(key, turnOutput.join("\n\n"));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[agent]", err);
-      deps.recordTurn?.(key, display, msg, false);
+      rec?.end(key, msg, false);
       const backendList = Object.entries(deps.models)
         .map(([n, m]) => `${n}=${m.baseURL}`)
         .join(", ");

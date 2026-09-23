@@ -9,7 +9,8 @@ import { Agent, checkLlmEntry } from "./agent.js";
 import { loadModels } from "./models.js";
 import { createBot } from "./bot.js";
 import { checkStt } from "./stt.js";
-import { startAdmin, getSelectedPattern, recordRemoteTurn } from "./admin.js";
+import { startAdmin, getSelectedPattern, remoteTurnStart, remoteTurnEvent, remoteTurnEnd } from "./admin.js";
+import type { Bot } from "grammy";
 import { loadAppTools } from "./app-tools.js";
 
 async function main(): Promise<void> {
@@ -71,9 +72,18 @@ async function main(): Promise<void> {
   // nonexistent files).
   const adminPort = parseInt(process.env.ADMIN_PORT || "8080", 10);
   const envPath = path.join(process.cwd(), ".env");
+  // Late-bound Telegram handle: the admin is constructed before the bot,
+  // but a webui-run turn into a Telegram conversation must reach the phone.
+  let telegramBot: Bot | undefined;
   startAdmin({
     port: adminPort,
     agent,
+    telegramNotify: (key, text) => {
+      const [chatId, threadId] = key.split(":");
+      telegramBot?.api
+        .sendMessage(Number(chatId), text, threadId && threadId !== "0" ? { message_thread_id: Number(threadId) } : {})
+        .catch((err) => console.warn("[admin] telegram notify failed:", err));
+    },
     projectDir: process.cwd(),
     envPath,
     workspaceDir: config.workspaceDir,
@@ -88,7 +98,7 @@ async function main(): Promise<void> {
 
   const bot = createBot({
     token: config.telegramToken,
-    recordTurn: recordRemoteTurn,
+    turnRecorder: { start: remoteTurnStart, event: remoteTurnEvent, end: remoteTurnEnd },
     allowedUserIds: config.allowedUserIds,
     workspace: config.workspaceDir,
     envPath,
@@ -101,6 +111,7 @@ async function main(): Promise<void> {
     agent,
   });
 
+  telegramBot = bot;
   process.once("SIGINT", () => bot.stop());
   process.once("SIGTERM", () => bot.stop());
 

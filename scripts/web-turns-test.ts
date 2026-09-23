@@ -242,11 +242,31 @@ let firstKey = "";
 
   // Telegram-side turns mirror into the followed transcript, and a turn on
   // an unfollowed key surfaces that key as its own selectable session.
-  mod.recordRemoteTurn("777:0", "on the phone", "answer from grandma's tree");
+  mod.remoteTurnStart("777:0", "on the phone");
+  mod.remoteTurnEvent("777:0", {
+    kind: "llm_call", branch_path: "relay", iteration: 1,
+    content: { model: "cheap", messages: [{ role: "system", content: "TG-PROMPT" }] },
+  });
+  mod.remoteTurnEvent("777:0", {
+    kind: "record", branch_path: "relay", scope_id: 5,
+    content: { child: "messages", op: "memoryUpdate", value: [1, 2, 3] },
+  });
+  mod.remoteTurnEnd("777:0", "answer from grandma's tree");
   const sm = await api(port, "GET", "/api/session");
-  assert.ok(sm.json.turns.some((t: any) => t.input === "on the phone" && t.output === "answer from grandma's tree"),
-    "telegram turn appears in the followed web transcript");
-  mod.recordRemoteTurn("555:0", "other chat", "other reply");
+  const tgTurn = sm.json.turns.find((t: any) => t.input === "on the phone");
+  assert.ok(tgTurn && tgTurn.output === "answer from grandma's tree", "telegram turn appears in the followed web transcript");
+  assert.equal(tgTurn.status, "done");
+  assert.equal(tgTurn.events.length, 2, "tree steps mirrored with the turn");
+  assert.equal(tgTurn.events[0].kind, "llm_call");
+  assert.equal(tgTurn.events[1].content.op, "memoryUpdate", "memory steps kept");
+  const rawTurns = (await api(port, "GET", "/api/turns")).json.turns;
+  const rawTurn = rawTurns.find((t: any) => t.input === "on the phone");
+  assert.ok(JSON.stringify(rawTurn.events[0].content).includes("TG-PROMPT"),
+    "live copy keeps the raw prompt for the step view");
+  const tgDisk = JSON.parse(await fs.readFile(path.join(ws6, "logs", "web-turns.json"), "utf8"));
+  assert.ok(!JSON.stringify(tgDisk).includes("TG-PROMPT"), "persisted copy strips prompt messages");
+  mod.remoteTurnStart("555:0", "other chat");
+  mod.remoteTurnEnd("555:0", "other reply");
   const sm2 = await api(port, "GET", "/api/session");
   assert.ok(sm2.json.sessions.some((x: any) => x.key === "555:0" && x.turns === 1),
     "mirrored turn on an inactive key creates its session entry");

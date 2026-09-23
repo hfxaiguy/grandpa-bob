@@ -670,42 +670,101 @@ function resolveFollow(agent?: Agent): void {
 
 // Module handle on the agent so remote turns can prune the store too.
 let adminAgent: Agent | undefined;
+// Deliver webui-run turns to the originating transport (see AdminOptions).
+let telegramNotify: ((key: string, text: string) => void) | undefined;
 
 /**
- * Mirror a conversation turn that ran on another transport (Telegram)
- * into the web session store, so a followed browser actually SHOWS the
- * chat instead of an empty transcript. bot.ts calls this after every
- * handled message via the `recordTurn` dep. Web-run turns are recorded by
- * runTurn itself; this never double-books them (keys starting "web:" are
- * skipped). Live pages get the exchange over SSE as a plain two-bubble
- * turn (no tree events — those streamed to whoever ran the turn).
+ * Track memory-slot writes from a raw agent event. Slots are identified
+ * by (scope_id, name) — see webMemoryValues above. Shared by web-run
+ * turns and mirrored Telegram turns so the tree panel stays truthful
+ * whichever transport ran the step.
  */
-export function recordRemoteTurn(key: string, input: string, output: string, ok = true): void {
-  if (!key || key.startsWith("web:")) return;
+function trackMemoryWrite(e: unknown): void {
+  const raw = e as {
+    scope_id?: number | null; branch_path?: string; kind?: string;
+    content?: { child?: unknown; value?: unknown; op?: unknown };
+  };
+  // Memory writes are record events with op memory/memoryUpdate; older
+  // runs logged them as their own "memory" kind.
+  const memWrite =
+    raw?.kind === "memory" ||
+    (raw?.kind === "record" && (raw.content?.op === "memory" || raw.content?.op === "memoryUpdate"));
+  if (!memWrite || raw.scope_id == null) return;
+  const child = typeof raw.content?.child === "string" ? raw.content.child : "";
+  const slotKey = `${raw.scope_id}/${child}`;
+  if (raw.content && "value" in raw.content) webMemoryValues.set(slotKey, raw.content.value);
+  const nodePath = (raw.branch_path ?? "") + (child ? "/" + child : "");
+  if (nodePath) {
+    let paths = webMemoryPaths.get(slotKey);
+    if (!paths) { paths = new Set(); webMemoryPaths.set(slotKey, paths); }
+    paths.add(nodePath);
+  }
+}
+
+/** Find or create the web-store entry for a (foreign) conversation key. */
+function ensureSessionEntry(key: string): WebSession {
   let s = sessionTurns.get(key);
   if (!s) {
     s = { label: describeForeignKey(key), pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] };
     sessionTurns.set(key, s);
+    pruneSessions(adminAgent);
+    saveTurns();
   }
+  return s;
+}
+
+// Live mirror of a turn that runs on another transport (Telegram). bot.ts
+// feeds these three calls while it runs the tree, so a followed browser
+// shows the exchange — bubbles AND tree steps — exactly like a web turn.
+// Web-run turns use runTurn and never come through here.
+export function remoteTurnStart(key: string, input: string): void {
+  if (!key || key.startsWith("web:")) return;
+  const s = ensureSessionEntry(key);
   const turnId = randomUUID();
   const now = Date.now();
   s.turns.push({
-    turnId,
-    input,
-    startedAt: now,
-    endedAt: now,
-    status: ok ? "done" : "error",
-    error: ok ? null : output || "agent error",
-    output: ok ? output || null : null,
-    events: [],
+    turnId, input, startedAt: now, endedAt: null, status: "running",
+    error: null, output: null, events: [],
   });
   while (s.turns.length > MAX_TURNS_KEPT) s.turns.shift();
   s.updatedAt = now;
-  pruneSessions(adminAgent);
+  saveTurns();
+  if (activeSession === key) broadcast({ type: "turn_start", turnId, session: key, input, ts: now });
+}
+
+export function remoteTurnEvent(key: string, event: unknown): void {
+  if (!key || key.startsWith("web:")) return;
+  const s = sessionTurns.get(key);
+  const t = s?.turns.at(-1);
+  if (!t || t.status !== "running") return;
+  trackMemoryWrite(event);
+  const clean = sanitizeEvent(event as Parameters<typeof sanitizeEvent>[0]);
+  t.events.push(clean);
+  if (activeSession === key) broadcast({ type: "event", turnId: t.turnId, event: clean });
+}
+
+export function remoteTurnEnd(key: string, output: string, ok = true): void {
+  if (!key || key.startsWith("web:")) return;
+  const s = sessionTurns.get(key);
+  if (!s) return;
+  const now = Date.now();
+  let t = s.turns.at(-1);
+  if (!t || t.status !== "running") {
+    // End without a start (e.g. the grow pass failed before start) —
+    // record a one-line turn rather than dropping the exchange.
+    t = { turnId: randomUUID(), input: "", startedAt: now, endedAt: null, status: "running", error: null, output: null, events: [] };
+    s.turns.push(t);
+    while (s.turns.length > MAX_TURNS_KEPT) s.turns.shift();
+    if (activeSession === key) broadcast({ type: "turn_start", turnId: t.turnId, session: key, input: "", ts: now });
+  }
+  t.endedAt = now;
+  t.status = ok ? "done" : "error";
+  t.output = ok ? output || null : null;
+  t.error = ok ? null : output || "agent error";
+  s.updatedAt = now;
   saveTurns();
   if (activeSession === key) {
-    broadcast({ type: "turn_start", turnId, session: key, input, ts: now });
-    broadcast({ type: "turn_end", turnId, status: ok ? "done" : "error", error: ok ? null : output, output: ok ? output : null, ts: now });
+    broadcast({ type: "turn_end", turnId: t.turnId, status: t.status, error: t.error, output: t.output, ts: now });
   }
 }
 
@@ -835,26 +894,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
   broadcast({ type: "turn_start", turnId, session: key, input: displayText, ts: record.startedAt });
 
   const onEvent = (e: unknown) => {
-    const raw = e as {
-      run_id?: string; scope_id?: number | null; branch_path?: string; kind?: string;
-      content?: { child?: unknown; value?: unknown; op?: unknown };
-    };
-    // Memory writes are record events with op memory/memoryUpdate; older
-    // runs logged them as their own "memory" kind.
-    const memWrite =
-      raw?.kind === "memory" ||
-      (raw?.kind === "record" && (raw.content?.op === "memory" || raw.content?.op === "memoryUpdate"));
-    if (memWrite && raw.scope_id != null) {
-      const child = typeof raw.content?.child === "string" ? raw.content.child : "";
-      const slotKey = `${raw.scope_id}/${child}`;
-      if (raw.content && "value" in raw.content) webMemoryValues.set(slotKey, raw.content.value);
-      const nodePath = (raw.branch_path ?? "") + (child ? "/" + child : "");
-      if (nodePath) {
-        let paths = webMemoryPaths.get(slotKey);
-        if (!paths) { paths = new Set(); webMemoryPaths.set(slotKey, paths); }
-        paths.add(nodePath);
-      }
-    }
+    trackMemoryWrite(e);
     const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0]);
     record.events.push(s);
     broadcast({ type: "event", turnId, event: s });
@@ -908,6 +948,19 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       ts: record.endedAt,
     });
     saveTurns();
+    // A turn the browser ran into a Telegram conversation belongs on the
+    // phone too — mirror it there (one-way: Telegram never mirrors its
+    // own turns back into any web page, it just records them).
+    if (telegramNotify && !key.startsWith("web:")) {
+      const body = record.status === "error"
+        ? `\u26a0\ufe0f ${record.error ?? "error"}`
+        : (record.output ?? "(no reply)");
+      try {
+        telegramNotify(key, `\ud83d\udcbb ${displayText}\n\n${body}`);
+      } catch (e) {
+        console.warn("[web-chat] telegram notify failed:", e);
+      }
+    }
   }
 }
 
@@ -2818,6 +2871,13 @@ setInterval(() => { if (!document.hidden) loadHealth(); }, 10000);
 export interface AdminOptions extends Partial<AdminConfig> {
   /** The agent instance — required for the chat front page. */
   agent?: Agent;
+  /**
+   * Deliver a webui-run turn back to its originating transport (Telegram).
+   * Called when a turn runs under a non-`web:` key — i.e. the browser
+   * continued a Telegram conversation — so the phone sees the exchange
+   * too. index.ts wires it to bot.api.sendMessage.
+   */
+  telegramNotify?: (key: string, text: string) => void;
   /** STT backend options — required for voice input on the chat page. */
   stt?: SttBackendOptions;
 }
@@ -2825,6 +2885,7 @@ export interface AdminOptions extends Partial<AdminConfig> {
 export function startAdmin(cfg?: AdminOptions): http.Server {
   const config: AdminConfig = { ...defaultConfig(), ...cfg };
   const agent = cfg?.agent;
+  telegramNotify = cfg?.telegramNotify;
   adminAgent = agent;
   const stt = cfg?.stt;
   const SETTINGS_HTML = buildSettingsHtml(config);
