@@ -64,10 +64,17 @@ async function main(): Promise<void> {
   }
 
   // Start the web UI: chat front page (/) + settings page (/settings).
+  // projectDir/envPath/workspaceDir must come from the RUNNING config —
+  // admin's HOME-based defaults break on hosts where the checkout isn't
+  // at ~/grandpa-bob-bot (env editor, models probe and health would read
+  // nonexistent files).
   const adminPort = parseInt(process.env.ADMIN_PORT || "8080", 10);
   startAdmin({
     port: adminPort,
     agent,
+    projectDir: process.cwd(),
+    envPath: path.join(process.cwd(), ".env"),
+    workspaceDir: config.workspaceDir,
     stt: {
       backend: config.sttBackend,
       whisperUrl: config.whisperUrl,

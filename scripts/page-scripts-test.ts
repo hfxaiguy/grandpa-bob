@@ -64,6 +64,8 @@ assert.match(chatHtml, /loadPatternSelect\(\);/, "dropdown is populated on load"
 assert.match(chatHtml, /<div id="session-bar"/, "session picker present");
 assert.match(chatHtml, /id="session-resume"/, "resume button present");
 assert.match(chatHtml, /id="session-new"/, "new-session button present");
+assert.match(chatHtml, /id="health-dots"/, "chat header carries service health dots");
+assert.match(chatHtml, /loadHealth\(\);/, "health dots are populated on load");
 
 // /api/status must report real service health (telegram / voice / llm),
 // each a tri-state (up/down/n-a) with a detail line — the old dots were a

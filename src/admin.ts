@@ -1356,6 +1356,11 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   header nav { margin-left: auto; }
   header nav a { color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 600; }
   #pattern-sel { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; padding: 3px 6px; }
+  #health-dots { display: inline-flex; align-items: center; gap: 9px; margin-left: 4px; }
+  #health-dots .hdot { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); }
+  #health-dots .hdot i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--muted); }
+  #health-dots .hdot.up i { background: var(--green); }
+  #health-dots .hdot.down i { background: var(--red); }
   #session-bar { display: flex; gap: 8px; align-items: center; padding: 8px 16px; background: #263449; border-bottom: 1px solid var(--border); font-size: 13px; }
   #session-bar select { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; padding: 4px 8px; max-width: 340px; }
   #input:disabled, #send-btn:disabled, #mic-btn:disabled, #file-btn:disabled { opacity: 0.4; }
@@ -1481,6 +1486,7 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
 <header>
   <h1>grandpa-bob</h1>
   <span class="sub">${sttLabel}</span>
+  <span id="health-dots" title="service health — green up, red down, grey not configured"></span>
   <select id="pattern-sel" title="tree to run (patterns/*.mjs or app/*/tree.mjs)"></select>
   <button id="tree-btn" title="show the structure of the active tree">tree</button>
   <button id="internals-btn" title="show runtime bookkeeping steps (record, scope)">internals</button>
@@ -2638,6 +2644,28 @@ async function setPattern(name) {
 }
 document.getElementById("pattern-sel").addEventListener("change", (e) => setPattern(e.target.value));
 loadPatternSelect();
+
+// ---- service health dots (telegram / voice / llm) ----
+const HEALTH_LABEL = { telegram: "telegram", voice: "voice", llm: "models" };
+async function loadHealth() {
+  try {
+    const r = await fetch("/api/status");
+    const d = await r.json();
+    const host = $("health-dots");
+    if (!host) return;
+    host.innerHTML = "";
+    for (const svc of d.services || []) {
+      const el = document.createElement("span");
+      el.className = "hdot " + (svc.up === true ? "up" : svc.up === false ? "down" : "na");
+      el.title = svc.name + ": " + svc.detail;
+      const dot = document.createElement("i");
+      el.append(dot, " " + (HEALTH_LABEL[svc.name] || svc.name));
+      host.appendChild(el);
+    }
+  } catch { /* status unreachable — leave dots as-is */ }
+}
+loadHealth();
+setInterval(() => { if (!document.hidden) loadHealth(); }, 10000);
 </script>
 </body>
 </html>
