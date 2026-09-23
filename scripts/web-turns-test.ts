@@ -34,10 +34,14 @@ function freePort(): Promise<number> {
   });
 }
 
+const usedKeys: string[] = [];
 const mockAgent = () =>
   ({
+    // Two live Telegram-style continuations the web may FOLLOW.
+    sessionKeys: () => ["12345:0", "999:42"],
     hasContinuation: () => true,
-    async run(_key: string, content: unknown, onEmit: (v: unknown) => void, opts?: any) {
+    async run(key: string, content: unknown, onEmit: (v: unknown) => void, opts?: any) {
+      usedKeys.push(key);
       opts?.onEvent?.({
         kind: "llm_call",
         branch_path: "relay",
@@ -127,12 +131,31 @@ let firstKey = "";
   const { port, server } = await boot(); // fresh module state = restart
   const s1 = await api(port, "GET", "/api/session");
   assert.equal(s1.json.active, null, "no session is armed automatically after restart");
-  assert.equal(s1.json.sessions.length, 1);
-  assert.equal(s1.json.sessions[0].key, firstKey);
-  assert.equal(s1.json.sessions[0].pattern, "trunk", "session records its tree name");
+  const local1 = s1.json.sessions.filter((x: any) => !x.remote);
+  assert.equal(local1.length, 1);
+  assert.equal(local1[0].key, firstKey);
+  assert.equal(local1[0].pattern, "trunk", "session records its tree name");
+  // The agent's live Telegram conversations surface as followable entries.
+  const remote1 = s1.json.sessions.filter((x: any) => x.remote);
+  assert.equal(remote1.length, 2, "telegram sessions offered for follow");
+  assert.match(remote1.find((x: any) => x.key === "12345:0").label, /chat 12345 \(general\)/);
+  assert.match(remote1.find((x: any) => x.key === "999:42").label, /topic 42/);
 
   const refused = await api(port, "POST", "/api/chat", { text: "not yet" });
   assert.equal(refused.status, 409, "chat refused until a session is selected");
+
+  // FOLLOW a Telegram conversation: selecting its foreign key arms it and
+  // messages run under that exact key (shared with the other transport).
+  const fol = await api(port, "POST", "/api/session", { key: "12345:0" });
+  assert.equal(fol.status, 200, "foreign session can be selected");
+  assert.equal(fol.json.active, "12345:0");
+  assert.deepEqual(fol.json.turns, [], "followed session starts with an empty transcript");
+  const intoTg = await api(port, "POST", "/api/chat", { text: "from web" });
+  await waitDone(port, intoTg.json.turnId);
+  assert.equal(usedKeys.at(-1), "12345:0", "message ran under the telegram key");
+  const nowLocal = (await api(port, "GET", "/api/session")).json.sessions;
+  assert.ok(nowLocal.find((x: any) => x.key === "12345:0" && !x.remote && x.turns === 1),
+    "followed session adopted with its turn history");
 
   const sel = await api(port, "POST", "/api/session", { key: firstKey });
   assert.equal(sel.status, 200);
@@ -151,7 +174,7 @@ let firstKey = "";
 {
   const { port, server } = await boot();
   const s = await api(port, "GET", "/api/session");
-  assert.equal(s.json.sessions.length, 1);
+  assert.equal(s.json.sessions.filter((x: any) => !x.remote).length, 2, "two local sessions restored");
   const n = await api(port, "POST", "/api/session", { new: true });
   assert.equal(n.status, 200);
   assert.notEqual(n.json.active, firstKey);
@@ -159,7 +182,7 @@ let firstKey = "";
   const { json } = await api(port, "POST", "/api/chat", { text: "brand new" });
   await waitDone(port, json.turnId);
   const list = (await api(port, "GET", "/api/session")).json.sessions;
-  assert.equal(list.length, 2, "both sessions recorded");
+  assert.equal(list.filter((x: any) => !x.remote).length, 3, "all sessions recorded");
   const old = list.find((x: any) => x.key === firstKey);
   assert.ok(old.turns >= 2, "old session history untouched");
   server.close();
@@ -172,8 +195,8 @@ let firstKey = "";
   assert.equal(c.json.active, firstKey, "clear keeps the session active");
   const after = await api(p4, "GET", "/api/session");
   assert.equal(after.json.turns.length, 0, "active history cleared");
-  const other = after.json.sessions.find((x: any) => x.key !== firstKey);
-  assert.ok(other.turns > 0, "other sessions unaffected");
+  const other = after.json.sessions.find((x: any) => x.label === "brand new");
+  assert.ok(other && other.turns > 0, "other sessions unaffected");
 
   // ── 5. delete removes from disk ──
   const del = await api(p4, "POST", "/api/session", { delete: other.key });

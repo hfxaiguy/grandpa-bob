@@ -612,16 +612,33 @@ function newSessionKey(): string {
   return `web:${randomUUID().slice(0, 8)}`;
 }
 
-function sessionList() {
-  return [...sessionTurns.entries()]
-    .map(([key, s]) => ({ key, label: s.label, pattern: s.pattern, updatedAt: s.updatedAt, turns: s.turns.length }))
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+function sessionList(agent?: Agent) {
+  const local = [...sessionTurns.entries()].map(([key, s]) => ({
+    key, label: s.label, pattern: s.pattern, updatedAt: s.updatedAt, turns: s.turns.length, remote: false,
+  }));
+  // Live continuations this page has no transcript for — Telegram topics
+  // and web sessions pruned from the store. The web UI may FOLLOW any of
+  // them: selecting one sends web messages into the same conversation key
+  // the other transport uses, shared tree and all.
+  const foreign = (agent?.sessionKeys() ?? [])
+    .filter((k) => !sessionTurns.has(k))
+    .map((k) => ({ key: k, label: describeForeignKey(k), pattern: "", updatedAt: 0, turns: 0, remote: true }));
+  return [...local, ...foreign].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/** "chatId:threadId" (Telegram) → a readable label. */
+function describeForeignKey(key: string): string {
+  if (key.startsWith("web:")) return `web ${key.slice(4)} (no history)`;
+  const m = key.match(/^(-?\d+):(\d+)$/);
+  if (!m) return key;
+  const [, chat, thread] = m;
+  return `telegram · chat ${chat}${thread === "0" ? " (general)" : ` · topic ${thread}`}`;
 }
 
 /** Drop the least recently active sessions past the cap (and their trees). */
 function pruneSessions(agent: Agent | undefined): void {
   if (sessionTurns.size <= MAX_SESSIONS_KEPT) return;
-  const keys = sessionList().map((s) => s.key).filter((k) => k !== activeSession);
+  const keys = sessionList().filter((s) => !s.remote).map((s) => s.key).filter((k) => k !== activeSession);
   for (const key of keys.slice(MAX_SESSIONS_KEPT)) {
     sessionTurns.delete(key);
     agent?.clear(key);
@@ -2496,12 +2513,13 @@ async function refreshSessionOptions() {
   for (const s of d.sessions || []) {
     const o = document.createElement("option");
     o.value = s.key;
+    if (s.remote) o.dataset.remote = "1";
     const when = s.updatedAt ? new Date(s.updatedAt).toLocaleString() : "";
     const parts = [(s.label || "untitled")];
     if (s.pattern) parts.push("[" + s.pattern + "]");
     if (when) parts.push(when);
-    parts.push(s.turns + " turn" + (s.turns === 1 ? "" : "s"));
-    o.textContent = parts.join(" \\u00b7 ");
+    if (!s.remote) parts.push(s.turns + " turn" + (s.turns === 1 ? "" : "s"));
+    o.textContent = (s.remote ? "\\u21c4 " : "") + parts.join(" \\u00b7 ");
     sel.appendChild(o);
   }
   return d;
@@ -2539,7 +2557,14 @@ async function chooseSession(body) {
     toast("session failed: " + e.message, true);
   }
 }
-$("session-resume").onclick = () => { const k = $("session-sel").value; if (k) chooseSession({ key: k }); };
+$("session-resume").onclick = () => {
+  const sel = $("session-sel");
+  const opt = sel.selectedOptions[0];
+  if (!sel.value) return;
+  chooseSession({ key: sel.value }).then(() => {
+    if (opt && opt.dataset.remote) toast("\\u21c4 following this conversation — it stays live in telegram too");
+  });
+};
 $("session-new").onclick = () => chooseSession({ new: true });
 
 showEmpty();
@@ -2736,7 +2761,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
           active: activeSession,
-          sessions: sessionList(),
+          sessions: sessionList(agent),
           turns: active ? active.turns.map(slimTurn) : null,
         }));
         return;
@@ -2769,11 +2794,20 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           }
           saveTurns();
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, active: activeSession, sessions: sessionList() }));
+          res.end(JSON.stringify({ ok: true, active: activeSession, sessions: sessionList(agent) }));
           return;
         }
         if (typeof sel.key === "string") {
-          const s = sessionTurns.get(sel.key);
+          let s = sessionTurns.get(sel.key);
+          if (!s && agent?.hasContinuation(sel.key)) {
+            // FOLLOW a conversation owned by another transport (a Telegram
+            // topic): adopt its key. Messages here run the very same tree;
+            // the transcript view starts empty (state lives in the
+            // checkpoint, and the other chat keeps working unchanged).
+            s = { label: describeForeignKey(sel.key), pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] };
+            sessionTurns.set(sel.key, s);
+            saveTurns();
+          }
           if (!s) { res.writeHead(404); res.end('{"error":"no such session"}'); return; }
           activeSession = sel.key;
           // Memory slots belong to the selected tree; the panel must not

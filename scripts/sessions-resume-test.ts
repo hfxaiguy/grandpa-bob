@@ -108,6 +108,40 @@ const readSessions = async () =>
   console.log("5. clear() emptied sessions.json");
 }
 
+// ── 6. concurrent turns on ONE key serialize (web following telegram) ──
+{
+  await fs.writeFile(
+    path.join(ws, "patterns", "serial.mjs"),
+    `export default function ({ Tree }) {
+       return Tree.name("serial")
+         .model("cheap")
+         .human("q1").prompt(() => [{ role: "user", content: "p" }])
+         .human("q2").prompt(() => [{ role: "user", content: "p" }]);
+     }\n`,
+  );
+  let active = 0, peak = 0;
+  const slow = {
+    cheap: {
+      model: "cheap",
+      handler: async () => {
+        active++;
+        peak = Math.max(peak, active);
+        await new Promise((r) => setTimeout(r, 25));
+        active--;
+        return { content: "ok", reasoning: null, tool_calls: [] };
+      },
+    },
+  };
+  const agent = new Agent({ models: slow as any, workspace: ws, tools, patternName: () => "serial" });
+  const r0 = await agent.run("s", "seed");
+  assert.equal(r0.status, "waiting", "tree paused at .human(q1)");
+  const [ra, rb] = await Promise.all([agent.run("s", "A"), agent.run("s", "B")]);
+  assert.equal(peak, 1, "turns sharing one key never overlap");
+  assert.equal(ra.status, "waiting", "A paused at .human(q2)");
+  assert.equal(rb.status, "done", "B resumed after A and completed the tree");
+  console.log("6. concurrent turns on the same key serialized cleanly");
+}
+
 // ── 6. input-driven trees consume the message on the fresh run ──
 {
   assert.equal(await mkAgent().consumesInputDirectly(), false, "relay is trunk-shaped");

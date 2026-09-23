@@ -93,11 +93,25 @@ export class Agent {
   private continuations = new Map<string, string>();
   private sessionsPath: string;
   private sessionPatterns = new Map<string, string>(); // key → pattern definition hash
+  // One run at a time per conversation key. Web and Telegram may both
+  // drive the SAME key (the web "follow" feature), and two concurrent
+  // resumes of one checkpoint would race on its load/save — the queue
+  // makes a shared conversation safe regardless of transport.
+  private runChains = new Map<string, Promise<void>>();
 
   constructor(private deps: AgentDeps) {
     this.logDb = path.resolve(deps.workspace, "logs/grandma-kat.db");
     this.sessionsPath = path.resolve(deps.workspace, "logs", "sessions.json");
     this.loadSessions();
+  }
+
+  /**
+   * All conversation keys with a live continuation — Telegram topics
+   * ("chatId:threadId"), web sessions ("web:<id>"), anything. Used by the
+   * web picker to offer cross-transport "follow".
+   */
+  sessionKeys(): string[] {
+    return [...this.continuations.keys()];
   }
 
   /**
@@ -165,6 +179,28 @@ export class Agent {
    *                    continuation for the next run.
    */
   async run(
+    key: string,
+    humanInput: unknown,
+    onEmit?: (value: unknown) => void | Promise<void>,
+    opts?: AgentRunOptions,
+  ): Promise<AgentRunResult> {
+    const prev = this.runChains.get(key);
+    const work = (prev ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => this.runExclusive(key, humanInput, onEmit, opts));
+    // Void mirror for the queue: settles on success AND failure so a
+    // crashed turn never blocks the next one.
+    const gate = work.then(() => {}, () => {});
+    this.runChains.set(key, gate);
+    try {
+      return await work;
+    } finally {
+      if (this.runChains.get(key) === gate) this.runChains.delete(key);
+    }
+  }
+
+  /** The unqueued body of run(); call only through run() so keys stay serialized. */
+  private async runExclusive(
     key: string,
     humanInput: unknown,
     onEmit?: (value: unknown) => void | Promise<void>,
