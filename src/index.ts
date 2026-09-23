@@ -69,11 +69,12 @@ async function main(): Promise<void> {
   // at ~/grandpa-bob-bot (env editor, models probe and health would read
   // nonexistent files).
   const adminPort = parseInt(process.env.ADMIN_PORT || "8080", 10);
+  const envPath = path.join(process.cwd(), ".env");
   startAdmin({
     port: adminPort,
     agent,
     projectDir: process.cwd(),
-    envPath: path.join(process.cwd(), ".env"),
+    envPath,
     workspaceDir: config.workspaceDir,
     stt: {
       backend: config.sttBackend,
@@ -88,6 +89,7 @@ async function main(): Promise<void> {
     token: config.telegramToken,
     allowedUserIds: config.allowedUserIds,
     workspace: config.workspaceDir,
+    envPath,
     tmpDir: config.tmpDir,
     sttBackend: config.sttBackend,
     whisperUrl: config.whisperUrl,

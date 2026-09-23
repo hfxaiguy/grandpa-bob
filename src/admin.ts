@@ -115,7 +115,7 @@ async function readEnv(envPath: string): Promise<Record<string, string> | null> 
  * end. The parsed form is a flat `KEY=value` file — values are stored
  * verbatim, secrets are not logged.
  */
-async function writeEnv(envPath: string, updates: Record<string, string | null>) {
+export async function writeEnv(envPath: string, updates: Record<string, string | null>) {
   let lines: string[] = [];
   try {
     lines = (await readFile(envPath, "utf8")).split("\n");

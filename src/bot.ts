@@ -1,4 +1,4 @@
-import { Bot } from "grammy";
+import { Bot, InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 import path from "node:path";
 import type { Agent } from "./agent.js";
@@ -8,11 +8,15 @@ import { git } from "./tools/git.js";
 import { attachmentPrompt, saveAttachment } from "./attachments.js";
 import { emitText } from "./util/emit-text.js";
 import { telegramHtml } from "./util/telegram-text.js";
+import { getSelectedPattern, listTreeSources, setSelectedPattern, writeEnv } from "./admin.js";
+import { loadPattern } from "./pattern-loader.js";
 
 export interface BotDeps {
   token: string;
   allowedUserIds: Set<number>;
   workspace: string;
+  /** Project .env path — the tree switch persists TREE_PATTERN here. */
+  envPath: string;
   tmpDir: string;
   sttBackend: SttBackend;
   whisperUrl: string;
@@ -65,6 +69,7 @@ export function createBot(deps: BotDeps): Bot {
     await bot.api
       .setMyCommands(
         [
+          { command: "tree", description: "Switch the active tree" },
           { command: "clear", description: "Clear conversation context for this topic" },
           { command: "status", description: "Show workspace, git, model and STT status" },
         ],
@@ -142,6 +147,82 @@ export function createBot(deps: BotDeps): Bot {
         `stt: ${deps.sttBackend}${deps.sttBackend === "sherpa" ? ` @ ${deps.sherpaUrl}` : ` @ ${deps.whisperUrl}`}`,
       ].join("\n"),
     );
+  });
+
+  /**
+   * Switch the active tree; the caller's conversation is dropped. Loads the
+   * tree first so a module that isn't runnable (e.g. patterns/shared.mjs)
+   * fails here with a clear message instead of on the next turn.
+   */
+  const switchTree = async (ctx: Context, name: string): Promise<string | null> => {
+    try {
+      await loadPattern(deps.workspace, name);
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    setSelectedPattern(name);
+    try {
+      await writeEnv(deps.envPath, { TREE_PATTERN: name });
+    } catch { /* persist best-effort */ }
+    deps.agent.clear(convKey(ctx));
+    return null;
+  };
+
+  // /tree — switch the active tree without the web UI. The command autofills
+  // from Telegram's command menu; `/tree <name>` switches directly, bare
+  // `/tree` offers one inline button per tree (patterns + app trees).
+  bot.command("tree", async (ctx) => {
+    const sources = await listTreeSources(deps.workspace);
+    const arg = (ctx.match ?? "").trim();
+    if (arg) {
+      const hit = sources.find((p) => p.name === arg);
+      if (!hit) {
+        await reply(
+          ctx,
+          `No tree named "${arg}".\nAvailable: ${sources.map((p) => p.name).join(", ") || "(none)"}`,
+        );
+        return;
+      }
+      const err = await switchTree(ctx, hit.name);
+      if (err) {
+        await reply(ctx, `Can't switch to "${hit.name}": ${err}`);
+        return;
+      }
+      await reply(ctx, `Active tree: ${hit.name}\nConversation cleared — send a request to start it.`);
+      return;
+    }
+    if (!sources.length) {
+      await reply(ctx, "No trees found in the workspace.");
+      return;
+    }
+    const current = getSelectedPattern();
+    const keyboard = new InlineKeyboard();
+    for (const p of sources) {
+      keyboard.text(`${p.name === current ? "\u2713 " : ""}${p.name}`, `tree:${p.name}`).row();
+    }
+    await ctx.reply(`Active tree: ${current}\nPick a tree:`, {
+      ...threadOpts(ctx),
+      reply_markup: keyboard,
+    });
+  });
+
+  bot.callbackQuery(/^tree:(.+)$/, async (ctx) => {
+    const name = ctx.match[1];
+    const sources = await listTreeSources(deps.workspace);
+    const hit = sources.find((p) => p.name === name);
+    if (!hit) {
+      await ctx.answerCallbackQuery({ text: `No tree named "${name}"`, show_alert: true });
+      return;
+    }
+    const err = await switchTree(ctx, hit.name);
+    if (err) {
+      await ctx.answerCallbackQuery({ text: `Can't switch: ${err}`, show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: `Active tree: ${hit.name}` });
+    await ctx
+      .editMessageText(`Active tree: ${hit.name}\nConversation cleared — send a request to start it.`)
+      .catch(() => {});
   });
 
   /**
