@@ -175,6 +175,9 @@ independent of the harness.
 1. **Telegram bot**: create one with @BotFather, copy the token. Get your numeric
    user id from @userinfobot.
 2. `cp .env.example .env` and fill in `TELEGRAM_BOT_TOKEN` and `ALLOWED_USER_IDS`.
+   The bot prefers `~/.grandpa-bob/.env` when that file exists (move it there
+   to keep secrets out of the checkout; `ENV_FILE=/path` overrides, and the
+   settings-page editor always edits whichever file was loaded).
 3. `npm install`
 4. whisper.cpp is already built under `vendor/` (Vulkan) with the `base` model.
    To rebuild or change the model:
@@ -576,9 +579,15 @@ read/log/diff/status/add/commit/branch — enough for the agent to inspect its o
 history, not enough to publish or destroy it.
 
 **Can the agent read my `.env` or the bot token?**
-Not through its tools: `.env` lives outside the workspace and file tools can't
-reach it. Be careful what you add to `ALLOWED_COMMANDS` though — something like
-`env` or a shell would punch a hole (which is why they're not in the defaults).
+Not with the defaults. File tools are sandboxed to the workspace, and
+`run_command` now rejects path-like ARGUMENTS that resolve outside it — `cat
+/etc/passwd`, `cat ~/.grandpa-bob/.env`, `git -C /tmp …` and `--file=/abs`
+forms all fail with "argument escapes the workspace" (conservative: any
+argument starting with `/` counts as a path, even a regex). It remains a
+guardrail, not a security boundary — be careful what you add to
+`ALLOWED_COMMANDS` (a shell or `env` would punch a hole), and the bot's LLM
+traffic still carries whatever the model chooses to read *inside* the
+workspace.
 
 **What can the `sql_query` and `sql_write` tools touch?**
 There are two separate SQLite tools, so reads and writes can't be confused:
@@ -606,5 +615,8 @@ agent runs (and LLM spend) on startup.
   to restrict both to a single database file.
 - The allowlist is a guardrail, not a security boundary — run the bot as your own
   user, keep the workspace non-critical, and review `git log` if you're curious.
-- Keep `.env` out of the workspace; the workspace dir is the only thing the
-  agent can touch.
+- `.env` resolution prefers a private file — `ENV_FILE`, then
+  `~/.grandpa-bob/.env`, then `<project>/.env` — so credentials don't depend
+  on a `.gitignore` line inside the checkout. The workspace dir is the only
+  place the agent's file tools can touch, and `run_command` refuses
+  path-like arguments outside it.
