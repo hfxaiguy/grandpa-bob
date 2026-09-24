@@ -73,7 +73,7 @@ async function main(): Promise<void> {
   // at ~/grandpa-bob-bot (env editor, models probe and health would read
   // nonexistent files).
   const adminPort = parseInt(process.env.ADMIN_PORT || "8080", 10);
-  const envPath = path.join(process.cwd(), ".env");
+  const envPath = config.envFile;
   // Late-bound Telegram handle: the admin is constructed before the bot,
   // but a webui-run turn into a Telegram conversation must reach the phone.
   let telegramBot: Bot | undefined;

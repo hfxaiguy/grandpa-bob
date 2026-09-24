@@ -1,6 +1,7 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import os from "node:os";
 import path from "node:path";
+import { resolveEnvFile } from "./env-file.js";
 
 function required(name: string): string {
   const v = process.env[name];
@@ -13,6 +14,11 @@ function required(name: string): string {
 
 const root = process.cwd();
 
+// Precedence: ENV_FILE override > ~/.grandpa-bob/.env > <project>/.env.
+// The chosen file is also what the admin's editor writes to.
+const envFile = resolveEnvFile({ root, home: os.homedir(), override: process.env.ENV_FILE });
+dotenv.config({ path: envFile });
+
 const DEFAULT_COMMANDS = [
   "ls", "cat", "head", "tail", "wc", "find", "rg", "grep", "pwd",
   "git", "mkdir", "touch", "date", "file", "stat", "du", "df",
@@ -21,6 +27,8 @@ const DEFAULT_COMMANDS = [
 ];
 
 export const config = {
+  // One source of truth for the config file (admin editor, docs, tests).
+  envFile,
   telegramToken: required("TELEGRAM_BOT_TOKEN"),
   allowedUserIds: new Set(
     required("ALLOWED_USER_IDS")
