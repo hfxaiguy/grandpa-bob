@@ -468,10 +468,13 @@ tree. When an app needs a credential file it declares it in
 
 The settings page grows an **App secrets** section listing every declared
 file as missing or uploaded, with upload / replace / delete buttons. Bytes
-are stored in `<workspace>/logs/secrets.db` — file mode 0600, gitignored,
-and hidden from the file browser and download routes. Apps read only their
-own entries via the context object passed to `execute(args, ctx)`:
-`ctx.secret(name)`, `ctx.secretText(name)`, `ctx.requireSecret(name)`
+are stored **outside the workspace** — `~/.grandpa-bob/secrets.db`, override
+with the `SECRETS_DB` env var — in a 0700 directory as a 0600 sqlite file.
+The workspace tree syncs over git, is readable by the bot's file tools and
+rides along in backups, so credentials must not live there; the store is
+additionally hidden from the file browser and download routes. Apps read
+only their own entries via the context object passed to `execute(args,
+ctx)`: `ctx.secret(name)`, `ctx.secretText(name)`, `ctx.requireSecret(name)`
 (throws a message pointing at the upload page when absent) and
 `ctx.listSecrets()`. Names are opaque keys, never paths.
 

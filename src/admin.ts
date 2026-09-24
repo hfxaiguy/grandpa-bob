@@ -419,17 +419,21 @@ export function setSelectedPattern(name: string): void {
 }
 
 // ── file browser ──────────────────────────────────────────────────────
-/** The secret store and its journals are never browsable/servable. */
-function isSecretStorePath(workspaceDir: string, resolved: string): boolean {
-  const rel = path.relative(workspaceDir, resolved);
-  const base = path.basename(resolved);
-  return rel === path.join("logs", base) && base.startsWith("secrets.db");
+/**
+ * The secret store and its journals are never browsable/servable — the
+ * store normally lives OUTSIDE the workspace (SECRETS_DB), but a custom
+ * path inside it must stay unreachable too.
+ */
+function isSecretStorePath(resolved: string): boolean {
+  const db = secretsStore?.dbPath;
+  if (!db) return false;
+  return resolved === db || resolved.startsWith(db + "-");
 }
 
 function safePath(workspaceDir: string, p: string) {
   const resolved = path.resolve(workspaceDir, p || ".");
   if (!resolved.startsWith(workspaceDir)) throw new Error("path outside workspace");
-  if (isSecretStorePath(workspaceDir, resolved)) {
+  if (isSecretStorePath(resolved)) {
     throw new Error("the secret store is not accessible through the file browser");
   }
   return resolved;
@@ -440,8 +444,8 @@ async function listFiles(workspaceDir: string, dir: string) {
   const entries = await readdir(resolved, { withFileTypes: true });
   const out: { name: string; isDir: boolean; size: number; mtime: string | null }[] = [];
   for (const e of entries) {
-    if (path.relative(workspaceDir, resolved) === "logs" && e.name.startsWith("secrets.db")) continue;
     const full = path.join(resolved, e.name);
+    if (isSecretStorePath(full)) continue;
     const s = await stat(full).catch(() => null);
     out.push({ name: e.name, isDir: e.isDirectory(), size: s ? s.size : 0, mtime: s ? s.mtime.toISOString() : null });
   }

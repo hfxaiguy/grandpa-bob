@@ -27,11 +27,10 @@ async function main(): Promise<void> {
     "logs/sessions.json",
     "logs/web-turns.json",
     "logs/web-settings.json",
-    "logs/secrets.db*",
     "assets/inbox/",
   ]);
 
-  const secrets = new SecretsStore(config.workspaceDir);
+  const secrets = new SecretsStore(config.secretsDb);
   const appTools = await loadAppTools(config.workspaceDir, secrets);
   console.log(`[app-tools] loaded ${appTools.length} tool(s) from workspace apps`);
   const tools = new ToolRegistry(

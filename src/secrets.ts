@@ -7,10 +7,12 @@
 //      "contentType": "application/json" }]
 //
 // The user uploads the file from the WebUI (settings → app secrets). The
-// bytes land in `<workspace>/logs/secrets.db` — a sqlite database kept out
-// of git, out of the file browser, and out of the agent's normal file
-// tools. App tools read ONLY their own app's secrets through the context
-// object the loader passes to execute().
+// bytes land in a sqlite database OUTSIDE the workspace by default
+// (~/.grandpa-bob/secrets.db, SECRETS_DB overrides) — the workspace tree
+// syncs over git, is readable by the bot's file tools and rides along in
+// backups, so credentials must not live there. App tools read ONLY their
+// own app's secrets through the context object the loader passes to
+// execute().
 
 import fs from "node:fs";
 import path from "node:path";
@@ -56,10 +58,10 @@ export class SecretsStore {
   readonly dbPath: string;
   private db: DatabaseSync;
 
-  constructor(workspace: string) {
-    const dir = path.join(workspace, "logs");
-    fs.mkdirSync(dir, { recursive: true });
-    this.dbPath = path.join(dir, "secrets.db");
+  /** @param dbPath absolute path of the sqlite file (parent auto-created). */
+  constructor(dbPath: string) {
+    this.dbPath = path.resolve(dbPath);
+    fs.mkdirSync(path.dirname(this.dbPath), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(this.dbPath);
     // Same rules as the run log: readers (upload routes, app tools) must
     // never starve the writer, and contention waits instead of throwing.

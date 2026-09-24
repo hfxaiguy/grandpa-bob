@@ -24,6 +24,9 @@ import { loadAppTools } from "../src/app-tools.js";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-secrets-"));
 await fs.mkdir(path.join(ws, "logs"), { recursive: true });
+// The store lives OUTSIDE the workspace (the workspace leaks via git).
+const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-secret-data-"));
+const storePath = path.join(dataDir, "grandpa-bob", "secrets.db");
 
 function freePort(): Promise<number> {
   return new Promise((resolve) => {
@@ -36,9 +39,8 @@ function freePort(): Promise<number> {
 }
 
 // ── 1. store basics ──
-const storePath = path.join(ws, "logs", "secrets.db");
 {
-  const store = new SecretsStore(ws);
+  const store = new SecretsStore(storePath);
   assert.ok(validSecretName("creds.json") && validSecretName("google-service-account.json"));
   assert.ok(!validSecretName("../etc/passwd") && !validSecretName("a/b") && !validSecretName(".hidden") && !validSecretName(""));
   store.put("calendar", "creds.json", Buffer.from('{"k":"v"}'), "application/json");
@@ -50,10 +52,14 @@ const storePath = path.join(ws, "logs", "secrets.db");
   assert.equal(store.list("other").length, 0);
   store.close();
 
-  const reopened = new SecretsStore(ws);
+  const reopened = new SecretsStore(storePath);
   assert.equal(reopened.get("calendar", "creds.json")?.content.toString(), '{"k":"v"}', "survives reopen");
   const mode = (await fs.stat(storePath)).mode & 0o777;
   assert.equal(mode, 0o600, "store file is 0600");
+  const dirMode = (await fs.stat(path.dirname(storePath))).mode & 0o777;
+  assert.equal(dirMode, 0o700, "store parent directory is 0700");
+  assert.ok(!(await fs.stat(path.join(ws, "logs", "secrets.db")).catch(() => null)),
+    "nothing is written into the workspace");
   reopened.put("calendar", "bin.dat", Buffer.from([0, 1, 2, 255]));
   assert.deepEqual([...reopened.get("calendar", "bin.dat")!.content], [0, 1, 2, 255], "binary round-trip");
   assert.equal(reopened.delete("calendar", "bin.dat"), true);
@@ -107,7 +113,7 @@ const storePath = path.join(ws, "logs", "secrets.db");
        },
      }];\n`,
   );
-  const store = new SecretsStore(ws);
+  const store = new SecretsStore(storePath);
   store.delete("calendar", "creds.json"); // ensure the missing-secret path is exercised
   const tools = await loadAppTools(ws, store);
   const tool = tools.find((t) => t.name === "calendar_check")!;
@@ -129,7 +135,10 @@ const storePath = path.join(ws, "logs", "secrets.db");
 
 // ── 4. admin API + file-browser invisibility ──
 {
-  const store = new SecretsStore(ws);
+  // Custom SECRETS_DB inside the workspace (defense-in-depth case): the
+  // browser must not serve or list it even then.
+  const insidePath = path.join(ws, "logs", "custom-secrets.db");
+  const store = new SecretsStore(insidePath);
   store.delete("calendar", "creds.json"); // start from a clean slate
   const port = await freePort();
   const mod = await import("../src/admin.ts?secrets-test");
@@ -174,8 +183,8 @@ const storePath = path.join(ws, "logs", "secrets.db");
 
   // The store is invisible to the file browser and the download route.
   const files = await (await fetch(`${base}/api/files?path=logs`)).json();
-  assert.ok(!files.files.some((f: any) => f.name.startsWith("secrets.db")), "file browser hides the secret store");
-  const dl = await fetch(`${base}/api/files/download?path=logs/secrets.db`);
+  assert.ok(!files.files.some((f: any) => f.name.startsWith("custom-secrets.db")), "file browser hides the secret store");
+  const dl = await fetch(`${base}/api/files/download?path=logs/custom-secrets.db`);
   assert.ok(dl.status >= 400, "download of the secret store refused");
 
   const del = await fetch(`${base}/api/secrets?app=calendar&name=creds.json`, { method: "DELETE" });

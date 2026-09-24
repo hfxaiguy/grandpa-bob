@@ -1,4 +1,5 @@
 import "dotenv/config";
+import os from "node:os";
 import path from "node:path";
 
 function required(name: string): string {
@@ -28,6 +29,14 @@ export const config = {
       .filter((n) => Number.isFinite(n)),
   ),
   workspaceDir: path.resolve(root, process.env.WORKSPACE_DIR ?? "workspace"),
+  /**
+   * Secret config store for workspace apps. Deliberately OUTSIDE the
+   * workspace: that tree syncs over git, goes through file tools and
+   * backups, and would leak credentials. Override with SECRETS_DB.
+   */
+  secretsDb: path.resolve(
+    process.env.SECRETS_DB ?? path.join(os.homedir(), ".grandpa-bob", "secrets.db"),
+  ),
   tmpDir: path.resolve(root, "tmp"),
   /** STT backend: "whisper" (whisper.cpp), "sherpa" (sherpa-onnx online websocket), or "parakeet" (sherpa-onnx offline websocket + NeMo parakeet). */
   sttBackend: (() => {
