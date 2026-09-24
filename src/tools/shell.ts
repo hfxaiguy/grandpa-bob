@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import os from "node:os";
 import path from "node:path";
 
 const execFileAsync = promisify(execFile);
@@ -12,6 +13,39 @@ const GIT_DENY = new Set([
   "push", "reset", "clean", "rebase", "remote", "config",
   "checkout", "switch", "restore", "update-index", "filter-branch", "gc",
 ]);
+
+/** Tokens that name a filesystem location rather than a plain word/flag. */
+function looksLikePath(value: string): boolean {
+  return value.startsWith("/") || value.startsWith("~") || value === ".." || value.includes("/");
+}
+
+/**
+ * Reject path-like arguments that resolve outside the workspace. Commands
+ * run with cwd=workspace, but execFile never sandboxes ARGUMENTS — without
+ * this, `cat ~/.grandpa-bob/.env` or `cat /etc/passwd` reads whatever the
+ * allowlisted binary can reach. Conservative by design: a string starting
+ * with "/" is treated as a path even if the command would read it as a
+ * pattern. Symlink escapes are out of reach here because none of the
+ * allowlisted commands can create symlinks.
+ */
+function assertInsideWorkspace(workspace: string, args: string[]): void {
+  for (const arg of args) {
+    const eq = arg.indexOf("=");
+    const value = eq >= 0 ? arg.slice(eq + 1) : arg;
+    if (!looksLikePath(value)) continue;
+    const expanded = value.startsWith("~")
+      ? path.join(os.homedir(), value.replace(/^~[/\\]?/, ""))
+      : value;
+    const resolved = path.resolve(workspace, expanded);
+    const rel = path.relative(workspace, resolved);
+    if (rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)) {
+      throw new Error(
+        `argument escapes the workspace: ${arg} (resolves to ${resolved}). ` +
+          `Only paths inside the workspace are allowed.`,
+      );
+    }
+  }
+}
 
 /**
  * Resolve `node_modules/.bin` relative to the project root (two levels
@@ -45,6 +79,7 @@ export class ShellTools {
     if (base === "git" && args.length > 0 && GIT_DENY.has(args[0])) {
       throw new Error(`git subcommand not allowed: ${args[0]} (denied: ${[...GIT_DENY].join(", ")})`);
     }
+    assertInsideWorkspace(this.workspace, args);
     try {
       const { stdout, stderr } = await execFileAsync(base, args, {
         cwd: this.workspace,
