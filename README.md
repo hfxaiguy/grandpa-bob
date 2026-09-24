@@ -453,6 +453,28 @@ tokens per image depending on provider settings, so this is modest, but worth
 knowing before a photo-heavy session. Use `/clear` to drop a conversation if
 token usage gets high.
 
+### Workspace apps & secrets
+
+`workspace/app/<name>/` packages optional features: `tools.mjs` exports an
+array of tools the agent can call, `tree.mjs` can be selected as the active
+tree. When an app needs a credential file it declares it in
+`app/<name>/secrets.json`:
+
+```json
+[{ "name": "google-service-account.json",
+   "description": "Service account JSON for the Calendar API",
+   "contentType": "application/json" }]
+```
+
+The settings page grows an **App secrets** section listing every declared
+file as missing or uploaded, with upload / replace / delete buttons. Bytes
+are stored in `<workspace>/logs/secrets.db` — file mode 0600, gitignored,
+and hidden from the file browser and download routes. Apps read only their
+own entries via the context object passed to `execute(args, ctx)`:
+`ctx.secret(name)`, `ctx.secretText(name)`, `ctx.requireSecret(name)`
+(throws a message pointing at the upload page when absent) and
+`ctx.listSecrets()`. Names are opaque keys, never paths.
+
 ### Telegram & topics
 
 **So… are there sessions?**

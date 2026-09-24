@@ -12,6 +12,7 @@ import { checkStt } from "./stt.js";
 import { startAdmin, getSelectedPattern, remoteTurnStart, remoteTurnEvent, remoteTurnEnd } from "./admin.js";
 import type { Bot } from "grammy";
 import { loadAppTools } from "./app-tools.js";
+import { SecretsStore } from "./secrets.js";
 
 async function main(): Promise<void> {
   await fs.mkdir(config.workspaceDir, { recursive: true });
@@ -26,10 +27,12 @@ async function main(): Promise<void> {
     "logs/sessions.json",
     "logs/web-turns.json",
     "logs/web-settings.json",
+    "logs/secrets.db*",
     "assets/inbox/",
   ]);
 
-  const appTools = await loadAppTools(config.workspaceDir);
+  const secrets = new SecretsStore(config.workspaceDir);
+  const appTools = await loadAppTools(config.workspaceDir, secrets);
   console.log(`[app-tools] loaded ${appTools.length} tool(s) from workspace apps`);
   const tools = new ToolRegistry(
     config.workspaceDir,
@@ -87,6 +90,7 @@ async function main(): Promise<void> {
     projectDir: process.cwd(),
     envPath,
     workspaceDir: config.workspaceDir,
+    secrets,
     stt: {
       backend: config.sttBackend,
       whisperUrl: config.whisperUrl,

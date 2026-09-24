@@ -96,6 +96,8 @@ assert.match(chatHtml, /function checkFollow\(\)/, "follow watcher present");
 const settingsHtml = await (await fetch(`http://127.0.0.1:${port}/settings`)).text();
 assert.match(settingsHtml, /id="service-dots"/, "settings page renders the service-dots host");
 assert.match(settingsHtml, /id="follow-chk"/, "settings follow toggle present");
+assert.match(settingsHtml, /id="secrets-list"/, "app secrets card present");
+assert.match(settingsHtml, /loadSecrets\(\);/, "app secrets load on page open");
 
 server.close();
 console.log("page-scripts-test: all assertions passed");

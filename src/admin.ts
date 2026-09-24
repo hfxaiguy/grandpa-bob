@@ -30,6 +30,7 @@ import fs from "node:fs";
 import type { Agent } from "./agent.js";
 import { checkLlmEntry } from "./agent.js";
 import { loadModels } from "./models.js";
+import { listSecretRequests, validSecretName, type SecretsStore } from "./secrets.js";
 import {
   transcribeAudioBytes,
   convertToWav,
@@ -41,6 +42,9 @@ import { TreeLogReader, logDbPath } from "./treeLog.js";
 import { DEFAULT_PATTERN, loadPattern } from "./pattern-loader.js";
 import { serializeTree } from "./tree-serialize.js";
 import { attachmentPrompt, saveAttachment, MAX_ATTACHMENT_BYTES } from "./attachments.js";
+
+/** Secret config files are small (credentials, JSON, keys). */
+const MAX_SECRET_BYTES = 1024 * 1024;
 import { emitText } from "./util/emit-text.js";
 
 const execFileAsync = promisify(execFile);
@@ -415,9 +419,19 @@ export function setSelectedPattern(name: string): void {
 }
 
 // ── file browser ──────────────────────────────────────────────────────
+/** The secret store and its journals are never browsable/servable. */
+function isSecretStorePath(workspaceDir: string, resolved: string): boolean {
+  const rel = path.relative(workspaceDir, resolved);
+  const base = path.basename(resolved);
+  return rel === path.join("logs", base) && base.startsWith("secrets.db");
+}
+
 function safePath(workspaceDir: string, p: string) {
   const resolved = path.resolve(workspaceDir, p || ".");
   if (!resolved.startsWith(workspaceDir)) throw new Error("path outside workspace");
+  if (isSecretStorePath(workspaceDir, resolved)) {
+    throw new Error("the secret store is not accessible through the file browser");
+  }
   return resolved;
 }
 
@@ -426,6 +440,7 @@ async function listFiles(workspaceDir: string, dir: string) {
   const entries = await readdir(resolved, { withFileTypes: true });
   const out: { name: string; isDir: boolean; size: number; mtime: string | null }[] = [];
   for (const e of entries) {
+    if (path.relative(workspaceDir, resolved) === "logs" && e.name.startsWith("secrets.db")) continue;
     const full = path.join(resolved, e.name);
     const s = await stat(full).catch(() => null);
     out.push({ name: e.name, isDir: e.isDirectory(), size: s ? s.size : 0, mtime: s ? s.mtime.toISOString() : null });
@@ -672,6 +687,8 @@ function resolveFollow(agent?: Agent): void {
 let adminAgent: Agent | undefined;
 // Deliver webui-run turns to the originating transport (see AdminOptions).
 let telegramNotify: ((key: string, text: string) => void) | undefined;
+// App secret store (logs/secrets.db); undefined when not wired.
+let secretsStore: SecretsStore | undefined;
 
 /**
  * Track memory-slot writes from a raw agent event. Slots are identified
@@ -1033,6 +1050,12 @@ function buildSettingsHtml(config: AdminConfig): string {
 </div>
 
 <div class="card">
+  <h2 style="margin-top:0">App secrets</h2>
+  <p style="margin:4px 0"><small>Files an app requested in <code>app/&lt;name&gt;/secrets.json</code>. Uploaded bytes live in <code>logs/secrets.db</code> &mdash; local, gitignored, invisible to the file browser and to the bot's file tools. An app reads only its own secrets.</small></p>
+  <div id="secrets-list">(loading...)</div>
+</div>
+
+<div class="card">
   <h2 style="margin-top:0">Workspace sync</h2>
   <p style="margin:4px 0"><small>Push/pull the workspace to/from the desktop's git-daemon (port 9418). The bot auto-commits file changes; use these to sync with the desktop.</small></p>
   <label>Local branch → Remote branch</label>
@@ -1258,6 +1281,75 @@ async function saveAllEnv() {
     renderEnvKeys();
     await refreshStatus();
   } catch {}
+}
+
+// ---- app secrets -----------------------------------------------------
+async function loadSecrets() {
+  const box = $("secrets-list");
+  if (!box) return;
+  try {
+    const d = await api("/api/secrets");
+    box.innerHTML = "";
+    if (!d.secrets || !d.secrets.length) {
+      box.textContent = "(no app has requested secret files yet)";
+      return;
+    }
+    for (const s of d.secrets) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--border,#334155)";
+      const info = document.createElement("span");
+      info.style.cssText = "flex:1 1 300px;font-size:13px";
+      const head = document.createElement("span");
+      const appB = document.createElement("b");
+      appB.textContent = s.app;
+      head.append(appB, document.createTextNode(" / " + s.name + " "));
+      const desc = document.createElement("small");
+      desc.style.color = "var(--muted)";
+      desc.textContent = s.description || "";
+      const br = document.createElement("br");
+      const status = document.createElement("small");
+      status.style.color = s.present ? "var(--green,#10b981)" : "var(--red,#ef4444)";
+      status.textContent = s.present
+        ? "\u2713 " + new Date(s.updatedAt).toLocaleString() + " \u00b7 " + s.size + " B"
+        : "missing \u2014 upload it below";
+      info.append(head, desc, br, status);
+      const pick = document.createElement("input");
+      pick.type = "file";
+      pick.style.maxWidth = "220px";
+      const up = document.createElement("button");
+      up.textContent = s.present ? "replace" : "upload";
+      up.onclick = async () => {
+        if (!pick.files || !pick.files[0]) { toast("pick a file first", true); return; }
+        const fd = new FormData();
+        fd.append("file", pick.files[0]);
+        try {
+          const r = await fetch("/api/secrets?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), { method: "POST", body: fd });
+          const d2 = await r.json().catch(() => ({}));
+          if (!r.ok) { toast(d2.error || "upload failed", true); return; }
+          toast("stored " + s.app + "/" + s.name);
+          loadSecrets();
+        } catch (e) { toast("upload failed: " + e.message, true); }
+      };
+      row.append(info, pick, up);
+      if (s.present) {
+        const del = document.createElement("button");
+        del.className = "secondary";
+        del.textContent = "delete";
+        del.onclick = async () => {
+          if (!confirm("Delete stored secret " + s.app + "/" + s.name + "?")) return;
+          try {
+            await api("/api/secrets?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), { method: "DELETE" });
+            toast("deleted " + s.name);
+            loadSecrets();
+          } catch { /* api() toasted */ }
+        };
+        row.appendChild(del);
+      }
+      box.appendChild(row);
+    }
+  } catch {
+    box.textContent = "(failed to load secrets)";
+  }
 }
 
 async function refreshAll() {
@@ -1504,6 +1596,7 @@ syncFollowChk();
 refreshStatus();
 refreshPatterns();
 filesBrowse();
+loadSecrets();
 </script>
 </body>
 </html>
@@ -2872,6 +2965,11 @@ export interface AdminOptions extends Partial<AdminConfig> {
   /** The agent instance — required for the chat front page. */
   agent?: Agent;
   /**
+   * Secret config store for workspace apps (logs/secrets.db). Enables the
+   * "App secrets" upload section on /settings.
+   */
+  secrets?: SecretsStore;
+  /**
    * Deliver a webui-run turn back to its originating transport (Telegram).
    * Called when a turn runs under a non-`web:` key — i.e. the browser
    * continued a Telegram conversation — so the phone sees the exchange
@@ -2886,6 +2984,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
   const config: AdminConfig = { ...defaultConfig(), ...cfg };
   const agent = cfg?.agent;
   telegramNotify = cfg?.telegramNotify;
+  secretsStore = cfg?.secrets;
   adminAgent = agent;
   const stt = cfg?.stt;
   const SETTINGS_HTML = buildSettingsHtml(config);
@@ -3445,6 +3544,73 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         broadcast({ type: "cleared" });
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, pattern: name }));
+        return;
+      }
+
+      // --- app secrets ---
+      // Apps declare the files they need in app/<name>/secrets.json; the
+      // user uploads them here. Bytes live in logs/secrets.db (0600,
+      // gitignored, hidden from the file browser); app tools read only
+      // their own app's entries via the context execute() receives.
+      if (req.method === "GET" && url.pathname === "/api/secrets") {
+        const requests = await listSecretRequests(config.workspaceDir);
+        const stored = new Map((secretsStore?.list() ?? []).map((s) => [`${s.app}/${s.name}`, s]));
+        const secrets = requests.map((r) => {
+          const hit = stored.get(`${r.app}/${r.name}`);
+          stored.delete(`${r.app}/${r.name}`);
+          return { ...r, present: !!hit, size: hit?.size ?? 0, updatedAt: hit?.updatedAt ?? null, contentType: hit?.contentType ?? r.contentType };
+        });
+        for (const orphan of stored.values()) {
+          secrets.push({ app: orphan.app, name: orphan.name, description: "(no longer requested by its app)", contentType: orphan.contentType, present: true, size: orphan.size, updatedAt: orphan.updatedAt });
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ secrets }));
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/secrets") {
+        if (!secretsStore) { res.writeHead(503, { "content-type": "application/json" }); res.end('{"error":"secret store not available"}'); return; }
+        const appName = url.searchParams.get("app") || "";
+        const secretName = url.searchParams.get("name") || "";
+        if (!validSecretName(appName) || !validSecretName(secretName)) {
+          res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid app or secret name"}'); return;
+        }
+        // Only declared requests are uploadable — a manifest is the only
+        // way to open an upload slot, and names are opaque keys, not paths.
+        const declared = await listSecretRequests(config.workspaceDir);
+        const request = declared.find((r) => r.app === appName && r.name === secretName);
+        if (!request) {
+          res.writeHead(404, { "content-type": "application/json" }); res.end('{"error":"no declared secret request with that app/name"}'); return;
+        }
+        const contentType = req.headers["content-type"] || "";
+        if (!contentType.includes("multipart/form-data")) {
+          res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"multipart required"}'); return;
+        }
+        const boundary = contentType.split("boundary=")[1];
+        if (!boundary) { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"no boundary"}'); return; }
+        const parts = await readMultipart(req, boundary);
+        const file = parts.file;
+        if (!file?.content?.length) { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"no file"}'); return; }
+        if (file.content.length > MAX_SECRET_BYTES) {
+          res.writeHead(413, { "content-type": "application/json" }); res.end('{"error":"secret too large (max 1 MB)"}'); return;
+        }
+        secretsStore.put(appName, secretName, file.content, file.contentType || request.contentType);
+        console.log(`[secrets] stored ${appName}/${secretName} (${file.content.length} bytes)`);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, app: appName, name: secretName, size: file.content.length }));
+        return;
+      }
+
+      if (req.method === "DELETE" && url.pathname === "/api/secrets") {
+        if (!secretsStore) { res.writeHead(503, { "content-type": "application/json" }); res.end('{"error":"secret store not available"}'); return; }
+        const appName = url.searchParams.get("app") || "";
+        const secretName = url.searchParams.get("name") || "";
+        if (!validSecretName(appName) || !validSecretName(secretName)) {
+          res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid app or secret name"}'); return;
+        }
+        const removed = secretsStore.delete(appName, secretName);
+        res.writeHead(removed ? 200 : 404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: removed }));
         return;
       }
 

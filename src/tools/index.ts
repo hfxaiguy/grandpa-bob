@@ -272,7 +272,7 @@ export class ToolRegistry {
     try {
       const appTool = this.appTools.get(name);
       if (appTool) {
-        const result = await appTool.execute(args);
+        const result = await appTool.execute(args, appTool.appContext);
         if (typeof result === "string") return result;
         if (result && typeof result === "object") return result as Json;
         return String(result ?? "");
