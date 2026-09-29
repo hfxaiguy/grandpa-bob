@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { listPatterns, listTreeSources } from "../src/admin.js";
+import { listPatterns, listTreeSources } from "../src/tree-sources.js";
 import { loadPattern } from "../src/pattern-loader.js";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-patterns-"));

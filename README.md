@@ -170,6 +170,15 @@ The **workspace** (agent sandbox + git repo) lives OUTSIDE the project by defaul
 (`~/grandma-workspace`, see `WORKSPACE_DIR`) so its git history is fully
 independent of the harness.
 
+**Trees are also tools.** Every workspace tree — `patterns/<name>.mjs` or
+`app/<name>/tree.mjs` — is registered as a callable *tree tool* on each turn.
+A pattern offers one to the model with `.tools("<name>")`; the model then
+calls it like any other tool and gets the tree's result back, while the tree
+runs in place. Its `.human()` pauses suspend the whole conversation and the
+next message resumes inside the tree (the calling prompt round is replayed
+from the log, not re-sent to the model). Because tree tools are built fresh
+each turn, edits to an app tree take effect immediately — no restart.
+
 ## Setup
 
 1. **Telegram bot**: create one with @BotFather, copy the token. Get your numeric

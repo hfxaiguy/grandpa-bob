@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.ts",
     "test:patterns": "tsx scripts/patterns-test.ts",
+    "test:trees": "tsx scripts/tree-tools-test.ts",
     "test:tree": "tsx scripts/tree-serialize-test.ts",
     "test:agent-done": "tsx scripts/agent-done-test.ts",
     "test:sessions": "tsx scripts/sessions-resume-test.ts",

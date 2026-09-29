@@ -6,6 +6,7 @@ import grandma from "grandma-kat";
 import type { ToolRegistry } from "./tools/index.js";
 import type { ModelRegistry } from "./models.js";
 import { loadPattern } from "./pattern-loader.js";
+import { listTreeSources } from "./tree-sources.js";
 
 export interface AgentDeps {
   /** Named LLM registry (e.g. { cheap, strong }) from models.json or env. */
@@ -99,6 +100,8 @@ export class Agent {
   // resumes of one checkpoint would race on its load/save — the queue
   // makes a shared conversation safe regardless of transport.
   private runChains = new Map<string, Promise<void>>();
+  // Tree-tool discovery runs every turn; warn once per name, not per turn.
+  private treeToolWarned = new Set<string>();
 
   constructor(private deps: AgentDeps) {
     this.logDb = path.resolve(deps.workspace, "logs/grandma-kat.db");
@@ -245,6 +248,7 @@ export class Agent {
     let cont = this.continuations.get(key);
     let droppedContinuation = false;
     const katTools = this.deps.tools.toKatTools();
+    const treeTools = await this.discoverTreeTools();
     const pattern = await loadPattern(this.deps.workspace, this.deps.patternName?.() ?? "trunk");
     const defId = Agent.definitionHash(pattern);
 
@@ -264,11 +268,17 @@ export class Agent {
       );
     }
 
-    const allTools = katTools;
+    // Function tools win name collisions; tree tools fill in the rest, so a
+    // pattern can offer any workspace tree to the model by name.
+    const allTools = { ...treeTools, ...katTools };
 
     const runtime: Record<string, unknown> = {
       models: this.deps.models,
       tools: allTools,
+      // Dynamic tree loader: resolves a tree by name from patterns/ or
+      // app/ when the engine needs one that was never built into this
+      // process (tree tools, and resume after a restart).
+      loadTree: (name: string) => this.loadTreeByName(name),
       logger: this.wrapLogger(opts?.onEvent),
       onEmit,
       // Only set logLevel when using the default (string path) logger.
@@ -416,6 +426,84 @@ export class Agent {
       this.deps.patternName?.() ?? "trunk",
     )) as { def?: { needs?: string[] }; needs?: string[] } | null;
     return ((pattern?.def ?? pattern)?.needs ?? []).includes("input");
+  }
+
+  /**
+   * Every runnable workspace tree (patterns/<name>.mjs, app/<name>/tree.mjs)
+   * as a callable tool entry. Prompts opt in with `.tools("<name>")` and the
+   * model calls them like any other tool; the engine runs the tree in place
+   * (pauses inside resume in position). Broken trees are skipped so one bad
+   * file cannot break a turn.
+   */
+  private async discoverTreeTools(): Promise<Record<string, unknown>> {
+    const sources = await listTreeSources(this.deps.workspace);
+    const tools: Record<string, unknown> = {};
+    for (const source of sources) {
+      if (!/^[A-Za-z0-9._-]+$/.test(source.name)) continue;
+      try {
+        const built = await loadPattern(this.deps.workspace, source.name);
+        const def = (built as { def?: { needs?: unknown } } | null)?.def ?? built;
+        const needs = Array.isArray((def as { needs?: unknown } | null)?.needs)
+          ? (def as { needs: string[] }).needs
+          : [];
+        if (tools[source.name]) {
+          // Both a pattern and an app tree can share a name; listTreeSources
+          // sorts apps last, so the app tree wins the tool slot.
+          this.warnTreeToolOnce(
+            `shadow:${source.name}`,
+            `[agent] tree tool '${source.name}' shadowed by a later source (${source.file})`,
+          );
+        }
+        tools[source.name] = {
+          description:
+            `${source.description} Call this to run the "${source.name}" tree; ` +
+            "the tree's result is returned as the tool result.",
+          parameters: {
+            type: "object",
+            properties: Object.fromEntries(
+              needs.map((need) => [need, { description: `Input seeded into the tree as '${need}'.` }]),
+            ),
+            ...(needs.length ? { required: needs } : {}),
+          },
+          tree: source.name,
+        };
+      } catch (error) {
+        // Helper modules (e.g. patterns/shared.mjs) and broken trees land
+        // here; warn once per name so the log stays readable.
+        this.warnTreeToolOnce(
+          `skip:${source.name}`,
+          `[agent] tree tool '${source.name}' skipped: ${error instanceof Error ? error.message : error}`,
+        );
+      }
+    }
+    return tools;
+  }
+
+  private warnTreeToolOnce(key: string, message: string): void {
+    if (this.treeToolWarned.has(key)) return;
+    this.treeToolWarned.add(key);
+    console.warn(message);
+  }
+
+  /**
+   * Resolve a tree by name for the engine's loadTree hook. Names arrive
+   * either as the file/app name ("caller-list") or as the tree's internal
+   * name ("caller_list", used by resume), so try the name and its
+   * underscore/dash variants. Unknown names return null — the engine then
+   * falls back to its build-time registry.
+   */
+  private async loadTreeByName(name: string): Promise<unknown> {
+    const candidates = [name];
+    if (name.includes("_")) candidates.push(name.replace(/_/g, "-"));
+    if (name.includes("-")) candidates.push(name.replace(/-/g, "_"));
+    for (const candidate of candidates) {
+      try {
+        return await loadPattern(this.deps.workspace, candidate);
+      } catch {
+        // try the next spelling
+      }
+    }
+    return null;
   }
 
   /**
