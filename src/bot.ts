@@ -6,7 +6,8 @@ import type { ModelRegistry } from "./models.js";
 import { transcribeVoice, type SttBackend } from "./stt.js";
 import { git } from "./tools/git.js";
 import { attachmentPrompt, saveAttachment } from "./attachments.js";
-import { emitText } from "./util/emit-text.js";
+import { emitValue, type EmitButton } from "./util/emit-text.js";
+import { ButtonStore } from "./buttons.js";
 import { telegramHtml, telegramRichHtml } from "./util/telegram-text.js";
 import { getSelectedPattern, listTreeSources, setSelectedPattern, writeEnv } from "./admin.js";
 import { loadPattern } from "./pattern-loader.js";
@@ -90,16 +91,44 @@ export function createBot(deps: BotDeps): Bot {
   // Serialize work per conversation so parallel voice notes don't interleave agent runs.
   const queues = new Map<string, Promise<void>>();
 
+  // Button values live server-side (Telegram caps callback_data at 64 bytes);
+  // a keyboard carries only "btn:<id>".
+  const buttonStore = new ButtonStore();
+
+  // ctx.msg also follows callbackQuery.message, so a button tap keeps the
+  // conversation key and topic of the message the keyboard hangs under.
   const convKey = (ctx: Context): string =>
-    `${ctx.chat?.id}:${ctx.message?.message_thread_id ?? 0}`;
+    `${ctx.chat?.id}:${ctx.msg?.message_thread_id ?? 0}`;
 
   const threadOpts = (ctx: Context): { message_thread_id?: number } => {
-    const id = ctx.message?.message_thread_id;
+    const id = ctx.msg?.message_thread_id;
     return id !== undefined ? { message_thread_id: id } : {};
   };
 
-  const reply = async (ctx: Context, text: string): Promise<void> => {
-    for (const part of chunk(text, MAX_TG_HTML)) {
+  /**
+   * Inline keyboard for an emitted button list: one row side by side, a new
+   * row every 8 (Telegram's per-row cap). Each callback carries a registered
+   * id, never the value itself.
+   */
+  const keyboardFor = (key: string, list: EmitButton[]): InlineKeyboard => {
+    const kb = new InlineKeyboard();
+    list.forEach((b, i) => {
+      kb.text(b.label, "btn:" + buttonStore.register(key, b.value));
+      if (i % 8 === 7 && i !== list.length - 1) kb.row();
+    });
+    return kb;
+  };
+
+  const reply = async (ctx: Context, text: string, buttons?: EmitButton[]): Promise<void> => {
+    const parts = chunk(text, MAX_TG_HTML);
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      // Buttons attach to the last chunk — the keyboard belongs under the
+      // message the user reads, not under an overflow fragment.
+      const markup =
+        i === parts.length - 1 && buttons?.length
+          ? { reply_markup: keyboardFor(convKey(ctx), buttons) }
+          : {};
       // Rich messages (Bot API 10.1+) render tel: links as real phone links;
       // classic messages only link http(s)/tg, so the numbers would be dead
       // text. Try rich first, fall back to a classic HTML send if the API
@@ -109,14 +138,14 @@ export function createBot(deps: BotDeps): Bot {
         await ctx.api.sendRichMessage(
           ctx.chat!.id,
           { html: telegramRichHtml(part) },
-          threadOpts(ctx),
+          { ...threadOpts(ctx), ...markup },
         );
       } catch (err) {
         console.warn(
           "[telegram] rich message failed, sending classic:",
           err instanceof Error ? err.message : err,
         );
-        await ctx.reply(telegramHtml(part), { ...threadOpts(ctx), parse_mode: "HTML" });
+        await ctx.reply(telegramHtml(part), { ...threadOpts(ctx), parse_mode: "HTML", ...markup });
       }
     }
   };
@@ -239,6 +268,24 @@ export function createBot(deps: BotDeps): Bot {
       .catch(() => {});
   });
 
+  // Emitted message buttons: a tap resolves the registered value and feeds it
+  // in exactly like a typed reply to the paused tree.
+  bot.callbackQuery(/^btn:(.+)$/, async (ctx) => {
+    const key = convKey(ctx);
+    const value = buttonStore.resolve(key, ctx.match[1]);
+    if (value === undefined) {
+      await ctx.answerCallbackQuery({
+        show_alert: true,
+        text: "That button expired — type your reply instead.",
+      });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    // One-shot: drop the keyboard so the same tap cannot be sent twice.
+    await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }).catch(() => {});
+    enqueue(key, () => handleUserContent(ctx, value));
+  });
+
   /**
    * Run the agent tree for one turn. The tree emits responses via
    * `onEmit` (which sends them to Telegram) and pauses at `.human()`
@@ -269,17 +316,17 @@ export function createBot(deps: BotDeps): Bot {
       let emitted = false;
       const res = await deps.agent.run(key, content, async (value) => {
         // onEmit: send each emitted value to Telegram immediately. Trees emit
-        // { text } objects; show the text, never the JSON wrapper.
-        const text = emitText(value);
-        if (text) { emitted = true; turnOutput.push(text); await reply(ctx, text); }
+        // { text, buttons? } objects; show the text, never the JSON wrapper.
+        const { text, buttons } = emitValue(value);
+        if (text) { emitted = true; turnOutput.push(text); await reply(ctx, text, buttons); }
       }, {
         onEvent: (e) => rec?.event(key, e),
       });
       // Non-looping trees complete instead of pausing at .human() — send
       // their final result as the reply when nothing was emitted.
       if (res.status === "done" && !emitted && res.result != null) {
-        const text = emitText(res.result);
-        if (text) { turnOutput.push(text); await reply(ctx, text); }
+        const { text, buttons } = emitValue(res.result);
+        if (text) { turnOutput.push(text); await reply(ctx, text, buttons); }
       }
       rec?.end(key, turnOutput.join("\n\n"));
     } catch (err) {

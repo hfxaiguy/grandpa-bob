@@ -46,7 +46,7 @@ import { attachmentPrompt, saveAttachment, MAX_ATTACHMENT_BYTES } from "./attach
 
 /** Secret config files are small (credentials, JSON, keys). */
 const MAX_SECRET_BYTES = 1024 * 1024;
-import { emitText } from "./util/emit-text.js";
+import { emitValue, type EmitButton } from "./util/emit-text.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -462,6 +462,8 @@ interface TurnRecord {
   status: "running" | "done" | "error";
   error: string | null;
   output: string | null;
+  /** Buttons of the last emit that carried any; null when none ever did. */
+  buttons?: EmitButton[] | null;
   events: SanitizedEvent[];
 }
 
@@ -859,13 +861,14 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       key,
       content,
       (value) => {
-        // Trees emit { text } objects; the chat shows the text, not the JSON.
-        const t = emitText(value);
-        if (t) {
-          record.output = record.output ? record.output + "\n\n" + t : t;
+        // Trees emit { text, buttons? }; the chat shows the text, not the JSON.
+        const { text, buttons } = emitValue(value);
+        if (buttons?.length) record.buttons = buttons;
+        if (text || buttons?.length) {
+          if (text) record.output = record.output ? record.output + "\n\n" + text : text;
           // Stream it now; turn_end still carries the final text, so the UI
           // can overwrite whatever a rewound/retried branch emitted.
-          broadcast({ type: "emit", turnId, text: t });
+          broadcast({ type: "emit", turnId, text, buttons });
         }
       },
       { onEvent },
@@ -873,8 +876,9 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     // Non-looping trees complete instead of pausing at .human() — show
     // their final result as the reply when nothing was emitted.
     if (res.status === "done" && !record.output && res.result != null) {
-      const t = emitText(res.result);
-      if (t) record.output = t;
+      const { text, buttons } = emitValue(res.result);
+      if (text) record.output = text;
+      if (buttons?.length) record.buttons = buttons;
     }
     record.status = "done";
   } catch (err) {
@@ -891,6 +895,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       status: record.status,
       error: record.error,
       output: record.output,
+      buttons: record.buttons,
       ts: record.endedAt,
     });
     saveTurns();
@@ -1605,6 +1610,9 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   .msg-answer { display: flex; gap: 8px; margin: 8px 0; align-items: flex-start; }
   .msg-answer .who { flex: none; font-size: 12px; font-weight: 700; color: var(--green); padding-top: 10px; }
   .msg-answer .bubble { background: var(--card); border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; padding: 10px 14px; max-width: 90%; white-space: pre-wrap; word-break: break-word; }
+  .emit-btns { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 6px 34px; }
+  .emit-btn { background: var(--accent); color: #fff; border: none; padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .emit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .msg-error { color: #fca5a5; border: 1px solid #7f1d1d; background: #450a0a; border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-size: 13px; white-space: pre-wrap; }
   footer { border-top: 1px solid var(--border); background: #0b1224; padding: 10px 16px 12px; }
   .input-row { display: flex; gap: 8px; max-width: 860px; margin: 0 auto; align-items: flex-end; }
@@ -1877,6 +1885,9 @@ function startTurn(turnId, input) {
   // A re-sync may render a turn the SSE turn_start then repeats.
   if (blocks.has(turnId)) return;
   hideEmpty();
+  // Only the newest turn's buttons stay live: an older pause's keyboard
+  // must not accept a tap aimed at the current one.
+  for (const b of conv.querySelectorAll(".emit-btn")) b.disabled = true;
   const pending = conv.querySelector('.msg-user.pending[data-turnid="' + turnId + '"]');
   const turn = document.createElement("div");
   turn.className = "turn";
@@ -2105,28 +2116,56 @@ function addStep(turnId, ev) {
   maybeScroll(false);
 }
 
-function emitToTurn(turnId, text) {
+function renderEmitButtons(block, buttons) {
+  if (block.emitBtns) { block.emitBtns.remove(); block.emitBtns = null; }
+  if (!buttons || !buttons.length) return;
+  const wrap = document.createElement("div");
+  wrap.className = "emit-btns";
+  for (const b of buttons) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "emit-btn";
+    btn.textContent = b.label;
+    btn.addEventListener("click", () => {
+      // One-shot: a tap sends the value as a reply, then the group goes inert.
+      for (const el of wrap.querySelectorAll("button")) el.disabled = true;
+      sendText(b.value);
+    });
+    wrap.appendChild(btn);
+  }
+  // Buttons live outside the answer bubble: endTurn settles the bubble's
+  // text and must never wipe the keyboard.
+  const ans = block.turn.querySelector(".msg-answer");
+  if (ans) ans.after(wrap);
+  else block.turn.appendChild(wrap);
+  block.emitBtns = wrap;
+}
+
+function emitToTurn(turnId, text, buttons) {
   const block = blocks.get(turnId);
   if (!block) return;
-  if (!block.answerBub) {
-    const ans = document.createElement("div");
-    ans.className = "msg-answer";
-    const who = document.createElement("div");
-    who.className = "who";
-    who.textContent = "bob";
-    const bub = document.createElement("div");
-    bub.className = "bubble";
-    ans.append(who, bub);
-    block.turn.appendChild(ans);
-    block.answerBub = bub;
+  if (text) {
+    if (!block.answerBub) {
+      const ans = document.createElement("div");
+      ans.className = "msg-answer";
+      const who = document.createElement("div");
+      who.className = "who";
+      who.textContent = "bob";
+      const bub = document.createElement("div");
+      bub.className = "bubble";
+      ans.append(who, bub);
+      block.turn.appendChild(ans);
+      block.answerBub = bub;
+    }
+    block.answerBub.textContent = block.answerBub.textContent
+      ? block.answerBub.textContent + "\\n\\n" + text
+      : text;
   }
-  block.answerBub.textContent = block.answerBub.textContent
-    ? block.answerBub.textContent + "\\n\\n" + text
-    : text;
+  if (buttons) renderEmitButtons(block, buttons);
   maybeScroll(false);
 }
 
-function endTurn(turnId, status, error, output) {
+function endTurn(turnId, status, error, output, buttons) {
   const block = blocks.get(turnId);
   if (!block) return;
   blocks.delete(turnId);
@@ -2156,6 +2195,11 @@ function endTurn(turnId, status, error, output) {
       block.turn.appendChild(ans);
     }
   }
+  // Replay renders the settled buttons once; a live turn already streamed
+  // them (and may have disabled them after a tap).
+  if (buttons && !block.emitBtns) renderEmitButtons(block, buttons);
+  // Keep the keyboard under the bubble even when the bubble only appears here.
+  if (block.emitBtns) block.turn.appendChild(block.emitBtns);
   maybeScroll(true);
 }
 
@@ -2681,8 +2725,8 @@ function connect() {
     try { msg = JSON.parse(e.data); } catch { return; }
     if (msg.type === "turn_start") { startTurn(msg.turnId, msg.input); treeOnTurnStart(); }
     else if (msg.type === "event") { addStep(msg.turnId, msg.event); treeOnEvent(msg.event); }
-    else if (msg.type === "emit") { emitToTurn(msg.turnId, msg.text); }
-    else if (msg.type === "turn_end") { endTurn(msg.turnId, msg.status, msg.error, msg.output); treeOnTurnEnd(); }
+    else if (msg.type === "emit") { emitToTurn(msg.turnId, msg.text, msg.buttons); }
+    else if (msg.type === "turn_end") { endTurn(msg.turnId, msg.status, msg.error, msg.output, msg.buttons); treeOnTurnEnd(); }
     else if (msg.type === "cleared") {
       conv.innerHTML = ""; blocks.clear(); showEmpty(); treeMemory.clear(); for (const btn of treeMemBtns.values()) btn.textContent = "(no value)";
       // Re-check whether a session is still active (deleting the active
@@ -2714,7 +2758,7 @@ function renderTurns(list) {
   for (const t of list || []) {
     startTurn(t.turnId, t.input);
     for (const ev of t.events || []) addStep(t.turnId, ev);
-    endTurn(t.turnId, t.status, t.error, t.output);
+    endTurn(t.turnId, t.status, t.error, t.output, t.buttons);
   }
 }
 
