@@ -216,6 +216,25 @@ export class Agent {
     }
   }
 
+  /**
+   * Tell the conversation that a saved position was dropped and the turn is
+   * starting fresh. Emitted through the run's onEmit so both transports show
+   * it (Telegram sends it, the web UI appends it to the turn).
+   */
+  private async noticeDrop(
+    onEmit: ((value: unknown) => void | Promise<void>) | undefined,
+    reason: string,
+  ): Promise<void> {
+    if (!onEmit) return;
+    try {
+      await onEmit({
+        text: `Heads up: I dropped the saved position for this conversation — ${reason} — so this message starts fresh.`,
+      });
+    } catch {
+      // The transport is already handling its own send errors.
+    }
+  }
+
   /** The unqueued body of run(); call only through run() so keys stay serialized. */
   private async runExclusive(
     key: string,
@@ -239,6 +258,10 @@ export class Agent {
       this.saveSessions();
       cont = undefined;
       droppedContinuation = true;
+      await this.noticeDrop(
+        onEmit,
+        "the tree changed since it paused (it was edited or the pattern was switched)",
+      );
     }
 
     const allTools = katTools;
@@ -302,6 +325,7 @@ export class Agent {
         this.sessionTimes.delete(key);
         this.saveSessions();
         droppedContinuation = true;
+        await this.noticeDrop(onEmit, "its saved checkpoint is no longer in the log database");
         outcome = await freshRun();
       }
     } else {
