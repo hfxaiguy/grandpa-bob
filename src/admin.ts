@@ -1949,6 +1949,8 @@ async function copyTurnLog(turn, btn) {
 }
 
 function startTurn(turnId, input) {
+  // A re-sync may render a turn the SSE turn_start then repeats.
+  if (blocks.has(turnId)) return;
   hideEmpty();
   const pending = conv.querySelector('.msg-user.pending[data-turnid="' + turnId + '"]');
   const turn = document.createElement("div");
@@ -2740,8 +2742,15 @@ function treeOnTurnEnd() {
 }
 
 // ---- live events over SSE ----
+let sseOpened = false;
 function connect() {
   const es = new EventSource("/api/events");
+  // SSE has no replay: whatever was broadcast while the stream was down is
+  // gone, so re-sync the transcript on every open after the first.
+  es.onopen = () => {
+    if (sseOpened) checkFollow();
+    sseOpened = true;
+  };
   es.onmessage = (e) => {
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
@@ -2765,6 +2774,16 @@ function connect() {
 // active=null and the session bar stays up until "resume"/"new chat".
 let sessionActive = false;
 let trackedActive = null;
+// The active session's updatedAt when we last rendered it: lets the poll
+// (and the SSE reconnect) notice turns that arrived while the stream was
+// down, instead of only reacting to a session switch.
+let trackedUpdatedAt = 0;
+
+/** The active session's updatedAt, so new turns can be detected. */
+function activeUpdatedAt(d) {
+  const key = d.active || null;
+  return (d.sessions || []).find((s) => s.key === key)?.updatedAt ?? 0;
+}
 
 function renderTurns(list) {
   for (const t of list || []) {
@@ -2809,6 +2828,7 @@ async function loadHistory() {
     const d = await refreshSessionOptions();
     if (d.active) renderTurns(d.turns);
     trackedActive = d.active || null;
+    trackedUpdatedAt = activeUpdatedAt(d);
     setSessionUi(!!d.active);
   } catch {
     setSessionUi(false); // server unreachable — input stays locked
@@ -2816,18 +2836,31 @@ async function loadHistory() {
 }
 
 // Re-read the followed session; swap the transcript when the server
-// re-targeted it (a newer Telegram conversation became current).
+// re-targeted it (a newer Telegram conversation became current), and
+// append any turns the page never saw (events missed while the SSE stream
+// was down — a server restart drops the stream and SSE has no replay).
 async function checkFollow() {
   try {
     const d = await refreshSessionOptions();
-    if ((d.active || null) === trackedActive) { setSessionUi(!!d.active); return; }
-    trackedActive = d.active || null;
-    conv.innerHTML = "";
-    blocks.clear();
-    showEmpty();
-    if (d.active) { renderTurns(d.turns); hideEmpty(); }
-    setSessionUi(!!d.active);
-    if (d.active) toast("now following: " + (d.label || d.active));
+    const active = d.active || null;
+    const updated = activeUpdatedAt(d);
+    if (active !== trackedActive) {
+      trackedActive = active;
+      trackedUpdatedAt = updated;
+      conv.innerHTML = "";
+      blocks.clear();
+      showEmpty();
+      if (active) { renderTurns(d.turns); hideEmpty(); }
+      setSessionUi(!!active);
+      if (active) toast("now following: " + (d.label || active));
+      return;
+    }
+    if (updated !== trackedUpdatedAt) {
+      trackedUpdatedAt = updated;
+      const missing = (d.turns || []).filter((t) => !blocks.has(t.turnId));
+      if (missing.length) { renderTurns(missing); hideEmpty(); }
+    }
+    setSessionUi(!!active);
   } catch { /* transient */ }
 }
 setInterval(() => { if (!document.hidden) checkFollow(); }, 7000);
