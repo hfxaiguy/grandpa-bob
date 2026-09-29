@@ -244,6 +244,9 @@ Useful checks: `npm run typecheck`, `npm run smoke` (offline tool/git tests),
   keeps a separate conversation history.
 - Send text, send a **photo** (caption optional) for image analysis, or hold the
   mic and send a **voice message** — you'll get `heard: "…"` plus the agent's reply.
+- Replies keep their line structure (rich messages spell every newline as
+  `<br>`, since their HTML would otherwise collapse it), and phone numbers
+  become tap-to-dial `tel:` links.
 - Commands:
   - `/clear` — drops the conversation continuation for this topic. The next message starts a fresh tree (new system prompt, empty history). Per-topic: each forum topic has its own continuation. The checkpoint in SQLite is orphaned but not deleted.
   - `/status` — shows workspace path, git status, LLM models, STT backend.

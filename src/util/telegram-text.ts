@@ -28,3 +28,15 @@ export function linkPhones(text: string): string {
 export function telegramHtml(text: string): string {
   return linkPhones(escapeHtml(text));
 }
+
+/**
+ * Rich-message HTML: telegramHtml, but line breaks become explicit <br>.
+ *
+ * Rich messages (sendRichMessage) collapse raw newlines into spaces like
+ * HTML whitespace, so a multi-line reply would arrive as one run-on line.
+ * Classic parse_mode "HTML" does NOT support <br>, so it keeps this
+ * function's input (telegramHtml) and the raw \n stays a line break.
+ */
+export function telegramRichHtml(text: string): string {
+  return telegramHtml(text).replace(/\n/g, "<br>");
+}

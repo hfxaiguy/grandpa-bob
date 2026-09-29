@@ -7,7 +7,7 @@ import { transcribeVoice, type SttBackend } from "./stt.js";
 import { git } from "./tools/git.js";
 import { attachmentPrompt, saveAttachment } from "./attachments.js";
 import { emitText } from "./util/emit-text.js";
-import { telegramHtml } from "./util/telegram-text.js";
+import { telegramHtml, telegramRichHtml } from "./util/telegram-text.js";
 import { getSelectedPattern, listTreeSources, setSelectedPattern, writeEnv } from "./admin.js";
 import { loadPattern } from "./pattern-loader.js";
 
@@ -100,19 +100,23 @@ export function createBot(deps: BotDeps): Bot {
 
   const reply = async (ctx: Context, text: string): Promise<void> => {
     for (const part of chunk(text, MAX_TG_HTML)) {
-      const html = telegramHtml(part);
       // Rich messages (Bot API 10.1+) render tel: links as real phone links;
       // classic messages only link http(s)/tg, so the numbers would be dead
       // text. Try rich first, fall back to a classic HTML send if the API
       // rejects the payload.
       try {
-        await ctx.api.sendRichMessage(ctx.chat!.id, { html }, threadOpts(ctx));
+        // Rich HTML collapses raw newlines; <br> keeps the line structure.
+        await ctx.api.sendRichMessage(
+          ctx.chat!.id,
+          { html: telegramRichHtml(part) },
+          threadOpts(ctx),
+        );
       } catch (err) {
         console.warn(
           "[telegram] rich message failed, sending classic:",
           err instanceof Error ? err.message : err,
         );
-        await ctx.reply(html, { ...threadOpts(ctx), parse_mode: "HTML" });
+        await ctx.reply(telegramHtml(part), { ...threadOpts(ctx), parse_mode: "HTML" });
       }
     }
   };
