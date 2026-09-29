@@ -78,7 +78,11 @@ const readSessions = async () =>
   const emitted: unknown[] = [];
   const r = await agent.run("k", "again", (v) => emitted.push(v));
   assert.equal(r.status, "waiting");
-  assert.deepEqual(emitted, [{ text: "A:again" }], "message delivered into the fresh tree");
+  // The dropped position is announced first (see Agent.noticeDrop), then
+  // the message is delivered into the fresh tree.
+  assert.equal(emitted.length, 2, "a drop notice precedes the delivery");
+  assert.match((emitted[0] as { text: string }).text, /dropped the saved position/);
+  assert.deepEqual(emitted[1], { text: "A:again" }, "message delivered into the fresh tree");
   const after = (await readSessions()).k.pattern;
   assert.notEqual(after, before, "pattern hash updated after session was dropped");
   console.log("3. edited pattern started a fresh tree, old session dropped");
@@ -94,7 +98,9 @@ const readSessions = async () =>
   const emitted: unknown[] = [];
   const r = await agent.run("stale", "hi", (v) => emitted.push(v));
   assert.equal(r.status, "waiting", "stale checkpoint recovered as fresh tree");
-  assert.deepEqual(emitted, [{ text: "A:hi" }], "the message is delivered, not swallowed");
+  assert.equal(emitted.length, 2, "a drop notice precedes the delivery");
+  assert.match((emitted[0] as { text: string }).text, /dropped the saved position/);
+  assert.deepEqual(emitted[1], { text: "A:hi" }, "the message is delivered, not swallowed");
   assert.notEqual((await readSessions()).stale.continuation, "2099-01-01_00-00-00-9:99");
   console.log("4. missing checkpoint caught, fresh tree started, message delivered");
 }
