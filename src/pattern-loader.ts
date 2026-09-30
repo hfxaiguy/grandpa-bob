@@ -11,7 +11,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 // @ts-ignore — grandma-kat ships no .d.ts files.
-import { Tree, when, goback, goto, max } from "grandma-kat";
+import { Tree, when, goback, goto, max, disableAuto, toolHookBefore, toolHookAfter } from "grandma-kat";
 
 const PATTERN_DIR = "patterns";
 const APP_DIR = "app";
@@ -24,6 +24,10 @@ export interface PatternContext {
   goback: typeof goback;
   goto: typeof goto;
   max: typeof max;
+  /** Prompt markers for the auto tool loop (see grandma-kat docs). */
+  disableAuto: typeof disableAuto;
+  toolHookBefore: typeof toolHookBefore;
+  toolHookAfter: typeof toolHookAfter;
 }
 
 /**
@@ -74,7 +78,7 @@ export async function loadPattern(
     throw new Error(`pattern '${name}' must export a default function: ${filePath}`);
   }
 
-  const ctx: PatternContext = { Tree, when, goback, goto, max };
+  const ctx: PatternContext = { Tree, when, goback, goto, max, disableAuto, toolHookBefore, toolHookAfter };
   const tree = mod.default(ctx);
 
   if (!tree || typeof tree !== "object") {

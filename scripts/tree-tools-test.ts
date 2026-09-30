@@ -6,7 +6,8 @@
  *   2. The tool schema comes from the tree's declared needs (required args).
  *   3. A .human() inside the model-called tree suspends the whole run; the
  *      resumed turn continues inside the tree — the prompt round is replayed
- *      from the log, so the model is NOT called again for it.
+ *      from the log, so the model is NOT called again for it. The router
+ *      prompt's auto tool loop then continues with a fresh round.
  *   4. Broken app trees are skipped; they cannot break a turn.
  *
  * Mock model handler, no network. Run: npm run test:trees
@@ -86,7 +87,7 @@ assert.equal(agent2.hasContinuation("k"), true, "continuation loaded from disk")
 const emitted: unknown[] = [];
 const r2 = await agent2.run("k", "yes", (v) => emitted.push(v));
 assert.equal(r2.status, "done", "mini finished and the router tree completed");
-assert.equal(calls, 2, "the router round was replayed — the model was not called again");
+assert.equal(calls, 3, "the router round was replayed, not re-called; the auto loop then ran one fresh round");
 assert.deepEqual(emitted, [{ text: 'mini-result:"answered:yes"' }], "the subtree result came back as the tool result");
 
 console.log("tree-tools-test: all assertions passed");
