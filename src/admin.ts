@@ -1730,6 +1730,11 @@ const $ = (id) => document.getElementById(id);
 const conv = $("conversation");
 const mainEl = $("main");
 const blocks = new Map(); // turnId -> live turn block
+// Turn ids already present in the transcript. Unlike blocks (which only
+// tracks RUNNING turns and drops each id at turn_end), this set is never
+// pruned until the transcript is cleared, so a re-sync — SSE reconnect or
+// the follow poll — never re-appends a finished turn as a second copy.
+const rendered = new Set();
 
 function toast(msg, isErr, ms) {
   const t = $("toast");
@@ -1882,8 +1887,10 @@ async function copyTurnLog(turn, btn) {
 }
 
 function startTurn(turnId, input) {
-  // A re-sync may render a turn the SSE turn_start then repeats.
-  if (blocks.has(turnId)) return;
+  // A re-sync may render a turn the SSE turn_start then repeats — and a turn
+  // that already ENDED must never be appended a second time by a later
+  // re-sync (its block left the live map at turn_end).
+  if (blocks.has(turnId) || rendered.has(turnId)) return;
   hideEmpty();
   // Only the newest turn's buttons stay live: an older pause's keyboard
   // must not accept a tap aimed at the current one.
@@ -1931,6 +1938,7 @@ function startTurn(turnId, input) {
 
   const block = { turn, list, spin, lab, cnt };
   blocks.set(turnId, block);
+  rendered.add(turnId);
   maybeScroll(true);
   return block;
 }
@@ -2728,7 +2736,7 @@ function connect() {
     else if (msg.type === "emit") { emitToTurn(msg.turnId, msg.text, msg.buttons); }
     else if (msg.type === "turn_end") { endTurn(msg.turnId, msg.status, msg.error, msg.output, msg.buttons); treeOnTurnEnd(); }
     else if (msg.type === "cleared") {
-      conv.innerHTML = ""; blocks.clear(); showEmpty(); treeMemory.clear(); for (const btn of treeMemBtns.values()) btn.textContent = "(no value)";
+      conv.innerHTML = ""; blocks.clear(); rendered.clear(); showEmpty(); treeMemory.clear(); for (const btn of treeMemBtns.values()) btn.textContent = "(no value)";
       // Re-check whether a session is still active (deleting the active
       // one drops us back to the picker).
       refreshSessionOptions().then((d) => setSessionUi(!!d.active)).catch(() => setSessionUi(false));
@@ -2818,6 +2826,7 @@ async function checkFollow() {
       trackedUpdatedAt = updated;
       conv.innerHTML = "";
       blocks.clear();
+      rendered.clear();
       showEmpty();
       if (active) { renderTurns(d.turns); hideEmpty(); }
       setSessionUi(!!active);
@@ -2826,7 +2835,7 @@ async function checkFollow() {
     }
     if (updated !== trackedUpdatedAt) {
       trackedUpdatedAt = updated;
-      const missing = (d.turns || []).filter((t) => !blocks.has(t.turnId));
+      const missing = (d.turns || []).filter((t) => !rendered.has(t.turnId));
       if (missing.length) { renderTurns(missing); hideEmpty(); }
     }
     setSessionUi(!!active);
@@ -2845,6 +2854,7 @@ async function chooseSession(body) {
     if (!r.ok) { toast(d.error || "session failed", true); return; }
     conv.innerHTML = "";
     blocks.clear();
+    rendered.clear();
     showEmpty();
     renderTurns(d.turns);
     trackedActive = d.active || null;
