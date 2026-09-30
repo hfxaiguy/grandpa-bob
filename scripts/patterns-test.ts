@@ -56,7 +56,7 @@ await fs.writeFile(
 );
 await fs.writeFile(
   path.join(ws, "app", "caller-list", "tree.mjs"),
-  'export default function ({ Tree }) { return Tree.name("caller_list").prompt(m => "hi"); }\n',
+  'export default function ({ Tree, name, Prompt }) { return Tree(name("caller_list"), Prompt(m => "hi")); }\n',
 );
 // An app without a tree is tools-only and must not appear.
 await fs.mkdir(path.join(ws, "app", "tools-only"), { recursive: true });

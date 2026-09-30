@@ -1,8 +1,8 @@
 // src/pattern-loader.ts
 //
 // Loads Tree patterns from workspace/patterns/*.mjs at runtime.
-// Each file exports a default function that receives the Tree builder
-// API and returns a Tree definition.
+// Each file exports a built tree (`export default Tree(...)`) or a
+// default function that receives the element surface and returns a Tree.
 //
 // The loader busts the ESM import cache on every call so the agent
 // can self-modify patterns and see changes on the next turn.
@@ -11,7 +11,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 // @ts-ignore — grandma-kat ships no .d.ts files.
-import { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, toolHookBefore, toolHookAfter } from "grandma-kat";
+import { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, name as elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from "grandma-kat";
 
 const PATTERN_DIR = "patterns";
 const APP_DIR = "app";
@@ -33,13 +33,30 @@ export interface PatternContext {
   disableAuto: typeof disableAuto;
   toolHookBefore: typeof toolHookBefore;
   toolHookAfter: typeof toolHookAfter;
+  /** The element surface — trees may be authored as elements. */
+  name: typeof elementName;
+  Model: typeof Model;
+  Tools: typeof Tools;
+  Needs: typeof Needs;
+  Human: typeof Human;
+  Prompt: typeof Prompt;
+  Memory: typeof Memory;
+  Register: typeof Register;
+  Branch: typeof Branch;
+  Each: typeof Each;
+  Call: typeof Call;
+  Check: typeof Check;
+  Emit: typeof Emit;
+  Return: typeof Return;
+  Until: typeof Until;
 }
 
 /**
  * Load a named tree from the workspace. A name resolves to
  * `patterns/<name>.mjs` first, then to an app tree at
- * `app/<name>/tree.mjs`. The file must export a default function that
- * receives `PatternContext` and returns a Tree.
+ * `app/<name>/tree.mjs`. The file may export a built tree
+ * (`export default Tree(...)`) or a default function that receives
+ * `PatternContext` and returns a Tree.
  *
  * @param workspaceDir  The workspace root (e.g. ~/grandma-workspace)
  * @param name          Pattern name or app directory name (default "trunk")
@@ -72,19 +89,19 @@ export async function loadPattern(
   }
   const fileUrl = pathToFileURL(filePath).href + `?t=${Date.now()}`;
 
-  let mod: { default?: (ctx: PatternContext) => unknown };
+  let mod: { default?: unknown };
   try {
     mod = await import(fileUrl);
   } catch (err: any) {
     throw new Error(`failed to load pattern '${name}' from ${filePath}: ${err.message}`);
   }
 
-  if (typeof mod.default !== "function") {
-    throw new Error(`pattern '${name}' must export a default function: ${filePath}`);
+  if (typeof mod.default !== "function" && (typeof mod.default !== "object" || mod.default === null)) {
+    throw new Error(`pattern '${name}' must export a default tree or a factory function: ${filePath}`);
   }
 
-  const ctx: PatternContext = { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, toolHookBefore, toolHookAfter };
-  const tree = mod.default(ctx);
+  const ctx: PatternContext = { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, name: elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until };
+  const tree = typeof mod.default === "function" ? mod.default(ctx) : mod.default;
 
   if (!tree || typeof tree !== "object") {
     throw new Error(`pattern '${name}' must return a Tree definition: ${filePath}`);

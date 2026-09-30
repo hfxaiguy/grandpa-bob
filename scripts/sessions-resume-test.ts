@@ -26,13 +26,15 @@ await fs.mkdir(path.join(ws, "patterns"), { recursive: true });
 await fs.mkdir(path.join(ws, "logs"), { recursive: true });
 const sessionsFile = path.join(ws, "logs", "sessions.json");
 
-const PATTERN = `export default function ({ Tree }) {
-  return Tree.name("relay")
-    .model("cheap")
-    .human("a")
-    .emit((m) => ({ text: "A:" + String(m.branch.a ?? "") }))
-    .human("b")
-    .emit((m) => ({ text: "B:" + String(m.branch.b ?? "") }));
+const PATTERN = `export default function ({ Tree, name, Model, Human, Emit }) {
+  return Tree(
+    name("relay"),
+    Model("cheap"),
+    Human("a"),
+    Emit((m) => ({ text: "A:" + String(m.branch.a ?? "") })),
+    Human("b"),
+    Emit((m) => ({ text: "B:" + String(m.branch.b ?? "") })),
+  );
 }\n`;
 await fs.writeFile(path.join(ws, "patterns", "relay.mjs"), PATTERN);
 
@@ -70,7 +72,7 @@ const readSessions = async () =>
 {
   await fs.writeFile(
     path.join(ws, "patterns", "relay.mjs"),
-    PATTERN.replace('.human("b")', '.human("b").emit(() => ({ text: "mid" })).human("c2")'),
+    PATTERN.replace('Human("b"),', 'Human("b"), Emit(() => ({ text: "mid" })), Human("c2"),'),
   );
   await new Promise((r) => setTimeout(r, 5)); // bust the import cache-buster
   const agent = mkAgent();
@@ -118,11 +120,13 @@ const readSessions = async () =>
 {
   await fs.writeFile(
     path.join(ws, "patterns", "serial.mjs"),
-    `export default function ({ Tree }) {
-       return Tree.name("serial")
-         .model("cheap")
-         .human("q1").prompt(() => [{ role: "user", content: "p" }])
-         .human("q2").prompt(() => [{ role: "user", content: "p" }]);
+    `export default function ({ Tree, name, Model, Human, Prompt }) {
+       return Tree(
+         name("serial"),
+         Model("cheap"),
+         Human("q1"), Prompt(() => [{ role: "user", content: "p" }]),
+         Human("q2"), Prompt(() => [{ role: "user", content: "p" }]),
+       );
      }\n`,
   );
   let active = 0, peak = 0;
@@ -153,8 +157,13 @@ const readSessions = async () =>
   assert.equal(await mkAgent().consumesInputDirectly(), false, "relay is trunk-shaped");
   await fs.writeFile(
     path.join(ws, "patterns", "ask.mjs"),
-    `export default function ({ Tree }) {
-  return Tree.name("ask").needs("input").emit((m) => ({ text: "I:" + String(m.input) })).human("go");
+    `export default function ({ Tree, name, Needs, Emit, Human }) {
+  return Tree(
+    name("ask"),
+    Needs("input"),
+    Emit((m) => ({ text: "I:" + String(m.input) })),
+    Human("go"),
+  );
 }\n`,
   );
   const agent = mkAgent("ask");

@@ -1389,10 +1389,10 @@ function showNewPattern() {
   $("p-name").value = "";
   $("p-code").value = \`// my-pattern.mjs — description of what this pattern does
 //
-// The function receives the Tree builder API as arguments.
-// Available: { Tree, when, goback, max }
+// The function receives the Tree element surface as arguments.
+// Available: { Tree, name, Model, Tools, Human, Prompt, Memory, Emit, Return, Until, when, max }
 //
-// Must return a Tree definition (the result of Tree.name(...).branch(...).until(...)).
+// Must return a Tree definition — the result of Tree(element, ...).
 //
 // Memory slots available in prompt functions (m):
 //   m.system      — the system prompt string
@@ -1403,12 +1403,14 @@ function showNewPattern() {
 //   m.raw.prev[i] — full record: { content, reasoning, toolCalls, toolResults }
 //   m.error       — feedback from last failed check
 
-export default function({ Tree, when, goback, max }) {
-  return Tree.name("my-pattern")
-    .human("main_input")
-    .prompt((m) => "You said: " + m.main_input + ". Respond briefly.")
-    .emit((m) => m.prev[0])
-    .until(() => false, max(100000));
+export default function({ Tree, name, Human, Prompt, Emit, Until, max }) {
+  return Tree(
+    name("my-pattern"),
+    Human("main_input"),
+    Prompt((m) => "You said: " + m.main_input + ". Respond briefly."),
+    Emit((m) => m.prev[0]),
+    Until(() => false, max(100000)),
+  );
 }
 \`;
   $("pattern-editor").style.display = "block";

@@ -25,24 +25,28 @@ await ensureRepo(ws);
 
 await fs.writeFile(
   path.join(ws, "patterns", "one-shot.mjs"),
-  `export default function ({ Tree }) {
-     return Tree.name("one-shot")
-       .model("cheap")
-       .prompt((m) => [
+  `export default function ({ Tree, name, Model, Prompt }) {
+     return Tree(
+       name("one-shot"),
+       Model("cheap"),
+       Prompt((m) => [
          { role: "user", content: "reply to: " + String(m.main_input ?? "") },
-       ]);
+       ]),
+     );
    }\n`,
 );
 await fs.writeFile(
   path.join(ws, "patterns", "two-step.mjs"),
-  `export default function ({ Tree }) {
-     return Tree.name("two-step")
-       .model("cheap")
-       .emit(() => ({ text: "hi" }))
-       .human("input_1")
-       .prompt((m) => [
+  `export default function ({ Tree, name, Model, Emit, Human, Prompt }) {
+     return Tree(
+       name("two-step"),
+       Model("cheap"),
+       Emit(() => ({ text: "hi" })),
+       Human("input_1"),
+       Prompt((m) => [
          { role: "user", content: "echo: " + String(m.branch.input_1 ?? "") },
-       ]);
+       ]),
+     );
    }\n`,
 );
 

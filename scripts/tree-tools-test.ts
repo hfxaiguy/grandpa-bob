@@ -23,22 +23,26 @@ const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-trees-"));
 await fs.mkdir(path.join(ws, "patterns"), { recursive: true });
 await fs.mkdir(path.join(ws, "logs"), { recursive: true });
 
-const ROUTER = `export default function ({ Tree }) {
-  return Tree.name("router")
-    .model("cheap")
-    .tools("mini")
-    .prompt("route", (m) => "route:" + String(m.main_input ?? ""))
-    .emit((m) => ({ text: "mini-result:" + JSON.stringify(m.raw.branch.route.toolResults[0].result) }));
+const ROUTER = `export default function ({ Tree, name, Model, Tools, Prompt, Emit }) {
+  return Tree(
+    name("router"),
+    Model("cheap"),
+    Tools("mini"),
+    Prompt("route", (m) => "route:" + String(m.main_input ?? "")),
+    Emit((m) => ({ text: "mini-result:" + JSON.stringify(m.raw.branch.route.toolResults[0].result) })),
+  );
 }\n`;
 await fs.writeFile(path.join(ws, "patterns", "router.mjs"), ROUTER);
 
-const MINI = `export default function ({ Tree }) {
-  return Tree.name("mini")
-    .needs("input")
-    .model("cheap")
-    .prompt((m) => "mini:" + String(m.input ?? ""))
-    .human("answer")
-    .memory("out", (m) => "answered:" + String(m.answer));
+const MINI = `export default function ({ Tree, name, Needs, Model, Prompt, Human, Memory }) {
+  return Tree(
+    name("mini"),
+    Needs("input"),
+    Model("cheap"),
+    Prompt((m) => "mini:" + String(m.input ?? "")),
+    Human("answer"),
+    Memory("out", (m) => "answered:" + String(m.answer)),
+  );
 }\n`;
 await fs.mkdir(path.join(ws, "app", "mini"), { recursive: true });
 await fs.writeFile(path.join(ws, "app", "mini", "tree.mjs"), MINI);
