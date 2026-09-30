@@ -11,7 +11,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 // @ts-ignore — grandma-kat ships no .d.ts files.
-import { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, name as elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from "grandma-kat";
+import { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, name as elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, From, memory } from "grandma-kat";
 
 const PATTERN_DIR = "patterns";
 const APP_DIR = "app";
@@ -49,6 +49,10 @@ export interface PatternContext {
   Emit: typeof Emit;
   Return: typeof Return;
   Until: typeof Until;
+  /** Attach a registered tree as a branch, optionally seeding its scope. */
+  From: typeof From;
+  /** Marker for From('name', memory(fn)) — the slots to seed. */
+  memory: typeof memory;
 }
 
 /**
@@ -100,7 +104,7 @@ export async function loadPattern(
     throw new Error(`pattern '${name}' must export a default tree or a factory function: ${filePath}`);
   }
 
-  const ctx: PatternContext = { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, name: elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until };
+  const ctx: PatternContext = { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, name: elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, From, memory };
   const tree = typeof mod.default === "function" ? mod.default(ctx) : mod.default;
 
   if (!tree || typeof tree !== "object") {
