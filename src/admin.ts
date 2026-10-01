@@ -1642,6 +1642,8 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   .toast.show { opacity: 1; }
   .toast.err { background: var(--red); }
   #tree-btn { background: #475569; font-size: 12px; padding: 4px 10px; }
+  #tg-btn { background: #475569; font-size: 12px; padding: 4px 10px; }
+  #tg-btn:disabled { opacity: 0.4; }
   #internals-btn { background: #475569; font-size: 12px; padding: 4px 10px; }
   #internals-btn.on { background: #2563eb; color: #fff; }
   body:not(.show-internals) .step.k-internals { display: none; }
@@ -1694,6 +1696,7 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   <span id="health-dots" title="service health — green up, red down, grey not configured"></span>
   <select id="pattern-sel" title="tree to run (patterns/*.mjs or app/*/tree.mjs)"></select>
   <button id="tree-btn" title="show the structure of the active tree">tree</button>
+  <button id="tg-btn" title="send this session's transcript to your telegram chat">✈ telegram</button>
   <button id="internals-btn" title="show runtime bookkeeping steps (record, scope)">internals</button>
   <nav><a href="/settings">settings</a></nav>
 </header>
@@ -2434,6 +2437,28 @@ async function transcribeFile(file) {
   maybeScroll(true);
 }
 
+// ---- send transcript to telegram ----
+// Posts the ACTIVE session's transcript to the user's own Telegram chat via
+// the app's server-side telegramNotify hook (index.ts wires it to
+// bot.api.sendMessage). Never touches the checkpoint — history stays where
+// it is; this only mirrors the visible turns onto the phone.
+$("tg-btn").onclick = async () => {
+  const btn = $("tg-btn");
+  if (!sessionActive) { toast("select or start a session first", true); return; }
+  if (!confirm("Send this session's transcript to your Telegram chat?")) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/send-to-telegram", { method: "POST" });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(d.error || "send failed", true); return; }
+    toast(d.key && d.parts > 1 ? "sent to telegram (" + d.parts + " messages)" : "sent to telegram");
+  } catch (e) {
+    toast("send failed: " + e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+};
+
 // ---- clear ----
 $("clear-btn").onclick = async () => {
   if (!confirm("Clear this conversation? The next message starts a fresh tree.")) return;
@@ -2777,6 +2802,7 @@ function setSessionUi(active) {
   $("session-bar").hidden = active;
   $("input").disabled = !active;
   $("send-btn").disabled = !active;
+  $("tg-btn").disabled = !active;
   $("mic-btn").disabled = !active;
   $("file-btn").disabled = !active;
   $("input").placeholder = active ? "type a message\\u2026" : "select or start a session above";
@@ -3397,6 +3423,76 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         broadcast({ type: "cleared" });
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, active: activeSession }));
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/send-to-telegram") {
+        // Mirror the ACTIVE session's transcript onto the user's own
+        // Telegram chat ("my linked chat"): reuse the existing one-way
+        // notify hook rather than inventing a new send path — the same code
+        // that mirrors webui-run turns onto the phone.
+        if (!activeSession) {
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end('{"error":"no session selected — resume one or start a new chat"}');
+          return;
+        }
+        const session = sessionTurns.get(activeSession);
+        if (!session || !session.turns.length) {
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end('{"error":"this session has no turns to send yet"}');
+          return;
+        }
+        if (!telegramNotify) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end('{"error":"telegram is not wired up (no telegramNotify hook)"}');
+          return;
+        }
+        // "My linked chat": the Telegram key tied to the active session.
+        // A web:-owned session has no Telegram key, so fall back to the
+        // freshest live Telegram conversation; with no Telegram key at
+        // all (phone never messaged the bot) there is nowhere to send.
+        let target = activeSession.startsWith("web:") ? null : activeSession;
+        if (!target) {
+          target = followTarget(agent) ?? null;
+          if (!target) {
+            res.writeHead(409, { "content-type": "application/json" });
+            res.end('{"error":"no telegram chat linked yet — message the bot on Telegram first"}');
+            return;
+          }
+        }
+        // Plain-text transcript: one block per turn, errors kept as ⚠️
+        // lines. No buttons — mirrors are text-only by design (see the
+        // emit-buttons continuation record).
+        const lines: string[] = [
+          `📋 transcript · ${session.label || sessionTurns.get(target)?.label || activeSession} (${session.turns.length} turn${session.turns.length === 1 ? "" : "s"})`,
+        ];
+        for (const t of session.turns) {
+          lines.push("", `—— you ——`, t.input || "(empty)");
+          lines.push(
+            `—— bob ——`,
+            t.status === "error" ? `⚠️ ${t.error ?? "error"}` : (t.output || "(no reply)"),
+          );
+        }
+        const text = lines.join("\n");
+        try {
+          // Same chunking the phone path uses (Telegram caps at 4096).
+          const MAX = 4000;
+          const parts: string[] = [];
+          let rest = text;
+          while (rest.length > MAX) {
+            let cut = rest.lastIndexOf("\n", MAX);
+            if (cut < MAX / 2) cut = MAX;
+            parts.push(rest.slice(0, cut));
+            rest = rest.slice(cut).replace(/^\n+/, "");
+          }
+          if (rest.trim()) parts.push(rest);
+          for (const part of parts) telegramNotify(target, part);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, key: target, parts: parts.length, turns: session.turns.length }));
+        } catch (e: unknown) {
+          res.writeHead(502, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+        }
         return;
       }
 
