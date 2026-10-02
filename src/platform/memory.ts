@@ -8,7 +8,7 @@ import { sha256hex } from "./sha256.js";
 
 interface Node {
   type: "file" | "dir";
-  data?: string;
+  data?: string | Uint8Array;
 }
 
 export function createMemoryFs(): FileSystem {
@@ -39,7 +39,8 @@ export function createMemoryFs(): FileSystem {
       const node = nodes.get(normalize(p));
       if (!node) throw new Error(`not found: ${p}`);
       if (node.type === "dir") throw new Error(`is a directory: ${p}`);
-      return node.data ?? "";
+      if (typeof node.data === "string" || node.data === undefined) return node.data ?? "";
+      return new TextDecoder().decode(node.data);
     },
     async writeFile(p, data) {
       const abs = normalize(p);

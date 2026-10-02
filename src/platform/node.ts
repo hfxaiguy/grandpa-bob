@@ -28,7 +28,7 @@ export const nodePathOps: PathOps = {
 
 export const nodeFs: FileSystem = {
   readFile: (path, encoding) => fs.readFile(path, encoding ?? "utf8"),
-  writeFile: (path, data) => fs.writeFile(path, data, "utf8"),
+  writeFile: (path, data) => fs.writeFile(path, data).then(() => undefined),
   mkdir: (path, opts) => fs.mkdir(path, opts).then(() => undefined),
   readdir: (path, _opts) =>
     fs.readdir(path, { withFileTypes: true }).then((entries) =>

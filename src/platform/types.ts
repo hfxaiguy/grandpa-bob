@@ -22,7 +22,7 @@ export interface DirEntry {
 /** The subset of `fs/promises` the shared core uses. */
 export interface FileSystem {
   readFile(path: string, encoding?: "utf8"): Promise<string>;
-  writeFile(path: string, data: string): Promise<void>;
+  writeFile(path: string, data: string | Uint8Array): Promise<void>;
   mkdir(path: string, opts: { recursive: boolean }): Promise<void>;
   readdir(path: string, opts: { withFileTypes: true }): Promise<DirEntry[]>;
   stat(path: string): Promise<{ isFile(): boolean; isDirectory(): boolean }>;

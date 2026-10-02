@@ -5,6 +5,7 @@ import type { Agent } from "./agent.js";
 import type { ModelRegistry } from "./models.js";
 import { transcribeVoice, type SttBackend } from "./stt.js";
 import { git } from "./tools/git.js";
+import { createNodePlatform } from "./platform/node.js";
 import { attachmentPrompt, saveAttachment } from "./attachments.js";
 import { emitValue, type EmitButton } from "./util/emit-text.js";
 import { ButtonStore } from "./buttons.js";
@@ -83,6 +84,7 @@ function chunk(text: string, size = MAX_TG_MESSAGE): string[] {
 
 export function createBot(deps: BotDeps): Bot {
   const bot = new Bot(deps.token);
+  const platform = createNodePlatform(deps.workspace);
   // Keep the Telegram command menu in sync with the handlers below.
   // setMyCommands without a scope only touches the default scope, so stale
   // commands set earlier (BotFather, old versions) survive in the other
@@ -552,7 +554,7 @@ export function createBot(deps: BotDeps): Bot {
         const response = await fetch(`https://api.telegram.org/file/bot${deps.token}/${file.file_path}`);
         if (!response.ok) throw new Error(`file download failed: HTTP ${response.status}`);
         const attachment = await saveAttachment(
-          deps.workspace,
+          platform,
           ctx.message.document.file_name || path.basename(file.file_path),
           Buffer.from(await response.arrayBuffer()),
           ctx.message.document.mime_type || "application/octet-stream",
