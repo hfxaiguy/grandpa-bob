@@ -11,6 +11,7 @@
  */
 import { posixPath } from "../../../src/platform/paths";
 import { sha256hex } from "../../../src/platform/sha256";
+import { createCoreutilsShell } from "../../../src/platform/coreutils";
 import type { CryptoOps, GitOps, Platform, Shell, SqliteFactory } from "../../../src/platform/types";
 import { opfsFs } from "./corefs";
 
@@ -25,9 +26,11 @@ function pending(what: string): (...args: unknown[]) => Promise<never> {
   };
 }
 
-const browserShell: Shell = {
-  runCommand: pending("run_command") as Shell["runCommand"],
-};
+const browserShell: Shell = createCoreutilsShell({
+  fs: opfsFs,
+  path: posixPath,
+  workspaceRoot: "/workspace",
+});
 
 const browserGit: GitOps = {
   ensureRepo: pending("git.ensureRepo") as GitOps["ensureRepo"],

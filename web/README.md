@@ -27,7 +27,9 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 | `node:*` shims + Vite aliases (`web/src/shims/*`) | done — existing shared modules bundle |
 | `tree-sources` + `tree-versions` in the browser | bundle + demo wired; needs live-browser run |
 | `grandma-kat` runtime in the browser | **bundles and runs** with `logger:false` + a mock model (demo); needs live-browser run |
-| WASM SQLite, Worker-as-server, LLM, git, coreutils | not yet (milestones 2–5) |
+| `SqliteTools` over `Platform.sqlite` | done; Node adapter (`test:sqlite`), browser adapter pending (sqlite-wasm) |
+| Virtual coreutils (`src/platform/coreutils.ts`) | done (`test:coreutils`); browser `Shell` uses them |
+| WASM SQLite, Worker-as-server, LLM, git | not yet (milestones 2c, 3, 4, 5b) |
 
 ## `node:*` shims
 

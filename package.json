@@ -32,6 +32,7 @@
     "test:platform": "tsx scripts/platform-fs-test.ts",
     "test:models": "tsx scripts/model-config-test.ts",
     "test:sqlite": "tsx scripts/sqlite-tools-test.ts",
+    "test:coreutils": "tsx scripts/coreutils-test.ts",
     "test:env": "tsx scripts/env-file-test.ts",
     "test:attachments": "tsx scripts/attachments-test.ts",
     "agent:mock": "tsx scripts/agent-mock-test.ts",
