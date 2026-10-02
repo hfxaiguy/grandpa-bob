@@ -29,7 +29,8 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 | `grandma-kat` runtime in the browser | done — **verified in real Chromium** (`knit()` with `logger:false`) |
 | `SqliteTools` over `Platform.sqlite` | done; Node adapter (`test:sqlite`) + **browser sqlite-wasm worker, verified in real Chromium** |
 | Virtual coreutils (`src/platform/coreutils.ts`) | done (`test:coreutils`); browser `Shell` uses them |
-| Git (`isomorphic-git`), LLM wiring, Worker-as-server/UI | not yet (milestones 3–5) |
+| Git (`isomorphic-git`), LLM wiring, pattern loader, UI | not yet (milestones 3b–5) |
+| Agent worker + tool registry + event stream | done — **verified in real Chromium** (streams events, runs file/SQL/shell tools) |
 
 ## `node:*` shims
 

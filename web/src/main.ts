@@ -7,6 +7,7 @@
  */
 import "./shims/process";
 import { createBrowserPlatform, initSqlite } from "./platform/browser";
+import { AgentClient } from "./agent/agent-client";
 import { Tree, name, Prompt, knit } from "grandma-kat";
 import { listTreeSources } from "../../src/tree-sources";
 import { promoteTree, snapshotTree } from "../../src/tree-versions";
@@ -111,6 +112,17 @@ async function sqliteDemo(root: string): Promise<void> {
   log(`sqlite: persisted rows after reopen = ${count.n}`);
 }
 
+async function agentDemo(): Promise<void> {
+  const client = new AgentClient();
+  try {
+    const { result, events } = await client.run("browser worker demo");
+    log(`agent-worker: events=${events.length}`);
+    log(`agent-worker: result=${JSON.stringify(result)}`);
+  } finally {
+    client.close();
+  }
+}
+
 async function main(): Promise<void> {
   const root = "/workspace";
   await opfsSmoke(root);
@@ -120,6 +132,8 @@ async function main(): Promise<void> {
   await grandmaKatDemo(root);
   log("");
   await sqliteDemo(root);
+  log("");
+  await agentDemo();
   log("");
   log("OK");
 }
