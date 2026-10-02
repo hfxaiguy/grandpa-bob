@@ -29,6 +29,7 @@
     "test:secrets": "tsx scripts/secrets-test.ts",
     "test:shell": "tsx scripts/shell-sandbox-test.ts",
     "test:paths": "tsx scripts/path-shim-test.ts",
+    "test:platform": "tsx scripts/platform-fs-test.ts",
     "test:env": "tsx scripts/env-file-test.ts",
     "test:attachments": "tsx scripts/attachments-test.ts",
     "agent:mock": "tsx scripts/agent-mock-test.ts",

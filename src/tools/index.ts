@@ -5,6 +5,7 @@ import { ExaSearchTools } from "./websearch.js";
 import { SqliteTools } from "./sqlite.js";
 import { OpencodeTools } from "./opencode.js";
 import { DuckdbTools } from "./duckdb.js";
+import { createNodePlatform } from "../platform/node.js";
 import type { AppTool } from "../app-tools.js";
 
 type Json = Record<string, unknown>;
@@ -44,7 +45,7 @@ export class ToolRegistry {
     sqliteLockedPath?: string,
     appTools: AppTool[] = [],
   ) {
-    this.files = new FileTools(workspace);
+    this.files = new FileTools(createNodePlatform(workspace, allowedCommands));
     this.shell = new ShellTools(workspace, allowedCommands);
     this.exa = new ExaSearchTools(exaApiKey);
     this.sqlite = new SqliteTools({ workspace, lockedPath: sqliteLockedPath });
