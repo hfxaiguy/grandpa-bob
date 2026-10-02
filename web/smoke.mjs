@@ -104,9 +104,45 @@ for (let i = 0; i < 160; i++) {
 
 console.log("=== PAGE OUTPUT ===");
 console.log(out.trim() || "(empty)");
+
+// Drive the chat UI if present.
+let chatOk = true;
+const hasChat = await send("Runtime.evaluate", {
+  expression: "!!document.getElementById('chat-input') && !document.getElementById('chat-send').disabled",
+  returnByValue: true,
+});
+if (hasChat.result?.result?.value) {
+  await send("Runtime.evaluate", {
+    expression: `(() => {
+      const input = document.getElementById('chat-input');
+      const send = document.getElementById('chat-send');
+      input.disabled = false; send.disabled = false;
+      input.value = 'smoke ping';
+      document.getElementById('chat-form').requestSubmit();
+      return true;
+    })()`,
+    returnByValue: true,
+  });
+  let reply = "";
+  for (let i = 0; i < 80; i++) {
+    const r = await send("Runtime.evaluate", {
+      expression: "Array.from(document.querySelectorAll('.msg-assistant')).map((e) => e.textContent).pop() ?? ''",
+      returnByValue: true,
+    });
+    reply = r.result?.result?.value ?? "";
+    if (reply) break;
+    await sleep(250);
+  }
+  console.log("=== CHAT REPLY ===");
+  console.log(reply || "(none)");
+  chatOk = reply.startsWith("llm-says");
+} else {
+  console.log("=== CHAT REPLY ===\n(chat not ready)");
+}
+
 if (logs.length) {
   console.log("=== CONSOLE ===");
   console.log(logs.join("\n"));
 }
 ws.close();
-cleanup(/\bOK\b/.test(out) && !/ERROR:/.test(out) ? 0 : 3);
+cleanup(/\bOK\b/.test(out) && !/ERROR:/.test(out) && chatOk ? 0 : 3);

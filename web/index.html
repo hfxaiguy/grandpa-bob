@@ -4,13 +4,32 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>BOB (browser)</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { margin: 0; display: flex; flex-direction: column; height: 100vh; }
+      header { padding: 0.6rem 1rem; border-bottom: 1px solid #8884; font-weight: 600; }
+      #chat-log { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+      .msg { max-width: 70ch; padding: 0.5rem 0.75rem; border-radius: 0.6rem; white-space: pre-wrap; }
+      .msg-user { align-self: flex-end; background: #2563eb; color: white; }
+      .msg-assistant { align-self: flex-start; background: #8882; }
+      form { display: flex; gap: 0.5rem; padding: 0.75rem 1rem; border-top: 1px solid #8884; }
+      #chat-input { flex: 1; padding: 0.5rem 0.75rem; font: inherit; }
+      button { padding: 0.5rem 1rem; font: inherit; }
+      details { padding: 0.5rem 1rem; border-top: 1px solid #8884; }
+      #out { white-space: pre-wrap; font-size: 0.8rem; max-height: 12rem; overflow: auto; }
+    </style>
   </head>
   <body>
-    <main>
-      <h1>BOB — browser target</h1>
-      <p>Milestone 0: platform seam + OPFS workspace smoke test.</p>
+    <header>BOB — browser target</header>
+    <div id="chat-log"></div>
+    <form id="chat-form">
+      <input id="chat-input" autocomplete="off" placeholder="Message BOB…" disabled />
+      <button id="chat-send" type="submit" disabled>Send</button>
+    </form>
+    <details>
+      <summary>diagnostics</summary>
       <pre id="out">booting…</pre>
-    </main>
+    </details>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

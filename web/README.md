@@ -33,7 +33,8 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 | Pattern module loader (OPFS + grandma-kat/node injection) | done — **verified in real Chromium** (loads a pattern and runs Prompt+Call) |
 | Remote LLM (`models.json` from OPFS + settings) | done — **verified in real Chromium** against a mock OpenAI-compatible endpoint |
 | Durability (persist request + workspace export/import) | done — **verified in real Chromium** (25 files exported/restored) |
-| Real `trunk`/app trees, git (`isomorphic-git`), UI | not yet |
+| Chat UI driving the agent worker | done — **verified in real Chromium** (smoke types a message, gets the LLM reply) |
+| Real `trunk`/app trees, git (`isomorphic-git`) | not yet |
 
 ## `node:*` shims
 

@@ -1,9 +1,10 @@
 /**
- * Browser target demo.
+ * Browser target entry point.
  *
- * Milestone 0/1: boot the browser Platform, exercise the OPFS workspace, then
- * run the *existing shared* tree-discovery and versioning modules unchanged by
- * aliasing their node: imports to browser shims.
+ * The page is a chat UI driven by the agent worker. The same demos from the
+ * milestones also run at startup to keep the OPFS / SQLite / LLM / loader paths
+ * exercised end-to-end; their output goes to the diagnostics panel (and is what
+ * `npm run smoke` checks).
  */
 import "./shims/process";
 import { createBrowserPlatform, initSqlite } from "./platform/browser";
@@ -21,6 +22,47 @@ const log = (line: string) => {
   out.textContent = lines.join("\n");
 };
 
+// ── chat UI ──────────────────────────────────────────────────────────────
+const chatLog = document.getElementById("chat-log")!;
+const chatForm = document.getElementById("chat-form") as HTMLFormElement;
+const chatInput = document.getElementById("chat-input") as HTMLInputElement;
+const chatSend = document.getElementById("chat-send") as HTMLButtonElement;
+const agent = new AgentClient();
+let agentReady = false;
+
+function appendMessage(role: "user" | "assistant", text: string): void {
+  const div = document.createElement("div");
+  div.className = `msg msg-${role}`;
+  div.textContent = text;
+  chatLog.appendChild(div);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function answerText(result: unknown): string {
+  if (result && typeof result === "object" && "answer" in result) {
+    return String((result as { answer: unknown }).answer);
+  }
+  return JSON.stringify(result);
+}
+
+chatForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = chatInput.value.trim();
+  if (!text || !agentReady) return;
+  appendMessage("user", text);
+  chatInput.value = "";
+  chatSend.disabled = true;
+  void agent
+    .run(text, loadEnv())
+    .then(({ result }) => appendMessage("assistant", answerText(result)))
+    .catch((err: unknown) => appendMessage("assistant", `error: ${err instanceof Error ? err.message : String(err)}`))
+    .finally(() => {
+      chatSend.disabled = false;
+      chatInput.focus();
+    });
+});
+
+// ── startup checks/demos ─────────────────────────────────────────────────
 async function opfsSmoke(root: string): Promise<void> {
   const platform = createBrowserPlatform(root);
   const { fs, path } = platform;
@@ -70,8 +112,6 @@ async function sharedTreesDemo(root: string): Promise<void> {
 }
 
 async function grandmaKatDemo(root: string): Promise<void> {
-  // Run a real tree through grandma-kat in the browser with a mock model
-  // (logger:false means the node:sqlite stub is never constructed).
   const pattern = Tree(
     name("browser_demo"),
     Prompt((m: { task?: string }) => `task: ${m.task}`),
@@ -107,16 +147,14 @@ async function sqliteDemo(root: string): Promise<void> {
   await db.close();
   log(`sqlite: inserted changes=${String(inserted.changes)} -> ${JSON.stringify(rows)}`);
 
-  // Reopen: persistence through the OPFS VFS.
   const reopened = await sqlite.open(file, { readOnly: true });
   const count = (await (await reopened.prepare("SELECT COUNT(*) AS n FROM people")).get()) as { n: number };
   await reopened.close();
   log(`sqlite: persisted rows after reopen = ${count.n}`);
 }
 
-async function agentDemo(root: string): Promise<void> {
-  // Write a real pattern to OPFS; the worker loads it through the module
-  // loader (grandma-kat + node shims injected, relative imports from OPFS).
+/** Write the demo pattern + model registry into the OPFS workspace. */
+async function bootstrapWorkspace(root: string): Promise<void> {
   const { fs, path } = createBrowserPlatform(root);
   await fs.mkdir(path.join(root, "patterns"), { recursive: true });
   await fs.writeFile(
@@ -137,8 +175,6 @@ async function agentDemo(root: string): Promise<void> {
     ].join("\n"),
   );
 
-  // Point the model registry at the local mock LLM and provide its key via
-  // settings, so models.json's ${DEMO_API_KEY} interpolation is exercised.
   setEnvVar("DEMO_API_KEY", "test-key");
   await fs.writeFile(
     path.join(root, "models.json"),
@@ -146,20 +182,22 @@ async function agentDemo(root: string): Promise<void> {
       default: { baseURL: "http://127.0.0.1:8787/v1", apiKey: "${DEMO_API_KEY}", model: "mock-model" },
     }),
   );
+}
 
-  const client = new AgentClient();
-  try {
-    const { result, events } = await client.run("the notes file", loadEnv());
-    log(`agent-worker: events=${events.length}`);
-    log(`agent-worker: result=${JSON.stringify(result)}`);
-    const answer = (result as { answer?: unknown })?.answer;
-    if (typeof answer !== "string" || !answer.startsWith("llm-says")) {
-      throw new Error(`expected a live-LLM answer, got ${JSON.stringify(answer)}`);
-    }
-    log("agent-worker: live LLM round-trip OK");
-  } finally {
-    client.close();
+async function agentDemo(root: string): Promise<void> {
+  await bootstrapWorkspace(root);
+  const { result, events } = await agent.run("the notes file", loadEnv());
+  log(`agent-worker: events=${events.length}`);
+  log(`agent-worker: result=${JSON.stringify(result)}`);
+  const answer = (result as { answer?: unknown })?.answer;
+  if (typeof answer !== "string" || !answer.startsWith("llm-says")) {
+    throw new Error(`expected a live-LLM answer, got ${JSON.stringify(answer)}`);
   }
+  log("agent-worker: live LLM round-trip OK");
+  agentReady = true;
+  chatInput.disabled = false;
+  chatSend.disabled = false;
+  chatInput.focus();
 }
 
 async function durabilityDemo(): Promise<void> {
