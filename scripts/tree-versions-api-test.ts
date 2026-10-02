@@ -104,6 +104,33 @@ try {
   assert.equal(r.status, 200);
   assert.equal(r.json.spec, "# trunk spec\n");
 
+  // A version change broadcasts a "trees" SSE event so open pages refresh.
+  {
+    const ac = new AbortController();
+    const sse = await fetch(`http://127.0.0.1:${port}/api/events`, { signal: ac.signal });
+    const reader = sse.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    const seen = (async () => {
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          if (buf.includes('"type":"trees"')) return true;
+        }
+      } catch { /* aborted */ }
+      return false;
+    })();
+    await api("POST", "/api/tree/versions", { name: "trunk" });
+    const got = await Promise.race([
+      seen,
+      new Promise((r) => setTimeout(() => r(false), 2000)),
+    ]);
+    assert.equal(got, true, "snapshot broadcasts trees");
+    ac.abort();
+  }
+
   // Unknown tree → 404-ish empty list, not a crash.
   r = await api("GET", "/api/tree/versions?name=nope");
   assert.equal(r.status, 200);
