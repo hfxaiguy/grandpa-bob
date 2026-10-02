@@ -34,7 +34,8 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 | Remote LLM (`models.json` from OPFS + settings) | done — **verified in real Chromium** against a mock OpenAI-compatible endpoint |
 | Durability (persist request + workspace export/import) | done — **verified in real Chromium** (25 files exported/restored) |
 | Chat UI driving the agent worker | done — **verified in real Chromium** (smoke types a message, gets the LLM reply) |
-| Real `trunk`/app trees, git (`isomorphic-git`) | not yet |
+| Git auto-commit (`isomorphic-git` over OPFS) | done — **verified in real Chromium** (`git: auto-commit 5be3f65`) |
+| Real `trunk`/app trees (wider import surface) | not yet |
 
 ## `node:*` shims
 

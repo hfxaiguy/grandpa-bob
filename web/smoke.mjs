@@ -41,7 +41,7 @@ function cleanup(code) {
   try { rmSync(PROFILE, { recursive: true, force: true }); } catch {}
   process.exit(code);
 }
-setTimeout(() => { console.error("timeout: chrome did not finish"); cleanup(2); }, 60_000).unref();
+setTimeout(() => { console.error("timeout: chrome did not finish"); cleanup(2); }, 120_000).unref();
 
 async function getJSON(p) {
   return (await fetch(`http://127.0.0.1:${PORT}${p}`)).json();
@@ -92,13 +92,13 @@ await send("Page.navigate", { url: TARGET });
 for (let i = 0; i < 60 && !loaded; i++) await sleep(100);
 
 let out = "";
-for (let i = 0; i < 160; i++) {
+for (let i = 0; i < 280; i++) {
   const r = await send("Runtime.evaluate", {
     expression: "document.getElementById('out')?.textContent ?? document.body?.innerText ?? ''",
     returnByValue: true,
   });
   out = r.result?.result?.value ?? "";
-  if (/\bOK\b|ERROR:/.test(out)) break;
+  if (out.includes("SMOKE_DONE") || /ERROR:/.test(out)) break;
   await sleep(250);
 }
 
@@ -145,4 +145,4 @@ if (logs.length) {
   console.log(logs.join("\n"));
 }
 ws.close();
-cleanup(/\bOK\b/.test(out) && !/ERROR:/.test(out) && chatOk ? 0 : 3);
+cleanup(out.includes("SMOKE_DONE") && !/ERROR:/.test(out) && chatOk ? 0 : 3);

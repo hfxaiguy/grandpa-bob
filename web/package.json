@@ -17,6 +17,9 @@
     "vite": "^6.0.7"
   },
   "dependencies": {
-    "@sqlite.org/sqlite-wasm": "^3.53.4-build2"
+    "@componentor/opfs-fs": "^1.1.7",
+    "@sqlite.org/sqlite-wasm": "^3.53.4-build2",
+    "buffer": "^6.0.3",
+    "isomorphic-git": "^1.42.6"
   }
 }

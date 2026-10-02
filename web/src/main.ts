@@ -11,6 +11,7 @@ import { createBrowserPlatform, initSqlite } from "./platform/browser";
 import { AgentClient } from "./agent/agent-client";
 import { loadEnv, setEnvVar } from "./settings";
 import { exportWorkspace, importWorkspace } from "./workspace-transfer";
+import { FileTools } from "../../src/tools/files";
 import { Tree, name, Prompt, knit } from "grandma-kat";
 import { listTreeSources } from "../../src/tree-sources";
 import { promoteTree, snapshotTree } from "../../src/tree-versions";
@@ -211,6 +212,15 @@ async function durabilityDemo(): Promise<void> {
   );
 }
 
+async function gitDemo(root: string): Promise<void> {
+  const platform = createBrowserPlatform(root);
+  const files = new FileTools(platform);
+  await platform.git.ensureRepo();
+  const result = await files.writeFile("git-demo.txt", `hello ${Date.now()}\n`);
+  const match = result.match(/commit: ([0-9a-f]{7})/);
+  log(`git: ${match ? `auto-commit ${match[1]}` : `WARN ${result}`}`);
+}
+
 async function main(): Promise<void> {
   const root = "/workspace";
   await opfsSmoke(root);
@@ -223,8 +233,11 @@ async function main(): Promise<void> {
   log("");
   await agentDemo(root);
   log("");
+  await gitDemo(root);
+  log("");
   await durabilityDemo();
   log("");
+  log("SMOKE_DONE");
   log("OK");
 }
 
