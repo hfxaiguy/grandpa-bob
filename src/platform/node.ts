@@ -64,28 +64,30 @@ export const nodeCrypto: CryptoOps = {
   sha256hex: (text) => createHash("sha256").update(text).digest("hex"),
 };
 
-/** node:sqlite adapter (synchronous DatabaseSync / StatementSync). */
+/** node:sqlite adapter (synchronous DatabaseSync, exposed through the async seam). */
 export const nodeSqlite: SqliteFactory = {
-  open(path: string, { readOnly }): SqliteDatabase {
+  async open(path: string, { readOnly }): Promise<SqliteDatabase> {
     const db = new DatabaseSync(path, { readOnly });
     return {
-      prepare(sql) {
+      async prepare(sql) {
         const stmt = db.prepare(sql);
         return {
-          all: (...params) => stmt.all(...(params as never[])) as unknown[],
-          get: (...params) => stmt.get(...(params as never[])),
-          run: (...params) =>
+          all: async (...params) => stmt.all(...(params as never[])) as unknown[],
+          get: async (...params) => stmt.get(...(params as never[])),
+          run: async (...params) =>
             stmt.run(...(params as never[])) as {
               changes: number | bigint;
               lastInsertRowid: number | bigint;
             },
-          columns: () => stmt.columns().map((c) => ({ name: c.name ?? "" })),
+          columns: async () => stmt.columns().map((c) => ({ name: c.name ?? "" })),
         };
       },
-      exec: (sql) => {
+      async exec(sql) {
         db.exec(sql);
       },
-      close: () => db.close(),
+      async close() {
+        db.close();
+      },
     };
   },
 };

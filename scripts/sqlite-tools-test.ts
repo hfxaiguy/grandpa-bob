@@ -1,6 +1,6 @@
 /**
  * SqliteTools over the Platform seam. Uses the Node adapter here (node:sqlite);
- * the same class runs in the browser once the sqlite-wasm adapter lands.
+ * the same class runs in the browser over the sqlite-wasm worker.
  * Run: `npm run test:sqlite`.
  */
 import assert from "node:assert/strict";
@@ -15,15 +15,15 @@ const platform = createNodePlatform(workspace);
 const tools = new SqliteTools(platform);
 
 try {
-  const created = tools.write("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT, note TEXT)", "people.db");
+  const created = await tools.write("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT, note TEXT)", "people.db");
   assert.equal(created.changes, 0);
   assert.equal(created.database, path.join(workspace, "people.db"));
 
-  const inserted = tools.write("INSERT INTO people (name, note) VALUES ('Ada', 'x'), ('Grace', 'y')", "people.db");
+  const inserted = await tools.write("INSERT INTO people (name, note) VALUES ('Ada', 'x'), ('Grace', 'y')", "people.db");
   assert.equal(inserted.changes, 2, "two rows inserted");
   assert.ok(Number(inserted.lastInsertRowid) >= 2);
 
-  const rows = tools.query("SELECT id, name, note FROM people ORDER BY id", "people.db");
+  const rows = await tools.query("SELECT id, name, note FROM people ORDER BY id", "people.db");
   assert.deepEqual(rows.columns, ["id", "name", "note"]);
   assert.equal(rows.rowCount, 2);
   assert.deepEqual(rows.rows, [
@@ -32,20 +32,20 @@ try {
   ]);
 
   // read-only guard
-  assert.throws(
+  await assert.rejects(
     () => tools.query("INSERT INTO people (name) VALUES ('nope')", "people.db"),
     /read-only/,
   );
 
   // workspace sandbox
-  assert.throws(() => tools.query("SELECT 1", "../escape.db"), /escapes workspace/);
+  await assert.rejects(() => tools.query("SELECT 1", "../escape.db"), /escapes workspace/);
 
   // missing path is reported, not silently ignored
-  assert.throws(() => tools.query("SELECT 1"), /path is required/);
+  await assert.rejects(() => tools.query("SELECT 1"), /path is required/);
 
   // locked path ignores the path argument entirely
   const locked = new SqliteTools(platform, path.join(workspace, "people.db"));
-  const viaLock = locked.query("SELECT COUNT(*) AS n FROM people", "/somewhere/else.db");
+  const viaLock = await locked.query("SELECT COUNT(*) AS n FROM people", "/somewhere/else.db");
   assert.equal((viaLock.rows as Array<{ n: number }>)[0].n, 2);
 
   console.log("sqlite-tools: query/write/guard/sandbox/lock OK");

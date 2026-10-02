@@ -14,6 +14,9 @@ import { sha256hex } from "../../../src/platform/sha256";
 import { createCoreutilsShell } from "../../../src/platform/coreutils";
 import type { CryptoOps, GitOps, Platform, Shell, SqliteFactory } from "../../../src/platform/types";
 import { opfsFs } from "./corefs";
+import { createSqliteWasm, initSqlite } from "./sqlite-wasm";
+
+export { initSqlite };
 
 const browserCrypto: CryptoOps = {
   randomUUID: () => crypto.randomUUID(),
@@ -37,11 +40,7 @@ const browserGit: GitOps = {
   autoCommit: pending("git.autoCommit") as GitOps["autoCommit"],
 };
 
-const browserSqlite: SqliteFactory = {
-  open: () => {
-    throw new Error("sqlite is not available in the browser yet (milestone 2c: sqlite-wasm)");
-  },
-};
+const browserSqlite: SqliteFactory = createSqliteWasm();
 
 export function createBrowserPlatform(workspaceRoot = "/workspace"): Platform {
   return {

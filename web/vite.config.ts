@@ -13,6 +13,11 @@ const shim = (name: string) => fileURLToPath(new URL(`./src/shims/${name}`, impo
 // COOP/COEP are set for OPFS-backed WASM SQLite with SharedArrayBuffer later.
 export default defineConfig({
   root: ".",
+  // sqlite-wasm locates its .wasm and its OPFS async-proxy worker via
+  // import.meta.url; dep pre-bundling would rewrite those to the wrong paths.
+  optimizeDeps: {
+    exclude: ["@sqlite.org/sqlite-wasm"],
+  },
   resolve: {
     alias: {
       "node:fs/promises": shim("node-fs-promises.ts"),
@@ -34,6 +39,12 @@ export default defineConfig({
     format: "es",
   },
   server: {
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp",
+    },
+  },
+  preview: {
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",
       "Cross-Origin-Embedder-Policy": "require-corp",

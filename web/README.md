@@ -19,17 +19,17 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 | Platform interfaces (`src/platform/types.ts`) | done |
 | Node adapter (`src/platform/node.ts`) | done |
 | In-memory adapter (`src/platform/memory.ts`) | done, used by tests |
-| OPFS `FileSystem` (`web/src/platform/corefs.ts`) | done, builds; needs live-browser run |
+| OPFS `FileSystem` (`web/src/platform/corefs.ts`) | done — **verified in real Chromium** |
 | Browser adapter (`web/src/platform/browser.ts`) | fs/path/crypto wired; shell + git stubbed |
 | `FileTools` over Platform | done (`test:platform`) |
 | `attachments` over Platform | done (`test:attachments`) |
 | Pure model parser (`src/model-config.ts`) | done (`test:models`) |
 | `node:*` shims + Vite aliases (`web/src/shims/*`) | done — existing shared modules bundle |
-| `tree-sources` + `tree-versions` in the browser | bundle + demo wired; needs live-browser run |
-| `grandma-kat` runtime in the browser | **bundles and runs** with `logger:false` + a mock model (demo); needs live-browser run |
-| `SqliteTools` over `Platform.sqlite` | done; Node adapter (`test:sqlite`), browser adapter pending (sqlite-wasm) |
+| `tree-sources` + `tree-versions` in the browser | done — **verified in real Chromium** |
+| `grandma-kat` runtime in the browser | done — **verified in real Chromium** (`knit()` with `logger:false`) |
+| `SqliteTools` over `Platform.sqlite` | done; Node adapter (`test:sqlite`) + **browser sqlite-wasm worker, verified in real Chromium** |
 | Virtual coreutils (`src/platform/coreutils.ts`) | done (`test:coreutils`); browser `Shell` uses them |
-| WASM SQLite, Worker-as-server, LLM, git | not yet (milestones 2c, 3, 4, 5b) |
+| Git (`isomorphic-git`), LLM wiring, Worker-as-server/UI | not yet (milestones 3–5) |
 
 ## `node:*` shims
 
@@ -55,11 +55,12 @@ npm install
 npm run dev        # http://localhost:5173
 npm run typecheck
 npm run build
+npm run smoke      # headless Chromium loads the app and checks its #out
 ```
 
-The page runs a smoke test: it creates `/workspace/notes/hello.txt` in OPFS,
-reads it back, stats it, lists the workspace, renames the file, and prints a
-SHA-256.
+`npm run smoke` needs a Chromium/Chrome binary (override with `CHROME_BIN`) and
+a running dev server. It exercises OPFS writes/rename, `tree-versions`
+snapshot/promote, and `grandma-kat knit()` in a real browser.
 
 ## Architecture
 

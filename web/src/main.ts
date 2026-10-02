@@ -6,7 +6,7 @@
  * aliasing their node: imports to browser shims.
  */
 import "./shims/process";
-import { createBrowserPlatform } from "./platform/browser";
+import { createBrowserPlatform, initSqlite } from "./platform/browser";
 import { Tree, name, Prompt, knit } from "grandma-kat";
 import { listTreeSources } from "../../src/tree-sources";
 import { promoteTree, snapshotTree } from "../../src/tree-versions";
@@ -90,6 +90,27 @@ async function grandmaKatDemo(root: string): Promise<void> {
   log(`grandma-kat: knit -> ${JSON.stringify(result)}`);
 }
 
+async function sqliteDemo(root: string): Promise<void> {
+  await initSqlite();
+  const { sqlite } = createBrowserPlatform(root);
+  const file = `${root}/demo.db`;
+
+  const db = await sqlite.open(file, { readOnly: false });
+  await db.exec("DROP TABLE IF EXISTS people");
+  await db.exec("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT)");
+  await (await db.prepare("INSERT INTO people (name) VALUES (?)")).run("Ada");
+  const inserted = await (await db.prepare("INSERT INTO people (name) VALUES (?)")).run("Grace");
+  const rows = await (await db.prepare("SELECT id, name FROM people ORDER BY id")).all();
+  await db.close();
+  log(`sqlite: inserted changes=${String(inserted.changes)} -> ${JSON.stringify(rows)}`);
+
+  // Reopen: persistence through the OPFS VFS.
+  const reopened = await sqlite.open(file, { readOnly: true });
+  const count = (await (await reopened.prepare("SELECT COUNT(*) AS n FROM people")).get()) as { n: number };
+  await reopened.close();
+  log(`sqlite: persisted rows after reopen = ${count.n}`);
+}
+
 async function main(): Promise<void> {
   const root = "/workspace";
   await opfsSmoke(root);
@@ -97,6 +118,8 @@ async function main(): Promise<void> {
   await sharedTreesDemo(root);
   log("");
   await grandmaKatDemo(root);
+  log("");
+  await sqliteDemo(root);
   log("");
   log("OK");
 }

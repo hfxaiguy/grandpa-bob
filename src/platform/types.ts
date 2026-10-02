@@ -56,24 +56,28 @@ export interface SqliteColumn {
   name: string;
 }
 
-/** A prepared statement. Synchronous, matching node:sqlite's StatementSync. */
+/**
+ * A prepared statement. Async because the browser engine lives in a Web Worker
+ * (OPFS sync access handles are worker-only); the Node adapter resolves
+ * immediately.
+ */
 export interface SqliteStatement {
-  all(...params: unknown[]): unknown[];
-  get(...params: unknown[]): unknown;
-  run(...params: unknown[]): { changes: number | bigint; lastInsertRowid: number | bigint };
-  columns(): SqliteColumn[];
+  all(...params: unknown[]): Promise<unknown[]>;
+  get(...params: unknown[]): Promise<unknown>;
+  run(...params: unknown[]): Promise<{ changes: number | bigint; lastInsertRowid: number | bigint }>;
+  columns(): Promise<SqliteColumn[]>;
 }
 
-/** An open database. Synchronous, matching node:sqlite's DatabaseSync. */
+/** An open database. Async for the same reason as SqliteStatement. */
 export interface SqliteDatabase {
-  prepare(sql: string): SqliteStatement;
-  exec(sql: string): void;
-  close(): void;
+  prepare(sql: string): Promise<SqliteStatement>;
+  exec(sql: string): Promise<void>;
+  close(): Promise<void>;
 }
 
-/** Opens SQLite databases (Node: node:sqlite; browser: sqlite-wasm over OPFS). */
+/** Opens SQLite databases (Node: node:sqlite; browser: sqlite-wasm in a Worker). */
 export interface SqliteFactory {
-  open(path: string, opts: { readOnly: boolean }): SqliteDatabase;
+  open(path: string, opts: { readOnly: boolean }): Promise<SqliteDatabase>;
 }
 
 /** The bundle of adapters a target injects into the shared core. */

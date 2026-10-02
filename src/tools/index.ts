@@ -304,12 +304,12 @@ export class ToolRegistry {
             Array.isArray(args.args) ? (args.args as unknown[]).map(String) : [],
           );
         case "sql_query":
-          return this.sqlite.query(
+          return await this.sqlite.query(
             String(args.query ?? ""),
             args.path !== undefined ? String(args.path) : undefined,
           );
         case "sql_write":
-          return this.sqlite.write(
+          return await this.sqlite.write(
             String(args.query ?? ""),
             args.path !== undefined ? String(args.path) : undefined,
           );

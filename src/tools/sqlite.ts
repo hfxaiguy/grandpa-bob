@@ -57,7 +57,7 @@ export class SqliteTools {
    * Read-only query (SELECT / WITH / EXPLAIN / PRAGMA). Returns a plain JSON
    * object: { database, sql, columns, rows, rowCount, truncated }.
    */
-  query(sql: string, pathArg?: string): Record<string, unknown> {
+  async query(sql: string, pathArg?: string): Promise<Record<string, unknown>> {
     const statement = sql.trim();
     if (!statement) throw new Error("no SQL query provided");
 
@@ -70,24 +70,26 @@ export class SqliteTools {
     }
 
     const database = this.resolveDatabase(pathArg);
-    const db = this.platform.sqlite.open(database, { readOnly: true });
+    const db = await this.platform.sqlite.open(database, { readOnly: true });
     try {
-      const stmt = db.prepare(statement);
-      const rows = (stmt.all() as Record<string, unknown>[]).map((r) => {
+      const stmt = await db.prepare(statement);
+      const rows = (await stmt.all()).map((r) => {
         const out: Record<string, unknown> = {};
-        for (const k of Object.keys(r)) out[k] = truncateCell(r[k]);
+        for (const k of Object.keys(r as Record<string, unknown>)) {
+          out[k] = truncateCell((r as Record<string, unknown>)[k]);
+        }
         return out;
       });
       return {
         database,
         sql: statement,
-        columns: stmt.columns().map((c) => c.name),
+        columns: (await stmt.columns()).map((c) => c.name),
         rows: rows.slice(0, MAX_ROWS),
         rowCount: rows.length,
         truncated: rows.length > MAX_ROWS,
       };
     } finally {
-      db.close();
+      await db.close();
     }
   }
 
@@ -96,20 +98,22 @@ export class SqliteTools {
    * Returns { database, sql, changes, lastInsertRowid } and, when the
    * statement returns rows, columns/rows as well.
    */
-  write(sql: string, pathArg?: string): Record<string, unknown> {
+  async write(sql: string, pathArg?: string): Promise<Record<string, unknown>> {
     const statement = sql.trim();
     if (!statement) throw new Error("no SQL statement provided");
 
     const database = this.resolveDatabase(pathArg);
-    const db = this.platform.sqlite.open(database, { readOnly: false });
+    const db = await this.platform.sqlite.open(database, { readOnly: false });
     try {
-      const stmt = db.prepare(statement);
-      const columnNames = stmt.columns().map((c) => c.name);
+      const stmt = await db.prepare(statement);
+      const columnNames = (await stmt.columns()).map((c) => c.name);
 
       if (columnNames.length > 0) {
-        const rows = (stmt.all() as Record<string, unknown>[]).map((r) => {
+        const rows = (await stmt.all()).map((r) => {
           const out: Record<string, unknown> = {};
-          for (const k of Object.keys(r)) out[k] = truncateCell(r[k]);
+          for (const k of Object.keys(r as Record<string, unknown>)) {
+            out[k] = truncateCell((r as Record<string, unknown>)[k]);
+          }
           return out;
         });
         return {
@@ -123,7 +127,7 @@ export class SqliteTools {
         };
       }
 
-      const info = stmt.run();
+      const info = await stmt.run();
       return {
         database,
         sql: statement,
@@ -134,7 +138,7 @@ export class SqliteTools {
         lastInsertRowid: info.lastInsertRowid === undefined ? null : Number(info.lastInsertRowid),
       };
     } finally {
-      db.close();
+      await db.close();
     }
   }
 }

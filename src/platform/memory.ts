@@ -117,7 +117,7 @@ export function createMemoryPlatform(opts: { root?: string; autoCommit?: GitOps[
     autoCommit: opts.autoCommit ?? (async () => "no-changes"),
   };
   const sqlite: SqliteFactory = {
-    open: () => {
+    open: async () => {
       throw new Error("sqlite is not implemented in the memory platform");
     },
   };
