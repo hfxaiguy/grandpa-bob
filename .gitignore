@@ -9,3 +9,4 @@ tmp/
 workspace.tar.gz
 logs/
 models.json
+web/public/seed/

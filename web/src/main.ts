@@ -249,8 +249,40 @@ async function gitDemo(root: string): Promise<void> {
   log(`git: ${match ? `auto-commit ${match[1]}` : `WARN ${result}`}`);
 }
 
+async function seedWorkspace(root: string): Promise<void> {
+  const platform = createBrowserPlatform(root);
+  const { fs, path } = platform;
+  const marker = path.join(root, ".seeded");
+  const trunk = path.join(root, "patterns", "trunk.mjs");
+  const isFile = (p: string): Promise<boolean> => fs.stat(p).then(() => true).catch(() => false);
+  const force = new URLSearchParams(location.search).has("reseed");
+  const summarize = async (prefix: string): Promise<void> => {
+    const sources = await listTreeSources(root);
+    log(`${prefix}; ${sources.length} trees (trunk: ${sources.some((s) => s.name === "trunk")})`);
+  };
+  if (!force && (await isFile(marker)) && (await isFile(trunk))) {
+    await summarize("seed: ready");
+    return;
+  }
+  try {
+    const res = await fetch("/seed/workspace.json");
+    if (!res.ok) {
+      log("seed: no seed archive served (run `npm run make-seed`)");
+      return;
+    }
+    const archive = (await res.json()) as Parameters<typeof importWorkspace>[0];
+    const imported = await importWorkspace(archive);
+    await fs.writeFile(marker, new Date().toISOString());
+    await summarize(`seed: imported ${imported} files`);
+  } catch (err) {
+    log(`seed: failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 async function main(): Promise<void> {
   const root = "/workspace";
+  await seedWorkspace(root);
+  log("");
   await opfsSmoke(root);
   log("");
   await sharedTreesDemo(root);
