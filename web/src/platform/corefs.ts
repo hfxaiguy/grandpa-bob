@@ -89,7 +89,7 @@ async function copyEntry(
     const buffer = await file.arrayBuffer();
     const handle = await dst.getFileHandle(name, { create: true });
     const writable = await handle.createWritable();
-    await writable.write(buffer);
+    await writable.write(buffer as Parameters<typeof writable.write>[0]);
     await writable.close();
     return;
   }
@@ -112,7 +112,7 @@ export const opfsFs: FileSystem = {
     const dir = await dirHandle(await root(), parts, true);
     const handle = await dir.getFileHandle(name, { create: true });
     const writable = await handle.createWritable();
-    await writable.write(data);
+    await writable.write(data as Parameters<typeof writable.write>[0]);
     await writable.close();
   },
 

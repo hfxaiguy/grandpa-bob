@@ -10,7 +10,7 @@ in browser storage.
 
 See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 
-## Status — milestone 0 (platform seam)
+## Status — milestone 1 (virtual FS / platform seam)
 
 | Piece | State |
 |---|---|
@@ -18,9 +18,31 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 | Shared pure SHA-256 (`src/platform/sha256.ts`) | done, tested vs `node:crypto` |
 | Platform interfaces (`src/platform/types.ts`) | done |
 | Node adapter (`src/platform/node.ts`) | done |
-| OPFS `FileSystem` (`web/src/platform/corefs.ts`) | written, builds; needs live-browser smoke test |
+| In-memory adapter (`src/platform/memory.ts`) | done, used by tests |
+| OPFS `FileSystem` (`web/src/platform/corefs.ts`) | done, builds; needs live-browser run |
 | Browser adapter (`web/src/platform/browser.ts`) | fs/path/crypto wired; shell + git stubbed |
-| Worker-as-server, WASM SQLite, LLM, git, virtual coreutils | not yet (milestones 1–5) |
+| `FileTools` over Platform | done (`test:platform`) |
+| `attachments` over Platform | done (`test:attachments`) |
+| Pure model parser (`src/model-config.ts`) | done (`test:models`) |
+| `node:*` shims + Vite aliases (`web/src/shims/*`) | done — existing shared modules bundle |
+| `tree-sources` + `tree-versions` in the browser | bundle + demo wired; needs live-browser run |
+| WASM SQLite, Worker-as-server, LLM, git, coreutils | not yet (milestones 2–5) |
+
+## `node:*` shims
+
+Existing NodeNext shared modules bundle unchanged via Vite aliases:
+
+| Import | Browser target |
+|---|---|
+| `node:fs` / `node:fs/promises` | OPFS (`corefs.ts`) |
+| `node:path` | shared pure POSIX shim |
+| `node:crypto` | shared pure SHA-256 + WebCrypto |
+| `node:os`, `node:util`, `node:url` | small shims |
+| `node:sqlite` | throwing stub (milestone 2) |
+| `node:child_process` | throwing stub (milestone 5) |
+
+The demo (`src/main.ts`) runs the real `listTreeSources`, `snapshotTree`, and
+`promoteTree` over OPFS, proving the alias approach.
 
 ## Run
 
