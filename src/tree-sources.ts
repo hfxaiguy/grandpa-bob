@@ -62,16 +62,29 @@ export async function listAppTrees(workspaceDir: string) {
   }
 }
 
-/** First prose line of the app's tree.md, falling back to its README. */
+/**
+ * First prose paragraph of the app's tree.md, falling back to its README. Its
+ * lines are joined, so a summary that wraps is not truncated; authors keep the
+ * summary on its own line, then a blank line, then the detail.
+ */
 async function appTreeDescription(appDir: string): Promise<string> {
   for (const file of ["tree.md", "README.md"]) {
     try {
       const content = await readFile(path.join(appDir, file), "utf8");
-      const line = content
-        .split("\n")
-        .map((l) => l.trim())
-        .find((l) => l && !l.startsWith("#") && !l.startsWith("```"));
-      if (line) return line.replace(/\*\*/g, "");
+      const para: string[] = [];
+      for (const raw of content.split("\n")) {
+        const line = raw.trim();
+        if (para.length === 0) {
+          if (!line || line.startsWith("#") || line.startsWith("```")) continue;
+          para.push(line);
+        } else if (!line) {
+          break;
+        } else {
+          para.push(line);
+        }
+      }
+      const text = para.join(" ").replace(/\*\*/g, "");
+      if (text) return text;
     } catch {
       // try the next file
     }
