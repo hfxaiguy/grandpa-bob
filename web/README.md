@@ -59,11 +59,37 @@ The demo (`src/main.ts`) runs the real `listTreeSources`, `snapshotTree`, and
 ```sh
 cd web
 npm install
-npm run dev        # http://localhost:5173
-npm run typecheck
-npm run build
-npm run smoke      # headless Chromium loads the app and checks its #out
+npm run make-seed /path/to/grandma-workspace   # pack workspace -> public/seed
+npm run mock-llm   # terminal 1 (LLM demo)
+npm run dev        # terminal 2 -> http://localhost:5173
+npm run smoke      # headless end-to-end check
 ```
+
+`npm run make-seed` turns a real grandpa-bob workspace (default
+`$WORKSPACE_DIR` or `../../workspace`) into `web/public/seed/workspace.json`.
+On first load the app imports it into OPFS (`?reseed=1` forces a re-import);
+after that the browser workspace persists on its own.
+
+### Clone from a git remote instead
+
+Browsers cannot use `git://` (no raw TCP), so serve a repo over CORS-enabled
+HTTP. `npm run git-server` fronts `git http-backend`:
+
+```sh
+npm run git-server /home/love        # -> http://127.0.0.1:8790/grandma-workspace.git
+```
+
+Then point the app at it (persisted in localStorage) or per load:
+
+```
+http://localhost:5173/?remote=http://127.0.0.1:8790/grandma-workspace.git
+http://localhost:5173/?remote=...&reclone=1   # clear OPFS and clone fresh
+```
+
+The app clones into `/workspace` when it has no `.git`. To also **push** back
+(copy browser → desktop), enable receive-pack on the bare repo:
+`git -C <repo>.git config http.receivepack true` (loopback only; add auth before
+exposing it).
 
 `npm run smoke` needs a Chromium/Chrome binary (override with `CHROME_BIN`) and
 a running dev server. It exercises OPFS writes/rename, `tree-versions`

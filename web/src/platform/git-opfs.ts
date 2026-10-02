@@ -8,6 +8,7 @@
  * work from a browser).
  */
 import git from "isomorphic-git";
+import http from "isomorphic-git/http/web";
 import OPFS from "@componentor/opfs-fs";
 import { Buffer } from "buffer";
 import type { GitOps } from "../../../src/platform/types";
@@ -17,6 +18,14 @@ import "../shims/process";
 (globalThis as unknown as { Buffer?: typeof Buffer }).Buffer ??= Buffer;
 
 type GitFs = Parameters<typeof git.init>[0]["fs"];
+
+/** Clone a remote into the browser workspace (OPFS). */
+export async function cloneWorkspace(root: string, url: string): Promise<void> {
+  const opfs = new OPFS({ useSync: false });
+  await (opfs as unknown as { ready?: () => Promise<void> }).ready?.();
+  const fs = opfs as unknown as GitFs;
+  await git.clone({ fs, http, dir: root, url, singleBranch: true });
+}
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([

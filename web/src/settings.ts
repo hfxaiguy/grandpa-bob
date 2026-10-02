@@ -25,3 +25,23 @@ export function saveEnv(env: Record<string, string>): void {
 export function setEnvVar(name: string, value: string): void {
   saveEnv({ ...loadEnv(), [name]: value });
 }
+
+const REMOTE_KEY = "bob:remote";
+
+/** Workspace git remote to clone from on startup. */
+export function loadRemote(): string {
+  try {
+    return localStorage.getItem(REMOTE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveRemote(url: string): void {
+  try {
+    if (url) localStorage.setItem(REMOTE_KEY, url);
+    else localStorage.removeItem(REMOTE_KEY);
+  } catch {
+    // ignore
+  }
+}

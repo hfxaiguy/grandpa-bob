@@ -11,6 +11,7 @@
     "smoke": "node smoke.mjs",
     "mock-llm": "node mock-llm.mjs",
     "make-seed": "node scripts/make-seed.mjs",
+    "git-server": "node scripts/git-server.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

@@ -9,8 +9,9 @@
 import "./shims/process";
 import { createBrowserPlatform, initSqlite } from "./platform/browser";
 import { AgentClient } from "./agent/agent-client";
-import { loadEnv, setEnvVar } from "./settings";
+import { loadEnv, loadRemote, setEnvVar } from "./settings";
 import { exportWorkspace, importWorkspace } from "./workspace-transfer";
+import { cloneWorkspace } from "./platform/git-opfs";
 import { FileTools } from "../../src/tools/files";
 import { Tree, name, Prompt, knit } from "grandma-kat";
 import { listTreeSources } from "../../src/tree-sources";
@@ -249,6 +250,40 @@ async function gitDemo(root: string): Promise<void> {
   log(`git: ${match ? `auto-commit ${match[1]}` : `WARN ${result}`}`);
 }
 
+/**
+ * Prepare the OPFS workspace: clone from a configured git remote, or fall back
+ * to the bundled seed archive. `?remote=<url>` overrides settings; `?reclone=1`
+ * clears the workspace and clones fresh.
+ */
+async function prepareWorkspace(root: string): Promise<void> {
+  const platform = createBrowserPlatform(root);
+  const { fs, path } = platform;
+  const params = new URLSearchParams(location.search);
+  const remote = params.get("remote") ?? loadRemote();
+  const isDir = (p: string): Promise<boolean> => fs.stat(p).then(() => true).catch(() => false);
+
+  if (!remote) {
+    await seedWorkspace(root);
+    return;
+  }
+
+  const isRepo = await isDir(path.join(root, ".git"));
+  if (isRepo && !params.has("reclone")) {
+    const sources = await listTreeSources(root);
+    log(`clone: up to date; ${sources.length} trees (trunk: ${sources.some((s) => s.name === "trunk")})`);
+    return;
+  }
+
+  try {
+    if (await isDir(root)) await fs.rm(root);
+    await cloneWorkspace(root, remote);
+    const sources = await listTreeSources(root);
+    log(`clone: ${remote} -> ${sources.length} trees (trunk: ${sources.some((s) => s.name === "trunk")})`);
+  } catch (err) {
+    log(`clone: failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 async function seedWorkspace(root: string): Promise<void> {
   const platform = createBrowserPlatform(root);
   const { fs, path } = platform;
@@ -281,7 +316,7 @@ async function seedWorkspace(root: string): Promise<void> {
 
 async function main(): Promise<void> {
   const root = "/workspace";
-  await seedWorkspace(root);
+  await prepareWorkspace(root);
   log("");
   await opfsSmoke(root);
   log("");
