@@ -24,6 +24,7 @@ export interface SerializedTree {
   models: { when: string | null; value: string }[];
   tools: { when: string | null; value: string[] }[];
   needs: string[];
+  optionalNeeds: string[];
   children: SerializedNode[];
 }
 
@@ -148,6 +149,7 @@ export function serializeTree(tree: any, basePath = "", fallbackName: string | n
     models: (def.models ?? []).map((r: any) => ({ when: gateText(r.cond), value: String(r.value) })),
     tools: (def.tools ?? []).map((r: any) => ({ when: gateText(r.cond), value: [...(r.value ?? [])] })),
     needs: [...(def.needs ?? [])],
+    optionalNeeds: [...(def.needsOptional ?? [])],
     children: (def.children ?? []).map((c: any, idx: number) => {
       // Same rule as knit()'s autoname: an unnamed branch subtree takes
       // `${parentName}#${k}` (k = 1-based child position).

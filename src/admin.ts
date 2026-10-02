@@ -2574,7 +2574,10 @@ function renderTreeNode(n, isRoot) {
     const meta = [];
     for (const m of n.models || []) meta.push("model: " + m.value + (m.when ? "   [" + m.when + "]" : ""));
     for (const t of n.tools || []) meta.push("tools: " + t.value.join(", ") + (t.when ? "   [" + t.when + "]" : ""));
-    if (n.needs && n.needs.length) meta.push("needs: " + n.needs.join(", "));
+    if (n.needs && n.needs.length) {
+      const optionalNeeds = new Set(n.optionalNeeds || []);
+      meta.push("needs: " + n.needs.map((x) => (optionalNeeds.has(x) ? x + " (optional)" : x)).join(", "));
+    }
     if (meta.length) wrap.appendChild(tpEl("pre", "tp-meta", meta.join("\\n")));
   }
   const ul = tpEl("ul", "tp-children");

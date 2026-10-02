@@ -442,10 +442,18 @@ export class Agent {
       if (!/^[A-Za-z0-9._-]+$/.test(source.name)) continue;
       try {
         const built = await loadPattern(this.deps.workspace, source.name);
-        const def = (built as { def?: { needs?: unknown } } | null)?.def ?? built;
+        const def = (built as { def?: { needs?: unknown; needsDescriptions?: unknown; needsOptional?: unknown } } | null)?.def ?? built;
         const needs = Array.isArray((def as { needs?: unknown } | null)?.needs)
           ? (def as { needs: string[] }).needs
           : [];
+        const needDescriptions =
+          ((def as { needsDescriptions?: Record<string, unknown> } | null)?.needsDescriptions) ?? {};
+        const optionalNeeds = new Set(
+          Array.isArray((def as { needsOptional?: unknown } | null)?.needsOptional)
+            ? (def as { needsOptional: string[] }).needsOptional
+            : [],
+        );
+        const required = needs.filter((need) => !optionalNeeds.has(need));
         if (tools[source.name]) {
           // Both a pattern and an app tree can share a name; listTreeSources
           // sorts apps last, so the app tree wins the tool slot.
@@ -461,9 +469,17 @@ export class Agent {
           parameters: {
             type: "object",
             properties: Object.fromEntries(
-              needs.map((need) => [need, { description: `Input seeded into the tree as '${need}'.` }]),
+              needs.map((need) => [
+                need,
+                {
+                  description:
+                    typeof needDescriptions[need] === "string" && needDescriptions[need]
+                      ? needDescriptions[need]
+                      : `Input seeded into the tree as '${need}'.`,
+                },
+              ]),
             ),
-            ...(needs.length ? { required: needs } : {}),
+            ...(required.length ? { required } : {}),
           },
           tree: source.name,
         };
