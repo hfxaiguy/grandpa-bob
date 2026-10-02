@@ -462,6 +462,8 @@ interface TurnRecord {
   status: "running" | "done" | "error";
   error: string | null;
   output: string | null;
+  /** Chat-facing text of each emit, in order — one bubble per entry. */
+  emits?: string[] | null;
   /** Buttons of the last emit that carried any; null when none ever did. */
   buttons?: EmitButton[] | null;
   events: SanitizedEvent[];
@@ -835,6 +837,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     status: "running",
     error: null,
     output: null,
+    emits: [],
     events: [],
   };
   session.turns.push(record);
@@ -865,8 +868,11 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
         const { text, buttons } = emitValue(value);
         if (buttons?.length) record.buttons = buttons;
         if (text || buttons?.length) {
-          if (text) record.output = record.output ? record.output + "\n\n" + text : text;
-          // Stream it now; turn_end still carries the final text, so the UI
+          if (text) {
+            record.output = record.output ? record.output + "\n\n" + text : text;
+            (record.emits ??= []).push(text);
+          }
+          // Stream it now; turn_end still carries the final list, so the UI
           // can overwrite whatever a rewound/retried branch emitted.
           broadcast({ type: "emit", turnId, text, buttons });
         }
@@ -895,6 +901,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       status: record.status,
       error: record.error,
       output: record.output,
+      emits: record.emits ?? null,
       buttons: record.buttons,
       ts: record.endedAt,
     });
@@ -903,11 +910,12 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     // phone too — mirror it there (one-way: Telegram never mirrors its
     // own turns back into any web page, it just records them).
     if (telegramNotify && !key.startsWith("web:")) {
-      const body = record.status === "error"
-        ? `\u26a0\ufe0f ${record.error ?? "error"}`
-        : (record.output ?? "(no reply)");
+      const parts = record.status === "error"
+        ? [`\u26a0\ufe0f ${record.error ?? "error"}`]
+        : (record.emits?.length ? record.emits : [record.output ?? "(no reply)"]);
       try {
-        telegramNotify(key, `\ud83d\udcbb ${displayText}\n\n${body}`);
+        telegramNotify(key, `\ud83d\udcbb ${displayText}`);
+        for (const body of parts) telegramNotify(key, body);
       } catch (e) {
         console.warn("[web-chat] telegram notify failed:", e);
       }
@@ -1941,7 +1949,7 @@ function startTurn(turnId, input) {
   if (pending) pending.replaceWith(turn);
   else conv.appendChild(turn);
 
-  const block = { turn, list, spin, lab, cnt };
+  const block = { turn, list, spin, lab, cnt, answerBubs: [] };
   blocks.set(turnId, block);
   rendered.add(turnId);
   maybeScroll(true);
@@ -2148,37 +2156,39 @@ function renderEmitButtons(block, buttons) {
   }
   // Buttons live outside the answer bubble: endTurn settles the bubble's
   // text and must never wipe the keyboard.
-  const ans = block.turn.querySelector(".msg-answer");
+  const answers = block.turn.querySelectorAll(".msg-answer");
+  const ans = answers.length ? answers[answers.length - 1] : null;
   if (ans) ans.after(wrap);
   else block.turn.appendChild(wrap);
   block.emitBtns = wrap;
 }
 
+function appendAnswer(block, text, withWho) {
+  const ans = document.createElement("div");
+  ans.className = "msg-answer";
+  const who = document.createElement("div");
+  who.className = "who";
+  who.textContent = withWho ? "bob" : "";
+  const bub = document.createElement("div");
+  bub.className = "bubble";
+  bub.textContent = text;
+  ans.append(who, bub);
+  block.turn.appendChild(ans);
+  block.answerBubs.push(bub);
+  block.answerBub = bub;
+  return bub;
+}
+
 function emitToTurn(turnId, text, buttons) {
   const block = blocks.get(turnId);
   if (!block) return;
-  if (text) {
-    if (!block.answerBub) {
-      const ans = document.createElement("div");
-      ans.className = "msg-answer";
-      const who = document.createElement("div");
-      who.className = "who";
-      who.textContent = "bob";
-      const bub = document.createElement("div");
-      bub.className = "bubble";
-      ans.append(who, bub);
-      block.turn.appendChild(ans);
-      block.answerBub = bub;
-    }
-    block.answerBub.textContent = block.answerBub.textContent
-      ? block.answerBub.textContent + "\\n\\n" + text
-      : text;
-  }
+  // One Emit = one bubble; the "bob" label rides the first only.
+  if (text) appendAnswer(block, text, (block.answerBubs || []).length === 0);
   if (buttons) renderEmitButtons(block, buttons);
   maybeScroll(false);
 }
 
-function endTurn(turnId, status, error, output, buttons) {
+function endTurn(turnId, status, error, output, buttons, emits) {
   const block = blocks.get(turnId);
   if (!block) return;
   blocks.delete(turnId);
@@ -2190,22 +2200,19 @@ function endTurn(turnId, status, error, output, buttons) {
     errEl.textContent = "Something went wrong: " + (error || "unknown error");
     block.turn.appendChild(errEl);
   }
-  if (output) {
-    if (block.answerBub) {
-      // The bubble streamed live; settle on the server's final text so
-      // anything a rewound branch emitted disappears again.
-      block.answerBub.textContent = output;
-    } else {
-      const ans = document.createElement("div");
-      ans.className = "msg-answer";
-      const who = document.createElement("div");
-      who.className = "who";
-      who.textContent = "bob";
-      const bub = document.createElement("div");
-      bub.className = "bubble";
-      bub.textContent = output;
-      ans.append(who, bub);
-      block.turn.appendChild(ans);
+  // The authoritative reply: one bubble per emit. Older records (and remote
+  // turns) carry only the joined output, so fall back to a single bubble.
+  const texts = Array.isArray(emits) && emits.length ? emits : (output ? [output] : []);
+  if (texts.length) {
+    const streamed = block.answerBubs || [];
+    const matches = streamed.length === texts.length &&
+      streamed.every((b, i) => b.textContent === texts[i]);
+    if (!matches) {
+      // A replayed turn, or a rewind that changed the emits — drop what
+      // streamed and render the final list.
+      for (const b of streamed) b.closest(".msg-answer")?.remove();
+      block.answerBubs = [];
+      for (let i = 0; i < texts.length; i++) appendAnswer(block, texts[i], i === 0);
     }
   }
   // Replay renders the settled buttons once; a live turn already streamed
@@ -2764,7 +2771,7 @@ function connect() {
     if (msg.type === "turn_start") { startTurn(msg.turnId, msg.input); treeOnTurnStart(); }
     else if (msg.type === "event") { addStep(msg.turnId, msg.event); treeOnEvent(msg.event); }
     else if (msg.type === "emit") { emitToTurn(msg.turnId, msg.text, msg.buttons); }
-    else if (msg.type === "turn_end") { endTurn(msg.turnId, msg.status, msg.error, msg.output, msg.buttons); treeOnTurnEnd(); }
+    else if (msg.type === "turn_end") { endTurn(msg.turnId, msg.status, msg.error, msg.output, msg.buttons, msg.emits); treeOnTurnEnd(); }
     else if (msg.type === "cleared") {
       conv.innerHTML = ""; blocks.clear(); rendered.clear(); showEmpty(); treeMemory.clear(); for (const btn of treeMemBtns.values()) btn.textContent = "(no value)";
       // Re-check whether a session is still active (deleting the active
@@ -2796,7 +2803,7 @@ function renderTurns(list) {
   for (const t of list || []) {
     startTurn(t.turnId, t.input);
     for (const ev of t.events || []) addStep(t.turnId, ev);
-    endTurn(t.turnId, t.status, t.error, t.output, t.buttons);
+    endTurn(t.turnId, t.status, t.error, t.output, t.buttons, t.emits);
   }
 }
 
