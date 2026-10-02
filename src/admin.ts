@@ -39,8 +39,16 @@ import {
   type SttBackendOptions,
 } from "./stt.js";
 import { TreeLogReader, logDbPath } from "./treeLog.js";
-import { DEFAULT_PATTERN, loadPattern } from "./pattern-loader.js";
+import { DEFAULT_PATTERN, loadPattern, splitTreeRef } from "./pattern-loader.js";
 import { PATTERNS_DIR_NAME, listPatterns, listTreeSources } from "./tree-sources.js";
+import {
+  KEEP_VERSIONS,
+  scanTreeVersions,
+  snapshotTree,
+  promoteTree,
+  pruneVersions,
+  resolveTreeEntry,
+} from "./tree-versions.js";
 import { serializeTree } from "./tree-serialize.js";
 import { attachmentPrompt, saveAttachment, MAX_ATTACHMENT_BYTES } from "./attachments.js";
 
@@ -341,6 +349,21 @@ export function getSelectedPattern(): string {
 /** Set the active tree pattern name (in memory; persists via /api/pattern). */
 export function setSelectedPattern(name: string): void {
   selectedPattern = name;
+}
+
+// The active VERSION ref for new sessions ("v1", "draft"; "" = prod default).
+// Separate from selectedPattern so switching version never drops sessions —
+// only new sessions adopt it. Persisted to .env as TREE_REF.
+let selectedRef = process.env.TREE_REF || "";
+
+/** Active version ref for new sessions, or undefined for the prod default. */
+export function getSelectedRef(): string | undefined {
+  return selectedRef || undefined;
+}
+
+/** Set the active version ref (in memory; persists via /api/tree/version/active). */
+export function setSelectedRef(ref: string): void {
+  selectedRef = ref === "prod" ? "" : ref;
 }
 
 // ── file browser ──────────────────────────────────────────────────────
@@ -721,6 +744,7 @@ export function remoteTurnEnd(key: string, output: string, ok = true): void {
 function sessionList(agent?: Agent) {
   const local = [...sessionTurns.entries()].map(([key, s]) => ({
     key, label: s.label, pattern: s.pattern, updatedAt: s.updatedAt, turns: s.turns.length, remote: false,
+    ref: agent?.sessionRef?.(key) ?? "",
   }));
   // Live continuations this page has no transcript for — Telegram topics
   // and web sessions pruned from the store. The web UI may FOLLOW any of
@@ -728,7 +752,7 @@ function sessionList(agent?: Agent) {
   // the other transport uses, shared tree and all.
   const foreign = (agent?.sessionKeys() ?? [])
     .filter((k) => !sessionTurns.has(k))
-    .map((k) => ({ key: k, label: describeForeignKey(k), pattern: "", updatedAt: 0, turns: 0, remote: true }));
+    .map((k) => ({ key: k, label: describeForeignKey(k), pattern: "", updatedAt: 0, turns: 0, remote: true, ref: agent?.sessionRef?.(k) ?? "" }));
   return [...local, ...foreign].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
@@ -1689,6 +1713,7 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   .tp-node.tp-active { background: rgba(30,58,138,0.35); outline: 1px solid var(--accent); }
   .tp-node.tp-active > details > summary .tp-badge, .tp-node.tp-active > .tp-row .tp-badge { background: var(--accent); }
   .tp-empty { color: var(--muted); }
+  #tree-body pre.tp-spec-body { white-space: pre-wrap; word-break: break-word; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #cbd5e1; margin: 0; padding: 8px 4px; }
   .tp-mem-btn { text-align: left; background: none; border: none; padding: 0; font: inherit; cursor: pointer; color: #a5b4fc; }
   .tp-mem-btn:hover { text-decoration: underline; }
   #mem-popup { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; background: rgba(2,6,23,0.72); }
@@ -1706,6 +1731,7 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   <span class="sub">${sttLabel}</span>
   <span id="health-dots" title="service health — green up, red down, grey not configured"></span>
   <select id="pattern-sel" title="tree to run (patterns/*.mjs or app/*/tree.mjs)"></select>
+  <select id="ref-sel" title="version used by NEW sessions (running sessions keep their pinned version)"></select>
   <button id="tree-btn" title="show the structure of the active tree">tree</button>
   <button id="tg-btn" title="send this session's transcript to your telegram chat">✈ telegram</button>
   <button id="internals-btn" title="show runtime bookkeeping steps (record, scope)">internals</button>
@@ -1737,6 +1763,9 @@ function buildChatHtml(config: AdminConfig, sttLabel: string): string {
   <div class="tp-head-row">
     <h2>tree</h2>
     <span class="tp-cur" id="tp-pattern"></span>
+    <button id="tp-snapshot" class="secondary" title="snapshot the draft into the next version">snapshot</button>
+    <button id="tp-promote" class="secondary" title="promote the selected version to production">promote</button>
+    <button id="tp-spec" class="secondary" title="show this version's paired .spec.md">spec</button>
     <button id="tree-close">close</button>
   </div>
   <div id="tree-body"><div class="tp-empty">loading&hellip;</div></div>
@@ -2502,6 +2531,8 @@ const TREE_OPEN_KEY = "treePanelOpen";
 // Last selected pattern, mirrored client-side so it survives reloads even
 // if the server restarts without TREE_PATTERN persisted in .env.
 const TREE_PATTERN_KEY = "treePattern";
+// Active version ref for NEW sessions (mirrored client-side like the tree).
+const TREE_REF_KEY = "treeRef";
 function setTreePanelOpen(open) {
   // Non-modal: no backdrop, the chat stays usable while the drawer is open.
   treePanel.classList.toggle("open", open);
@@ -2509,6 +2540,65 @@ function setTreePanelOpen(open) {
   if (open) loadTreePanel();
 }
 $("tree-btn").onclick = () => setTreePanelOpen(!treePanel.classList.contains("open"));
+
+// Snapshot / promote from the tree panel. Uses the selector's current tree
+// and version; a promote needs a concrete version selected.
+async function versionAction(kind) {
+  const name = $("pattern-sel").value;
+  const ref = $("ref-sel").value;
+  if (!name) return;
+  const post = (url, body) =>
+    fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+      .then(async (r) => ({ ok: r.ok, d: await r.json().catch(() => ({})) }));
+  try {
+    if (kind === "snapshot") {
+      const { ok, d } = await post("/api/tree/versions", { name });
+      if (!ok) { toast(d.error || "snapshot failed", true); return; }
+      toast(d.created ? "snapshot " + name + "@" + d.version : name + "@" + d.version + " already matches");
+      await loadRefSelect(name, d.version);
+    } else {
+      if (!ref || ref === "prod" || ref === "draft") { toast("select a version to promote", true); return; }
+      const { ok, d } = await post("/api/tree/version/promote", { name, version: ref });
+      if (!ok) { toast(d.error || "promote failed", true); return; }
+      toast("promoted " + name + "@" + d.promoted + (d.demoted ? " (demoted " + d.demoted + ")" : ""));
+      await loadRefSelect(name, d.promoted);
+    }
+    if (treePanel.classList.contains("open")) loadTreePanel(true);
+  } catch (e) {
+    toast(kind + " failed: " + e.message, true);
+  }
+}
+$("tp-snapshot").onclick = () => versionAction("snapshot");
+$("tp-promote").onclick = () => versionAction("promote");
+
+// Show the selected version's paired spec in the tree drawer.
+async function showSpec() {
+  const name = $("pattern-sel").value;
+  const ref = $("ref-sel").value;
+  const spec = name && ref && ref !== "prod" ? name + "@" + ref : name;
+  if (!spec) return;
+  // Open the drawer directly (setTreePanelOpen would immediately load the
+  // structure view and race this spec render).
+  treePanel.classList.add("open");
+  try { localStorage.setItem(TREE_OPEN_KEY, "1"); } catch { /* private mode */ }
+  treeBody.innerHTML = "";
+  treeBody.appendChild(tpEl("div", "tp-empty", "loading spec\\u2026"));
+  try {
+    const r = await fetch("/api/tree/spec?pattern=" + encodeURIComponent(spec));
+    const d = await r.json().catch(() => ({}));
+    treeBody.innerHTML = "";
+    if (!r.ok) {
+      treeBody.appendChild(tpEl("div", "tp-empty", d.error || "no spec for this version"));
+      return;
+    }
+    treeBody.appendChild(tpEl("div", "tp-info", d.specFile || spec));
+    treeBody.appendChild(tpEl("pre", "tp-spec-body", d.spec));
+    treeLoadedFor = null; // reopening the tree reloads the structure view
+  } catch (e) {
+    toast("spec failed: " + e.message, true);
+  }
+}
+$("tp-spec").onclick = () => showSpec();
 $("tree-close").onclick = () => setTreePanelOpen(false);
 
 // Runtime bookkeeping rows (record, scope_init) are for debugging the tree,
@@ -2543,11 +2633,13 @@ try {
 
 async function loadTreePanel(force) {
   const name = $("pattern-sel").value;
-  if (!force && treeLoadedFor && treeLoadedFor === name) return;
+  const ref = $("ref-sel") ? $("ref-sel").value : "";
+  const spec = name && ref && ref !== "prod" ? name + "@" + ref : name;
+  if (!force && treeLoadedFor && treeLoadedFor === spec) return;
   treeBody.innerHTML = "";
   treeBody.appendChild(tpEl("div", "tp-empty", "loading\\u2026"));
   try {
-    const r = await fetch("/api/tree" + (name ? "?pattern=" + encodeURIComponent(name) : ""));
+    const r = await fetch("/api/tree" + (spec ? "?pattern=" + encodeURIComponent(spec) : ""));
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || "load failed");
     treeLoadedFor = d.pattern;
@@ -2833,6 +2925,9 @@ async function refreshSessionOptions() {
     const when = s.updatedAt ? new Date(s.updatedAt).toLocaleString() : "";
     const parts = [(s.label || "untitled")];
     if (s.pattern) parts.push("[" + s.pattern + "]");
+    // Pinned-version badge: the version this session will resume on.
+    const refVersion = s.ref && s.ref.includes("@") ? s.ref.split("@")[1] : "";
+    if (refVersion) parts.push("@" + refVersion);
     if (when) parts.push(when);
     if (!s.remote) parts.push(s.turns + " turn" + (s.turns === 1 ? "" : "s"));
     o.textContent = (s.remote ? "\\u21c4 " : "") + parts.join(" \\u00b7 ");
@@ -2923,6 +3018,56 @@ loadHistory();
 connect();
 
 // ---- pattern selector -------------------------------------------------
+// Populate the version selector for the chosen tree: prod, each snapshot,
+// and draft. Choosing one retargets NEW sessions only; live sessions keep
+// their pinned version.
+async function loadRefSelect(name, activeRef) {
+  const sel = document.getElementById("ref-sel");
+  if (!sel) return;
+  sel.innerHTML = "";
+  if (!name) { sel.disabled = true; return; }
+  let d = { versions: [], prod: null, draft: false, active: "" };
+  try {
+    const r = await fetch("/api/tree/versions?name=" + encodeURIComponent(name));
+    if (r.ok) d = await r.json();
+  } catch { /* leave defaults */ }
+  const active = (activeRef != null && activeRef !== "") ? activeRef : (d.active || "prod");
+  const add = (value, label) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    if (value === active) o.selected = true;
+    sel.appendChild(o);
+  };
+  add("prod", "prod" + (d.prod ? " (" + d.prod + ")" : ""));
+  const byNum = (a, b) => parseInt(b.slice(1), 10) - parseInt(a.slice(1), 10);
+  for (const v of (d.versions || []).slice().sort(byNum)) {
+    add(v, v + (d.prod === v ? " \u2713 prod" : ""));
+  }
+  if (d.draft) add("draft", "draft");
+  if (active !== "prod" && active !== "draft" && !(d.versions || []).includes(active)) {
+    add(active, active + " (missing)");
+  }
+  sel.disabled = !d.versions.length && !d.draft;
+}
+async function setRef(ref) {
+  const name = document.getElementById("pattern-sel").value;
+  if (!name || !ref) return;
+  try {
+    const r = await fetch("/api/tree/version/active", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name, ref }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(d.error || "version switch failed", true); return; }
+    toast("new sessions use: " + name + (ref && ref !== "prod" ? "@" + ref : " (prod)"));
+    try { localStorage.setItem(TREE_REF_KEY, ref); } catch { /* private mode */ }
+  } catch (e) {
+    toast("version switch failed: " + e.message, true);
+  }
+}
+
 async function loadPatternSelect() {
   try {
     const r = await fetch("/api/pattern");
@@ -2965,6 +3110,7 @@ async function loadPatternSelect() {
     }
     // The drawer may have loaded before the select was populated — resync.
     if (treePanel.classList.contains("open")) loadTreePanel(true);
+    await loadRefSelect(sel.value || d.current);
   } catch { /* pattern API unreachable — selector just stays empty */ }
 }
 async function setPattern(name) {
@@ -2983,11 +3129,13 @@ async function setPattern(name) {
     treeVisited.clear();
     treeActive = null;
     if (treePanel.classList.contains("open")) loadTreePanel(true);
+    await loadRefSelect(name);
   } catch (e) {
     toast("pattern switch failed: " + e.message, true);
   }
 }
 document.getElementById("pattern-sel").addEventListener("change", (e) => setPattern(e.target.value));
+document.getElementById("ref-sel").addEventListener("change", (e) => setRef(e.target.value));
 loadPatternSelect();
 
 // ---- service health dots (telegram / voice / llm) ----
@@ -3639,7 +3787,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       if (req.method === "GET" && url.pathname === "/api/pattern") {
         const patterns = await listTreeSources(config.workspaceDir);
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ current: getSelectedPattern(), patterns }));
+        res.end(JSON.stringify({ current: getSelectedPattern(), ref: getSelectedRef() ?? "", patterns }));
         return;
       }
 
@@ -3652,6 +3800,13 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         if (!patterns.some((p) => p.name === name)) {
           res.writeHead(404, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: `pattern not found: ${name}` }));
+          return;
+        }
+        // Re-selecting the same logical tree is a no-op: keep every session
+        // (the selector polls, and a redundant POST must not wipe chats).
+        if (name === getSelectedPattern()) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, pattern: name }));
           return;
         }
         setSelectedPattern(name);
@@ -3671,6 +3826,123 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         broadcast({ type: "cleared" });
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, pattern: name }));
+        return;
+      }
+
+      // --- tree versions ---
+      // The version list for one logical tree, plus the ref new sessions
+      // adopt. Snapshots come straight from the filenames, so a manual
+      // rename is observed on the next read (no hidden state).
+      if (req.method === "GET" && url.pathname === "/api/tree/versions") {
+        const name = url.searchParams.get("name") ?? "";
+        if (!name) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"name is required"}');
+          return;
+        }
+        const catalog = (await scanTreeVersions(config.workspaceDir)).find((c) => c.logical === name);
+        const source = (await listTreeSources(config.workspaceDir)).find((s) => s.name === name);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            name,
+            versions: catalog?.versions ?? [],
+            specs: catalog?.specVersions ?? [],
+            prod: catalog?.hasProd ? (catalog.prodVersion ?? "prod") : null,
+            draft: catalog?.draft ?? false,
+            draftSpec: catalog?.draftSpec ?? false,
+            active: getSelectedRef() ?? "",
+            description: source?.description ?? "",
+            pinned: agent?.pinnedVersions?.(name) ?? [],
+          }),
+        );
+        return;
+      }
+
+      // The paired spec (source of truth for behavior) of a resolved version.
+      if (req.method === "GET" && url.pathname === "/api/tree/spec") {
+        const pattern = url.searchParams.get("pattern") || getSelectedPattern();
+        const { logical, ref } = splitTreeRef(pattern);
+        const entry = await resolveTreeEntry(config.workspaceDir, logical, ref);
+        if (!entry || !entry.specAbs) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: `no spec for '${pattern}'` }));
+          return;
+        }
+        try {
+          const spec = await readFile(entry.specAbs, "utf8");
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ pattern, specFile: entry.specFile, spec }));
+        } catch (err) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+        }
+        return;
+      }
+
+      // Snapshot the draft into the next immutable version.
+      if (req.method === "POST" && url.pathname === "/api/tree/versions") {
+        const body = await readBody(req);
+        let name: unknown;
+        try { name = JSON.parse(body).name; } catch { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid JSON body"}'); return; }
+        if (typeof name !== "string" || !name) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"name is required"}');
+          return;
+        }
+        try {
+          const snap = await snapshotTree(config.workspaceDir, name);
+          await pruneVersions(config.workspaceDir, name, KEEP_VERSIONS, agent?.pinnedVersions?.(name) ?? []);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, version: snap.version, created: snap.created }));
+        } catch (err) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+        }
+        return;
+      }
+
+      // Set the active ref for NEW sessions. Unlike /api/pattern this never
+      // clears a session: already-running chats keep their pinned version.
+      if (req.method === "POST" && url.pathname === "/api/tree/version/active") {
+        const body = await readBody(req);
+        let parsed: { name?: unknown; ref?: unknown };
+        try { parsed = JSON.parse(body); } catch { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid JSON body"}'); return; }
+        const name = typeof parsed.name === "string" ? parsed.name : "";
+        const ref = typeof parsed.ref === "string" ? parsed.ref : "";
+        if (!name) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"name is required"}');
+          return;
+        }
+        setSelectedRef(ref);
+        try { await writeEnv(config.envPath, { TREE_REF: ref && ref !== "prod" ? ref : null }); } catch { /* persist best-effort */ }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ref: getSelectedRef() ?? "" }));
+        return;
+      }
+
+      // Promote a snapshot to production (rename) and prune old snapshots.
+      if (req.method === "POST" && url.pathname === "/api/tree/version/promote") {
+        const body = await readBody(req);
+        let parsed: { name?: unknown; version?: unknown };
+        try { parsed = JSON.parse(body); } catch { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid JSON body"}'); return; }
+        const name = typeof parsed.name === "string" ? parsed.name : "";
+        const version = typeof parsed.version === "string" ? parsed.version : "";
+        if (!name || !version) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"name and version are required"}');
+          return;
+        }
+        try {
+          const promoted = await promoteTree(config.workspaceDir, name, version);
+          await pruneVersions(config.workspaceDir, name, KEEP_VERSIONS, agent?.pinnedVersions?.(name) ?? []);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, ...promoted }));
+        } catch (err) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+        }
         return;
       }
 

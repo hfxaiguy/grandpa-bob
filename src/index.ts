@@ -9,10 +9,11 @@ import { Agent, checkLlmEntry } from "./agent.js";
 import { loadModels } from "./models.js";
 import { createBot } from "./bot.js";
 import { checkStt } from "./stt.js";
-import { startAdmin, getSelectedPattern, remoteTurnStart, remoteTurnEvent, remoteTurnEnd } from "./admin.js";
+import { startAdmin, getSelectedPattern, getSelectedRef, remoteTurnStart, remoteTurnEvent, remoteTurnEnd } from "./admin.js";
 import type { Bot } from "grammy";
 import { loadAppTools } from "./app-tools.js";
 import { SecretsStore } from "./secrets.js";
+import { KEEP_VERSIONS, scanTreeVersions, pruneVersions } from "./tree-versions.js";
 
 async function main(): Promise<void> {
   await fs.mkdir(config.workspaceDir, { recursive: true });
@@ -45,8 +46,25 @@ async function main(): Promise<void> {
   // db path string) lets Agent.run() wrap it per-run so the web UI can
   // stream tree events live.
   const katLogger = createLogger(path.join(config.workspaceDir, "logs/grandma-kat.db"), "info");
-  // patternName is a getter so the admin UI's dropdown can switch it at runtime.
-  const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger, patternName: getSelectedPattern });
+  // patternName/patternRef are getters so the admin UI's selector can switch
+  // the active tree and version for NEW sessions at runtime; running sessions
+  // stay pinned to the version they started on.
+  const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger, patternName: getSelectedPattern, patternRef: getSelectedRef });
+
+  // Prune old snapshots once at startup. Prod and any version a live session
+  // still pins are never removed, so a restart cannot strand a conversation.
+  try {
+    for (const tree of await scanTreeVersions(config.workspaceDir)) {
+      await pruneVersions(
+        config.workspaceDir,
+        tree.logical,
+        KEEP_VERSIONS,
+        agent.pinnedVersions(tree.logical),
+      );
+    }
+  } catch (err) {
+    console.warn(`[tree-versions] startup prune skipped: ${err instanceof Error ? err.message : err}`);
+  }
 
   const modelReachable = await Promise.all(
     Object.entries(models).map(async ([name, m]) => [name, await checkLlmEntry(m.baseURL, m.apiKey, m.protocol)] as const),

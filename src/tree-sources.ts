@@ -4,6 +4,7 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { isVersionFileName, scanTreeVersions } from "./tree-versions.js";
 
 export const PATTERNS_DIR_NAME = "patterns";
 
@@ -15,6 +16,7 @@ export async function listPatterns(workspaceDir: string) {
     for (const f of files) {
       if (!f.endsWith(".mjs")) continue;
       if (f.endsWith(".test.mjs")) continue; // smoke tests, not runnable patterns
+      if (isVersionFileName(f)) continue; // versions are not trees of their own
       try {
         const content = await readFile(path.join(patternsDir, f), "utf8");
         const m = content.match(/^\/\/\s*(\S+\.mjs)\s*[—–-]\s*(.+)/m);
@@ -68,7 +70,7 @@ export async function listAppTrees(workspaceDir: string) {
  * summary on its own line, then a blank line, then the detail.
  */
 async function appTreeDescription(appDir: string): Promise<string> {
-  for (const file of ["tree.md", "README.md"]) {
+  for (const file of ["tree.spec.md", "tree.md", "README.md"]) {
     try {
       const content = await readFile(path.join(appDir, file), "utf8");
       const para: string[] = [];
@@ -92,8 +94,42 @@ async function appTreeDescription(appDir: string): Promise<string> {
   return "(app tree)";
 }
 
-/** Everything the tree selector can run: patterns first, then app trees. */
-export async function listTreeSources(workspaceDir: string) {
-  const patterns = (await listPatterns(workspaceDir)).map((p) => ({ ...p, group: "patterns" }));
-  return [...patterns, ...(await listAppTrees(workspaceDir))];
+/** One runnable logical tree, with the versions currently on disk. */
+export interface TreeSource {
+  file: string;
+  name: string;
+  description: string;
+  group: string;
+  /** Version ids present, ascending (`["v1", "v2"]`). */
+  versions: string[];
+  /** Version ids whose paired `.spec.md` exists, ascending. */
+  specVersions: string[];
+  /** Version id of the prod snapshot, `"prod"` for a bare `.prod`, or null. */
+  prod: string | null;
+  /** True when an editable `patterns/<name>.mjs` / `app/<name>/tree.mjs` exists. */
+  draft: boolean;
+  /** True when the draft has a paired `.spec.md`. */
+  draftSpec: boolean;
+}
+
+/**
+ * Everything the tree selector can run: patterns first, then app trees. Each
+ * logical tree is listed once — snapshots (`<name>.vN[.prod].mjs`) never show
+ * up as trees of their own.
+ */
+export async function listTreeSources(workspaceDir: string): Promise<TreeSource[]> {
+  type Base = Omit<TreeSource, "versions" | "specVersions" | "prod" | "draft" | "draftSpec">;
+  const patterns: Base[] = (await listPatterns(workspaceDir)).map((p) => ({ ...p, group: "patterns" }));
+  const catalog = new Map((await scanTreeVersions(workspaceDir)).map((c) => [c.logical, c]));
+  return [...patterns, ...(await listAppTrees(workspaceDir))].map((source) => {
+    const info = catalog.get(source.name);
+    return {
+      ...source,
+      versions: info?.versions ?? [],
+      specVersions: info?.specVersions ?? [],
+      prod: info?.hasProd ? (info.prodVersion ?? "prod") : null,
+      draft: info?.draft ?? true,
+      draftSpec: info?.draftSpec ?? false,
+    };
+  });
 }
