@@ -9,7 +9,7 @@ import { Agent, checkLlmEntry } from "./agent.js";
 import { loadModels } from "./models.js";
 import { createBot } from "./bot.js";
 import { checkStt } from "./stt.js";
-import { startAdmin, getSelectedPattern, getSelectedRef, remoteTurnStart, remoteTurnEvent, remoteTurnEnd } from "./admin.js";
+import { startAdmin, getSelectedPattern, getSelectedRef, telegramFollowKey, remoteTurnStart, remoteTurnEvent, remoteTurnEnd } from "./admin.js";
 import type { Bot } from "grammy";
 import { loadAppTools } from "./app-tools.js";
 import { SecretsStore } from "./secrets.js";
@@ -136,6 +136,7 @@ async function main(): Promise<void> {
     sttLanguage: config.sttLanguage,
     models,
     agent,
+    telegramFollowKey,
   });
 
   telegramBot = bot;

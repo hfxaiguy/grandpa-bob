@@ -292,8 +292,18 @@ The exchange stays visible on both ends. A Telegram turn streams into the
 followed transcript live — bubbles *and* tree steps (bot.ts feeds
 `remoteTurnStart/Event/End`). A webui turn that runs into a Telegram
 conversation is posted back to the phone with a `💻` prefix, so the chat
-there keeps making sense. What Telegram never does is *adopt* a web
-conversation key: its chats always stay its own.
+there keeps making sense.
+
+**Send to telegram reverses it, per chat.** The ✈ telegram button posts the
+active web session's transcript to your linked chat and then *binds* that
+chat to the web key: the phone now follows the web session. Its next message
+continues the same tree and checkpoint, a phone turn appears in the browser
+transcript, and every browser turn is mirrored back to the phone — both ends
+share one conversation. Binding turns web-follows-telegram off (or the page
+would jump back onto the phone's own key) and is remembered in
+`logs/web-settings.json`; deleting the web session drops the binding. Chats
+that were never bound keep their own separate conversations, exactly as
+before.
 
 The checkbox on `/settings` ("webui follows telegram") turns following off;
 choosing a local web session or starting a *new chat* turns it off

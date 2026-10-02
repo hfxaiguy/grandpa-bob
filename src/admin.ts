@@ -595,10 +595,21 @@ function newSessionKey(): string {
 let autoFollowTelegram = true;
 let webSettingsPath = "";
 
+// Reverse follow, established by "send to telegram": the Telegram chat adopts
+// the web session's own conversation key, so a message sent from either end
+// continues the same tree. tgKey ("chatId:threadId") -> webKey ("web:<id>").
+// Deliberately the mirror image of autoFollowTelegram.
+const telegramFollow = new Map<string, string>();
+
 function loadFollowSetting(): void {
   try {
     const raw = JSON.parse(fs.readFileSync(webSettingsPath, "utf8"));
     if (typeof raw?.followTelegram === "boolean") autoFollowTelegram = raw.followTelegram;
+    if (raw?.telegramFollow && typeof raw.telegramFollow === "object") {
+      for (const [tg, web] of Object.entries(raw.telegramFollow as Record<string, unknown>)) {
+        if (typeof tg === "string" && typeof web === "string") telegramFollow.set(tg, web);
+      }
+    }
   } catch { /* first boot — default on */ }
 }
 
@@ -606,9 +617,53 @@ function saveFollowSetting(): void {
   if (!webSettingsPath) return;
   try {
     fs.mkdirSync(path.dirname(webSettingsPath), { recursive: true });
-    fs.writeFileSync(webSettingsPath, JSON.stringify({ followTelegram: autoFollowTelegram }));
+    fs.writeFileSync(
+      webSettingsPath,
+      JSON.stringify({
+        followTelegram: autoFollowTelegram,
+        telegramFollow: Object.fromEntries(telegramFollow),
+      }),
+    );
   } catch (e) {
     console.warn("[admin] failed to save follow setting:", e);
+  }
+}
+
+/** The web session a Telegram key has adopted, if any (reverse follow). */
+export function telegramFollowKey(tgKey: string): string | undefined {
+  return telegramFollow.get(tgKey);
+}
+
+/** The Telegram key following a web session, if any. */
+export function webFollowTarget(webKey: string): string | undefined {
+  for (const [tg, web] of telegramFollow) if (web === webKey) return tg;
+  return undefined;
+}
+
+/**
+ * Bind a Telegram chat to a web session. Called after "send to telegram" so
+ * the phone continues the same conversation. Web-follows-telegram is turned
+ * off, or resolveFollow would pull the page back onto the phone's own key.
+ */
+export function bindTelegramFollow(tgKey: string, webKey: string): void {
+  telegramFollow.set(tgKey, webKey);
+  autoFollowTelegram = false;
+  saveFollowSetting();
+  broadcast({ type: "followWeb", key: webKey, tgKey });
+}
+
+/** Drop every Telegram binding that points at a web session. */
+export function unbindWebSession(webKey: string): void {
+  let changed = false;
+  for (const [tg, web] of [...telegramFollow]) {
+    if (web === webKey) {
+      telegramFollow.delete(tg);
+      changed = true;
+    }
+  }
+  if (changed) {
+    saveFollowSetting();
+    broadcast({ type: "followWeb", key: null, tgKey: null });
   }
 }
 
@@ -689,9 +744,11 @@ function ensureSessionEntry(key: string): WebSession {
 // Live mirror of a turn that runs on another transport (Telegram). bot.ts
 // feeds these three calls while it runs the tree, so a followed browser
 // shows the exchange — bubbles AND tree steps — exactly like a web turn.
-// Web-run turns use runTurn and never come through here.
+// The key is normally the Telegram chat's; when the phone is reverse-following
+// a web session (see bindTelegramFollow) it is that session's `web:` key, and
+// recording here keeps the browser in step. Web-run turns use runTurn.
 export function remoteTurnStart(key: string, input: string): void {
-  if (!key || key.startsWith("web:")) return;
+  if (!key) return;
   const s = ensureSessionEntry(key);
   const turnId = randomUUID();
   const now = Date.now();
@@ -706,7 +763,7 @@ export function remoteTurnStart(key: string, input: string): void {
 }
 
 export function remoteTurnEvent(key: string, event: unknown): void {
-  if (!key || key.startsWith("web:")) return;
+  if (!key) return;
   const s = sessionTurns.get(key);
   const t = s?.turns.at(-1);
   if (!t || t.status !== "running") return;
@@ -717,7 +774,7 @@ export function remoteTurnEvent(key: string, event: unknown): void {
 }
 
 export function remoteTurnEnd(key: string, output: string, ok = true): void {
-  if (!key || key.startsWith("web:")) return;
+  if (!key) return;
   const s = sessionTurns.get(key);
   if (!s) return;
   const now = Date.now();
@@ -940,10 +997,12 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       ts: record.endedAt,
     });
     saveTurns();
-    // A turn the browser ran into a Telegram conversation belongs on the
-    // phone too — mirror it there (one-way: Telegram never mirrors its
-    // own turns back into any web page, it just records them).
-    if (telegramNotify && !key.startsWith("web:")) {
+    // A browser-run turn belongs on the phone too: directly when it ran into
+    // a Telegram conversation, or via the reverse-follow binding when the
+    // phone has adopted this web session (send to telegram). A phone-run turn
+    // arrives through remoteTurn* instead, so it is never mirrored back.
+    const mirrorTarget = key.startsWith("web:") ? webFollowTarget(key) : key;
+    if (telegramNotify && mirrorTarget) {
       const parts = record.status === "error"
         ? [`\u26a0\ufe0f ${record.error ?? "error"}`]
         : (record.emits?.length ? record.emits : [record.output ?? "(no reply)"]);
@@ -951,8 +1010,8 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
         // Send in order: each send is awaited so Telegram receives the user's
         // line before the emits, and the emits in emit order. Firing them
         // fire-and-forget races the HTTP calls and delivers out of order.
-        await telegramNotify(key, `\ud83d\udcbb ${displayText}`);
-        for (const body of parts) await telegramNotify(key, body);
+        await telegramNotify(mirrorTarget, `\ud83d\udcbb ${displayText}`);
+        for (const body of parts) await telegramNotify(mirrorTarget, body);
       } catch (e) {
         console.warn("[web-chat] telegram notify failed:", e);
       }
@@ -2500,7 +2559,8 @@ $("tg-btn").onclick = async () => {
     const r = await fetch("/api/send-to-telegram", { method: "POST" });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { toast(d.error || "send failed", true); return; }
-    toast(d.key && d.parts > 1 ? "sent to telegram (" + d.parts + " messages)" : "sent to telegram");
+    if (d.followWeb) toast("sent — telegram now follows this session");
+    else toast(d.key && d.parts > 1 ? "sent to telegram (" + d.parts + " messages)" : "sent to telegram");
   } catch (e) {
     toast("send failed: " + e.message, true);
   } finally {
@@ -2892,6 +2952,7 @@ function connect() {
       }).catch(() => {});
     }
     else if (msg.type === "follow") { checkFollow(); }
+    else if (msg.type === "followWeb") { refreshSessionOptions().catch(() => {}); }
   };
 }
 
@@ -3405,6 +3466,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           if (!sessionTurns.has(sel.delete)) { res.writeHead(404); res.end('{"error":"no such session"}'); return; }
           sessionTurns.delete(sel.delete);
           agent?.clear(sel.delete);
+          unbindWebSession(sel.delete);
           if (activeSession === sel.delete) {
             activeSession = null;
             broadcast({ type: "cleared" });
@@ -3707,8 +3769,19 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           }
           if (rest.trim()) parts.push(rest);
           for (const part of parts) await telegramNotify(target, part);
+          // The phone now follows this web session: a message from either
+          // end continues the same conversation. Only web-owned sessions can
+          // be adopted (a Telegram transcript has nowhere new to point).
+          const followWeb = activeSession.startsWith("web:") ? activeSession : null;
+          if (followWeb) {
+            bindTelegramFollow(target, followWeb);
+            await telegramNotify(
+              target,
+              "\ud83d\udd17 This chat now follows the web session — messages from either end continue it.",
+            );
+          }
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, key: target, parts: parts.length, turns: session.turns.length }));
+          res.end(JSON.stringify({ ok: true, key: target, parts: parts.length, turns: session.turns.length, followWeb }));
         } catch (e: unknown) {
           res.writeHead(502, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));

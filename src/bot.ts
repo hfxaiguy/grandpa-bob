@@ -51,6 +51,12 @@ export interface BotDeps {
   /** Named model registry; the bot's /status command shows all entries. */
   models: ModelRegistry;
   agent: Agent;
+  /**
+   * Reverse-follow lookup: when a Telegram chat has adopted a web session
+   * (via the webui's "send to telegram"), return that session's `web:` key so
+   * the turn runs the same tree. Absent / no binding -> the chat's own key.
+   */
+  telegramFollowKey?: (tgKey: string) => string | undefined;
 }
 
 const MAX_TG_MESSAGE = 4000;
@@ -114,6 +120,14 @@ export function createBot(deps: BotDeps): Bot {
   // conversation key and topic of the message the keyboard hangs under.
   const convKey = (ctx: Context): string =>
     `${ctx.chat?.id}:${ctx.msg?.message_thread_id ?? 0}`;
+
+  // The key a turn actually runs under: the chat's own, or the web session it
+  // reverse-follows (send to telegram). Replies and buttons stay keyed by
+  // convKey, so the keyboard round-trips through this chat.
+  const followKey = (ctx: Context): string => {
+    const conv = convKey(ctx);
+    return deps.telegramFollowKey?.(conv) ?? conv;
+  };
 
   const threadOpts = (ctx: Context): { message_thread_id?: number } => {
     const id = ctx.msg?.message_thread_id;
@@ -182,7 +196,7 @@ export function createBot(deps: BotDeps): Bot {
   });
 
   bot.command("clear", async (ctx) => {
-    deps.agent.clear(convKey(ctx));
+    deps.agent.clear(followKey(ctx));
     await reply(ctx, "Conversation context cleared for this topic.");
   });
 
@@ -230,7 +244,7 @@ export function createBot(deps: BotDeps): Bot {
     notifyTreesChanged(name);
     // The caller starts a fresh session on the chosen tree+version; sessions
     // in other topics keep their own pinned version.
-    deps.agent.clear(convKey(ctx));
+    deps.agent.clear(followKey(ctx));
     return null;
   };
 
@@ -407,7 +421,9 @@ export function createBot(deps: BotDeps): Bot {
    * for the next message. The continuation is stored automatically.
    */
   const handleUserContent = async (ctx: Context, content: unknown): Promise<void> => {
-    const key = convKey(ctx);
+    // Reverse-followed chats run the adopted web session's key; replies still
+    // go to this Telegram chat.
+    const key = followKey(ctx);
     const display = typeof content === "string" ? content : "[attachment]";
     const turnOutput: string[] = [];
     const rec = deps.turnRecorder;
