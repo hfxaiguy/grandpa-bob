@@ -9,6 +9,7 @@ import { Tree, name, Call, Return, Tools, knit } from "grandma-kat";
 import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { browserTools } from "./browser-tools";
 import { createMemoryLogger } from "./logger";
+import { createModuleLoader } from "./module-loader";
 
 const platform = createBrowserPlatform("/workspace");
 const ready = initSqlite();
@@ -27,23 +28,20 @@ async function handleRun(id: number, task: string): Promise<void> {
   });
   const tools = browserTools(platform);
 
-  // Deterministic tree (no model round-trips): exercise the file, SQL and
-  // command tools through Call, then return their results. A real agent tree
-  // (loaded from OPFS) plugs in here once the module loader lands.
-  const pattern = Tree(
-    name("worker_demo"),
-    Tools("read_file", "sql_write", "sql_query", "list_files"),
-    Call("read", "read_file", { path: "notes/renamed.txt" }),
-    Call("create", "sql_write", { query: "CREATE TABLE IF NOT EXISTS t(a INTEGER)", path: "worker.db" }),
-    Call("ins", "sql_write", { query: "INSERT INTO t VALUES (42)", path: "worker.db" }),
-    Call("rows", "sql_query", { query: "SELECT a FROM t", path: "worker.db" }),
-    Return((m: { branch: Record<string, unknown> }) => ({
-      read: m.branch.read,
-      create: m.branch.create,
-      insert: m.branch.ins,
-      rows: m.branch.rows,
-    })),
-  );
+  // Load the real pattern from the OPFS workspace. Falls back to a built-in
+  // deterministic tree when the pattern file is absent.
+  let pattern: unknown;
+  try {
+    const mod = await createModuleLoader(platform).load("patterns/agent_demo.mjs");
+    pattern = mod.default ?? mod.pattern;
+  } catch {
+    pattern = Tree(
+      name("worker_demo"),
+      Tools("read_file"),
+      Call("read", "read_file", { path: "notes/renamed.txt" }),
+      Return((m: { branch: Record<string, unknown> }) => ({ read: m.branch.read })),
+    );
+  }
 
   const { result } = await knit(pattern, {
     models: { default: { model: "mock", handler: async () => ({ content: task }) } },

@@ -112,10 +112,32 @@ async function sqliteDemo(root: string): Promise<void> {
   log(`sqlite: persisted rows after reopen = ${count.n}`);
 }
 
-async function agentDemo(): Promise<void> {
+async function agentDemo(root: string): Promise<void> {
+  // Write a real pattern to OPFS; the worker loads it through the module
+  // loader (grandma-kat + node shims injected, relative imports from OPFS).
+  const { fs, path } = createBrowserPlatform(root);
+  await fs.mkdir(path.join(root, "patterns"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, "patterns", "agent_demo.mjs"),
+    [
+      'import { Tree, name, Prompt, Call, Tools, Return } from "grandma-kat";',
+      "",
+      "const pattern = Tree(",
+      '  name("agent_demo"),',
+      '  Tools("read_file"),',
+      '  Prompt("answer", (m) => `read ${m.task}`),',
+      '  Call("file", "read_file", { path: "notes/renamed.txt" }),',
+      "  Return((m) => ({ answer: m.branch.answer, file: m.branch.file })),",
+      ");",
+      "",
+      "export default pattern;",
+      "",
+    ].join("\n"),
+  );
+
   const client = new AgentClient();
   try {
-    const { result, events } = await client.run("browser worker demo");
+    const { result, events } = await client.run("the notes file");
     log(`agent-worker: events=${events.length}`);
     log(`agent-worker: result=${JSON.stringify(result)}`);
   } finally {
@@ -133,7 +155,7 @@ async function main(): Promise<void> {
   log("");
   await sqliteDemo(root);
   log("");
-  await agentDemo();
+  await agentDemo(root);
   log("");
   log("OK");
 }
