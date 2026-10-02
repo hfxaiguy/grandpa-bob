@@ -13,6 +13,7 @@ import {
   getSelectedPattern,
   getSelectedRef,
   listTreeSources,
+  notifyTreesChanged,
   setSelectedPattern,
   setSelectedRef,
   writeEnv,
@@ -226,6 +227,7 @@ export function createBot(deps: BotDeps): Bot {
         TREE_REF: ref && ref !== "prod" ? ref : null,
       });
     } catch { /* persist best-effort */ }
+    notifyTreesChanged(name);
     // The caller starts a fresh session on the chosen tree+version; sessions
     // in other topics keep their own pinned version.
     deps.agent.clear(convKey(ctx));
@@ -282,6 +284,7 @@ export function createBot(deps: BotDeps): Bot {
       try {
         const snap = await snapshotTree(deps.workspace, name);
         await pruneVersions(deps.workspace, name, KEEP_VERSIONS, deps.agent.pinnedVersions(name));
+        notifyTreesChanged(name);
         await reply(
           ctx,
           snap.created
@@ -306,6 +309,7 @@ export function createBot(deps: BotDeps): Bot {
       try {
         const promoted = await promoteTree(deps.workspace, name, version);
         await pruneVersions(deps.workspace, name, KEEP_VERSIONS, deps.agent.pinnedVersions(name));
+        notifyTreesChanged(name);
         await reply(
           ctx,
           `Promoted ${name}@${promoted.promoted}.` +

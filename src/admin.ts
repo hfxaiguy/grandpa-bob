@@ -787,6 +787,16 @@ function broadcast(msg: unknown): void {
   }
 }
 
+/**
+ * Tell connected web clients the tree/version catalog changed (a snapshot,
+ * promote, or active-ref switch) so their selectors refresh right away.
+ * Changes made outside the process (manual renames, an editor) are caught by
+ * the client's periodic scan of the directory.
+ */
+export function notifyTreesChanged(name?: string): void {
+  broadcast({ type: "trees", name: name ?? null });
+}
+
 function truncStr(s: string): string {
   return s.length > MAX_EVENT_STR ? s.slice(0, MAX_EVENT_STR) + "…" : s;
 }
@@ -2584,7 +2594,7 @@ async function showSpec() {
   treeBody.innerHTML = "";
   treeBody.appendChild(tpEl("div", "tp-empty", "loading spec\\u2026"));
   try {
-    const r = await fetch("/api/tree/spec?pattern=" + encodeURIComponent(spec));
+    const r = await fetch("/api/tree/spec?pattern=" + encodeURIComponent(spec), { cache: "no-store" });
     const d = await r.json().catch(() => ({}));
     treeBody.innerHTML = "";
     if (!r.ok) {
@@ -2639,7 +2649,7 @@ async function loadTreePanel(force) {
   treeBody.innerHTML = "";
   treeBody.appendChild(tpEl("div", "tp-empty", "loading\\u2026"));
   try {
-    const r = await fetch("/api/tree" + (spec ? "?pattern=" + encodeURIComponent(spec) : ""));
+    const r = await fetch("/api/tree" + (spec ? "?pattern=" + encodeURIComponent(spec) : ""), { cache: "no-store" });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || "load failed");
     treeLoadedFor = d.pattern;
@@ -2873,6 +2883,14 @@ function connect() {
       // one drops us back to the picker).
       refreshSessionOptions().then((d) => setSessionUi(!!d.active)).catch(() => setSessionUi(false));
     }
+    else if (msg.type === "trees") {
+      // A version or tree changed in-process: re-sync the selectors now
+      // (and the drawer, if it is showing the affected tree).
+      treeLoadedFor = null;
+      syncTreeSelectors(true).then(() => {
+        if (treePanel.classList.contains("open")) loadTreePanel(true);
+      }).catch(() => {});
+    }
     else if (msg.type === "follow") { checkFollow(); }
   };
 }
@@ -3028,7 +3046,7 @@ async function loadRefSelect(name, activeRef) {
   if (!name) { sel.disabled = true; return; }
   let d = { versions: [], prod: null, draft: false, active: "" };
   try {
-    const r = await fetch("/api/tree/versions?name=" + encodeURIComponent(name));
+    const r = await fetch("/api/tree/versions?name=" + encodeURIComponent(name), { cache: "no-store" });
     if (r.ok) d = await r.json();
   } catch { /* leave defaults */ }
   const active = (activeRef != null && activeRef !== "") ? activeRef : (d.active || "prod");
@@ -3063,38 +3081,76 @@ async function setRef(ref) {
     if (!r.ok) { toast(d.error || "version switch failed", true); return; }
     toast("new sessions use: " + name + (ref && ref !== "prod" ? "@" + ref : " (prod)"));
     try { localStorage.setItem(TREE_REF_KEY, ref); } catch { /* private mode */ }
+    // The drawer shows the selected version's structure; reload it.
+    treeLoadedFor = null;
+    if (treePanel.classList.contains("open")) loadTreePanel(true);
   } catch (e) {
     toast("version switch failed: " + e.message, true);
   }
 }
 
+// Patterns and app trees, grouped under optgroup headings.
+function buildPatternOptions(sel, patterns, current) {
+  sel.innerHTML = "";
+  const groups = new Map();
+  for (const p of patterns || []) {
+    const label = p.group === "app" ? "apps" : "patterns";
+    let g = groups.get(label);
+    if (!g) {
+      g = document.createElement("optgroup");
+      g.label = label;
+      sel.appendChild(g);
+      groups.set(label, g);
+    }
+    const o = document.createElement("option");
+    o.value = p.name;
+    o.textContent = p.name;
+    if (p.description) o.title = p.description;
+    if (p.name === current) o.selected = true;
+    g.appendChild(o);
+  }
+  if (!patterns || !patterns.length) {
+    sel.appendChild(new Option("(no patterns)", "", false, false));
+  }
+}
+// A compact fingerprint of every tree's version catalog, so a poll only
+// rebuilds the selectors when the directory actually changed.
+function treeCatalogSignature(d) {
+  // Include the active tree/ref so a switch made in another tab also
+  // refocuses the selectors on the next scan.
+  return JSON.stringify([
+    d.current ?? "",
+    d.ref ?? "",
+    ...(d.patterns || []).map((p) => [p.name, p.versions, p.specVersions, p.prod, p.draft, p.draftSpec]),
+  ]);
+}
+let treeCatalogSig = "";
+// Re-read the directory through the server and refresh the tree/version
+// selectors when anything changed — a snapshot, promote, new tree, or a
+// manual rename made outside BOB. Runs on an interval and on the "trees"
+// SSE event, so the available versions follow the directory automatically.
+async function syncTreeSelectors(force) {
+  try {
+    const r = await fetch("/api/pattern", { cache: "no-store" });
+    if (!r.ok) return;
+    const d = await r.json();
+    const sig = treeCatalogSignature(d);
+    if (!force && sig === treeCatalogSig) return;
+    treeCatalogSig = sig;
+    const sel = $("pattern-sel");
+    const chosen = sel.value || d.current;
+    buildPatternOptions(sel, d.patterns, d.current);
+    sel.value = (d.patterns || []).some((p) => p.name === chosen) ? chosen : d.current;
+    await loadRefSelect(sel.value);
+  } catch { /* transient; the next tick retries */ }
+}
 async function loadPatternSelect() {
   try {
-    const r = await fetch("/api/pattern");
+    const r = await fetch("/api/pattern", { cache: "no-store" });
     const d = await r.json();
     const sel = document.getElementById("pattern-sel");
-    sel.innerHTML = "";
-    // Patterns and app trees, grouped under optgroup headings.
-    const groups = new Map();
-    for (const p of d.patterns || []) {
-      const label = p.group === "app" ? "apps" : "patterns";
-      let g = groups.get(label);
-      if (!g) {
-        g = document.createElement("optgroup");
-        g.label = label;
-        sel.appendChild(g);
-        groups.set(label, g);
-      }
-      const o = document.createElement("option");
-      o.value = p.name;
-      o.textContent = p.name;
-      if (p.description) o.title = p.description;
-      if (p.name === d.current) o.selected = true;
-      g.appendChild(o);
-    }
-    if (!d.patterns || !d.patterns.length) {
-      sel.appendChild(new Option("(no patterns)", "", false, false));
-    }
+    buildPatternOptions(sel, d.patterns, d.current);
+    treeCatalogSig = treeCatalogSignature(d);
     // Restore the last locally-selected pattern if the server no longer
     // has it (e.g. restarted without TREE_PATTERN persisted in .env).
     let saved = null;
@@ -3137,6 +3193,9 @@ async function setPattern(name) {
 document.getElementById("pattern-sel").addEventListener("change", (e) => setPattern(e.target.value));
 document.getElementById("ref-sel").addEventListener("change", (e) => setRef(e.target.value));
 loadPatternSelect();
+// Keep the available versions in step with the directory: catches snapshots
+// made from Telegram, other tabs, or a manual rename, none of which can push.
+setInterval(() => { if (!document.hidden) syncTreeSelectors(); }, 8000);
 
 // ---- service health dots (telegram / voice / llm) ----
 const HEALTH_LABEL = { telegram: "telegram", voice: "voice", llm: "models" };
@@ -3744,7 +3803,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         const name = url.searchParams.get("pattern") || getSelectedPattern();
         try {
           const tree = await loadPattern(config.workspaceDir, name);
-          res.writeHead(200, { "content-type": "application/json" });
+          res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
           res.end(JSON.stringify({ pattern: name, tree: serializeTree(tree) }));
         } catch (e: any) {
           res.writeHead(500, { "content-type": "application/json" });
@@ -3786,7 +3845,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       // is pattern-specific, so it can't be resumed under a different tree).
       if (req.method === "GET" && url.pathname === "/api/pattern") {
         const patterns = await listTreeSources(config.workspaceDir);
-        res.writeHead(200, { "content-type": "application/json" });
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
         res.end(JSON.stringify({ current: getSelectedPattern(), ref: getSelectedRef() ?? "", patterns }));
         return;
       }
@@ -3824,6 +3883,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         webMemoryPaths.clear();
         saveTurns();
         broadcast({ type: "cleared" });
+        notifyTreesChanged(name);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, pattern: name }));
         return;
@@ -3842,7 +3902,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         }
         const catalog = (await scanTreeVersions(config.workspaceDir)).find((c) => c.logical === name);
         const source = (await listTreeSources(config.workspaceDir)).find((s) => s.name === name);
-        res.writeHead(200, { "content-type": "application/json" });
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
         res.end(
           JSON.stringify({
             name,
@@ -3871,7 +3931,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         }
         try {
           const spec = await readFile(entry.specAbs, "utf8");
-          res.writeHead(200, { "content-type": "application/json" });
+          res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
           res.end(JSON.stringify({ pattern, specFile: entry.specFile, spec }));
         } catch (err) {
           res.writeHead(404, { "content-type": "application/json" });
@@ -3893,6 +3953,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         try {
           const snap = await snapshotTree(config.workspaceDir, name);
           await pruneVersions(config.workspaceDir, name, KEEP_VERSIONS, agent?.pinnedVersions?.(name) ?? []);
+          notifyTreesChanged(name);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true, version: snap.version, created: snap.created }));
         } catch (err) {
@@ -3917,6 +3978,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         }
         setSelectedRef(ref);
         try { await writeEnv(config.envPath, { TREE_REF: ref && ref !== "prod" ? ref : null }); } catch { /* persist best-effort */ }
+        notifyTreesChanged(name);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, ref: getSelectedRef() ?? "" }));
         return;
@@ -3937,6 +3999,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         try {
           const promoted = await promoteTree(config.workspaceDir, name, version);
           await pruneVersions(config.workspaceDir, name, KEEP_VERSIONS, agent?.pinnedVersions?.(name) ?? []);
+          notifyTreesChanged(name);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true, ...promoted }));
         } catch (err) {
