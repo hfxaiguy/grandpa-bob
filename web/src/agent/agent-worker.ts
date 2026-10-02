@@ -19,7 +19,7 @@ function post(message: unknown): void {
   (self as unknown as Worker).postMessage(message);
 }
 
-async function handleRun(id: number, task: string, env: Record<string, string>): Promise<void> {
+async function handleRun(id: number, task: string, env: Record<string, string>, patternPath: string): Promise<void> {
   await ready;
 
   const events: unknown[] = [];
@@ -33,7 +33,7 @@ async function handleRun(id: number, task: string, env: Record<string, string>):
   // deterministic tree when the pattern file is absent.
   let pattern: unknown;
   try {
-    const mod = await createModuleLoader(platform).load("patterns/agent_demo.mjs");
+    const mod = await createModuleLoader(platform).load(patternPath);
     pattern = mod.default ?? mod.pattern;
   } catch {
     pattern = Tree(
@@ -61,10 +61,10 @@ async function handleRun(id: number, task: string, env: Record<string, string>):
 }
 
 self.onmessage = async (ev: MessageEvent) => {
-  const msg = ev.data as { id: number; type: string; task?: string; env?: Record<string, string> };
+  const msg = ev.data as { id: number; type: string; task?: string; env?: Record<string, string>; pattern?: string };
   if (msg.type !== "run") return;
   try {
-    await handleRun(msg.id, msg.task ?? "", msg.env ?? {});
+    await handleRun(msg.id, msg.task ?? "", msg.env ?? {}, msg.pattern ?? "patterns/agent_demo.mjs");
   } catch (err) {
     post({
       id: msg.id,

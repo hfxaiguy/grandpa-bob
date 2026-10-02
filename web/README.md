@@ -35,7 +35,8 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 | Durability (persist request + workspace export/import) | done — **verified in real Chromium** (25 files exported/restored) |
 | Chat UI driving the agent worker | done — **verified in real Chromium** (smoke types a message, gets the LLM reply) |
 | Git auto-commit (`isomorphic-git` over OPFS) | done — **verified in real Chromium** (`git: auto-commit 5be3f65`) |
-| Real `trunk`/app trees (wider import surface) | not yet |
+| Multi-file patterns (relative imports + named exports + node shims) | done — **verified in real Chromium** (`read/the notes file`) |
+| Real `trunk` (scratch builder, app `src/*`, `appTreeNames()` scan) | not yet |
 
 ## `node:*` shims
 

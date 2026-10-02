@@ -183,11 +183,39 @@ async function bootstrapWorkspace(root: string): Promise<void> {
       default: { baseURL: "http://127.0.0.1:8787/v1", apiKey: "${DEMO_API_KEY}", model: "mock-model" },
     }),
   );
+
+  // A multi-file pattern: imports a named export from a relative submodule,
+  // which itself uses a node: shim — the shape app trees use.
+  await fs.mkdir(path.join(root, "patterns", "lib"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, "patterns", "lib", "helper.mjs"),
+    ['import path from "node:path";', 'export function describe(name) { return path.join("read", name); }', ""].join(
+      "\n",
+    ),
+  );
+  await fs.writeFile(
+    path.join(root, "patterns", "multi.mjs"),
+    [
+      'import { Tree, name, Prompt, Call, Tools, Return } from "grandma-kat";',
+      'import { describe } from "./lib/helper.mjs";',
+      "",
+      "const pattern = Tree(",
+      '  name("multi_demo"),',
+      '  Tools("read_file"),',
+      '  Prompt("answer", (m) => describe(String(m.task))),',
+      '  Call("file", "read_file", { path: "notes/renamed.txt" }),',
+      "  Return((m) => ({ answer: m.branch.answer, file: m.branch.file })),",
+      ");",
+      "",
+      "export default pattern;",
+      "",
+    ].join("\n"),
+  );
 }
 
 async function agentDemo(root: string): Promise<void> {
   await bootstrapWorkspace(root);
-  const { result, events } = await agent.run("the notes file", loadEnv());
+  const { result, events } = await agent.run("the notes file", loadEnv(), "patterns/multi.mjs");
   log(`agent-worker: events=${events.length}`);
   log(`agent-worker: result=${JSON.stringify(result)}`);
   const answer = (result as { answer?: unknown })?.answer;

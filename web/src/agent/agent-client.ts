@@ -41,11 +41,11 @@ export class AgentClient {
     };
   }
 
-  run(task = "", env: Record<string, string> = {}): Promise<AgentRunResult> {
+  run(task = "", env: Record<string, string> = {}, pattern = "patterns/agent_demo.mjs"): Promise<AgentRunResult> {
     const id = this.nextId++;
     return new Promise<AgentRunResult>((resolve, reject) => {
       this.pending.set(id, { resolve, reject, events: [] });
-      this.worker.postMessage({ id, type: "run", task, env });
+      this.worker.postMessage({ id, type: "run", task, env, pattern });
     });
   }
 
