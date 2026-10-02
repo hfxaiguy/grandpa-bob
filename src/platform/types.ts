@@ -51,6 +51,31 @@ export interface GitOps {
   autoCommit(paths: string[], message: string): Promise<string>;
 }
 
+/** One column in a statement's result set. */
+export interface SqliteColumn {
+  name: string;
+}
+
+/** A prepared statement. Synchronous, matching node:sqlite's StatementSync. */
+export interface SqliteStatement {
+  all(...params: unknown[]): unknown[];
+  get(...params: unknown[]): unknown;
+  run(...params: unknown[]): { changes: number | bigint; lastInsertRowid: number | bigint };
+  columns(): SqliteColumn[];
+}
+
+/** An open database. Synchronous, matching node:sqlite's DatabaseSync. */
+export interface SqliteDatabase {
+  prepare(sql: string): SqliteStatement;
+  exec(sql: string): void;
+  close(): void;
+}
+
+/** Opens SQLite databases (Node: node:sqlite; browser: sqlite-wasm over OPFS). */
+export interface SqliteFactory {
+  open(path: string, opts: { readOnly: boolean }): SqliteDatabase;
+}
+
 /** The bundle of adapters a target injects into the shared core. */
 export interface Platform {
   readonly kind: "node" | "browser";
@@ -59,6 +84,7 @@ export interface Platform {
   readonly crypto: CryptoOps;
   readonly shell: Shell;
   readonly git: GitOps;
+  readonly sqlite: SqliteFactory;
   /** Absolute-by-convention workspace root (Node: a real path; browser: e.g. "/workspace"). */
   readonly workspaceRoot: string;
 }

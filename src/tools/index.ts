@@ -45,10 +45,11 @@ export class ToolRegistry {
     sqliteLockedPath?: string,
     appTools: AppTool[] = [],
   ) {
-    this.files = new FileTools(createNodePlatform(workspace, allowedCommands));
+    const platform = createNodePlatform(workspace, allowedCommands);
+    this.files = new FileTools(platform);
     this.shell = new ShellTools(workspace, allowedCommands);
     this.exa = new ExaSearchTools(exaApiKey);
-    this.sqlite = new SqliteTools({ workspace, lockedPath: sqliteLockedPath });
+    this.sqlite = new SqliteTools(platform, sqliteLockedPath);
     this.opencode = new OpencodeTools();
     this.duckdb = new DuckdbTools(workspace);
     this.appTools = new Map(appTools.map((tool) => [tool.name, tool]));

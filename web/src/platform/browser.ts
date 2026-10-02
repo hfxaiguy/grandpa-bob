@@ -11,7 +11,7 @@
  */
 import { posixPath } from "../../../src/platform/paths";
 import { sha256hex } from "../../../src/platform/sha256";
-import type { CryptoOps, GitOps, Platform, Shell } from "../../../src/platform/types";
+import type { CryptoOps, GitOps, Platform, Shell, SqliteFactory } from "../../../src/platform/types";
 import { opfsFs } from "./corefs";
 
 const browserCrypto: CryptoOps = {
@@ -34,6 +34,12 @@ const browserGit: GitOps = {
   autoCommit: pending("git.autoCommit") as GitOps["autoCommit"],
 };
 
+const browserSqlite: SqliteFactory = {
+  open: () => {
+    throw new Error("sqlite is not available in the browser yet (milestone 2c: sqlite-wasm)");
+  },
+};
+
 export function createBrowserPlatform(workspaceRoot = "/workspace"): Platform {
   return {
     kind: "browser",
@@ -42,6 +48,7 @@ export function createBrowserPlatform(workspaceRoot = "/workspace"): Platform {
     crypto: browserCrypto,
     shell: browserShell,
     git: browserGit,
+    sqlite: browserSqlite,
     workspaceRoot,
   };
 }

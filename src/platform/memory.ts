@@ -3,7 +3,7 @@
  * No Node builtins, so it runs anywhere (Node tests, browser, workers).
  */
 import { posixPath } from "./paths.js";
-import type { CryptoOps, DirEntry, FileSystem, GitOps, Platform, Shell } from "./types.js";
+import type { CryptoOps, DirEntry, FileSystem, GitOps, Platform, Shell, SqliteFactory } from "./types.js";
 import { sha256hex } from "./sha256.js";
 
 interface Node {
@@ -116,6 +116,11 @@ export function createMemoryPlatform(opts: { root?: string; autoCommit?: GitOps[
     ensureRepo: async () => {},
     autoCommit: opts.autoCommit ?? (async () => "no-changes"),
   };
+  const sqlite: SqliteFactory = {
+    open: () => {
+      throw new Error("sqlite is not implemented in the memory platform");
+    },
+  };
   return {
     kind: "browser",
     path: posixPath,
@@ -123,6 +128,7 @@ export function createMemoryPlatform(opts: { root?: string; autoCommit?: GitOps[
     crypto,
     shell,
     git,
+    sqlite,
     workspaceRoot: opts.root ?? "/workspace",
   };
 }

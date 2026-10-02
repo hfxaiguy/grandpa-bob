@@ -8,8 +8,19 @@
 import fs from "node:fs/promises";
 import nodePath from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { posixPath } from "./paths.js";
-import type { CryptoOps, DirEntry, FileSystem, GitOps, PathOps, Platform, Shell } from "./types.js";
+import type {
+  CryptoOps,
+  DirEntry,
+  FileSystem,
+  GitOps,
+  PathOps,
+  Platform,
+  Shell,
+  SqliteDatabase,
+  SqliteFactory,
+} from "./types.js";
 import { ShellTools } from "../tools/shell.js";
 import { autoCommit, ensureRepo } from "../tools/git.js";
 
@@ -53,6 +64,32 @@ export const nodeCrypto: CryptoOps = {
   sha256hex: (text) => createHash("sha256").update(text).digest("hex"),
 };
 
+/** node:sqlite adapter (synchronous DatabaseSync / StatementSync). */
+export const nodeSqlite: SqliteFactory = {
+  open(path: string, { readOnly }): SqliteDatabase {
+    const db = new DatabaseSync(path, { readOnly });
+    return {
+      prepare(sql) {
+        const stmt = db.prepare(sql);
+        return {
+          all: (...params) => stmt.all(...(params as never[])) as unknown[],
+          get: (...params) => stmt.get(...(params as never[])),
+          run: (...params) =>
+            stmt.run(...(params as never[])) as {
+              changes: number | bigint;
+              lastInsertRowid: number | bigint;
+            },
+          columns: () => stmt.columns().map((c) => ({ name: c.name ?? "" })),
+        };
+      },
+      exec: (sql) => {
+        db.exec(sql);
+      },
+      close: () => db.close(),
+    };
+  },
+};
+
 /** Build a Node-backed `Platform`. `allowedCommands` feeds the shell adapter. */
 export function createNodePlatform(workspaceRoot: string, allowedCommands: string[] = []): Platform {
   const shellTools = new ShellTools(workspaceRoot, allowedCommands);
@@ -70,6 +107,7 @@ export function createNodePlatform(workspaceRoot: string, allowedCommands: strin
     crypto: nodeCrypto,
     shell,
     git,
+    sqlite: nodeSqlite,
     workspaceRoot,
   };
 }

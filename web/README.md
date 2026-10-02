@@ -26,6 +26,7 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 | Pure model parser (`src/model-config.ts`) | done (`test:models`) |
 | `node:*` shims + Vite aliases (`web/src/shims/*`) | done — existing shared modules bundle |
 | `tree-sources` + `tree-versions` in the browser | bundle + demo wired; needs live-browser run |
+| `grandma-kat` runtime in the browser | **bundles and runs** with `logger:false` + a mock model (demo); needs live-browser run |
 | WASM SQLite, Worker-as-server, LLM, git, coreutils | not yet (milestones 2–5) |
 
 ## `node:*` shims
