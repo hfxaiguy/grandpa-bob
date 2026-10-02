@@ -8,6 +8,7 @@
 import "./shims/process";
 import { createBrowserPlatform, initSqlite } from "./platform/browser";
 import { AgentClient } from "./agent/agent-client";
+import { loadEnv, setEnvVar } from "./settings";
 import { Tree, name, Prompt, knit } from "grandma-kat";
 import { listTreeSources } from "../../src/tree-sources";
 import { promoteTree, snapshotTree } from "../../src/tree-versions";
@@ -135,11 +136,26 @@ async function agentDemo(root: string): Promise<void> {
     ].join("\n"),
   );
 
+  // Point the model registry at the local mock LLM and provide its key via
+  // settings, so models.json's ${DEMO_API_KEY} interpolation is exercised.
+  setEnvVar("DEMO_API_KEY", "test-key");
+  await fs.writeFile(
+    path.join(root, "models.json"),
+    JSON.stringify({
+      default: { baseURL: "http://127.0.0.1:8787/v1", apiKey: "${DEMO_API_KEY}", model: "mock-model" },
+    }),
+  );
+
   const client = new AgentClient();
   try {
-    const { result, events } = await client.run("the notes file");
+    const { result, events } = await client.run("the notes file", loadEnv());
     log(`agent-worker: events=${events.length}`);
     log(`agent-worker: result=${JSON.stringify(result)}`);
+    const answer = (result as { answer?: unknown })?.answer;
+    if (typeof answer !== "string" || !answer.startsWith("llm-says")) {
+      throw new Error(`expected a live-LLM answer, got ${JSON.stringify(answer)}`);
+    }
+    log("agent-worker: live LLM round-trip OK");
   } finally {
     client.close();
   }

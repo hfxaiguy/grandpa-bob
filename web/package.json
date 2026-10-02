@@ -9,6 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "smoke": "node smoke.mjs",
+    "mock-llm": "node mock-llm.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

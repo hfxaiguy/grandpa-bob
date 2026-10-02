@@ -31,7 +31,8 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 | Virtual coreutils (`src/platform/coreutils.ts`) | done (`test:coreutils`); browser `Shell` uses them |
 | Agent worker + tool registry + event stream | done — **verified in real Chromium** (streams events, runs file/SQL/shell tools) |
 | Pattern module loader (OPFS + grandma-kat/node injection) | done — **verified in real Chromium** (loads a pattern and runs Prompt+Call) |
-| Real `trunk`/app trees, remote LLM, git (`isomorphic-git`), UI | not yet (milestones 4–6) |
+| Remote LLM (`models.json` from OPFS + settings) | done — **verified in real Chromium** against a mock OpenAI-compatible endpoint |
+| Real `trunk`/app trees, git (`isomorphic-git`), UI | not yet (milestones 4b–6) |
 
 ## `node:*` shims
 

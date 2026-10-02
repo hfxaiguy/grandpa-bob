@@ -10,6 +10,7 @@ import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { browserTools } from "./browser-tools";
 import { createMemoryLogger } from "./logger";
 import { createModuleLoader } from "./module-loader";
+import { loadBrowserModels } from "./models";
 
 const platform = createBrowserPlatform("/workspace");
 const ready = initSqlite();
@@ -18,7 +19,7 @@ function post(message: unknown): void {
   (self as unknown as Worker).postMessage(message);
 }
 
-async function handleRun(id: number, task: string): Promise<void> {
+async function handleRun(id: number, task: string, env: Record<string, string>): Promise<void> {
   await ready;
 
   const events: unknown[] = [];
@@ -43,21 +44,27 @@ async function handleRun(id: number, task: string): Promise<void> {
     );
   }
 
+  const registry = await loadBrowserModels(platform, env);
+  const models =
+    Object.keys(registry).length > 0
+      ? registry
+      : { default: { model: "mock", handler: async () => ({ content: `mock: ${task}` }) } };
+
   const { result } = await knit(pattern, {
-    models: { default: { model: "mock", handler: async () => ({ content: task }) } },
+    models,
     tools,
     logger,
-    memory: {},
+    memory: { task },
   });
 
   post({ id, type: "result", result, eventCount: events.length });
 }
 
 self.onmessage = async (ev: MessageEvent) => {
-  const msg = ev.data as { id: number; type: string; task?: string };
+  const msg = ev.data as { id: number; type: string; task?: string; env?: Record<string, string> };
   if (msg.type !== "run") return;
   try {
-    await handleRun(msg.id, msg.task ?? "");
+    await handleRun(msg.id, msg.task ?? "", msg.env ?? {});
   } catch (err) {
     post({
       id: msg.id,
