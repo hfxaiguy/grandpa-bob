@@ -80,11 +80,17 @@ async function main(): Promise<void> {
   startAdmin({
     port: adminPort,
     agent,
-    telegramNotify: (key, text) => {
+    telegramNotify: async (key, text) => {
       const [chatId, threadId] = key.split(":");
-      telegramBot?.api
-        .sendMessage(Number(chatId), text, threadId && threadId !== "0" ? { message_thread_id: Number(threadId) } : {})
-        .catch((err) => console.warn("[admin] telegram notify failed:", err));
+      try {
+        await telegramBot?.api.sendMessage(
+          Number(chatId),
+          text,
+          threadId && threadId !== "0" ? { message_thread_id: Number(threadId) } : {},
+        );
+      } catch (err) {
+        console.warn("[admin] telegram notify failed:", err);
+      }
     },
     projectDir: process.cwd(),
     envPath,

@@ -914,8 +914,11 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
         ? [`\u26a0\ufe0f ${record.error ?? "error"}`]
         : (record.emits?.length ? record.emits : [record.output ?? "(no reply)"]);
       try {
-        telegramNotify(key, `\ud83d\udcbb ${displayText}`);
-        for (const body of parts) telegramNotify(key, body);
+        // Send in order: each send is awaited so Telegram receives the user's
+        // line before the emits, and the emits in emit order. Firing them
+        // fire-and-forget races the HTTP calls and delivers out of order.
+        await telegramNotify(key, `\ud83d\udcbb ${displayText}`);
+        for (const body of parts) await telegramNotify(key, body);
       } catch (e) {
         console.warn("[web-chat] telegram notify failed:", e);
       }
@@ -3029,7 +3032,7 @@ export interface AdminOptions extends Partial<AdminConfig> {
    * continued a Telegram conversation — so the phone sees the exchange
    * too. index.ts wires it to bot.api.sendMessage.
    */
-  telegramNotify?: (key: string, text: string) => void;
+  telegramNotify?: (key: string, text: string) => void | Promise<void>;
   /** STT backend options — required for voice input on the chat page. */
   stt?: SttBackendOptions;
 }
@@ -3496,7 +3499,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
             rest = rest.slice(cut).replace(/^\n+/, "");
           }
           if (rest.trim()) parts.push(rest);
-          for (const part of parts) telegramNotify(target, part);
+          for (const part of parts) await telegramNotify(target, part);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true, key: target, parts: parts.length, turns: session.turns.length }));
         } catch (e: unknown) {
