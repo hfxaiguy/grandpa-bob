@@ -7,6 +7,7 @@
  */
 import "./shims/process";
 import { createBrowserPlatform } from "./platform/browser";
+import { Tree, name, Prompt, knit } from "grandma-kat";
 import { listTreeSources } from "../../src/tree-sources";
 import { promoteTree, snapshotTree } from "../../src/tree-versions";
 
@@ -65,11 +66,37 @@ async function sharedTreesDemo(root: string): Promise<void> {
   log(`shared: after promote -> prod=${after?.prod} versions=[${after?.versions.join(",")}]`);
 }
 
+async function grandmaKatDemo(root: string): Promise<void> {
+  // Run a real tree through grandma-kat in the browser with a mock model
+  // (logger:false means the node:sqlite stub is never constructed).
+  const pattern = Tree(
+    name("browser_demo"),
+    Prompt((m: { task?: string }) => `task: ${m.task}`),
+  );
+  const runtime = {
+    models: {
+      default: {
+        model: "mock",
+        handler: async (messages: unknown[]) => ({
+          content: `hello from grandma-kat (${messages.length} message(s))`,
+        }),
+      },
+    },
+    tools: {},
+    memory: { task: "say hi" },
+    logger: false,
+  };
+  const { result } = await knit(pattern, runtime);
+  log(`grandma-kat: knit -> ${JSON.stringify(result)}`);
+}
+
 async function main(): Promise<void> {
   const root = "/workspace";
   await opfsSmoke(root);
   log("");
   await sharedTreesDemo(root);
+  log("");
+  await grandmaKatDemo(root);
   log("");
   log("OK");
 }
