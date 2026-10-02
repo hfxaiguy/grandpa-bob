@@ -1,0 +1,17 @@
+{
+  "name": "grandpa-bob-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Browser target: grandpa-bob running entirely in a tab (OPFS + WASM SQLite, no backend).",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^6.0.7"
+  }
+}

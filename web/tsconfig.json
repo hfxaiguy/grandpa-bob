@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": false,
+    "types": []
+  },
+  "include": [
+    "src/**/*.ts",
+    "../src/platform/paths.ts",
+    "../src/platform/sha256.ts",
+    "../src/platform/types.ts"
+  ]
+}

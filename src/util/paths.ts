@@ -1,4 +1,6 @@
-import path from "node:path";
+import { posixPath } from "../platform/paths.js";
+
+const path = posixPath;
 
 /** Resolve a user/agent-supplied relative path inside the workspace, rejecting escapes. */
 export function resolveInWorkspace(workspace: string, rel: string): string {
