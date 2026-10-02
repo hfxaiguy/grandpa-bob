@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "smoke": "node smoke.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

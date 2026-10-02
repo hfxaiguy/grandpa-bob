@@ -78,24 +78,42 @@ async function entryKind(
   }
 }
 
+async function copyFile(
+  src: FileSystemDirectoryHandle,
+  srcName: string,
+  dst: FileSystemDirectoryHandle,
+  dstName: string,
+): Promise<void> {
+  const file = await (await src.getFileHandle(srcName)).getFile();
+  const buffer = await file.arrayBuffer();
+  const handle = await dst.getFileHandle(dstName, { create: true });
+  const writable = await handle.createWritable();
+  await writable.write(buffer as Parameters<typeof writable.write>[0]);
+  await writable.close();
+}
+
+async function copyDir(
+  src: FileSystemDirectoryHandle,
+  srcName: string,
+  dst: FileSystemDirectoryHandle,
+  dstName: string,
+): Promise<void> {
+  const srcDir = await src.getDirectoryHandle(srcName);
+  const dstDir = await dst.getDirectoryHandle(dstName, { create: true });
+  await eachEntry(srcDir, async (child, handle) => {
+    if (handle.kind === "directory") await copyDir(srcDir, child, dstDir, child);
+    else await copyFile(srcDir, child, dstDir, child);
+  });
+}
+
 async function copyEntry(
   src: FileSystemDirectoryHandle,
+  srcName: string,
   dst: FileSystemDirectoryHandle,
-  name: string,
+  dstName: string,
 ): Promise<void> {
-  const kind = await entryKind(src, name);
-  if (kind === "file") {
-    const file = await (await src.getFileHandle(name)).getFile();
-    const buffer = await file.arrayBuffer();
-    const handle = await dst.getFileHandle(name, { create: true });
-    const writable = await handle.createWritable();
-    await writable.write(buffer as Parameters<typeof writable.write>[0]);
-    await writable.close();
-    return;
-  }
-  const srcDir = await src.getDirectoryHandle(name);
-  const dstDir = await dst.getDirectoryHandle(name, { create: true });
-  await eachEntry(srcDir, (child) => copyEntry(srcDir, dstDir, child));
+  if ((await entryKind(src, srcName)) === "file") await copyFile(src, srcName, dst, dstName);
+  else await copyDir(src, srcName, dst, dstName);
 }
 
 export const opfsFs: FileSystem = {
@@ -154,7 +172,7 @@ export const opfsFs: FileSystem = {
     const dstName = dstParts.pop();
     if (!dstName) throw new DOMException(`invalid path: ${to}`, "TypeMismatchError");
     const dstDir = await dirHandle(await root(), dstParts, true);
-    await copyEntry(src.dir, dstDir, src.name);
+    await copyEntry(src.dir, src.name, dstDir, dstName);
     await src.dir.removeEntry(src.name, { recursive: true });
   },
 };
