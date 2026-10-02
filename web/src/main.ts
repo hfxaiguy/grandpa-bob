@@ -9,6 +9,7 @@ import "./shims/process";
 import { createBrowserPlatform, initSqlite } from "./platform/browser";
 import { AgentClient } from "./agent/agent-client";
 import { loadEnv, setEnvVar } from "./settings";
+import { exportWorkspace, importWorkspace } from "./workspace-transfer";
 import { Tree, name, Prompt, knit } from "grandma-kat";
 import { listTreeSources } from "../../src/tree-sources";
 import { promoteTree, snapshotTree } from "../../src/tree-versions";
@@ -161,6 +162,17 @@ async function agentDemo(root: string): Promise<void> {
   }
 }
 
+async function durabilityDemo(): Promise<void> {
+  const persisted = (await navigator.storage.persist?.().catch(() => false)) ?? "n/a";
+  const estimate = await navigator.storage.estimate?.().catch(() => null);
+  const blob = await exportWorkspace();
+  const archive = JSON.parse(await blob.text()) as Parameters<typeof importWorkspace>[0];
+  const restored = await importWorkspace(archive);
+  log(
+    `durability: persisted=${persisted} usage=${estimate?.usage ?? "?"}B backup=${blob.size}B files=${archive.files.length} restored=${restored}`,
+  );
+}
+
 async function main(): Promise<void> {
   const root = "/workspace";
   await opfsSmoke(root);
@@ -172,6 +184,8 @@ async function main(): Promise<void> {
   await sqliteDemo(root);
   log("");
   await agentDemo(root);
+  log("");
+  await durabilityDemo();
   log("");
   log("OK");
 }

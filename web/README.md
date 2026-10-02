@@ -32,7 +32,8 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 | Agent worker + tool registry + event stream | done — **verified in real Chromium** (streams events, runs file/SQL/shell tools) |
 | Pattern module loader (OPFS + grandma-kat/node injection) | done — **verified in real Chromium** (loads a pattern and runs Prompt+Call) |
 | Remote LLM (`models.json` from OPFS + settings) | done — **verified in real Chromium** against a mock OpenAI-compatible endpoint |
-| Real `trunk`/app trees, git (`isomorphic-git`), UI | not yet (milestones 4b–6) |
+| Durability (persist request + workspace export/import) | done — **verified in real Chromium** (25 files exported/restored) |
+| Real `trunk`/app trees, git (`isomorphic-git`), UI | not yet |
 
 ## `node:*` shims
 
@@ -63,7 +64,11 @@ npm run smoke      # headless Chromium loads the app and checks its #out
 
 `npm run smoke` needs a Chromium/Chrome binary (override with `CHROME_BIN`) and
 a running dev server. It exercises OPFS writes/rename, `tree-versions`
-snapshot/promote, and `grandma-kat knit()` in a real browser.
+snapshot/promote, `grandma-kat knit()`, WASM SQLite persistence, and a real LLM
+round-trip.
+
+The LLM smoke also needs the mock endpoint: `npm run mock-llm` (port 8787) in a
+second terminal.
 
 ## Architecture
 
