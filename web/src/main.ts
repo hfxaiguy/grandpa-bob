@@ -19,6 +19,7 @@ import {
   loadStorage,
   loadStorageServer,
   loadBranch,
+  loadModelsJson,
   saveStorage,
   saveStorageServer,
   saveRemote,
@@ -191,6 +192,7 @@ async function main(): Promise<void> {
     env: loadEnv(),
     remote: configuredRemote,
     initialPattern: pattern,
+    modelsJson: loadModelsJson(),
   });
 
   hostUi(backend, document.getElementById("app")!, { page: "chat", port: 8080 });

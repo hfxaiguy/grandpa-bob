@@ -67,6 +67,26 @@ export function saveBranch(branch: string): void {
   }
 }
 
+const MODELS_KEY = "bob:models-json";
+
+/** The model registry JSON typed in Settings (browser-local, not in the workspace). */
+export function loadModelsJson(): string {
+  try {
+    return localStorage.getItem(MODELS_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveModelsJson(json: string): void {
+  try {
+    if (json.trim()) localStorage.setItem(MODELS_KEY, json);
+    else localStorage.removeItem(MODELS_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 export type StorageMode = "browser" | "desktop";
 
 /** Where BOB's tools operate: browser OPFS, or the desktop via the bridge. */

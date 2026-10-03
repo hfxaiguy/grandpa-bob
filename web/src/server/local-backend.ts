@@ -15,7 +15,7 @@ import { listPatterns, listTreeSources } from "../../../src/tree-sources";
 import { promoteTree, resolveTreeEntry, scanTreeVersions, snapshotTree } from "../../../src/tree-versions";
 import { serializeTree } from "../../../src/tree-serialize";
 import { createModuleLoader } from "../agent/module-loader";
-import { loadEnv, saveEnv } from "../settings";
+import { loadEnv, saveEnv, saveModelsJson } from "../settings";
 
 export interface BackendResponse {
   status: number;
@@ -31,6 +31,8 @@ export interface BackendOptions {
   env: Record<string, string>;
   remote: string;
   initialPattern: string;
+  /** Model registry JSON from browser settings (overrides the workspace models.json). */
+  modelsJson?: string;
 }
 
 interface TurnRecord {
@@ -64,6 +66,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   const subscribers = new Set<(msg: EventMessage) => void>();
   let activePattern = opts.initialPattern || "trunk";
   let updatedAt = Date.now();
+  let modelsJson = opts.modelsJson ?? "";
   const activeRefs = new Map<string, string>();
 
   const parseBody = <T>(b: string | FormData | null): T => {
@@ -135,6 +138,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
           remote: opts.remote,
           storage: opts.storage,
           server: opts.server,
+          modelsJson,
         },
         {
           onEvent: (event) => {
@@ -371,6 +375,17 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       } catch (err) {
         return { status: 404, body: { error: String(err) } };
       }
+    }
+
+    // ── models (browser settings; keys never touch the workspace) ─────────
+    if (pathname === "/api/models" && method === "GET") {
+      return { status: 200, body: { json: modelsJson } };
+    }
+    if (pathname === "/api/models" && method === "POST") {
+      const json = parseBody<{ json?: string }>(body).json ?? "";
+      modelsJson = json;
+      saveModelsJson(json);
+      return { status: 200, body: { ok: true } };
     }
 
     // ── env (browser settings) ────────────────────────────────────────────

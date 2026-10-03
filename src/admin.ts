@@ -1552,6 +1552,27 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/api/models") {
+        let json = "";
+        try {
+          json = await readFile(path.resolve(config.projectDir, "models.json"), "utf8");
+        } catch {
+          /* no models.json yet */
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ json }));
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/models") {
+        const body = await readBody(req);
+        const json = (JSON.parse(body || "{}") as { json?: string }).json ?? "";
+        await writeFile(path.resolve(config.projectDir, "models.json"), String(json), "utf8");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/api/restart-bot") {
         restartBot(config.projectDir, config.botSession);
         res.writeHead(200, { "content-type": "application/json" });

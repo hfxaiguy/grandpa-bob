@@ -22,6 +22,8 @@ export interface AgentRunOptions {
   remote?: string;
   storage?: "browser" | "desktop";
   server?: string;
+  /** Model registry JSON from browser settings (takes precedence over models.json). */
+  modelsJson?: string;
 }
 
 interface Pending {

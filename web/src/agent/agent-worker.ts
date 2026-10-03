@@ -14,6 +14,7 @@ import { browserTools } from "./browser-tools";
 import { createMemoryLogger, type MemoryLogger } from "./logger";
 import { createModuleLoader } from "./module-loader";
 import { loadBrowserModels } from "./models";
+import { parseModels, type ModelRegistry } from "../../../src/model-config";
 
 const ready = initSqlite();
 const platforms = new Map<string, Platform>();
@@ -33,6 +34,28 @@ function post(message: unknown): void {
   (self as unknown as Worker).postMessage(message);
 }
 
+/**
+ * Wrap the tool map so any name a tree declares but this target doesn't
+ * implement resolves to an error stub instead of failing the knit. Keeps
+ * trunk working as the workspace's tool list evolves.
+ */
+function withStubs(tools: Record<string, unknown>): Record<string, unknown> {
+  const stub = (name: string): unknown => ({
+    description: `${name} is not available in the browser target.`,
+    parameters: { type: "object", properties: {} },
+    execute: async () => ({ error: `${name} is not available in the browser target` }),
+  });
+  return new Proxy(tools, {
+    get(target, prop) {
+      if (prop in target) return (target as Record<string | symbol, unknown>)[prop];
+      return typeof prop === "string" ? stub(prop) : undefined;
+    },
+    has() {
+      return true;
+    },
+  });
+}
+
 interface RunOptions {
   id: number;
   task?: string;
@@ -41,6 +64,7 @@ interface RunOptions {
   remote?: string;
   storage?: "browser" | "desktop";
   server?: string;
+  modelsJson?: string;
 }
 
 interface Session {
@@ -78,8 +102,17 @@ async function handleRun(opts: RunOptions): Promise<void> {
   const session = getSession(`${storage}|${server}|${patternPath}`);
   session.currentId = opts.id;
 
-  const tools = browserTools(platform, { remote: opts.remote ?? "" });
-  const registry = await loadBrowserModels(platform, opts.env ?? {});
+  const tools = withStubs(browserTools(platform, { remote: opts.remote ?? "" }));
+  const registry = await (async (): Promise<ModelRegistry> => {
+    if (opts.modelsJson && opts.modelsJson.trim()) {
+      try {
+        return parseModels(opts.modelsJson, opts.env ?? {});
+      } catch {
+        /* fall through to models.json */
+      }
+    }
+    return loadBrowserModels(platform, opts.env ?? {});
+  })();
   const models =
     Object.keys(registry).length > 0
       ? registry

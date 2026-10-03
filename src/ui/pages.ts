@@ -128,6 +128,16 @@ export function buildSettingsHtml(config: UiConfig): string {
 </div>
 
 <div class="card">
+  <h2 style="margin-top:0">Models</h2>
+  <p style="margin:4px 0"><small>The model registry (JSON). In the browser target this is stored in <b>browser settings</b>, never in the workspace, so API keys don't land in git. Keys may use <code>\${ENV}</code> to reference the credentials above.</small></p>
+  <textarea id="models-json" rows="9" style="width:100%;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace" placeholder='{"default":{"baseURL":"https://ollama.com","apiKey":"\${OLLAMA_API_KEY}","model":"gemma4:31b-cloud","protocol":"ollama"}}'></textarea>
+  <div class="actions">
+    <button onclick="saveModels()">Save models</button>
+    <span id="models-status"></span>
+  </div>
+</div>
+
+<div class="card">
   <h2 style="margin-top:0">Logs</h2>
   <div class="row" style="margin-bottom:8px">
     <button class="secondary" onclick="loadLog('bot')">bot.log</button>
@@ -461,6 +471,22 @@ async function loadSecrets() {
   }
 }
 
+async function loadModels() {
+  try {
+    const d = await api("/api/models");
+    const t = $("models-json");
+    if (t) t.value = d.json || "";
+  } catch { /* optional */ }
+}
+async function saveModels() {
+  const t = $("models-json");
+  if (!t) return;
+  try {
+    await api("/api/models", { method: "POST", body: JSON.stringify({ json: t.value }) });
+    toast("models saved");
+  } catch (e) { toast("models save failed: " + e.message, true); }
+}
+
 async function refreshAll() {
   try { await refreshStatus(); toast("refreshed"); } catch (e) {}
 }
@@ -707,6 +733,7 @@ syncFollowChk();
 refreshStatus();
 refreshPatterns();
 filesBrowse();
+loadModels();
 loadSecrets();
 </script>
 </body>
