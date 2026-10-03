@@ -46,6 +46,27 @@ export function hostUi(
         if (!anchor) return;
         // srcdoc iframes can't resolve relative hrefs, so match the raw value.
         const raw = anchor.getAttribute("href") || "";
+        if (raw.startsWith("/api/files/download")) {
+          // Downloads are native navigation; fetch via the backend and save.
+          event.preventDefault();
+          const q = raw.indexOf("?");
+          const search = new URLSearchParams(q >= 0 ? raw.slice(q + 1) : "");
+          void backend
+            .request("GET", "/api/files/download", search, null)
+            .then((res) => {
+              const body = typeof res.body === "string" ? res.body : JSON.stringify(res.body);
+              const url = URL.createObjectURL(new Blob([body], { type: res.contentType || "text/plain" }));
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = (search.get("path") ?? "download").split("/").pop() || "download";
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              setTimeout(() => URL.revokeObjectURL(url), 5000);
+            })
+            .catch(() => {});
+          return;
+        }
         if (raw === "/settings" || raw === "/") {
           event.preventDefault();
           render(raw === "/settings" ? "settings" : "chat");

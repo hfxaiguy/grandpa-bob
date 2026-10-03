@@ -48,7 +48,7 @@ type EventMessage = Record<string, unknown>;
 
 export interface LocalBackend {
   ready: Promise<void>;
-  request(method: string, pathname: string, search: URLSearchParams, body: string | null): Promise<BackendResponse>;
+  request(method: string, pathname: string, search: URLSearchParams, body: string | FormData | null): Promise<BackendResponse>;
   subscribe(cb: (msg: EventMessage) => void): () => void;
 }
 
@@ -65,6 +65,41 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   let activePattern = opts.initialPattern || "trunk";
   let updatedAt = Date.now();
   const activeRefs = new Map<string, string>();
+
+  const parseBody = <T>(b: string | FormData | null): T => {
+    try {
+      return JSON.parse(typeof b === "string" ? b : "{}") as T;
+    } catch {
+      return {} as T;
+    }
+  };
+
+  // Browser secret store (localStorage; the Node target uses logs/secrets.db).
+  const SECRETS_KEY = "bob:secrets";
+  interface StoredSecret {
+    contentType: string | null;
+    base64: string;
+    updatedAt: string;
+  }
+  const readSecrets = (): Record<string, StoredSecret> => {
+    try {
+      return JSON.parse(localStorage.getItem(SECRETS_KEY) || "{}") as Record<string, StoredSecret>;
+    } catch {
+      return {};
+    }
+  };
+  const writeSecrets = (map: Record<string, StoredSecret>): void => {
+    try {
+      localStorage.setItem(SECRETS_KEY, JSON.stringify(map));
+    } catch {
+      /* quota/private mode */
+    }
+  };
+  const base64Of = (bytes: Uint8Array): string => {
+    let s = "";
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s);
+  };
 
   const broadcast = (msg: EventMessage): void => {
     for (const cb of subscribers) {
@@ -140,7 +175,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     method: string,
     pathname: string,
     search: URLSearchParams,
-    body: string | null,
+    body: string | FormData | null,
   ): Promise<BackendResponse> {
     // ── chat ──────────────────────────────────────────────────────────────
     if (pathname === "/api/session" && method === "GET") {
@@ -156,10 +191,28 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       return { status: 200, body: { turns } };
     }
     if (pathname === "/api/chat" && method === "POST") {
-      const text = (JSON.parse(body || "{}") as { text?: string }).text ?? "";
+      const text = (parseBody(body) as { text?: string }).text ?? "";
       const turnId = crypto.randomUUID();
       void runTurn(turnId, text);
       return { status: 200, body: { turnId, queued: false } };
+    }
+    if (pathname === "/api/chat/upload" && method === "POST") {
+      if (!(body instanceof FormData)) return { status: 400, body: { error: "multipart required" } };
+      const file = body.get("file");
+      if (!(file instanceof File)) return { status: 400, body: { error: "no file" } };
+      const caption = String(body.get("caption") ?? "");
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const safe = (file.name || "upload").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "upload";
+      const rel = `assets/inbox/${crypto.randomUUID()}-${safe}`;
+      const abs = platform.path.join(platform.workspaceRoot, rel);
+      await platform.fs.mkdir(platform.path.dirname(abs), { recursive: true });
+      await platform.fs.writeFile(abs, bytes);
+      const text =
+        `[Attached file: ${rel} (${file.type || "application/octet-stream"}, ${bytes.length} bytes)]` +
+        (caption ? `\n\n${caption}` : "");
+      const turnId = crypto.randomUUID();
+      void runTurn(turnId, text);
+      return { status: 200, body: { ok: true, turnId } };
     }
     if (pathname === "/api/clear" && method === "POST") {
       turns.length = 0;
@@ -183,7 +236,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     // ── pattern / tree ────────────────────────────────────────────────────
     if (pathname === "/api/pattern" && method === "GET") return patternCatalog();
     if (pathname === "/api/pattern" && method === "POST") {
-      const want = (JSON.parse(body || "{}") as { name?: string }).name;
+      const want = (parseBody(body) as { name?: string }).name;
       if (want) activePattern = want;
       return { status: 200, body: { pattern: activePattern } };
     }
@@ -202,15 +255,15 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       };
     }
     if (pathname === "/api/tree/versions" && method === "POST") {
-      const name = (JSON.parse(body || "{}") as { name?: string }).name ?? "";
+      const name = (parseBody(body) as { name?: string }).name ?? "";
       return { status: 200, body: await snapshotTree(platform.workspaceRoot, name) };
     }
     if (pathname === "/api/tree/version/promote" && method === "POST") {
-      const { name = "", version = "" } = JSON.parse(body || "{}") as { name?: string; version?: string };
+      const { name = "", version = "" } = parseBody(body) as { name?: string; version?: string };
       return { status: 200, body: await promoteTree(platform.workspaceRoot, name, version) };
     }
     if (pathname === "/api/tree/version/active" && method === "POST") {
-      const { name = "", ref = "prod" } = JSON.parse(body || "{}") as { name?: string; ref?: string };
+      const { name = "", ref = "prod" } = parseBody(body) as { name?: string; ref?: string };
       if (name) activeRefs.set(name, ref || "prod");
       return { status: 200, body: { ok: true, active: ref || "prod" } };
     }
@@ -240,10 +293,6 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       } catch (err) {
         return { status: 500, body: { error: `could not load tree: ${err instanceof Error ? err.message : String(err)}` } };
       }
-    }
-    if (pathname === "/api/patterns" && method === "GET") {
-      const cat = await patternCatalog();
-      return { status: 200, body: (cat.body as { patterns?: unknown }).patterns ?? [] };
     }
     // ── files ─────────────────────────────────────────────────────────────
     if (pathname === "/api/files" && method === "GET") {
@@ -278,6 +327,18 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       }
     }
 
+    if (pathname === "/api/files/upload" && method === "POST") {
+      if (!(body instanceof FormData)) return { status: 400, body: { error: "multipart required" } };
+      const dir = String(body.get("path") ?? "");
+      const file = body.get("file");
+      if (!(file instanceof File)) return { status: 400, body: { error: "no file" } };
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const target = platform.path.join(platform.workspaceRoot, dir, file.name);
+      await platform.fs.mkdir(platform.path.dirname(target), { recursive: true });
+      await platform.fs.writeFile(target, bytes);
+      return { status: 200, body: { ok: true, name: file.name } };
+    }
+
     // ── patterns ──────────────────────────────────────────────────────────
     if (pathname === "/api/patterns" && method === "GET") {
       const patterns = await listPatterns(platform.workspaceRoot).catch(() => []);
@@ -293,7 +354,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       }
     }
     if (pathname === "/api/patterns" && method === "POST") {
-      const parsed = JSON.parse(body || "{}") as { name?: string; content?: string };
+      const parsed = parseBody(body) as { name?: string; content?: string };
       if (!parsed.name || typeof parsed.content !== "string") {
         return { status: 400, body: { error: "name and content required" } };
       }
@@ -314,7 +375,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
 
     // ── env (browser settings) ────────────────────────────────────────────
     if (pathname === "/api/env" && method === "POST") {
-      const vars = JSON.parse(body || "{}") as Record<string, string>;
+      const vars = parseBody(body) as Record<string, string>;
       const env = loadEnv();
       for (const [k, v] of Object.entries(vars)) if (v) env[k] = String(v);
       saveEnv(env);
@@ -324,8 +385,9 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     // ── logs ──────────────────────────────────────────────────────────────
     if (pathname === "/api/log") return { status: 200, body: { content: "" } };
 
-    // ── secrets (declarations only; no store in the browser) ──────────────
+    // ── secrets (declarations in app/*/secrets.json; stored in localStorage) ─
     if (pathname === "/api/secrets" && method === "GET") {
+      const stored = readSecrets();
       const secrets: unknown[] = [];
       try {
         const appDir = platform.path.join(platform.workspaceRoot, "app");
@@ -344,14 +406,15 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
             for (const item of list) {
               const it = item as { name?: unknown; description?: unknown; contentType?: unknown };
               if (typeof it?.name !== "string") continue;
+              const hit = stored[`${appEntry.name}/${it.name}`];
               secrets.push({
                 app: appEntry.name,
                 name: it.name,
                 description: typeof it.description === "string" ? it.description : "",
                 contentType: typeof it.contentType === "string" ? it.contentType : null,
-                present: false,
-                size: 0,
-                updatedAt: null,
+                present: !!hit,
+                size: hit ? Math.floor((hit.base64.length * 3) / 4) : 0,
+                updatedAt: hit?.updatedAt ?? null,
               });
             }
           } catch {
@@ -362,6 +425,50 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         /* no app dir */
       }
       return { status: 200, body: { secrets } };
+    }
+    if (pathname === "/api/secrets" && method === "POST") {
+      if (!(body instanceof FormData)) return { status: 400, body: { error: "multipart required" } };
+      const appName = search.get("app") ?? "";
+      const secretName = search.get("name") ?? "";
+      const file = body.get("file");
+      if (!(file instanceof File)) return { status: 400, body: { error: "no file" } };
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (bytes.length > 1024 * 1024) return { status: 413, body: { error: "secret too large (max 1 MB)" } };
+      const map = readSecrets();
+      map[`${appName}/${secretName}`] = {
+        contentType: file.type || "application/octet-stream",
+        base64: base64Of(bytes),
+        updatedAt: new Date().toISOString(),
+      };
+      writeSecrets(map);
+      return { status: 200, body: { ok: true, app: appName, name: secretName, size: bytes.length } };
+    }
+    if (pathname === "/api/secrets/vars" && method === "POST") {
+      const appName = search.get("app") ?? "";
+      const secretName = search.get("name") ?? "";
+      const value = parseBody<{ value?: unknown }>(body).value;
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return { status: 400, body: { error: "value must be an object" } };
+      }
+      const text = JSON.stringify(value, null, 2);
+      const map = readSecrets();
+      map[`${appName}/${secretName}`] = {
+        contentType: "application/json",
+        base64: base64Of(new TextEncoder().encode(text)),
+        updatedAt: new Date().toISOString(),
+      };
+      writeSecrets(map);
+      return { status: 200, body: { ok: true, app: appName, name: secretName, size: text.length } };
+    }
+    if (pathname === "/api/secrets" && method === "DELETE") {
+      const appName = search.get("app") ?? "";
+      const secretName = search.get("name") ?? "";
+      const map = readSecrets();
+      const key = `${appName}/${secretName}`;
+      const existed = !!map[key];
+      delete map[key];
+      writeSecrets(map);
+      return { status: existed ? 200 : 404, body: { ok: existed } };
     }
 
     if (pathname.startsWith("/api/")) return UNAVAILABLE(pathname);

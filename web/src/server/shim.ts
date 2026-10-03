@@ -26,7 +26,7 @@ export const SHIM_SCRIPT = `(function () {
   window.fetch = function (input, init) {
     var url = typeof input === "string" ? input : (input && input.url) || String(input);
     var method = (init && init.method) || (input && input.method) || "GET";
-    var body = init && typeof init.body === "string" ? init.body : null;
+    var body = init && init.body ? init.body : null;
     var api = apiPath(url);
     if (api) {
       return wait().then(function () {
