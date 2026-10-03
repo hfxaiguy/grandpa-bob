@@ -1323,6 +1323,18 @@ async function saveAllEnv() {
 }
 
 // ---- app secrets -----------------------------------------------------
+// Expand dotted keys ("auth.token") into a nested object when building JSON.
+function setPath(obj, path, value) {
+  const parts = String(path).split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const k = parts[i];
+    if (!cur[k] || typeof cur[k] !== "object") cur[k] = {};
+    cur = cur[k];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
 async function loadSecrets() {
   const box = $("secrets-list");
   if (!box) return;
@@ -1348,10 +1360,12 @@ async function loadSecrets() {
       const br = document.createElement("br");
       const status = document.createElement("small");
       status.style.color = s.present ? "var(--green,#10b981)" : "var(--red,#ef4444)";
+      const isJson = String(s.contentType || "").indexOf("json") >= 0 || (s.fields && Object.keys(s.fields).length > 0);
       status.textContent = s.present
         ? "\u2713 " + new Date(s.updatedAt).toLocaleString() + " \u00b7 " + s.size + " B"
-        : "missing \u2014 upload it below";
+        : (isJson ? "missing \u2014 enter the values below" : "missing \u2014 upload it below");
       info.append(head, desc, br, status);
+
       const pick = document.createElement("input");
       pick.type = "file";
       pick.style.maxWidth = "220px";
@@ -1369,7 +1383,79 @@ async function loadSecrets() {
           loadSecrets();
         } catch (e) { toast("upload failed: " + e.message, true); }
       };
-      row.append(info, pick, up);
+
+      if (isJson) {
+        // Key/value editor for JSON secrets; dotted keys expand to nested
+        // objects (auth.token -> { auth: { token } }).
+        const editor = document.createElement("div");
+        editor.style.cssText = "flex:1 1 100%;display:flex;flex-direction:column;gap:6px";
+        const rowsBox = document.createElement("div");
+        rowsBox.style.cssText = "display:flex;flex-direction:column;gap:4px";
+        const addRow = (key, hint) => {
+          const r = document.createElement("div");
+          r.style.cssText = "display:flex;gap:6px;align-items:center";
+          const k = document.createElement("input");
+          k.placeholder = "key (e.g. auth.token)";
+          k.value = key || "";
+          k.style.flex = "0 0 200px";
+          const v = document.createElement("input");
+          v.placeholder = hint || "value";
+          v.style.flex = "1 1 auto";
+          const rm = document.createElement("button");
+          rm.className = "secondary";
+          rm.textContent = "\u00d7";
+          rm.onclick = () => r.remove();
+          r.append(k, v, rm);
+          rowsBox.appendChild(r);
+        };
+        const fieldKeys = s.fields ? Object.keys(s.fields) : [];
+        if (fieldKeys.length) fieldKeys.forEach((k) => addRow(k, s.fields[k] || ""));
+        else addRow("", "");
+        const actions = document.createElement("div");
+        actions.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;align-items:center";
+        const add = document.createElement("button");
+        add.className = "secondary";
+        add.textContent = "+ add var";
+        add.onclick = () => addRow("", "");
+        const save = document.createElement("button");
+        save.textContent = "Save vars";
+        save.onclick = async () => {
+          const value = {};
+          let bad = "";
+          rowsBox.querySelectorAll("div").forEach((r) => {
+            const inputs = r.querySelectorAll("input");
+            const key = inputs[0].value.trim();
+            const val = inputs[1].value;
+            if (!key) return;
+            if (!/^[A-Za-z0-9_.-]+$/.test(key)) { bad = key; return; }
+            if (val === "") return;
+            setPath(value, key, val);
+          });
+          if (bad) { toast("invalid key: " + bad, true); return; }
+          if (!Object.keys(value).length) { toast("enter at least one value", true); return; }
+          try {
+            const r = await fetch("/api/secrets/vars?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ value }),
+            });
+            const d2 = await r.json().catch(() => ({}));
+            if (!r.ok) { toast(d2.error || "save failed", true); return; }
+            toast("stored vars for " + s.app + "/" + s.name);
+            loadSecrets();
+          } catch (e) { toast("save failed: " + e.message, true); }
+        };
+        actions.append(add, save);
+        editor.append(rowsBox, actions);
+        const fallback = document.createElement("details");
+        const sum = document.createElement("summary");
+        sum.textContent = "or upload a file instead";
+        sum.style.cssText = "cursor:pointer;font-size:12px;color:var(--muted)";
+        fallback.append(sum, pick, up);
+        row.append(info, editor, fallback);
+      } else {
+        row.append(info, pick, up);
+      }
       if (s.present) {
         const del = document.createElement("button");
         del.className = "secondary";
