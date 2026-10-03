@@ -165,6 +165,7 @@ function notAvailable(name: string): KatTool {
 export const STUB_TOOL_NAMES = [
   "duckdb_query",
   "exa_search",
+  "read_runs",
   "upsert_contact",
   "log_message",
   "get_contact",
