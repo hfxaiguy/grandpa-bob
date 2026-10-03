@@ -17,8 +17,12 @@ const workspace =
   path.resolve(here, "..", "..", "workspace");
 const out = path.resolve(here, "..", "public", "seed", "workspace.json");
 
-const SKIP_DIRS = new Set([".git", "node_modules", "dist", "tmp", "logs", ".commandcode"]);
+const SKIP_DIRS = new Set([".git", "node_modules", "dist", "tmp", ".commandcode"]);
 const SKIP_FILE = /\.(db|db-wal|db-shm|sqlite|sqlite3|log)$/i;
+// The run log (logs/grandma-kat.db + its WAL) is workspace data the browser
+// target carries so read_runs / logs_review work there too, so logs/ files are
+// exempt from the DB/transient skip filter.
+const KEEP_DIR = "logs/";
 
 const files = [];
 async function walk(dir, rel) {
@@ -29,7 +33,7 @@ async function walk(dir, rel) {
       if (SKIP_DIRS.has(entry.name)) continue;
       await walk(full, childRel);
     } else if (entry.isFile()) {
-      if (SKIP_FILE.test(childRel)) continue;
+      if (SKIP_FILE.test(childRel) && !childRel.startsWith(KEEP_DIR)) continue;
       const bytes = await fs.readFile(full);
       files.push({ path: `workspace/${childRel}`, base64: bytes.toString("base64") });
     }
