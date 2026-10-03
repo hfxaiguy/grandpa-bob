@@ -53,6 +53,8 @@ export interface GitOps {
   log?(depth?: number): Promise<unknown>;
   fetch?(url: string, branch?: string): Promise<unknown>;
   push?(url: string, branch?: string): Promise<unknown>;
+  /** Stage every change (including deletions) and commit. */
+  commitAll?(message: string): Promise<string>;
 }
 
 /** One column in a statement's result set. */

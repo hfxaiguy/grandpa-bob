@@ -140,9 +140,36 @@ if (hasChat.result?.result?.value) {
   console.log("=== CHAT REPLY ===\n(chat not ready)");
 }
 
+// Click the git Sync button only when the URL explicitly configures a remote.
+let syncOk = true;
+const wantsSync = TARGET.includes("gitremote=");
+const syncReady = await send("Runtime.evaluate", {
+  expression: "!!document.getElementById('git-sync') && !!document.getElementById('git-remote')?.value",
+  returnByValue: true,
+});
+if (wantsSync && syncReady.result?.result?.value) {
+  await send("Runtime.evaluate", {
+    expression: "document.getElementById('git-sync').click(); true",
+    returnByValue: true,
+  });
+  let syncMsg = "";
+  for (let i = 0; i < 80; i++) {
+    const r = await send("Runtime.evaluate", {
+      expression: "Array.from(document.querySelectorAll('.msg-assistant')).map((e) => e.textContent).pop() ?? ''",
+      returnByValue: true,
+    });
+    syncMsg = r.result?.result?.value ?? "";
+    if (/pushed|sync failed|committed/.test(syncMsg)) break;
+    await sleep(250);
+  }
+  console.log("=== SYNC RESULT ===");
+  console.log(syncMsg || "(none)");
+  syncOk = /pushed/.test(syncMsg) && !/sync failed/.test(syncMsg);
+}
+
 if (logs.length) {
   console.log("=== CONSOLE ===");
   console.log(logs.join("\n"));
 }
 ws.close();
-cleanup(out.includes("SMOKE_DONE") && !/ERROR:/.test(out) && chatOk ? 0 : 3);
+cleanup(out.includes("SMOKE_DONE") && !/ERROR:/.test(out) && chatOk && syncOk ? 0 : 3);

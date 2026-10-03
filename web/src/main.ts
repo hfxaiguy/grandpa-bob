@@ -16,8 +16,11 @@ import {
   loadRemote,
   loadStorage,
   loadStorageServer,
+  loadBranch,
   saveStorage,
   saveStorageServer,
+  saveRemote,
+  saveBranch,
   setEnvVar,
   type StorageMode,
 } from "./settings";
@@ -79,6 +82,53 @@ const applyStorage = (): void => {
 };
 storageSelect?.addEventListener("change", applyStorage);
 storageServerInput?.addEventListener("change", applyStorage);
+
+// ── git sync controls ────────────────────────────────────────────────────
+const gitRemoteInput = document.getElementById("git-remote") as HTMLInputElement | null;
+const gitBranchInput = document.getElementById("git-branch") as HTMLInputElement | null;
+const gitSyncBtn = document.getElementById("git-sync") as HTMLButtonElement | null;
+if (gitRemoteInput) gitRemoteInput.value = configuredRemote;
+if (gitBranchInput) gitBranchInput.value = loadBranch();
+// Allow the smoke runner (and deep links) to preconfigure the sync controls.
+if (params.get("gitremote") && gitRemoteInput) {
+  gitRemoteInput.value = params.get("gitremote")!;
+  configuredRemote = gitRemoteInput.value;
+}
+if (params.get("gitbranch") && gitBranchInput) gitBranchInput.value = params.get("gitbranch")!;
+
+async function syncWorkspace(): Promise<void> {
+  const remote = (gitRemoteInput?.value ?? configuredRemote).trim();
+  const branch = (gitBranchInput?.value ?? "main").trim() || "main";
+  configuredRemote = remote;
+  saveRemote(remote);
+  saveBranch(branch);
+  if (!remote) {
+    appendMessage("assistant", "Set a git remote first (a local path in desktop mode, or an http url).");
+    return;
+  }
+  if (gitSyncBtn) gitSyncBtn.disabled = true;
+  appendMessage("user", `sync ${remote} -> ${branch}`);
+  try {
+    const platform =
+      storageMode === "desktop" ? createDesktopPlatform("/", storageServer) : createBrowserPlatform("/workspace");
+    await platform.git.ensureRepo();
+    const commit = platform.git.commitAll
+      ? await platform.git.commitAll(`sync from BOB ${new Date().toISOString()}`)
+      : await platform.git.autoCommit(["."], "sync from BOB");
+    const pushed = platform.git.push ? await platform.git.push(remote, branch) : { error: "push unavailable" };
+    appendMessage("assistant", `committed ${commit}; pushed ${branch} -> ${JSON.stringify(pushed)}`);
+  } catch (err) {
+    appendMessage("assistant", `sync failed: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    if (gitSyncBtn) gitSyncBtn.disabled = false;
+  }
+}
+gitSyncBtn?.addEventListener("click", () => void syncWorkspace());
+gitRemoteInput?.addEventListener("change", () => {
+  configuredRemote = gitRemoteInput.value.trim();
+  saveRemote(configuredRemote);
+});
+gitBranchInput?.addEventListener("change", () => saveBranch(gitBranchInput.value.trim() || "main"));
 
 function appendMessage(role: "user" | "assistant", text: string): void {
   const div = document.createElement("div");

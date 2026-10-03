@@ -8,7 +8,7 @@ import { ToolRegistry } from "../tools/index.js";
 import { Agent, checkLlmEntry } from "../agent.js";
 import { loadModels } from "../models.js";
 // @ts-ignore — grandma-kat ships no .d.ts files.
-import { createLogger } from "grandma-kat";
+import { createLogger, runLogTools } from "grandma-kat";
 import { EventLogger, type KatEvent } from "./event-logger.js";
 import { formatEvent, formatAgentOutput } from "./format.js";
 import { loadAppTools } from "../app-tools.js";
@@ -48,7 +48,10 @@ async function main(): Promise<void> {
   await fs.mkdir(path.join(config.workspaceDir, "logs"), { recursive: true });
   await ensureWorkspaceGitignore(config.workspaceDir, ["logs/grandma-kat.db*"]);
 
-  const appTools = await loadAppTools(config.workspaceDir);
+  const appTools = [
+    ...(await loadAppTools(config.workspaceDir)),
+    ...runLogTools(path.join(config.workspaceDir, "logs", "grandma-kat.db")),
+  ];
   const tools = new ToolRegistry(config.workspaceDir, config.allowedCommands, config.exaApiKey, undefined, appTools);
   const models = await loadModels();
 

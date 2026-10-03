@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 // @ts-ignore — grandma-kat ships no .d.ts files.
-import { createLogger } from "grandma-kat";
+import { createLogger, runLogTools } from "grandma-kat";
 import { config } from "./config.js";
 import { ensureRepo, ensureWorkspaceGitignore } from "./tools/git.js";
 import { ToolRegistry } from "./tools/index.js";
@@ -32,7 +32,12 @@ async function main(): Promise<void> {
   ]);
 
   const secrets = new SecretsStore(config.secretsDb);
-  const appTools = await loadAppTools(config.workspaceDir, secrets);
+  const appTools = [
+    ...(await loadAppTools(config.workspaceDir, secrets)),
+    // KAT's own run-log reader, so a tree can recall what happened in past
+    // sessions (grandma-kat/src/runlog.mjs). Same DB as katLogger below.
+    ...runLogTools(path.join(config.workspaceDir, "logs", "grandma-kat.db")),
+  ];
   console.log(`[app-tools] loaded ${appTools.length} tool(s) from workspace apps`);
   const tools = new ToolRegistry(
     config.workspaceDir,

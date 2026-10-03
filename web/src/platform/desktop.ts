@@ -81,6 +81,10 @@ function httpGit(base: string): GitOps {
     log: () => call(base, "/git", { op: "log" }),
     fetch: (url: string, branch?: string) => call(base, "/git", { op: "fetch", url, branch }),
     push: (url: string, branch?: string) => call(base, "/git", { op: "push", url, branch }),
+    async commitAll(message: string): Promise<string> {
+      const { commit } = await call<{ commit?: string }>(base, "/git", { op: "commit", paths: ["."], message });
+      return commit ?? "no-changes";
+    },
   };
 }
 

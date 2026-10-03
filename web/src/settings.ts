@@ -48,6 +48,25 @@ export function saveRemote(url: string): void {
   }
 }
 
+const BRANCH_KEY = "bob:branch";
+
+/** Branch to push to when syncing. */
+export function loadBranch(): string {
+  try {
+    return localStorage.getItem(BRANCH_KEY) ?? "main";
+  } catch {
+    return "main";
+  }
+}
+
+export function saveBranch(branch: string): void {
+  try {
+    localStorage.setItem(BRANCH_KEY, branch);
+  } catch {
+    // ignore
+  }
+}
+
 export type StorageMode = "browser" | "desktop";
 
 /** Where BOB's tools operate: browser OPFS, or the desktop via the bridge. */

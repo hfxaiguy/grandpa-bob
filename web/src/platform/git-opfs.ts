@@ -114,5 +114,17 @@ export function createOpfsGit(root: string): GitOps {
     log: (depth = 5) => gitLog(dir, depth),
     fetch: (url: string) => gitFetch(dir, url),
     push: (url: string, branch?: string) => gitPush(dir, url, branch),
+    async commitAll(message: string): Promise<string> {
+      await (opfs as unknown as { ready?: () => Promise<void> }).ready?.();
+      if (!(await hasRepo())) await withTimeout(git.init({ fs, dir, defaultBranch: "main" }), 4000, "init");
+      const matrix = await git.statusMatrix({ fs, dir });
+      for (const [filepath, head, workdir, stage] of matrix) {
+        if (head === 1 && workdir === 1 && stage === 1) continue; // unchanged
+        if (workdir === 0) await withTimeout(git.remove({ fs, dir, filepath }), 4000, `remove ${filepath}`);
+        else await withTimeout(git.add({ fs, dir, filepath }), 4000, `add ${filepath}`);
+      }
+      const sha = await withTimeout(git.commit({ fs, dir, message, author }), 4000, "commit");
+      return sha.slice(0, 7);
+    },
   };
 }
