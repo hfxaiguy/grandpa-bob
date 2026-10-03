@@ -384,6 +384,7 @@ export class Agent {
           ...runtime,
           _continuation: cont,
           humanInput,
+          memory: { workspace: this.deps.workspace, guide },
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -414,6 +415,7 @@ export class Agent {
         ...runtime,
         _continuation: outcome.continuation,
         humanInput,
+        memory: { workspace: this.deps.workspace, guide },
       });
     }
 
