@@ -4,7 +4,7 @@
  * Renders the *exact* Node admin pages (src/ui/pages.ts) inside an iframe and
  * serves their /api/* calls from an in-browser backend (AgentClient + Platform)
  * via a fetch/EventSource shim. A thin toolbar above the iframe selects the
- * storage backend and drives git sync; everything else is the shared UI.
+ * storage backend; everything else — including git sync — is the shared UI.
  */
 import "./shims/process";
 import { setActiveFs } from "./shims/node-fs-promises";
@@ -18,12 +18,9 @@ import {
   loadRemote,
   loadStorage,
   loadStorageServer,
-  loadBranch,
   loadModelsJson,
   saveStorage,
   saveStorageServer,
-  saveRemote,
-  saveBranch,
   type StorageMode,
 } from "./settings";
 import { importWorkspace } from "./workspace-transfer";
@@ -44,18 +41,8 @@ const setStatus = (text: string): void => {
 // ── toolbar ──────────────────────────────────────────────────────────────
 const storageSelect = document.getElementById("storage-mode") as HTMLSelectElement | null;
 const storageServerInput = document.getElementById("storage-server") as HTMLInputElement | null;
-const gitRemoteInput = document.getElementById("git-remote") as HTMLInputElement | null;
-const gitBranchInput = document.getElementById("git-branch") as HTMLInputElement | null;
-const gitSyncBtn = document.getElementById("git-sync") as HTMLButtonElement | null;
 if (storageSelect) storageSelect.value = storageMode;
 if (storageServerInput) storageServerInput.value = storageServer;
-if (gitRemoteInput) gitRemoteInput.value = configuredRemote;
-if (gitBranchInput) gitBranchInput.value = loadBranch();
-if (params.get("gitremote") && gitRemoteInput) {
-  gitRemoteInput.value = params.get("gitremote")!;
-  configuredRemote = gitRemoteInput.value;
-}
-if (params.get("gitbranch") && gitBranchInput) gitBranchInput.value = params.get("gitbranch")!;
 
 const applyStorage = (): void => {
   if (storageSelect) saveStorage(storageSelect.value as StorageMode);
@@ -64,11 +51,6 @@ const applyStorage = (): void => {
 };
 storageSelect?.addEventListener("change", applyStorage);
 storageServerInput?.addEventListener("change", applyStorage);
-gitRemoteInput?.addEventListener("change", () => {
-  configuredRemote = gitRemoteInput.value.trim();
-  saveRemote(configuredRemote);
-});
-gitBranchInput?.addEventListener("change", () => saveBranch(gitBranchInput.value.trim() || "main"));
 
 function activePlatform(): Platform {
   return storageMode === "desktop"
@@ -148,30 +130,6 @@ async function detectPattern(platform: Platform): Promise<string> {
   }
   return "patterns/trunk.mjs";
 }
-
-async function syncWorkspace(platform: Platform): Promise<void> {
-  const remote = (gitRemoteInput?.value ?? configuredRemote).trim();
-  const branch = (gitBranchInput?.value ?? "main").trim() || "main";
-  if (!remote) {
-    setStatus("set a git remote first");
-    return;
-  }
-  if (gitSyncBtn) gitSyncBtn.disabled = true;
-  try {
-    await platform.git.ensureRepo();
-    const commit = platform.git.commitAll
-      ? await platform.git.commitAll(`sync from BOB ${new Date().toISOString()}`)
-      : await platform.git.autoCommit(["."], "sync from BOB");
-    const pushed = platform.git.push ? await platform.git.push(remote, branch) : { error: "push unavailable" };
-    setStatus(`committed ${commit}; pushed ${branch}`);
-    void pushed;
-  } catch (err) {
-    setStatus(`sync failed: ${err instanceof Error ? err.message : String(err)}`);
-  } finally {
-    if (gitSyncBtn) gitSyncBtn.disabled = false;
-  }
-}
-gitSyncBtn?.addEventListener("click", () => void syncWorkspace(activePlatform()));
 
 // ── boot ─────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
