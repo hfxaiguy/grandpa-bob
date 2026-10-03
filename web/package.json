@@ -1,0 +1,28 @@
+{
+  "name": "grandpa-bob-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Browser target: grandpa-bob running entirely in a tab (OPFS + WASM SQLite, no backend).",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node smoke.mjs",
+    "mock-llm": "node mock-llm.mjs",
+    "make-seed": "node scripts/make-seed.mjs",
+    "git-server": "node scripts/git-server.mjs",
+    "storage-server": "node scripts/storage-server.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^6.0.7"
+  },
+  "dependencies": {
+    "@componentor/opfs-fs": "^1.1.7",
+    "@sqlite.org/sqlite-wasm": "^3.53.4-build2",
+    "buffer": "^6.0.3",
+    "isomorphic-git": "^1.42.6"
+  }
+}

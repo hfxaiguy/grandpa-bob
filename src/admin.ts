@@ -51,6 +51,7 @@ import {
 } from "./tree-versions.js";
 import { serializeTree } from "./tree-serialize.js";
 import { attachmentPrompt, saveAttachment, MAX_ATTACHMENT_BYTES } from "./attachments.js";
+import { createNodePlatform } from "./platform/node.js";
 
 /** Secret config files are small (credentials, JSON, keys). */
 const MAX_SECRET_BYTES = 1024 * 1024;
@@ -3307,6 +3308,7 @@ export interface AdminOptions extends Partial<AdminConfig> {
 
 export function startAdmin(cfg?: AdminOptions): http.Server {
   const config: AdminConfig = { ...defaultConfig(), ...cfg };
+  const platform = createNodePlatform(config.workspaceDir);
   const agent = cfg?.agent;
   telegramNotify = cfg?.telegramNotify;
   secretsStore = cfg?.secrets;
@@ -3578,7 +3580,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           return;
         }
         const attachment = await saveAttachment(
-          config.workspaceDir,
+          platform,
           file.filename || "upload",
           file.content,
           file.contentType || "application/octet-stream",

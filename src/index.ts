@@ -49,7 +49,25 @@ async function main(): Promise<void> {
   // patternName/patternRef are getters so the admin UI's selector can switch
   // the active tree and version for NEW sessions at runtime; running sessions
   // stay pinned to the version they started on.
-  const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger, patternName: getSelectedPattern, patternRef: getSelectedRef });
+  // Host context for tree registers (grandma-kat runtime.context): an app tree
+  // reaches the app-secrets store through it, so an app can expose only a tree.
+  const treeContext = {
+    secret: (app: string, name: string) => secrets.get(app, name)?.content ?? null,
+    secretText: (app: string, name: string) =>
+      secrets.get(app, name)?.content?.toString("utf8") ?? null,
+    requireSecret: (app: string, name: string) => {
+      const bytes = secrets.get(app, name)?.content;
+      if (!bytes) {
+        throw new Error(
+          `secret "${name}" for app "${app}" is missing — upload it in the WebUI: settings page → App secrets`,
+        );
+      }
+      return bytes.toString("utf8");
+    },
+    listSecrets: (app: string) =>
+      secrets.list(app).map((s) => ({ name: s.name, updatedAt: s.updatedAt, size: s.size })),
+  };
+  const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger, patternName: getSelectedPattern, patternRef: getSelectedRef, context: treeContext });
 
   // Prune old snapshots once at startup. Prod and any version a live session
   // still pins are never removed, so a restart cannot strand a conversation.

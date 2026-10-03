@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "baseUrl": ".",
+    "paths": {
+      "node:fs/promises": ["./src/shims/node-fs-promises.ts"],
+      "node:fs": ["./src/shims/node-fs-promises.ts"],
+      "node:path": ["./src/shims/node-path.ts"],
+      "node:crypto": ["./src/shims/node-crypto.ts"],
+      "node:os": ["./src/shims/node-os.ts"],
+      "node:util": ["./src/shims/node-util.ts"],
+      "node:sqlite": ["./src/shims/node-sqlite.ts"],
+      "node:child_process": ["./src/shims/node-child-process.ts"],
+      "node:url": ["./src/shims/node-url.ts"]
+    },
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": false,
+    "types": []
+  },
+  "include": [
+    "src/**/*.ts",
+    "../src/platform/paths.ts",
+    "../src/platform/sha256.ts",
+    "../src/platform/types.ts",
+    "../src/tree-sources.ts",
+    "../src/tree-versions.ts"
+  ]
+}

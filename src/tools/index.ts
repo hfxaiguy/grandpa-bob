@@ -5,6 +5,7 @@ import { ExaSearchTools } from "./websearch.js";
 import { SqliteTools } from "./sqlite.js";
 import { OpencodeTools } from "./opencode.js";
 import { DuckdbTools } from "./duckdb.js";
+import { createNodePlatform } from "../platform/node.js";
 import type { AppTool } from "../app-tools.js";
 
 type Json = Record<string, unknown>;
@@ -44,10 +45,11 @@ export class ToolRegistry {
     sqliteLockedPath?: string,
     appTools: AppTool[] = [],
   ) {
-    this.files = new FileTools(workspace);
+    const platform = createNodePlatform(workspace, allowedCommands);
+    this.files = new FileTools(platform);
     this.shell = new ShellTools(workspace, allowedCommands);
     this.exa = new ExaSearchTools(exaApiKey);
-    this.sqlite = new SqliteTools({ workspace, lockedPath: sqliteLockedPath });
+    this.sqlite = new SqliteTools(platform, sqliteLockedPath);
     this.opencode = new OpencodeTools();
     this.duckdb = new DuckdbTools(workspace);
     this.appTools = new Map(appTools.map((tool) => [tool.name, tool]));
@@ -302,12 +304,12 @@ export class ToolRegistry {
             Array.isArray(args.args) ? (args.args as unknown[]).map(String) : [],
           );
         case "sql_query":
-          return this.sqlite.query(
+          return await this.sqlite.query(
             String(args.query ?? ""),
             args.path !== undefined ? String(args.path) : undefined,
           );
         case "sql_write":
-          return this.sqlite.write(
+          return await this.sqlite.write(
             String(args.query ?? ""),
             args.path !== undefined ? String(args.path) : undefined,
           );

@@ -7,13 +7,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { FileTools } from "../src/tools/files.js";
+import { createNodePlatform } from "../src/platform/node.js";
 import { ShellTools } from "../src/tools/shell.js";
 import { ensureRepo, git } from "../src/tools/git.js";
 import { ExaSearchTools } from "../src/tools/websearch.js";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "grandma-smoke-"));
 await ensureRepo(ws);
-const files = new FileTools(ws);
+const files = new FileTools(createNodePlatform(ws, ["ls", "git", "echo"]));
 const shell = new ShellTools(ws, ["ls", "git", "echo"]);
 
 // write_file creates parent dirs and auto-commits

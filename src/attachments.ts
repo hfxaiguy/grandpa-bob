@@ -1,6 +1,4 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
+import type { Platform } from "./platform/types.js";
 
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
@@ -16,16 +14,16 @@ export function attachmentPrompt(attachment: AttachmentMetadata, text = ""): str
   return text ? `${text}\n\n${prefix}` : prefix;
 }
 
-function safeFilename(filename: string): string {
+function safeFilename(path: Platform["path"], filename: string): string {
   const base = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
   return base.slice(0, 180) || "upload";
 }
 
 /** Store an uploaded file outside the chat/checkpoint payload. */
 export async function saveAttachment(
-  workspaceDir: string,
+  platform: Platform,
   filename: string,
-  content: Buffer,
+  content: Uint8Array,
   mimeType = "application/octet-stream",
 ): Promise<AttachmentMetadata> {
   if (content.length === 0) throw new Error("attachment is empty");
@@ -33,16 +31,17 @@ export async function saveAttachment(
     throw new Error("attachment too large (max 50 MB)");
   }
 
-  const dir = path.join(workspaceDir, "assets", "inbox");
-  await mkdir(dir, { recursive: true });
-  const storedName = `${randomUUID()}-${safeFilename(filename)}`;
+  const { fs, path, crypto, workspaceRoot } = platform;
+  const dir = path.join(workspaceRoot, "assets", "inbox");
+  await fs.mkdir(dir, { recursive: true });
+  const storedName = `${crypto.randomUUID()}-${safeFilename(path, filename)}`;
   const absolute = path.join(dir, storedName);
   const temporary = `${absolute}.part`;
-  await writeFile(temporary, content, { mode: 0o600 });
-  await rename(temporary, absolute);
+  await fs.writeFile(temporary, content);
+  await fs.rename(temporary, absolute);
 
   return {
-    path: path.relative(workspaceDir, absolute),
+    path: path.relative(workspaceRoot, absolute),
     filename: filename || storedName,
     mimeType: mimeType || "application/octet-stream",
     size: content.length,

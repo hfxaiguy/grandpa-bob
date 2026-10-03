@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BOB (browser)</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { margin: 0; display: flex; flex-direction: column; height: 100vh; }
+      header { padding: 0.6rem 1rem; border-bottom: 1px solid #8884; font-weight: 600; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+      header .controls { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; font-weight: 400; }
+      header select, header input { font: inherit; padding: 0.2rem 0.4rem; }
+      #storage-badge { font-size: 0.8rem; opacity: 0.7; }
+      #chat-log { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+      .msg { max-width: 70ch; padding: 0.5rem 0.75rem; border-radius: 0.6rem; white-space: pre-wrap; }
+      .msg-user { align-self: flex-end; background: #2563eb; color: white; }
+      .msg-assistant { align-self: flex-start; background: #8882; }
+      form { display: flex; gap: 0.5rem; padding: 0.75rem 1rem; border-top: 1px solid #8884; }
+      #chat-input { flex: 1; padding: 0.5rem 0.75rem; font: inherit; }
+      button { padding: 0.5rem 1rem; font: inherit; }
+      details { padding: 0.5rem 1rem; border-top: 1px solid #8884; }
+      #out { white-space: pre-wrap; font-size: 0.8rem; max-height: 12rem; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span>BOB — browser target</span>
+      <span class="controls">
+        <label>Storage
+          <select id="storage-mode">
+            <option value="browser">Browser (OPFS)</option>
+            <option value="desktop">Desktop (local server)</option>
+          </select>
+        </label>
+        <input id="storage-server" placeholder="http://127.0.0.1:8795" size="24" />
+        <span id="storage-badge"></span>
+      </span>
+    </header>
+    <div id="chat-log"></div>
+    <form id="chat-form">
+      <input id="chat-input" autocomplete="off" placeholder="Message BOB…" disabled />
+      <button id="chat-send" type="submit" disabled>Send</button>
+    </form>
+    <details>
+      <summary>diagnostics</summary>
+      <pre id="out">booting…</pre>
+    </details>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

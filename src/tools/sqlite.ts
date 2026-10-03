@@ -3,37 +3,21 @@
 // Two SQLite tools for the agent:
 //
 //   sql_query  — READ-ONLY. Runs SELECT / WITH / EXPLAIN / PRAGMA and returns
-//                structured rows. The database is opened with SQLite's
-//                readOnly flag, so writes are refused at the engine level even
-//                if read-only SQL were somehow bypassed.
+//                structured rows. The database is opened with the read-only
+//                flag, so writes are refused at the engine level even if
+//                read-only SQL were somehow bypassed.
 //
 //   sql_write  — READ-WRITE. Explicitly runs INSERT / UPDATE / DELETE / DDL
-//                (and any query) and reports affected rows. Opt-in: the agent
-//                only reaches this via a separate tool call, so writes are
-//                never an accidental side effect of a "query".
+//                (and any query) and reports affected rows.
 //
-// Pointing either tool at a database:
-//   1. "Locked" (recommended): construct with `lockedPath` and every query or
-//      write runs against that one file, ignoring the `path` argument
-//      entirely — the agent can never reach anything else.
-//   2. Free: without `lockedPath`, the `path` argument resolves inside the
-//      workspace sandbox, so the agent can touch any `.db` it creates.
+// The engine comes from the injected `Platform.sqlite` (Node: node:sqlite;
+// browser: sqlite-wasm), so this module has no Node dependency.
 
-import { DatabaseSync } from "node:sqlite";
+import type { Platform } from "../platform/types.js";
 import { resolveInWorkspace } from "../util/paths.js";
 
 const MAX_ROWS = 100;
 const MAX_CELL = 200;
-
-export interface SqliteToolsOptions {
-  /** Workspace root used to sandbox `path` when `lockedPath` is not set. */
-  workspace: string;
-  /**
-   * Optional absolute path to a single locked database file. When set, the
-   * `path` argument is ignored and every query/write runs against this file.
-   */
-  lockedPath?: string;
-}
 
 /** First keyword of a trimmed SQL statement (uppercased). */
 function firstKeyword(sql: string): string {
@@ -50,30 +34,30 @@ function truncateCell(value: unknown): unknown {
   return value;
 }
 
-function resolveDatabase(workspace: string, lockedPath: string | undefined, pathArg?: string): string {
-  if (lockedPath) return lockedPath;
-  if (!pathArg) {
-    throw new Error(
-      "path is required: no database is locked, so pass a workspace-relative .db file (e.g. \"contacts.db\")",
-    );
-  }
-  return resolveInWorkspace(workspace, pathArg);
-}
-
 export class SqliteTools {
-  private workspace: string;
+  private platform: Platform;
   private lockedPath?: string;
 
-  constructor({ workspace, lockedPath }: SqliteToolsOptions) {
-    this.workspace = workspace;
+  constructor(platform: Platform, lockedPath?: string) {
+    this.platform = platform;
     this.lockedPath = lockedPath;
+  }
+
+  private resolveDatabase(pathArg?: string): string {
+    if (this.lockedPath) return this.lockedPath;
+    if (!pathArg) {
+      throw new Error(
+        'path is required: no database is locked, so pass a workspace-relative .db file (e.g. "contacts.db")',
+      );
+    }
+    return resolveInWorkspace(this.platform.workspaceRoot, pathArg);
   }
 
   /**
    * Read-only query (SELECT / WITH / EXPLAIN / PRAGMA). Returns a plain JSON
    * object: { database, sql, columns, rows, rowCount, truncated }.
    */
-  query(sql: string, pathArg?: string): Record<string, unknown> {
+  async query(sql: string, pathArg?: string): Promise<Record<string, unknown>> {
     const statement = sql.trim();
     if (!statement) throw new Error("no SQL query provided");
 
@@ -85,25 +69,27 @@ export class SqliteTools {
       );
     }
 
-    const database = resolveDatabase(this.workspace, this.lockedPath, pathArg);
-    const db = new DatabaseSync(database, { readOnly: true });
+    const database = this.resolveDatabase(pathArg);
+    const db = await this.platform.sqlite.open(database, { readOnly: true });
     try {
-      const stmt = db.prepare(statement);
-      const rows = (stmt.all() as Record<string, unknown>[]).map((r) => {
+      const stmt = await db.prepare(statement);
+      const rows = (await stmt.all()).map((r) => {
         const out: Record<string, unknown> = {};
-        for (const k of Object.keys(r)) out[k] = truncateCell(r[k]);
+        for (const k of Object.keys(r as Record<string, unknown>)) {
+          out[k] = truncateCell((r as Record<string, unknown>)[k]);
+        }
         return out;
       });
       return {
         database,
         sql: statement,
-        columns: stmt.columns().map((c) => c.name),
+        columns: (await stmt.columns()).map((c) => c.name),
         rows: rows.slice(0, MAX_ROWS),
         rowCount: rows.length,
         truncated: rows.length > MAX_ROWS,
       };
     } finally {
-      db.close();
+      await db.close();
     }
   }
 
@@ -112,20 +98,22 @@ export class SqliteTools {
    * Returns { database, sql, changes, lastInsertRowid } and, when the
    * statement returns rows, columns/rows as well.
    */
-  write(sql: string, pathArg?: string): Record<string, unknown> {
+  async write(sql: string, pathArg?: string): Promise<Record<string, unknown>> {
     const statement = sql.trim();
     if (!statement) throw new Error("no SQL statement provided");
 
-    const database = resolveDatabase(this.workspace, this.lockedPath, pathArg);
-    const db = new DatabaseSync(database, { readOnly: false });
+    const database = this.resolveDatabase(pathArg);
+    const db = await this.platform.sqlite.open(database, { readOnly: false });
     try {
-      const stmt = db.prepare(statement);
-      const columnNames = stmt.columns().map((c) => c.name);
+      const stmt = await db.prepare(statement);
+      const columnNames = (await stmt.columns()).map((c) => c.name);
 
       if (columnNames.length > 0) {
-        const rows = (stmt.all() as Record<string, unknown>[]).map((r) => {
+        const rows = (await stmt.all()).map((r) => {
           const out: Record<string, unknown> = {};
-          for (const k of Object.keys(r)) out[k] = truncateCell(r[k]);
+          for (const k of Object.keys(r as Record<string, unknown>)) {
+            out[k] = truncateCell((r as Record<string, unknown>)[k]);
+          }
           return out;
         });
         return {
@@ -139,7 +127,7 @@ export class SqliteTools {
         };
       }
 
-      const info = stmt.run();
+      const info = await stmt.run();
       return {
         database,
         sql: statement,
@@ -150,7 +138,7 @@ export class SqliteTools {
         lastInsertRowid: info.lastInsertRowid === undefined ? null : Number(info.lastInsertRowid),
       };
     } finally {
-      db.close();
+      await db.close();
     }
   }
 }
