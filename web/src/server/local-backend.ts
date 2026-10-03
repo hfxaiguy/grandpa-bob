@@ -12,6 +12,9 @@
 import type { AgentClient } from "../agent/agent-client";
 import type { Platform } from "../../../src/platform/types";
 import { listPatterns, listTreeSources } from "../../../src/tree-sources";
+import { promoteTree, resolveTreeEntry, scanTreeVersions, snapshotTree } from "../../../src/tree-versions";
+import { serializeTree } from "../../../src/tree-serialize";
+import { createModuleLoader } from "../agent/module-loader";
 import { loadEnv, saveEnv } from "../settings";
 
 export interface BackendResponse {
@@ -61,6 +64,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   const subscribers = new Set<(msg: EventMessage) => void>();
   let activePattern = opts.initialPattern || "trunk";
   let updatedAt = Date.now();
+  const activeRefs = new Map<string, string>();
 
   const broadcast = (msg: EventMessage): void => {
     for (const cb of subscribers) {
@@ -184,6 +188,59 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       return { status: 200, body: { pattern: activePattern } };
     }
     if (pathname === "/api/tree/memory") return { status: 200, body: { values: {} } };
+    if (pathname === "/api/tree/versions" && method === "GET") {
+      const name = search.get("name") ?? "";
+      const catalog = (await scanTreeVersions(platform.workspaceRoot).catch(() => [])).find((c) => c.logical === name);
+      return {
+        status: 200,
+        body: {
+          versions: catalog?.versions ?? [],
+          prod: catalog?.prodVersion ?? null,
+          draft: catalog?.draft ?? false,
+          active: activeRefs.get(name) ?? "prod",
+        },
+      };
+    }
+    if (pathname === "/api/tree/versions" && method === "POST") {
+      const name = (JSON.parse(body || "{}") as { name?: string }).name ?? "";
+      return { status: 200, body: await snapshotTree(platform.workspaceRoot, name) };
+    }
+    if (pathname === "/api/tree/version/promote" && method === "POST") {
+      const { name = "", version = "" } = JSON.parse(body || "{}") as { name?: string; version?: string };
+      return { status: 200, body: await promoteTree(platform.workspaceRoot, name, version) };
+    }
+    if (pathname === "/api/tree/version/active" && method === "POST") {
+      const { name = "", ref = "prod" } = JSON.parse(body || "{}") as { name?: string; ref?: string };
+      if (name) activeRefs.set(name, ref || "prod");
+      return { status: 200, body: { ok: true, active: ref || "prod" } };
+    }
+    if (pathname === "/api/tree/spec" && method === "GET") {
+      const spec = search.get("pattern") ?? "";
+      const at = spec.lastIndexOf("@");
+      const entry = await resolveTreeEntry(
+        platform.workspaceRoot,
+        at >= 0 ? spec.slice(0, at) : spec,
+        at >= 0 ? spec.slice(at + 1) : "prod",
+      );
+      if (!entry?.specAbs) return { status: 404, body: { error: "no spec for this version" } };
+      const text = await platform.fs.readFile(entry.specAbs, "utf8").catch(() => null);
+      if (text == null) return { status: 404, body: { error: "no spec for this version" } };
+      return { status: 200, body: { specFile: entry.specFile, spec: text } };
+    }
+    if (pathname === "/api/tree" && method === "GET") {
+      const spec = search.get("pattern") ?? "";
+      const at = spec.lastIndexOf("@");
+      const logical = at >= 0 ? spec.slice(0, at) : spec;
+      const entry = await resolveTreeEntry(platform.workspaceRoot, logical, at >= 0 ? spec.slice(at + 1) : "prod");
+      if (!entry) return { status: 404, body: { error: `tree not found: ${logical}` } };
+      try {
+        const mod = await createModuleLoader(platform).load(entry.file);
+        const def = (mod as { default?: unknown }).default ?? mod;
+        return { status: 200, body: { pattern: entry.internalName, tree: serializeTree(def) } };
+      } catch (err) {
+        return { status: 500, body: { error: `could not load tree: ${err instanceof Error ? err.message : String(err)}` } };
+      }
+    }
     if (pathname === "/api/patterns" && method === "GET") {
       const cat = await patternCatalog();
       return { status: 200, body: (cat.body as { patterns?: unknown }).patterns ?? [] };
