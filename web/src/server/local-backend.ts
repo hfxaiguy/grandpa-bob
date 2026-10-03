@@ -11,7 +11,8 @@
  */
 import type { AgentClient } from "../agent/agent-client";
 import type { Platform } from "../../../src/platform/types";
-import { listTreeSources } from "../../../src/tree-sources";
+import { listPatterns, listTreeSources } from "../../../src/tree-sources";
+import { loadEnv, saveEnv } from "../settings";
 
 export interface BackendResponse {
   status: number;
@@ -187,9 +188,125 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       const cat = await patternCatalog();
       return { status: 200, body: (cat.body as { patterns?: unknown }).patterns ?? [] };
     }
-    // ── settings pages: safe empty defaults ───────────────────────────────
-    if (pathname === "/api/files" && method === "GET") return { status: 200, body: { entries: [] } };
-    if (pathname === "/api/secrets" && method === "GET") return { status: 200, body: { secrets: [] } };
+    // ── files ─────────────────────────────────────────────────────────────
+    if (pathname === "/api/files" && method === "GET") {
+      const rel = search.get("path") ?? ".";
+      try {
+        const dirAbs = platform.path.resolve(platform.workspaceRoot, rel);
+        const entries = await platform.fs.readdir(dirAbs, { withFileTypes: true });
+        const files = entries
+          .map((e) => ({ name: e.name, isDir: e.isDirectory(), size: 0, mtime: null as number | null }))
+          .sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name));
+        return { status: 200, body: { dir: rel === "." ? "" : rel, files } };
+      } catch {
+        return { status: 200, body: { dir: rel, files: [] } };
+      }
+    }
+    if (pathname === "/api/files" && method === "DELETE") {
+      const rel = search.get("path") ?? "";
+      try {
+        await platform.fs.rm(platform.path.resolve(platform.workspaceRoot, rel));
+        return { status: 200, body: { ok: true } };
+      } catch (err) {
+        return { status: 400, body: { error: String(err) } };
+      }
+    }
+    if (pathname === "/api/files/download") {
+      const rel = search.get("path") ?? "";
+      try {
+        const content = await platform.fs.readFile(platform.path.resolve(platform.workspaceRoot, rel), "utf8");
+        return { status: 200, contentType: "text/plain; charset=utf-8", body: content };
+      } catch (err) {
+        return { status: 404, body: { error: String(err) } };
+      }
+    }
+
+    // ── patterns ──────────────────────────────────────────────────────────
+    if (pathname === "/api/patterns" && method === "GET") {
+      const patterns = await listPatterns(platform.workspaceRoot).catch(() => []);
+      return { status: 200, body: { patterns } };
+    }
+    if (pathname.startsWith("/api/patterns/") && method === "GET") {
+      const name = decodeURIComponent(pathname.slice("/api/patterns/".length));
+      try {
+        const content = await platform.fs.readFile(platform.path.join(platform.workspaceRoot, "patterns", `${name}.mjs`), "utf8");
+        return { status: 200, body: { name, content } };
+      } catch {
+        return { status: 404, body: { error: "not found" } };
+      }
+    }
+    if (pathname === "/api/patterns" && method === "POST") {
+      const parsed = JSON.parse(body || "{}") as { name?: string; content?: string };
+      if (!parsed.name || typeof parsed.content !== "string") {
+        return { status: 400, body: { error: "name and content required" } };
+      }
+      const file = platform.path.join(platform.workspaceRoot, "patterns", `${parsed.name.replace(/\.mjs$/, "")}.mjs`);
+      await platform.fs.mkdir(platform.path.dirname(file), { recursive: true });
+      await platform.fs.writeFile(file, parsed.content);
+      return { status: 200, body: { ok: true, name: parsed.name } };
+    }
+    if (pathname.startsWith("/api/patterns/") && method === "DELETE") {
+      const name = decodeURIComponent(pathname.slice("/api/patterns/".length));
+      try {
+        await platform.fs.rm(platform.path.join(platform.workspaceRoot, "patterns", `${name}.mjs`));
+        return { status: 200, body: { ok: true } };
+      } catch (err) {
+        return { status: 404, body: { error: String(err) } };
+      }
+    }
+
+    // ── env (browser settings) ────────────────────────────────────────────
+    if (pathname === "/api/env" && method === "POST") {
+      const vars = JSON.parse(body || "{}") as Record<string, string>;
+      const env = loadEnv();
+      for (const [k, v] of Object.entries(vars)) if (v) env[k] = String(v);
+      saveEnv(env);
+      return { status: 200, body: { ok: true } };
+    }
+
+    // ── logs ──────────────────────────────────────────────────────────────
+    if (pathname === "/api/log") return { status: 200, body: { content: "" } };
+
+    // ── secrets (declarations only; no store in the browser) ──────────────
+    if (pathname === "/api/secrets" && method === "GET") {
+      const secrets: unknown[] = [];
+      try {
+        const appDir = platform.path.join(platform.workspaceRoot, "app");
+        const apps = await platform.fs.readdir(appDir, { withFileTypes: true });
+        for (const appEntry of apps) {
+          if (!appEntry.isDirectory()) continue;
+          try {
+            const raw = JSON.parse(
+              await platform.fs.readFile(platform.path.join(appDir, appEntry.name, "secrets.json"), "utf8"),
+            ) as unknown;
+            const list = Array.isArray(raw)
+              ? raw
+              : Array.isArray((raw as { secrets?: unknown[] })?.secrets)
+                ? (raw as { secrets: unknown[] }).secrets
+                : [];
+            for (const item of list) {
+              const it = item as { name?: unknown; description?: unknown; contentType?: unknown };
+              if (typeof it?.name !== "string") continue;
+              secrets.push({
+                app: appEntry.name,
+                name: it.name,
+                description: typeof it.description === "string" ? it.description : "",
+                contentType: typeof it.contentType === "string" ? it.contentType : null,
+                present: false,
+                size: 0,
+                updatedAt: null,
+              });
+            }
+          } catch {
+            /* no manifest */
+          }
+        }
+      } catch {
+        /* no app dir */
+      }
+      return { status: 200, body: { secrets } };
+    }
+
     if (pathname.startsWith("/api/")) return UNAVAILABLE(pathname);
     return { status: 404, body: { error: "not found" } };
   }
