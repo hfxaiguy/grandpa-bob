@@ -110,5 +110,9 @@ export function createOpfsGit(root: string): GitOps {
         return "failed";
       }
     },
+    status: () => gitStatus(dir),
+    log: (depth = 5) => gitLog(dir, depth),
+    fetch: (url: string) => gitFetch(dir, url),
+    push: (url: string) => gitPush(dir, url),
   };
 }

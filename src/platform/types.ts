@@ -45,10 +45,14 @@ export interface Shell {
   runCommand(command: string, args: string[]): Promise<string>;
 }
 
-/** Git operations (Node: git CLI; browser: isomorphic-git). */
+/** Git operations (Node/desktop: real git; browser: isomorphic-git over OPFS). */
 export interface GitOps {
   ensureRepo(): Promise<void>;
   autoCommit(paths: string[], message: string): Promise<string>;
+  status?(): Promise<unknown>;
+  log?(depth?: number): Promise<unknown>;
+  fetch?(url: string): Promise<unknown>;
+  push?(url: string): Promise<unknown>;
 }
 
 /** One column in a statement's result set. */

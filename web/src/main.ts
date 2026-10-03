@@ -8,11 +8,22 @@
  */
 import "./shims/process";
 import { createBrowserPlatform, initSqlite } from "./platform/browser";
+import { createDesktopPlatform } from "./platform/desktop";
 import { AgentClient } from "./agent/agent-client";
-import { loadEnv, loadRemote, setEnvVar } from "./settings";
+import {
+  loadEnv,
+  loadRemote,
+  loadStorage,
+  loadStorageServer,
+  saveStorage,
+  saveStorageServer,
+  setEnvVar,
+  type StorageMode,
+} from "./settings";
 import { exportWorkspace, importWorkspace } from "./workspace-transfer";
 import { cloneWorkspace } from "./platform/git-opfs";
 import { FileTools } from "../../src/tools/files";
+import type { Platform } from "../../src/platform/types";
 import { Tree, name, Prompt, knit } from "grandma-kat";
 import { listTreeSources } from "../../src/tree-sources";
 import { promoteTree, snapshotTree } from "../../src/tree-versions";
@@ -33,6 +44,31 @@ const agent = new AgentClient();
 let agentReady = false;
 /** Git remote configured for this session (settings or ?remote=). */
 let configuredRemote = "";
+/** Storage backend: browser OPFS, or the desktop via the local bridge. */
+const params = new URLSearchParams(location.search);
+const storageMode: StorageMode = (params.get("storage") as StorageMode) ?? loadStorage();
+const storageServer = params.get("server") ?? loadStorageServer();
+const runOptions = (pattern: string, task = "") => ({
+  task,
+  env: loadEnv(),
+  pattern,
+  remote: configuredRemote,
+  storage: storageMode,
+  server: storageServer,
+});
+
+// ── storage selector ─────────────────────────────────────────────────────
+const storageSelect = document.getElementById("storage-mode") as HTMLSelectElement | null;
+const storageServerInput = document.getElementById("storage-server") as HTMLInputElement | null;
+if (storageSelect) storageSelect.value = storageMode;
+if (storageServerInput) storageServerInput.value = storageServer;
+const applyStorage = (): void => {
+  if (storageSelect) saveStorage(storageSelect.value as StorageMode);
+  if (storageServerInput) saveStorageServer(storageServerInput.value.trim());
+  location.reload();
+};
+storageSelect?.addEventListener("change", applyStorage);
+storageServerInput?.addEventListener("change", applyStorage);
 
 function appendMessage(role: "user" | "assistant", text: string): void {
   const div = document.createElement("div");
@@ -57,7 +93,7 @@ chatForm.addEventListener("submit", (event) => {
   chatInput.value = "";
   chatSend.disabled = true;
   void agent
-    .run(text, loadEnv(), "patterns/agent_demo.mjs", configuredRemote)
+    .run(runOptions("patterns/agent_demo.mjs", text))
     .then(({ result }) => appendMessage("assistant", answerText(result)))
     .catch((err: unknown) => appendMessage("assistant", `error: ${err instanceof Error ? err.message : String(err)}`))
     .finally(() => {
@@ -157,9 +193,9 @@ async function sqliteDemo(root: string): Promise<void> {
   log(`sqlite: persisted rows after reopen = ${count.n}`);
 }
 
-/** Write the demo pattern + model registry into the OPFS workspace. */
-async function bootstrapWorkspace(root: string): Promise<void> {
-  const { fs, path } = createBrowserPlatform(root);
+/** Write the demo pattern + model registry into the active workspace. */
+async function bootstrapWorkspace(platform: Platform, root: string): Promise<void> {
+  const { fs, path } = platform;
   await fs.mkdir(path.join(root, "patterns"), { recursive: true });
   await fs.writeFile(
     path.join(root, "patterns", "agent_demo.mjs"),
@@ -234,9 +270,11 @@ async function bootstrapWorkspace(root: string): Promise<void> {
 }
 
 async function agentDemo(root: string): Promise<void> {
-  await bootstrapWorkspace(root);
-  const { result, events } = await agent.run("the notes file", loadEnv(), "patterns/multi.mjs", configuredRemote);
-  log(`agent-worker: events=${events.length}`);
+  const platform =
+    storageMode === "desktop" ? createDesktopPlatform("/", storageServer) : createBrowserPlatform(root);
+  await bootstrapWorkspace(platform, platform.workspaceRoot);
+  const { result, events } = await agent.run(runOptions("patterns/multi.mjs", "the notes file"));
+  log(`agent-worker: storage=${storageMode} events=${events.length}`);
   log(`agent-worker: result=${JSON.stringify(result)}`);
   const answer = (result as { answer?: unknown })?.answer;
   if (typeof answer !== "string" || !answer.startsWith("llm-says")) {
@@ -281,6 +319,16 @@ async function prepareWorkspace(root: string): Promise<void> {
   const remote = params.get("remote") ?? loadRemote();
   configuredRemote = remote;
   const isDir = (p: string): Promise<boolean> => fs.stat(p).then(() => true).catch(() => false);
+
+  if (storageMode === "desktop") {
+    try {
+      const health = await fetch(`${storageServer}/health`).then((r) => r.json());
+      log(`storage: desktop via ${storageServer} (root: ${health.root})`);
+    } catch (err) {
+      log(`storage: desktop bridge unreachable at ${storageServer}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
 
   if (!remote) {
     await seedWorkspace(root);
@@ -350,7 +398,7 @@ async function main(): Promise<void> {
   log("");
   await gitDemo(root);
   log("");
-  const gitTools = await agent.run("", loadEnv(), "patterns/git_demo.mjs", configuredRemote);
+  const gitTools = await agent.run(runOptions("patterns/git_demo.mjs"));
   const gitResult = gitTools.result as {
     status?: { branch?: string; changes?: unknown[] };
     log?: { commits?: unknown[] };

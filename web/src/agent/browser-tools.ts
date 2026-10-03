@@ -6,7 +6,6 @@ import { FileTools } from "../../../src/tools/files";
 import { SqliteTools } from "../../../src/tools/sqlite";
 import { runCommand } from "../../../src/platform/coreutils";
 import type { Platform } from "../../../src/platform/types";
-import { gitFetch, gitLog, gitPush, gitStatus } from "../platform/git-opfs";
 
 type Args = Record<string, unknown>;
 export interface KatTool {
@@ -114,12 +113,14 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
     git_status: {
       description: "Show the workspace git branch and changed files.",
       parameters: { type: "object", properties: {} },
-      execute: async () => gitStatus(root),
+      execute: async () => (platform.git.status ? platform.git.status() : { error: "git status unavailable" }),
     },
     git_log: {
       description: "Show recent workspace git commits.",
       parameters: { type: "object", properties: { depth: { type: "integer" } } },
-      execute: async (a) => ({ commits: await gitLog(root, a.depth ? Number(a.depth) : 5) }),
+      execute: async (a) => ({
+        commits: platform.git.log ? await platform.git.log(a.depth ? Number(a.depth) : 5) : [],
+      }),
     },
     git_commit: {
       description: "Commit workspace files (paths) with a message.",
@@ -136,12 +137,14 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
     git_fetch: {
       description: "Fetch updates from the configured git remote.",
       parameters: { type: "object", properties: {} },
-      execute: async () => gitFetch(root, opts.remote ?? ""),
+      execute: async () =>
+        platform.git.fetch ? platform.git.fetch(opts.remote ?? "") : { error: "git fetch unavailable" },
     },
     git_push: {
       description: "Push the workspace branch to the configured git remote.",
       parameters: { type: "object", properties: {} },
-      execute: async () => gitPush(root, opts.remote ?? ""),
+      execute: async () =>
+        platform.git.push ? platform.git.push(opts.remote ?? "") : { error: "git push unavailable" },
     },
   };
 }

@@ -12,6 +12,7 @@
     "mock-llm": "node mock-llm.mjs",
     "make-seed": "node scripts/make-seed.mjs",
     "git-server": "node scripts/git-server.mjs",
+    "storage-server": "node scripts/storage-server.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

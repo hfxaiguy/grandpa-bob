@@ -14,6 +14,15 @@ interface Pending {
   events: unknown[];
 }
 
+export interface AgentRunOptions {
+  task?: string;
+  env?: Record<string, string>;
+  pattern?: string;
+  remote?: string;
+  storage?: "browser" | "desktop";
+  server?: string;
+}
+
 export class AgentClient {
   private worker: Worker;
   private nextId = 1;
@@ -41,16 +50,11 @@ export class AgentClient {
     };
   }
 
-  run(
-    task = "",
-    env: Record<string, string> = {},
-    pattern = "patterns/agent_demo.mjs",
-    remote = "",
-  ): Promise<AgentRunResult> {
+  run(opts: AgentRunOptions = {}): Promise<AgentRunResult> {
     const id = this.nextId++;
     return new Promise<AgentRunResult>((resolve, reject) => {
       this.pending.set(id, { resolve, reject, events: [] });
-      this.worker.postMessage({ id, type: "run", task, env, pattern, remote });
+      this.worker.postMessage({ id, type: "run", ...opts });
     });
   }
 
