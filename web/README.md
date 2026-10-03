@@ -124,6 +124,12 @@ assistant reply. Trunk's tool list includes `git_status`/`git_commit`/
 `git_push`/`git_fetch` and its system prompt explains the sync flow, so with a
 tool-calling model “sync workspace git to main” commits then pushes.
 
+There is also a **Sync** button in the header: it stages every change (including
+deletions), commits, and pushes to the remote + branch you enter
+(`git commitAll` + `git_push`). In desktop mode the remote can be a local bare
+path (e.g. `/home/love/grandma-workspace.git`); in browser mode it must be a
+CORS http url. `?gitremote=…&gitbranch=…` preconfigures it.
+
 `npm run smoke` needs a Chromium/Chrome binary (override with `CHROME_BIN`) and
 a running dev server. It exercises OPFS writes/rename, `tree-versions`
 snapshot/promote, `grandma-kat knit()`, WASM SQLite persistence, and a real LLM
