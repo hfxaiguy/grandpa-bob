@@ -16,6 +16,16 @@ declare module "grandma-kat" {
   export function Call(...args: unknown[]): unknown;
   export function Check(...args: unknown[]): unknown;
   export function Return(...args: unknown[]): unknown;
+  export interface RunLogTool {
+    name: string;
+    description: string;
+    parameters: { type: "object"; properties?: Record<string, unknown>; required?: string[] };
+    execute(args: Record<string, unknown>): Promise<unknown>;
+  }
+  export function runLogToolFromQuery(
+    query: (sql: string, params?: unknown[]) => Promise<unknown[]> | unknown[],
+    opts?: { defaultLimit?: number },
+  ): RunLogTool;
   export const grandma: { knit: typeof knit; resume: typeof resume };
   const _default: { knit: typeof knit; resume: typeof resume };
   export default _default;

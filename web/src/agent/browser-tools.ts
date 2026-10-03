@@ -5,6 +5,7 @@
 import { FileTools } from "../../../src/tools/files";
 import { SqliteTools } from "../../../src/tools/sqlite";
 import { runCommand } from "../../../src/platform/coreutils";
+import { runLogToolFromQuery } from "grandma-kat";
 import type { Platform } from "../../../src/platform/types";
 
 type Args = Record<string, unknown>;
@@ -17,12 +18,25 @@ export interface KatTool {
 export interface BrowserToolOptions {
   /** Git remote to fetch/push (from settings/`?remote=`). */
   remote?: string;
+  /** Flush buffered run-log events before read_runs reads them. */
+  flushLog?: () => Promise<void> | void;
 }
 
 export function browserTools(platform: Platform, opts: BrowserToolOptions = {}): Record<string, KatTool> {
   const files = new FileTools(platform);
   const sqlite = new SqliteTools(platform);
   const root = platform.workspaceRoot;
+
+  // read_runs over the browser's own run log (OPFS-backed WASM SQLite).
+  const runLog = runLogToolFromQuery(async (sql, params = []) => {
+    const db = await platform.sqlite.open(platform.path.join(root, "logs/grandma-kat.db"), { readOnly: true });
+    try {
+      const stmt = await db.prepare(sql);
+      return await stmt.all(...params);
+    } finally {
+      await db.close();
+    }
+  });
 
   return {
     list_files: {
@@ -93,6 +107,14 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
       },
       execute: async (a) =>
         sqlite.write(String(a.query ?? ""), a.path === undefined ? undefined : String(a.path)),
+    },
+    read_runs: {
+      description: runLog.description,
+      parameters: runLog.parameters,
+      execute: async (a) => {
+        await opts.flushLog?.();
+        return runLog.execute(a);
+      },
     },
     run_command: {
       description: "Run an allowlisted command over the virtual workspace filesystem.",
@@ -165,7 +187,6 @@ function notAvailable(name: string): KatTool {
 export const STUB_TOOL_NAMES = [
   "duckdb_query",
   "exa_search",
-  "read_runs",
   "upsert_contact",
   "log_message",
   "get_contact",

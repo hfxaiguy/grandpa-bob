@@ -15,7 +15,7 @@ import { setActiveFs, setFsIndex } from "../shims/node-fs-promises";
 import { listAppTrees } from "../../../src/tree-sources";
 import { resolveTreeEntry } from "../../../src/tree-versions";
 import { assembleGuides, HOST_GUIDES } from "../../../src/tool-guides";
-import { createMemoryLogger, type MemoryLogger } from "./logger";
+import { createWorkspaceLogger, type MemoryLogger, type WorkspaceLogger } from "./logger";
 import { createModuleLoader } from "./module-loader";
 import { loadBrowserModels } from "./models";
 import { parseModels, type ModelRegistry } from "../../../src/model-config";
@@ -72,18 +72,20 @@ interface RunOptions {
 }
 
 interface Session {
-  logger: MemoryLogger;
+  logger: WorkspaceLogger;
   continuation: string;
   currentId: number;
 }
 
 const sessions = new Map<string, Session>();
 
-function getSession(key: string): Session {
+function getSession(key: string, platform: Platform): Session {
   let session = sessions.get(key);
   if (!session) {
-    const created: Session = { logger: null as unknown as MemoryLogger, continuation: "", currentId: 0 };
-    created.logger = createMemoryLogger((event) => post({ id: created.currentId, type: "event", event }));
+    const created: Session = { logger: null as unknown as WorkspaceLogger, continuation: "", currentId: 0 };
+    created.logger = createWorkspaceLogger(platform, (event) =>
+      post({ id: created.currentId, type: "event", event }),
+    );
     sessions.set(key, created);
     session = created;
   }
@@ -194,7 +196,7 @@ async function handleRun(opts: RunOptions): Promise<void> {
   const platform = getPlatform(storage, server);
   await ready;
 
-  const session = getSession(`${storage}|${server}|${patternPath}`);
+  const session = getSession(`${storage}|${server}|${patternPath}`, platform);
   session.currentId = opts.id;
 
   setActiveFs(platform.fs);
@@ -216,7 +218,9 @@ async function handleRun(opts: RunOptions): Promise<void> {
       : { default: { model: "mock", handler: async () => ({ content: `mock: ${task}` }) } };
 
   const onEmit = (value: unknown): void => post({ id: opts.id, type: "emit", value });
-  const toolsMap: Record<string, unknown> = { ...browserTools(platform, { remote: opts.remote ?? "" }) };
+  const toolsMap: Record<string, unknown> = {
+    ...browserTools(platform, { remote: opts.remote ?? "", flushLog: () => session.logger.flush() }),
+  };
   const tools = withStubs(toolsMap);
   const appTree = await buildAppTreeTools(platform, { models, tools, logger: session.logger, onEmit });
   Object.assign(toolsMap, appTree.tools);
@@ -253,6 +257,7 @@ async function handleRun(opts: RunOptions): Promise<void> {
       else {
         session.continuation = res.continuation!;
         post({ id: opts.id, type: "result", result: { status: "waiting", humanSlot: res.humanSlot }, eventCount: 0 });
+        void session.logger.flush();
         return;
       }
     }
@@ -265,6 +270,7 @@ async function handleRun(opts: RunOptions): Promise<void> {
     result: res.result ?? { status: res.status ?? "done" },
     eventCount: session.logger.events.length,
   });
+  void session.logger.flush();
 }
 
 self.onmessage = async (ev: MessageEvent) => {
