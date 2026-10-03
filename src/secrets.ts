@@ -23,6 +23,11 @@ export interface SecretRequest {
   name: string;
   description: string;
   contentType: string | null;
+  /**
+   * Optional key schema for the key/value editor shown for JSON secrets:
+   * `{ "auth.token": "hint", "from": "…" }`. Dotted keys become nested.
+   */
+  fields?: Record<string, string>;
 }
 
 export interface SecretInfo {
@@ -147,7 +152,7 @@ export async function listSecretRequests(workspace: string): Promise<SecretReque
     }
     const list = Array.isArray(raw) ? raw : Array.isArray((raw as { secrets?: unknown })?.secrets) ? (raw as { secrets: unknown[] }).secrets : [];
     for (const item of list) {
-      const it = item as { name?: unknown; description?: unknown; contentType?: unknown };
+      const it = item as { name?: unknown; description?: unknown; contentType?: unknown; fields?: unknown };
       const name = typeof it?.name === "string" ? it.name.trim() : "";
       if (!validSecretName(name)) {
         console.warn(`[secrets] ${entry.name}: ignoring invalid secret name ${JSON.stringify(it?.name)}`);
@@ -158,6 +163,13 @@ export async function listSecretRequests(workspace: string): Promise<SecretReque
         name,
         description: typeof it.description === "string" ? it.description : "",
         contentType: typeof it.contentType === "string" ? it.contentType : null,
+        ...(it.fields && typeof it.fields === "object" && !Array.isArray(it.fields)
+          ? {
+              fields: Object.fromEntries(
+                Object.entries(it.fields as Record<string, unknown>).map(([k, v]) => [k, typeof v === "string" ? v : ""]),
+              ),
+            }
+          : {}),
       });
     }
   }

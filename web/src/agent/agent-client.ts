@@ -9,6 +9,12 @@ export interface AgentRunResult {
   emits: unknown[];
 }
 
+/** Live hooks so a backend can re-emit events as they arrive (SSE). */
+export interface AgentRunHooks {
+  onEvent?: (event: unknown) => void;
+  onEmit?: (value: unknown) => void;
+}
+
 export interface AgentRunOptions {
   task?: string;
   env?: Record<string, string>;
@@ -16,6 +22,8 @@ export interface AgentRunOptions {
   remote?: string;
   storage?: "browser" | "desktop";
   server?: string;
+  /** Model registry JSON from browser settings (takes precedence over models.json). */
+  modelsJson?: string;
 }
 
 interface Pending {
@@ -23,6 +31,7 @@ interface Pending {
   reject: (error: Error) => void;
   events: unknown[];
   emits: unknown[];
+  hooks?: AgentRunHooks;
 }
 
 export class AgentClient {
@@ -43,9 +52,13 @@ export class AgentClient {
       };
       const p = this.pending.get(msg.id);
       if (!p) return;
-      if (msg.type === "event") p.events.push(msg.event);
-      else if (msg.type === "emit") p.emits.push(msg.value);
-      else if (msg.type === "result") {
+      if (msg.type === "event") {
+        p.events.push(msg.event);
+        p.hooks?.onEvent?.(msg.event);
+      } else if (msg.type === "emit") {
+        p.emits.push(msg.value);
+        p.hooks?.onEmit?.(msg.value);
+      } else if (msg.type === "result") {
         this.pending.delete(msg.id);
         p.resolve({ result: msg.result, events: p.events, emits: p.emits });
       } else if (msg.type === "error") {
@@ -60,10 +73,10 @@ export class AgentClient {
     };
   }
 
-  run(opts: AgentRunOptions = {}): Promise<AgentRunResult> {
+  run(opts: AgentRunOptions = {}, hooks?: AgentRunHooks): Promise<AgentRunResult> {
     const id = this.nextId++;
     return new Promise<AgentRunResult>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, events: [], emits: [] });
+      this.pending.set(id, { resolve, reject, events: [], emits: [], hooks });
       this.worker.postMessage({ id, type: "run", ...opts });
     });
   }

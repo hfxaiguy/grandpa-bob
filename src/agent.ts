@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 // @ts-ignore — grandma-kat ships no .d.ts files.
-import grandma from "grandma-kat";
+import grandma, { registerTree } from "grandma-kat";
 import type { ToolRegistry } from "./tools/index.js";
 import type { ModelRegistry } from "./models.js";
 import { loadPattern } from "./pattern-loader.js";
@@ -508,6 +508,14 @@ export class Agent {
       try {
         const built = await loadPattern(this.deps.workspace, source.name);
         const def = (built as { def?: { needs?: unknown; needsDescriptions?: unknown; needsOptional?: unknown } } | null)?.def ?? built;
+        // Register discovered trees in grandma-kat's global registry so an app
+        // tree can attach another by name with From("…") without importing it
+        // (From resolves the registry at build time, not runtime.tools).
+        try {
+          registerTree(def as never);
+        } catch {
+          // a def without a name is not registrable; ignore
+        }
         const needs = Array.isArray((def as { needs?: unknown } | null)?.needs)
           ? (def as { needs: string[] }).needs
           : [];

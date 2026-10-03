@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Browser target: grandpa-bob running entirely in a tab (OPFS + WASM SQLite, no backend).",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev.mjs",
+    "dev:all": "MOCK_LLM=1 node scripts/dev.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "smoke": "node smoke.mjs",
