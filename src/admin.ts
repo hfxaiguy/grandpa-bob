@@ -1873,6 +1873,37 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         return;
       }
 
+      if (req.method === "POST" && url.pathname === "/api/secrets/vars") {
+        if (!secretsStore) { res.writeHead(503, { "content-type": "application/json" }); res.end('{"error":"secret store not available"}'); return; }
+        const appName = url.searchParams.get("app") || "";
+        const secretName = url.searchParams.get("name") || "";
+        if (!validSecretName(appName) || !validSecretName(secretName)) {
+          res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid app or secret name"}'); return;
+        }
+        const declared = await listSecretRequests(config.workspaceDir);
+        if (!declared.find((r) => r.app === appName && r.name === secretName)) {
+          res.writeHead(404, { "content-type": "application/json" }); res.end('{"error":"no declared secret request with that app/name"}'); return;
+        }
+        let value: unknown;
+        try {
+          value = (JSON.parse((await readBody(req)) || "{}") as { value?: unknown }).value;
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid JSON body"}'); return;
+        }
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"value must be an object"}'); return;
+        }
+        const bytes = Buffer.from(JSON.stringify(value, null, 2));
+        if (bytes.length > MAX_SECRET_BYTES) {
+          res.writeHead(413, { "content-type": "application/json" }); res.end('{"error":"secret too large (max 1 MB)"}'); return;
+        }
+        secretsStore.put(appName, secretName, bytes, "application/json");
+        console.log(`[secrets] stored ${appName}/${secretName} (vars, ${bytes.length} bytes)`);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, app: appName, name: secretName, size: bytes.length }));
+        return;
+      }
+
       if (req.method === "DELETE" && url.pathname === "/api/secrets") {
         if (!secretsStore) { res.writeHead(503, { "content-type": "application/json" }); res.end('{"error":"secret store not available"}'); return; }
         const appName = url.searchParams.get("app") || "";

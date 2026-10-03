@@ -382,6 +382,35 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       return { status: 200, body: { ok: true } };
     }
 
+    // ── git (commit/sync) over the active platform ────────────────────────
+    if (pathname === "/api/commit" && method === "POST") {
+      const message = (parseBody<{ message?: string }>(body).message || "").trim() || "manual commit from admin UI";
+      try {
+        await platform.git.ensureRepo();
+        const hash = platform.git.commitAll
+          ? await platform.git.commitAll(message)
+          : await platform.git.autoCommit(["."], message);
+        return { status: 200, body: { ok: true, committed: hash !== "no-changes", hash } };
+      } catch (err) {
+        return { status: 200, body: { ok: false, error: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+    if ((pathname === "/api/sync/push" || pathname === "/api/sync/pull") && method === "POST") {
+      const p = parseBody<{ local?: string; remote?: string }>(body);
+      const posted = p.remote ?? "";
+      const url = opts.remote || (/[:\/]/.test(posted) ? posted : "");
+      if (!url) return { status: 400, body: { error: "set a git remote first" } };
+      try {
+        const out =
+          pathname === "/api/sync/push"
+            ? await platform.git.push?.(url, posted || p.local || "master")
+            : await platform.git.fetch?.(url);
+        return { status: 200, body: { ok: true, output: typeof out === "string" ? out : JSON.stringify(out ?? {}) } };
+      } catch (err) {
+        return { status: 200, body: { ok: false, error: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+
     // ── logs ──────────────────────────────────────────────────────────────
     if (pathname === "/api/log") return { status: 200, body: { content: "" } };
 
