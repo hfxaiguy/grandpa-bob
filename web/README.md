@@ -117,9 +117,12 @@ mode BOB operates on the real workspace:
 - **git sync to a branch** — `git_push` takes a `branch` (default `main`) and
   the bridge runs `git push <remote> HEAD:refs/heads/<branch>`.
 
-The chat uses `patterns/sync.mjs`, an assistant that exposes the git tools, so
-a request like “sync workspace git to main” commits then pushes (it needs a
-real tool-calling model; the mock only echoes).
+The chat uses the workspace's **real `trunk` tree when present** (else the
+`sync` assistant). The worker keeps a per-pattern session and drives trunk's
+`Human("main_input")` pause/resume across messages, surfacing emits as the
+assistant reply. Trunk's tool list includes `git_status`/`git_commit`/
+`git_push`/`git_fetch` and its system prompt explains the sync flow, so with a
+tool-calling model “sync workspace git to main” commits then pushes.
 
 `npm run smoke` needs a Chromium/Chrome binary (override with `CHROME_BIN`) and
 a running dev server. It exercises OPFS writes/rename, `tree-versions`
