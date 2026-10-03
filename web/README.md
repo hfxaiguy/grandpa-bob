@@ -93,6 +93,24 @@ The app clones into `/workspace` when it has no `.git`. To also **push** back
 `git -C <repo>.git config http.receivepack true` (loopback only; add auth before
 exposing it).
 
+### Storage backend selector (browser OPFS vs desktop)
+
+The header has a **Storage** selector:
+
+- **Browser (OPFS)** — everything lives in the browser (the mode above).
+- **Desktop (local server)** — BOB's file/shell/git tools operate on the real
+  workspace via a loopback bridge:
+
+```sh
+npm run storage-server /home/love/grandma-workspace   # -> http://127.0.0.1:8795
+# then pick "Desktop (local server)" in the header (persisted in localStorage)
+# or load ?storage=desktop&server=http://127.0.0.1:8795
+```
+
+The bridge is sandboxed to the workspace root and loopback-only. In desktop
+mode BOB reads/writes the real files and runs real `git` (init/commit/fetch/
+push) through `platform.git`; SQLite bridging is phase 2.
+
 `npm run smoke` needs a Chromium/Chrome binary (override with `CHROME_BIN`) and
 a running dev server. It exercises OPFS writes/rename, `tree-versions`
 snapshot/promote, `grandma-kat knit()`, WASM SQLite persistence, and a real LLM

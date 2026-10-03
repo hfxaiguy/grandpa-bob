@@ -51,8 +51,8 @@ export interface GitOps {
   autoCommit(paths: string[], message: string): Promise<string>;
   status?(): Promise<unknown>;
   log?(depth?: number): Promise<unknown>;
-  fetch?(url: string): Promise<unknown>;
-  push?(url: string): Promise<unknown>;
+  fetch?(url: string, branch?: string): Promise<unknown>;
+  push?(url: string, branch?: string): Promise<unknown>;
 }
 
 /** One column in a statement's result set. */

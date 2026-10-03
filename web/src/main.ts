@@ -7,6 +7,7 @@
  * `npm run smoke` checks).
  */
 import "./shims/process";
+import { setActiveFs } from "./shims/node-fs-promises";
 import { createBrowserPlatform, initSqlite } from "./platform/browser";
 import { createDesktopPlatform } from "./platform/desktop";
 import { AgentClient } from "./agent/agent-client";
@@ -48,6 +49,7 @@ let configuredRemote = "";
 const params = new URLSearchParams(location.search);
 const storageMode: StorageMode = (params.get("storage") as StorageMode) ?? loadStorage();
 const storageServer = params.get("server") ?? loadStorageServer();
+configuredRemote = params.get("remote") ?? loadRemote();
 const runOptions = (pattern: string, task = "") => ({
   task,
   env: loadEnv(),
@@ -93,7 +95,7 @@ chatForm.addEventListener("submit", (event) => {
   chatInput.value = "";
   chatSend.disabled = true;
   void agent
-    .run(runOptions("patterns/agent_demo.mjs", text))
+    .run(runOptions("patterns/sync.mjs", text))
     .then(({ result }) => appendMessage("assistant", answerText(result)))
     .catch((err: unknown) => appendMessage("assistant", `error: ${err instanceof Error ? err.message : String(err)}`))
     .finally(() => {
@@ -267,6 +269,30 @@ async function bootstrapWorkspace(platform: Platform, root: string): Promise<voi
       "",
     ].join("\n"),
   );
+
+  // The chat/assistant pattern: exposes the git tools so a request like
+  // "sync workspace git to main" can be handled by committing then pushing.
+  await fs.writeFile(
+    path.join(root, "patterns", "sync.mjs"),
+    [
+      'import { Tree, name, Model, Tools, Prompt, Return } from "grandma-kat";',
+      "",
+      "const pattern = Tree(",
+      '  name("sync"),',
+      '  Model("default"),',
+      '  Tools("git_status", "git_commit", "git_push", "read_file", "write_file", "list_files"),',
+      "  Prompt(",
+      '    "reply",',
+      '    (m) => "You are BOB. Request: " + m.task +',
+      '      ". To sync the workspace git, call git_status, then git_commit, then git_push with branch main, then answer briefly."',
+      "  ),",
+      "  Return((m) => ({ answer: m.branch.reply })),",
+      ");",
+      "",
+      "export default pattern;",
+      "",
+    ].join("\n"),
+  );
 }
 
 async function agentDemo(root: string): Promise<void> {
@@ -382,8 +408,68 @@ async function seedWorkspace(root: string): Promise<void> {
   }
 }
 
+async function desktopSqlDemo(platform: Platform): Promise<void> {
+  const db = await platform.sqlite.open("/sync-demo.db", { readOnly: false });
+  await db.exec("DROP TABLE IF EXISTS t");
+  await db.exec("CREATE TABLE t(a INTEGER)");
+  await (await db.prepare("INSERT INTO t VALUES (1)")).run();
+  await (await db.prepare("INSERT INTO t VALUES (2)")).run();
+  const rows = await (await db.prepare("SELECT a FROM t ORDER BY a")).all();
+  await db.close();
+  log(`desktop-sql: rows=${JSON.stringify(rows)}`);
+}
+
+async function desktopSyncDemo(platform: Platform): Promise<void> {
+  if (!configuredRemote) {
+    log("desktop-git: no remote configured (pass ?remote=<path-or-url> or set bob:remote)");
+    return;
+  }
+  await platform.git.ensureRepo();
+  const files = new FileTools(platform);
+  await files.writeFile("sync-demo.txt", `sync ${Date.now()}\n`);
+  const pushed = await platform.git.push?.(configuredRemote, "main");
+  log(`desktop-git: push main -> ${JSON.stringify(pushed)}`);
+}
+
+/** Desktop storage mode: BOB operates on the real workspace via the bridge. */
+async function runDesktopMode(): Promise<void> {
+  const platform = createDesktopPlatform("/", storageServer);
+  setActiveFs(platform.fs);
+  const health = await fetch(`${storageServer}/health`).then((r) => r.json());
+  log(`storage: desktop via ${storageServer} (root: ${health.root})`);
+
+  const sources = await listTreeSources("/");
+  log(`discovery: ${sources.length} trees (trunk: ${sources.some((s) => s.name === "trunk")})`);
+
+  await bootstrapWorkspace(platform, platform.workspaceRoot);
+  const { result, events } = await agent.run(runOptions("patterns/multi.mjs", "the notes file"));
+  log(`agent-worker: storage=desktop events=${events.length}`);
+  log(`agent-worker: result=${JSON.stringify(result)}`);
+  const answer = (result as { answer?: unknown })?.answer;
+  if (typeof answer !== "string" || !answer.startsWith("llm-says")) {
+    throw new Error(`expected a live-LLM answer, got ${JSON.stringify(answer)}`);
+  }
+  log("agent-worker: live LLM round-trip OK");
+
+  await desktopSqlDemo(platform);
+  await desktopSyncDemo(platform);
+
+  agentReady = true;
+  chatInput.disabled = false;
+  chatSend.disabled = false;
+  chatInput.focus();
+}
+
 async function main(): Promise<void> {
   const root = "/workspace";
+  if (storageMode === "desktop") {
+    await runDesktopMode();
+    log("");
+    log("SMOKE_DONE");
+    log("OK");
+    return;
+  }
+
   await prepareWorkspace(root);
   log("");
   await opfsSmoke(root);

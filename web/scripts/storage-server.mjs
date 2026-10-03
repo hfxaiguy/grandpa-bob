@@ -10,6 +10,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { DatabaseSync } from "node:sqlite";
 
 const execFileAsync = promisify(execFile);
 const ROOT = path.resolve(process.argv[2] ?? process.env.WORKSPACE_DIR ?? process.cwd());
@@ -71,12 +72,12 @@ const routes = {
     await fs.rename(resolveIn(from), abs);
     return { ok: true };
   },
-  async "POST /git"({ op, paths = [], message, remote, url: remoteUrl }) {
+  async "POST /git"({ op, paths = [], message, remote, url: remoteUrl, branch }) {
     if (op === "status") {
       const status = await git(["status", "--porcelain"]);
-      const branch = await git(["branch", "--show-current"]);
+      const branchName = await git(["branch", "--show-current"]);
       return {
-        branch: branch.stdout || null,
+        branch: branchName.stdout || null,
         changes: status.stdout ? status.stdout.split("\n") : [],
       };
     }
@@ -100,10 +101,54 @@ const routes = {
     if (op === "fetch" || op === "pull" || op === "push") {
       const target = remoteUrl || remote;
       if (!target) throw new Error("no git remote");
-      const args = op === "push" ? ["push", target, "HEAD"] : [op, target];
+      const ref = branch ? `HEAD:refs/heads/${branch}` : "HEAD";
+      const args =
+        op === "push" ? ["push", target, ref] : op === "fetch" ? ["fetch", target] : ["pull", target];
       return { result: (await git(args)).stdout || `${op} ok` };
     }
     throw new Error(`unknown git op: ${op}`);
+  },
+  async "POST /sql/columns"({ path: p, sql }) {
+    const db = new DatabaseSync(resolveIn(p), { readOnly: true });
+    try {
+      return { columns: db.prepare(sql).columns().map((c) => ({ name: c.name ?? "" })) };
+    } finally {
+      db.close();
+    }
+  },
+  async "POST /sql/all"({ path: p, sql, params = [] }) {
+    const db = new DatabaseSync(resolveIn(p), { readOnly: true });
+    try {
+      return { rows: db.prepare(sql).all(...params) };
+    } finally {
+      db.close();
+    }
+  },
+  async "POST /sql/get"({ path: p, sql, params = [] }) {
+    const db = new DatabaseSync(resolveIn(p), { readOnly: true });
+    try {
+      return { row: db.prepare(sql).get(...params) ?? null };
+    } finally {
+      db.close();
+    }
+  },
+  async "POST /sql/run"({ path: p, sql, params = [] }) {
+    const db = new DatabaseSync(resolveIn(p));
+    try {
+      const info = db.prepare(sql).run(...params);
+      return { changes: Number(info.changes), lastInsertRowid: Number(info.lastInsertRowid ?? 0) };
+    } finally {
+      db.close();
+    }
+  },
+  async "POST /sql/exec"({ path: p, sql }) {
+    const db = new DatabaseSync(resolveIn(p));
+    try {
+      db.exec(sql);
+      return { ok: true };
+    } finally {
+      db.close();
+    }
   },
 };
 

@@ -141,10 +141,12 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         platform.git.fetch ? platform.git.fetch(opts.remote ?? "") : { error: "git fetch unavailable" },
     },
     git_push: {
-      description: "Push the workspace branch to the configured git remote.",
-      parameters: { type: "object", properties: {} },
-      execute: async () =>
-        platform.git.push ? platform.git.push(opts.remote ?? "") : { error: "git push unavailable" },
+      description: "Commit is not implied: push the workspace branch to the remote (default branch 'main').",
+      parameters: { type: "object", properties: { branch: { type: "string" } } },
+      execute: async (a) =>
+        platform.git.push
+          ? platform.git.push(opts.remote ?? "", String(a.branch ?? "main"))
+          : { error: "git push unavailable" },
     },
   };
 }

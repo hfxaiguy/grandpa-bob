@@ -60,11 +60,11 @@ export async function gitFetch(root: string, url: string): Promise<unknown> {
   return { fetched: result.fetchHead?.slice(0, 7) ?? null };
 }
 
-/** Push the current branch to the configured remote. */
-export async function gitPush(root: string, url: string): Promise<unknown> {
+/** Push the current branch to the configured remote (optionally refs/heads/<branch>). */
+export async function gitPush(root: string, url: string, branch?: string): Promise<unknown> {
   if (!url) throw new Error("no git remote configured");
   const fs = await gitFs();
-  const result = await git.push({ fs, http, dir: root, url });
+  const result = await git.push({ fs, http, dir: root, url, ...(branch ? { ref: branch } : {}) });
   return { ok: result.ok, refs: Object.fromEntries(Object.entries(result.refs ?? {}).map(([k, v]) => [k, String(v).slice(0, 7)])) };
 }
 
@@ -113,6 +113,6 @@ export function createOpfsGit(root: string): GitOps {
     status: () => gitStatus(dir),
     log: (depth = 5) => gitLog(dir, depth),
     fetch: (url: string) => gitFetch(dir, url),
-    push: (url: string) => gitPush(dir, url),
+    push: (url: string, branch?: string) => gitPush(dir, url, branch),
   };
 }

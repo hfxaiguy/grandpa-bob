@@ -79,16 +79,37 @@ function httpGit(base: string): GitOps {
     },
     status: () => call(base, "/git", { op: "status" }),
     log: () => call(base, "/git", { op: "log" }),
-    fetch: (url: string) => call(base, "/git", { op: "fetch", url }),
-    push: (url: string) => call(base, "/git", { op: "push", url }),
+    fetch: (url: string, branch?: string) => call(base, "/git", { op: "fetch", url, branch }),
+    push: (url: string, branch?: string) => call(base, "/git", { op: "push", url, branch }),
   };
 }
 
-const desktopSqlite: SqliteFactory = {
-  open: async () => {
-    throw new Error("desktop SQLite is not bridged yet (phase 2)");
-  },
-};
+function httpSqlite(base: string): SqliteFactory {
+  return {
+    async open(path) {
+      return {
+        async prepare(sql) {
+          const { columns } = await call<{ columns: Array<{ name: string }> }>(base, "/sql/columns", { path, sql });
+          return {
+            all: async (...params: unknown[]) =>
+              (await call<{ rows: unknown[] }>(base, "/sql/all", { path, sql, params })).rows,
+            get: async (...params: unknown[]) =>
+              (await call<{ row: unknown }>(base, "/sql/get", { path, sql, params })).row,
+            run: async (...params: unknown[]) =>
+              call<{ changes: number; lastInsertRowid: number }>(base, "/sql/run", { path, sql, params }),
+            columns: async () => columns,
+          };
+        },
+        async exec(sql) {
+          await call(base, "/sql/exec", { path, sql });
+        },
+        async close() {
+          /* each op opens and closes its own handle */
+        },
+      };
+    },
+  };
+}
 
 export function createDesktopPlatform(workspaceRoot: string, server: string): Platform {
   const base = server.replace(/\/$/, "");
@@ -101,7 +122,7 @@ export function createDesktopPlatform(workspaceRoot: string, server: string): Pl
     crypto,
     shell: createCoreutilsShell({ fs, path: posixPath, workspaceRoot }),
     git: httpGit(base),
-    sqlite: desktopSqlite,
+    sqlite: httpSqlite(base),
     workspaceRoot,
   };
 }

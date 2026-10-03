@@ -40,6 +40,12 @@ export interface AgentDeps {
    * dropping the sessions already pinned to their own version.
    */
   patternRef?: () => string | undefined;
+  /**
+   * Host context forwarded verbatim to grandma-kat as `runtime.context` (and
+   * from there to tree register bodies). App trees use it to reach things the
+   * host owns — the app-secrets store — without exposing an app tool.
+   */
+  context?: unknown;
 }
 
 export type AgentRunResult =
@@ -329,6 +335,7 @@ export class Agent {
       // Only set logLevel when using the default (string path) logger.
       // When a custom logger is provided, it already handles console output.
       ...(this.deps.logger ? {} : { logLevel: this.deps.logLevel ?? "info" }),
+      ...(this.deps.context !== undefined ? { context: this.deps.context } : {}),
     };
 
     // Trees that declare `input` (app trees: contacts, caller-list) consume
