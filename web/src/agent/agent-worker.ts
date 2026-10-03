@@ -1,16 +1,17 @@
 /**
  * Agent Web Worker — the browser target's "server".
  *
- * Owns the Platform (OPFS or the desktop bridge), the tool registry, and the
- * grandma-kat runtime. The main thread sends run requests and receives
- * streamed events + the final result.
+ * Owns the Platform (OPFS or the desktop bridge), the tool registry, the
+ * grandma-kat runtime and per-pattern sessions (continuation checkpoints) so
+ * trees with `Human(...)` — like the real trunk — can pause and resume across
+ * chat messages.
  */
-import { Tree, name, Call, Return, Tools, knit } from "grandma-kat";
+import { Tree, name, Call, Return, Tools, knit, resume } from "grandma-kat";
 import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { createDesktopPlatform } from "../platform/desktop";
 import type { Platform } from "../../../src/platform/types";
 import { browserTools } from "./browser-tools";
-import { createMemoryLogger } from "./logger";
+import { createMemoryLogger, type MemoryLogger } from "./logger";
 import { createModuleLoader } from "./module-loader";
 import { loadBrowserModels } from "./models";
 
@@ -42,41 +43,79 @@ interface RunOptions {
   server?: string;
 }
 
+interface Session {
+  logger: MemoryLogger;
+  continuation: string;
+  currentId: number;
+}
+
+const sessions = new Map<string, Session>();
+
+function getSession(key: string): Session {
+  let session = sessions.get(key);
+  if (!session) {
+    const created: Session = { logger: null as unknown as MemoryLogger, continuation: "", currentId: 0 };
+    created.logger = createMemoryLogger((event) => post({ id: created.currentId, type: "event", event }));
+    sessions.set(key, created);
+    session = created;
+  }
+  return session;
+}
+
+async function loadPattern(platform: Platform, patternPath: string): Promise<unknown> {
+  const mod = await createModuleLoader(platform).load(patternPath);
+  return mod.default ?? mod.pattern;
+}
+
 async function handleRun(opts: RunOptions): Promise<void> {
   const task = opts.task ?? "";
-  const platform = getPlatform(opts.storage ?? "browser", opts.server ?? "");
+  const storage = opts.storage ?? "browser";
+  const server = opts.server ?? "";
+  const patternPath = opts.pattern ?? "patterns/agent_demo.mjs";
+  const platform = getPlatform(storage, server);
   await ready;
 
-  const events: unknown[] = [];
-  const logger = createMemoryLogger((event) => {
-    events.push(event);
-    post({ id: opts.id, type: "event", event });
-  });
+  const session = getSession(`${storage}|${server}|${patternPath}`);
+  session.currentId = opts.id;
+
   const tools = browserTools(platform, { remote: opts.remote ?? "" });
-
-  // Load the pattern from the active workspace; fall back to a deterministic
-  // tree when it is absent.
-  let pattern: unknown;
-  try {
-    const mod = await createModuleLoader(platform).load(opts.pattern ?? "patterns/agent_demo.mjs");
-    pattern = mod.default ?? mod.pattern;
-  } catch {
-    pattern = Tree(
-      name("worker_demo"),
-      Tools("read_file"),
-      Call("read", "read_file", { path: "notes/renamed.txt" }),
-      Return((m: { branch: Record<string, unknown> }) => ({ read: m.branch.read })),
-    );
-  }
-
   const registry = await loadBrowserModels(platform, opts.env ?? {});
   const models =
     Object.keys(registry).length > 0
       ? registry
       : { default: { model: "mock", handler: async () => ({ content: `mock: ${task}` }) } };
 
-  const { result } = await knit(pattern, { models, tools, logger, memory: { task } });
-  post({ id: opts.id, type: "result", result, eventCount: events.length });
+  const runtime = {
+    models,
+    tools,
+    logger: session.logger,
+    loadTree: async () => null,
+    onEmit: (value: unknown) => post({ id: opts.id, type: "emit", value }),
+  };
+
+  let res: { result?: unknown; status?: string; continuation?: string; humanSlot?: unknown };
+  if (session.continuation) {
+    res = (await resume(session.continuation, { ...runtime, humanInput: task })) as typeof res;
+  } else {
+    const pattern = await loadPattern(platform, patternPath);
+    res = (await knit(pattern, { ...runtime, memory: {} })) as typeof res;
+    if (res.status === "waiting") {
+      if (task) res = (await resume(res.continuation!, { ...runtime, humanInput: task })) as typeof res;
+      else {
+        session.continuation = res.continuation!;
+        post({ id: opts.id, type: "result", result: { status: "waiting", humanSlot: res.humanSlot }, eventCount: 0 });
+        return;
+      }
+    }
+  }
+
+  session.continuation = res.status === "waiting" ? (res.continuation ?? "") : "";
+  post({
+    id: opts.id,
+    type: "result",
+    result: res.result ?? { status: res.status ?? "done" },
+    eventCount: session.logger.events.length,
+  });
 }
 
 self.onmessage = async (ev: MessageEvent) => {

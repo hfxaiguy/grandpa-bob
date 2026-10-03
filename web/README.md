@@ -108,8 +108,18 @@ npm run storage-server /home/love/grandma-workspace   # -> http://127.0.0.1:8795
 ```
 
 The bridge is sandboxed to the workspace root and loopback-only. In desktop
-mode BOB reads/writes the real files and runs real `git` (init/commit/fetch/
-push) through `platform.git`; SQLite bridging is phase 2.
+mode BOB operates on the real workspace:
+
+- **files + shell + git** via the bridge (`platform.fs`/`platform.git`);
+- **SQLite** via the bridge's `node:sqlite` routes, so `sql_*` tools work;
+- **discovery follows the backend** — the `node:fs` shim is repointed with
+  `setActiveFs()`, so `tree-sources`/`tree-versions` read the desktop workspace;
+- **git sync to a branch** — `git_push` takes a `branch` (default `main`) and
+  the bridge runs `git push <remote> HEAD:refs/heads/<branch>`.
+
+The chat uses `patterns/sync.mjs`, an assistant that exposes the git tools, so
+a request like “sync workspace git to main” commits then pushes (it needs a
+real tool-calling model; the mock only echoes).
 
 `npm run smoke` needs a Chromium/Chrome binary (override with `CHROME_BIN`) and
 a running dev server. It exercises OPFS writes/rename, `tree-versions`

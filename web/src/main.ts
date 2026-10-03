@@ -59,6 +59,14 @@ const runOptions = (pattern: string, task = "") => ({
   server: storageServer,
 });
 
+/** Chat with the real trunk when the workspace has one; else the sync assistant. */
+let chatPattern = "patterns/sync.mjs";
+async function detectChatPattern(platform: Platform): Promise<void> {
+  const trunk = platform.path.join(platform.workspaceRoot, "patterns", "trunk.mjs");
+  const has = await platform.fs.stat(trunk).then(() => true).catch(() => false);
+  chatPattern = has ? "patterns/trunk.mjs" : "patterns/sync.mjs";
+}
+
 // ── storage selector ─────────────────────────────────────────────────────
 const storageSelect = document.getElementById("storage-mode") as HTMLSelectElement | null;
 const storageServerInput = document.getElementById("storage-server") as HTMLInputElement | null;
@@ -95,8 +103,10 @@ chatForm.addEventListener("submit", (event) => {
   chatInput.value = "";
   chatSend.disabled = true;
   void agent
-    .run(runOptions("patterns/sync.mjs", text))
-    .then(({ result }) => appendMessage("assistant", answerText(result)))
+    .run(runOptions(chatPattern, text))
+    .then(({ result, emits }) =>
+      appendMessage("assistant", emits.length ? String(emits[emits.length - 1]) : answerText(result)),
+    )
     .catch((err: unknown) => appendMessage("assistant", `error: ${err instanceof Error ? err.message : String(err)}`))
     .finally(() => {
       chatSend.disabled = false;
@@ -222,6 +232,8 @@ async function bootstrapWorkspace(platform: Platform, root: string): Promise<voi
     path.join(root, "models.json"),
     JSON.stringify({
       default: { baseURL: "http://127.0.0.1:8787/v1", apiKey: "${DEMO_API_KEY}", model: "mock-model" },
+      strong: { baseURL: "http://127.0.0.1:8787/v1", apiKey: "${DEMO_API_KEY}", model: "mock-model" },
+      cheap: { baseURL: "http://127.0.0.1:8787/v1", apiKey: "${DEMO_API_KEY}", model: "mock-model" },
     }),
   );
 
@@ -299,6 +311,8 @@ async function agentDemo(root: string): Promise<void> {
   const platform =
     storageMode === "desktop" ? createDesktopPlatform("/", storageServer) : createBrowserPlatform(root);
   await bootstrapWorkspace(platform, platform.workspaceRoot);
+  await detectChatPattern(platform);
+  log(`chat pattern: ${chatPattern}`);
   const { result, events } = await agent.run(runOptions("patterns/multi.mjs", "the notes file"));
   log(`agent-worker: storage=${storageMode} events=${events.length}`);
   log(`agent-worker: result=${JSON.stringify(result)}`);
@@ -442,6 +456,8 @@ async function runDesktopMode(): Promise<void> {
   log(`discovery: ${sources.length} trees (trunk: ${sources.some((s) => s.name === "trunk")})`);
 
   await bootstrapWorkspace(platform, platform.workspaceRoot);
+  await detectChatPattern(platform);
+  log(`chat pattern: ${chatPattern}`);
   const { result, events } = await agent.run(runOptions("patterns/multi.mjs", "the notes file"));
   log(`agent-worker: storage=desktop events=${events.length}`);
   log(`agent-worker: result=${JSON.stringify(result)}`);

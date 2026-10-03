@@ -142,8 +142,8 @@ function transform(source: string, fileUrl: string): TransformResult {
     return `require(${JSON.stringify(spec)});`;
   });
 
-  // export default X;
-  out = out.replace(/^[ \t]*export\s+default\s+(.+?);?[ \t]*$/m, "module.exports.default = $1;");
+  // export default X;  (may span multiple lines — replace only the keyword)
+  out = out.replace(/^[ \t]*export\s+default\s+/m, "module.exports.default = ");
 
   // export const/let/var/function/class NAME ...
   const named: string[] = [];

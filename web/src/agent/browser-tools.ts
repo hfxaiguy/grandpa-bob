@@ -148,5 +148,26 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
           ? platform.git.push(opts.remote ?? "", String(a.branch ?? "main"))
           : { error: "git push unavailable" },
     },
+    ...Object.fromEntries(STUB_TOOL_NAMES.map((n) => [n, notAvailable(n)])),
   };
 }
+
+/** A stand-in for tools the Node/desktop target has but the browser does not. */
+function notAvailable(name: string): KatTool {
+  return {
+    description: `${name} is not available in the browser target.`,
+    parameters: { type: "object", properties: {} },
+    execute: async () => ({ error: `${name} is not available in the browser target` }),
+  };
+}
+
+/** Names the workspace trunk declares but this target does not implement. */
+export const STUB_TOOL_NAMES = [
+  "duckdb_query",
+  "exa_search",
+  "upsert_contact",
+  "log_message",
+  "get_contact",
+  "make_phone_call",
+  "caller-list",
+];
