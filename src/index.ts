@@ -13,6 +13,7 @@ import { startAdmin, getSelectedPattern, getSelectedRef, telegramFollowKey, remo
 import type { Bot } from "grammy";
 import { loadAppTools } from "./app-tools.js";
 import { SecretsStore } from "./secrets.js";
+import { makeTreeContext } from "./tree-context.js";
 import { KEEP_VERSIONS, scanTreeVersions, pruneVersions } from "./tree-versions.js";
 
 async function main(): Promise<void> {
@@ -71,6 +72,7 @@ async function main(): Promise<void> {
     },
     listSecrets: (app: string) =>
       secrets.list(app).map((s) => ({ name: s.name, updatedAt: s.updatedAt, size: s.size })),
+    trees: makeTreeContext(config.workspaceDir),
   };
   const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger, patternName: getSelectedPattern, patternRef: getSelectedRef, context: treeContext });
 
