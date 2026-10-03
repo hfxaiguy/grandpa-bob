@@ -6,7 +6,8 @@
 //   MOCK_LLM=1 npm run dev             # also start the mock LLM (:8787)
 //
 // Ctrl-C stops everything.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +15,15 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const webDir = path.resolve(here, "..");
 const repoRoot = path.resolve(webDir, "..");
 const workspace = process.argv[2] ?? process.env.WORKSPACE_DIR ?? path.join(repoRoot, "workspace");
+
+// The browser target seeds OPFS from public/seed/workspace.json. Generate it
+// on first run so `npm run dev` never starts with an empty workspace.
+const seed = path.join(webDir, "public", "seed", "workspace.json");
+if (!fs.existsSync(seed) && fs.existsSync(workspace)) {
+  console.log(`[dev] no seed; packing ${workspace} …`);
+  const r = spawnSync(process.execPath, ["scripts/make-seed.mjs", workspace], { cwd: webDir, stdio: "inherit" });
+  if (r.status !== 0) console.warn("[dev] make-seed failed; the browser workspace will be empty");
+}
 
 const children = [];
 let shuttingDown = false;

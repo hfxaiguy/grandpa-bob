@@ -88,8 +88,15 @@ function getSession(key: string): Session {
 }
 
 async function loadPattern(platform: Platform, patternPath: string): Promise<unknown> {
-  const mod = await createModuleLoader(platform).load(patternPath);
-  return mod.default ?? mod.pattern;
+  try {
+    const mod = await createModuleLoader(platform).load(patternPath);
+    return mod.default ?? mod.pattern;
+  } catch (err) {
+    throw new Error(
+      `cannot load pattern ${patternPath}: ${err instanceof Error ? err.message : String(err)} ` +
+        "(is the workspace seeded? run `npm run make-seed`, or use Desktop storage)",
+    );
+  }
 }
 
 async function handleRun(opts: RunOptions): Promise<void> {
