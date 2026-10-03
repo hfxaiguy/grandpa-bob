@@ -5,6 +5,7 @@ import { ExaSearchTools } from "./websearch.js";
 import { SqliteTools } from "./sqlite.js";
 import { OpencodeTools } from "./opencode.js";
 import { DuckdbTools } from "./duckdb.js";
+import { GitTools, GIT_DEFINITIONS } from "./git-tools.js";
 import { createNodePlatform } from "../platform/node.js";
 import type { AppTool } from "../app-tools.js";
 
@@ -28,6 +29,7 @@ export class ToolRegistry {
   private sqlite: SqliteTools;
   private opencode: OpencodeTools;
   private duckdb: DuckdbTools;
+  private gitTools: GitTools;
   private appTools: Map<string, AppTool>;
 
   /**
@@ -52,8 +54,10 @@ export class ToolRegistry {
     this.sqlite = new SqliteTools(platform, sqliteLockedPath);
     this.opencode = new OpencodeTools();
     this.duckdb = new DuckdbTools(workspace);
+    this.gitTools = new GitTools(workspace);
     this.appTools = new Map(appTools.map((tool) => [tool.name, tool]));
     this.definitions.push(...appTools.map(toOpenAiDefinition));
+    this.definitions.push(...GIT_DEFINITIONS);
   }
 
   readonly definitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
@@ -344,6 +348,19 @@ export class ToolRegistry {
             text: result.text,
           };
         }
+        case "git_status":
+          return { ...(await this.gitTools.status()) };
+        case "git_log":
+          return { ...(await this.gitTools.log(args.depth !== undefined ? Number(args.depth) : 5)) };
+        case "git_commit":
+          return { ...(await this.gitTools.commit(String(args.message ?? "agent commit"), args.paths)) };
+        case "git_fetch":
+          return await this.gitTools.fetch(args.remote !== undefined ? String(args.remote) : "");
+        case "git_push":
+          return await this.gitTools.push(
+            args.remote !== undefined ? String(args.remote) : "",
+            args.branch !== undefined ? String(args.branch) : "main",
+          );
         default:
           return `error: unknown tool ${name}`;
       }
