@@ -34,10 +34,20 @@ export const HOST_GUIDES: HostGuide[] = [
     tools: ["git_status", "git_commit", "git_push", "git_fetch", "git_log"],
     guide:
       "GIT SYNC: the workspace is a git repository (every write_file/edit_file/" +
-      "delete_file is committed automatically). When the user asks to sync, push, " +
-      'or "sync workspace git to main", call git_status to see changes, then ' +
-      'git_commit with a short message, then git_push with branch "main", and ' +
-      "report what was committed and pushed. Never force-push or reset.",
+      "delete_file is committed automatically). When the user asks to sync or push, " +
+      "call git_status to see changes, then git_commit with a short message, then " +
+      "git_push — it pushes the branch you are on (pass branch only to override), so a " +
+      "local 'master' is pushed as master, not forced to 'main'. If push reports that no " +
+      "remote is configured, ask the user for the remote URL (never guess one). Never " +
+      "force-push or reset.",
+  },
+  {
+    tools: ["git_remote"],
+    guide:
+      "GIT REMOTES: call git_remote with no arguments to list the remotes plus the current " +
+      "branch and its upstream; git_remote { name, url } adds or updates one; " +
+      "{ name, remove: true } removes one. A branch name is not a remote — push the branch " +
+      "you are on unless told otherwise. Never guess a URL; ask the user.",
   },
 ];
 

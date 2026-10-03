@@ -357,10 +357,19 @@ export class ToolRegistry {
           return { ...(await this.gitTools.commit(String(args.message ?? "agent commit"), args.paths)) };
         case "git_fetch":
           return await this.gitTools.fetch(args.remote !== undefined ? String(args.remote) : "");
+        case "git_remote":
+          if (!args.name) return { ...(await this.gitTools.remotes()) };
+          return {
+            ...(await this.gitTools.setRemote(
+              String(args.name),
+              args.url !== undefined ? String(args.url) : "",
+              args.remove === true,
+            )),
+          };
         case "git_push":
           return await this.gitTools.push(
             args.remote !== undefined ? String(args.remote) : "",
-            args.branch !== undefined ? String(args.branch) : "main",
+            args.branch !== undefined ? String(args.branch) : "",
           );
         default:
           return `error: unknown tool ${name}`;

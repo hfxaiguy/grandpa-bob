@@ -170,4 +170,5 @@ export const STUB_TOOL_NAMES = [
   "get_contact",
   "make_phone_call",
   "caller-list",
+  "git_remote",
 ];

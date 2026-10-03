@@ -10,7 +10,7 @@ import { Tree, name, Call, Return, Tools, knit, resume } from "grandma-kat";
 import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { createDesktopPlatform } from "../platform/desktop";
 import type { Platform } from "../../../src/platform/types";
-import { browserTools } from "./browser-tools";
+import { browserTools, STUB_TOOL_NAMES } from "./browser-tools";
 import { assembleGuides, HOST_GUIDES } from "../../../src/tool-guides";
 import { createMemoryLogger, type MemoryLogger } from "./logger";
 import { createModuleLoader } from "./module-loader";
@@ -81,8 +81,12 @@ async function handleRun(opts: RunOptions): Promise<void> {
 
   const tools = browserTools(platform, { remote: opts.remote ?? "" });
   // Host-tool guidance comes from the shared module, so the browser and Node
-  // targets teach the model the same tool etiquette.
-  const guide = assembleGuides({ hostGuides: HOST_GUIDES, inScope: Object.keys(tools) });
+  // targets teach the model the same tool etiquette. Stubs are excluded so a
+  // guide never points at a tool this target only stands in for.
+  const guide = assembleGuides({
+    hostGuides: HOST_GUIDES,
+    inScope: Object.keys(tools).filter((name) => !STUB_TOOL_NAMES.includes(name)),
+  });
   const registry = await loadBrowserModels(platform, opts.env ?? {});
   const models =
     Object.keys(registry).length > 0
