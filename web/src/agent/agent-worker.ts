@@ -144,15 +144,17 @@ async function loadTreeRef(platform: Platform, name: string): Promise<unknown> {
   return pending;
 }
 
-/** Every runnable app tree (`app/<name>/tree.mjs`) as a callable tool. */
+/** Every runnable app tree (`app/<name>/tree.mjs`) as a callable tool, plus its guide. */
 async function buildAppTreeTools(
   platform: Platform,
   ctx: { models: unknown; tools: unknown; logger: MemoryLogger; onEmit: (value: unknown) => void },
-): Promise<Record<string, unknown>> {
+): Promise<{ tools: Record<string, unknown>; guides: Map<string, string> }> {
   const apps = await listAppTrees(platform.workspaceRoot).catch(() => []);
-  const out: Record<string, unknown> = {};
+  const tools: Record<string, unknown> = {};
+  const guides = new Map<string, string>();
   for (const app of apps) {
-    out[app.name] = {
+    if (app.guide && app.guide.trim()) guides.set(app.name, app.guide);
+    tools[app.name] = {
       description: app.description,
       parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
       execute: async (args: Record<string, unknown>) => {
@@ -181,7 +183,7 @@ async function buildAppTreeTools(
       },
     };
   }
-  return out;
+  return { tools, guides };
 }
 
 async function handleRun(opts: RunOptions): Promise<void> {
@@ -216,13 +218,15 @@ async function handleRun(opts: RunOptions): Promise<void> {
   const onEmit = (value: unknown): void => post({ id: opts.id, type: "emit", value });
   const toolsMap: Record<string, unknown> = { ...browserTools(platform, { remote: opts.remote ?? "" }) };
   const tools = withStubs(toolsMap);
-  Object.assign(toolsMap, await buildAppTreeTools(platform, { models, tools, logger: session.logger, onEmit }));
+  const appTree = await buildAppTreeTools(platform, { models, tools, logger: session.logger, onEmit });
+  Object.assign(toolsMap, appTree.tools);
 
-  // Host-tool guidance comes from the shared module, so the browser and Node
+  // Host + app guidance comes from the shared module, so the browser and Node
   // targets teach the model the same tool etiquette. Stubs are excluded so a
   // guide never points at a tool this target only stands in for.
   const guide = assembleGuides({
     hostGuides: HOST_GUIDES,
+    appGuides: appTree.guides,
     inScope: Object.keys(toolsMap).filter((name) => !STUB_TOOL_NAMES.includes(name)),
   });
 
@@ -236,7 +240,11 @@ async function handleRun(opts: RunOptions): Promise<void> {
 
   let res: { result?: unknown; status?: string; continuation?: string; humanSlot?: unknown };
   if (session.continuation) {
-    res = (await resume(session.continuation, { ...runtime, humanInput: task })) as typeof res;
+    res = (await resume(session.continuation, {
+      ...runtime,
+      memory: { guide },
+      humanInput: task,
+    })) as typeof res;
   } else {
     const pattern = await loadPattern(platform, patternPath);
     res = (await knit(pattern, { ...runtime, memory: { guide } })) as typeof res;

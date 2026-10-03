@@ -55,7 +55,9 @@ export const HOST_GUIDES: HostGuide[] = [
  * Join the guidance that applies to a set of in-scope tool names:
  *  - a host guide is included when any of its tools is in scope;
  *  - an app/tree guide is included when its name is in scope.
- * Identical text is deduplicated; the order is host, then tree, then app.
+ * An app/tree guide is prefixed with its tool name, so "call this tree" in the
+ * guide is unambiguously tied to the tool the model must call. Identical text is
+ * deduplicated; the order is host, then tree, then app.
  */
 export function assembleGuides(opts: {
   hostGuides?: HostGuide[];
@@ -72,15 +74,20 @@ export function assembleGuides(opts: {
     seen.add(t);
     parts.push(t);
   };
+  const addNamed = (name: string, guide: string) => {
+    const t = String(guide ?? "").trim();
+    if (!t) return;
+    add(`Tool "${name}": ${t}`);
+  };
 
   for (const { tools, guide } of opts.hostGuides ?? []) {
     if (tools.some((t) => scope.has(t))) add(guide);
   }
   for (const [name, guide] of [...(opts.treeGuides ?? new Map())].sort(([a], [b]) => a.localeCompare(b))) {
-    if (scope.has(name)) add(guide);
+    if (scope.has(name)) addNamed(name, guide);
   }
   for (const [name, guide] of [...(opts.appGuides ?? new Map())].sort(([a], [b]) => a.localeCompare(b))) {
-    if (scope.has(name)) add(guide);
+    if (scope.has(name)) addNamed(name, guide);
   }
   return parts.join("\n\n");
 }
