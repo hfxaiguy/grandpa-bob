@@ -764,6 +764,10 @@ export function buildChatHtml(config: UiConfig, sttLabel: string): string {
   #health-dots .hdot i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--muted); }
   #health-dots .hdot.up i { background: var(--green); }
   #health-dots .hdot.down i { background: var(--red); }
+  #session-id-wrap { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; }
+  #session-id-wrap[hidden] { display: none; }
+  #session-id { font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 3px 7px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #session-id-copy { background: #475569; font-size: 11px; padding: 4px 8px; }
   #session-bar { display: flex; gap: 8px; align-items: center; padding: 8px 16px; background: #263449; border-bottom: 1px solid var(--border); font-size: 13px; }
   #session-bar select { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; padding: 4px 8px; max-width: 340px; }
   #input:disabled, #send-btn:disabled, #mic-btn:disabled, #file-btn:disabled { opacity: 0.4; }
@@ -896,6 +900,10 @@ export function buildChatHtml(config: UiConfig, sttLabel: string): string {
   <h1>grandpa-bob</h1>
   <span class="sub">${sttLabel}</span>
   <span id="health-dots" title="service health — green up, red down, grey not configured"></span>
+  <span id="session-id-wrap" hidden title="active session id">
+    <span id="session-id"></span>
+    <button id="session-id-copy" title="copy session id">copy</button>
+  </span>
   <select id="pattern-sel" title="tree to run (patterns/*.mjs or app/*/tree.mjs)"></select>
   <select id="ref-sel" title="version used by NEW sessions (running sessions keep their pinned version)"></select>
   <button id="tree-btn" title="show the structure of the active tree">tree</button>
@@ -2038,7 +2046,7 @@ function connect() {
       conv.innerHTML = ""; blocks.clear(); rendered.clear(); showEmpty(); treeMemory.clear(); for (const btn of treeMemBtns.values()) btn.textContent = "(no value)";
       // Re-check whether a session is still active (deleting the active
       // one drops us back to the picker).
-      refreshSessionOptions().then((d) => setSessionUi(!!d.active)).catch(() => setSessionUi(false));
+      refreshSessionOptions().then((d) => setSessionUi(!!d.active, d.active)).catch(() => setSessionUi(false));
     }
     else if (msg.type === "trees") {
       // A version or tree changed in-process: re-sync the selectors now
@@ -2078,8 +2086,40 @@ function renderTurns(list) {
   }
 }
 
-function setSessionUi(active) {
+function setSessionId(key) {
+  const wrap = $("session-id-wrap");
+  const code = $("session-id");
+  if (!key) { wrap.hidden = true; code.textContent = ""; code.removeAttribute("title"); return; }
+  code.textContent = key;
+  code.title = key;
+  wrap.hidden = false;
+}
+
+function copySessionId() {
+  const text = $("session-id").textContent || "";
+  if (!text) return;
+  const fallback = () => {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch { ok = false; }
+    ta.remove();
+    if (ok) toast("session id copied"); else toast("copy failed", true);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast("session id copied")).catch(fallback);
+  } else {
+    fallback();
+  }
+}
+
+function setSessionUi(active, key) {
   sessionActive = active;
+  setSessionId(active ? key : null);
   $("session-bar").hidden = active;
   $("input").disabled = !active;
   $("send-btn").disabled = !active;
@@ -2118,7 +2158,7 @@ async function loadHistory() {
     if (d.active) renderTurns(d.turns);
     trackedActive = d.active || null;
     trackedUpdatedAt = activeUpdatedAt(d);
-    setSessionUi(!!d.active);
+    setSessionUi(!!d.active, d.active);
   } catch {
     setSessionUi(false); // server unreachable — input stays locked
   }
@@ -2141,7 +2181,7 @@ async function checkFollow() {
       rendered.clear();
       showEmpty();
       if (active) { renderTurns(d.turns); hideEmpty(); }
-      setSessionUi(!!active);
+      setSessionUi(!!active, active);
       if (active) toast("now following: " + (d.label || active));
       return;
     }
@@ -2150,7 +2190,7 @@ async function checkFollow() {
       const missing = (d.turns || []).filter((t) => !rendered.has(t.turnId));
       if (missing.length) { renderTurns(missing); hideEmpty(); }
     }
-    setSessionUi(!!active);
+    setSessionUi(!!active, active);
   } catch { /* transient */ }
 }
 setInterval(() => { if (!document.hidden) checkFollow(); }, 7000);
@@ -2170,7 +2210,7 @@ async function chooseSession(body) {
     showEmpty();
     renderTurns(d.turns);
     trackedActive = d.active || null;
-    setSessionUi(true);
+    setSessionUi(true, d.active);
     treeLoadedFor = null;
     treeVisited.clear();
     treeActive = null;
@@ -2188,6 +2228,7 @@ $("session-resume").onclick = () => {
   });
 };
 $("session-new").onclick = () => chooseSession({ new: true });
+$("session-id-copy").onclick = copySessionId;
 
 showEmpty();
 loadHistory();
