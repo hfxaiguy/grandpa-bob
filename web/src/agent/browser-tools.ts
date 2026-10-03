@@ -6,6 +6,7 @@ import { FileTools } from "../../../src/tools/files";
 import { SqliteTools } from "../../../src/tools/sqlite";
 import { runCommand } from "../../../src/platform/coreutils";
 import type { Platform } from "../../../src/platform/types";
+import { gitFetch, gitLog, gitPush, gitStatus } from "../platform/git-opfs";
 
 type Args = Record<string, unknown>;
 export interface KatTool {
@@ -14,9 +15,15 @@ export interface KatTool {
   execute: (args: Args) => Promise<unknown>;
 }
 
-export function browserTools(platform: Platform): Record<string, KatTool> {
+export interface BrowserToolOptions {
+  /** Git remote to fetch/push (from settings/`?remote=`). */
+  remote?: string;
+}
+
+export function browserTools(platform: Platform, opts: BrowserToolOptions = {}): Record<string, KatTool> {
   const files = new FileTools(platform);
   const sqlite = new SqliteTools(platform);
+  const root = platform.workspaceRoot;
 
   return {
     list_files: {
@@ -98,11 +105,43 @@ export function browserTools(platform: Platform): Record<string, KatTool> {
       execute: async (a) =>
         ({
           output: await runCommand(
-            { fs: platform.fs, path: platform.path, workspaceRoot: platform.workspaceRoot },
+            { fs: platform.fs, path: platform.path, workspaceRoot: root },
             String(a.command ?? ""),
             Array.isArray(a.args) ? (a.args as unknown[]).map(String) : [],
           ),
         }),
+    },
+    git_status: {
+      description: "Show the workspace git branch and changed files.",
+      parameters: { type: "object", properties: {} },
+      execute: async () => gitStatus(root),
+    },
+    git_log: {
+      description: "Show recent workspace git commits.",
+      parameters: { type: "object", properties: { depth: { type: "integer" } } },
+      execute: async (a) => ({ commits: await gitLog(root, a.depth ? Number(a.depth) : 5) }),
+    },
+    git_commit: {
+      description: "Commit workspace files (paths) with a message.",
+      parameters: {
+        type: "object",
+        properties: { message: { type: "string" }, paths: { type: "array", items: { type: "string" } } },
+        required: ["message"],
+      },
+      execute: async (a) => {
+        const paths = Array.isArray(a.paths) && a.paths.length ? (a.paths as unknown[]).map(String) : ["."];
+        return { commit: await platform.git.autoCommit(paths, String(a.message ?? "agent commit")) };
+      },
+    },
+    git_fetch: {
+      description: "Fetch updates from the configured git remote.",
+      parameters: { type: "object", properties: {} },
+      execute: async () => gitFetch(root, opts.remote ?? ""),
+    },
+    git_push: {
+      description: "Push the workspace branch to the configured git remote.",
+      parameters: { type: "object", properties: {} },
+      execute: async () => gitPush(root, opts.remote ?? ""),
     },
   };
 }

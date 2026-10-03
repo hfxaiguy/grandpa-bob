@@ -27,6 +27,47 @@ export async function cloneWorkspace(root: string, url: string): Promise<void> {
   await git.clone({ fs, http, dir: root, url, singleBranch: true });
 }
 
+let sharedOpfs: OPFS | null = null;
+async function gitFs(): Promise<GitFs> {
+  if (!sharedOpfs) sharedOpfs = new OPFS({ useSync: false });
+  await (sharedOpfs as unknown as { ready?: () => Promise<void> }).ready?.();
+  return sharedOpfs as unknown as GitFs;
+}
+
+/** Working-tree changes and current branch. */
+export async function gitStatus(root: string): Promise<unknown> {
+  const fs = await gitFs();
+  const matrix = await git.statusMatrix({ fs, dir: root });
+  const changes = matrix
+    .filter(([, head, workdir, stage]) => !(head === 1 && workdir === 1 && stage === 1))
+    .map(([filepath, head, workdir, stage]) => ({ path: filepath, head, workdir, stage }));
+  const branch = await git.currentBranch({ fs, dir: root, fullname: false }).catch(() => null);
+  return { branch, changes };
+}
+
+/** Recent commits (short). */
+export async function gitLog(root: string, depth = 5): Promise<unknown> {
+  const fs = await gitFs();
+  const commits = await git.log({ fs, dir: root, depth });
+  return commits.map((c) => ({ oid: c.oid.slice(0, 7), message: c.commit.message.split("\n")[0] }));
+}
+
+/** Fetch updates from the configured remote. */
+export async function gitFetch(root: string, url: string): Promise<unknown> {
+  if (!url) throw new Error("no git remote configured");
+  const fs = await gitFs();
+  const result = await git.fetch({ fs, http, dir: root, url, singleBranch: true });
+  return { fetched: result.fetchHead?.slice(0, 7) ?? null };
+}
+
+/** Push the current branch to the configured remote. */
+export async function gitPush(root: string, url: string): Promise<unknown> {
+  if (!url) throw new Error("no git remote configured");
+  const fs = await gitFs();
+  const result = await git.push({ fs, http, dir: root, url });
+  return { ok: result.ok, refs: Object.fromEntries(Object.entries(result.refs ?? {}).map(([k, v]) => [k, String(v).slice(0, 7)])) };
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     promise,

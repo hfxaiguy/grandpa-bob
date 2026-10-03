@@ -19,7 +19,7 @@ function post(message: unknown): void {
   (self as unknown as Worker).postMessage(message);
 }
 
-async function handleRun(id: number, task: string, env: Record<string, string>, patternPath: string): Promise<void> {
+async function handleRun(id: number, task: string, env: Record<string, string>, patternPath: string, remote: string): Promise<void> {
   await ready;
 
   const events: unknown[] = [];
@@ -27,7 +27,7 @@ async function handleRun(id: number, task: string, env: Record<string, string>, 
     events.push(event);
     post({ id, type: "event", event });
   });
-  const tools = browserTools(platform);
+  const tools = browserTools(platform, { remote });
 
   // Load the real pattern from the OPFS workspace. Falls back to a built-in
   // deterministic tree when the pattern file is absent.
@@ -61,10 +61,17 @@ async function handleRun(id: number, task: string, env: Record<string, string>, 
 }
 
 self.onmessage = async (ev: MessageEvent) => {
-  const msg = ev.data as { id: number; type: string; task?: string; env?: Record<string, string>; pattern?: string };
+  const msg = ev.data as {
+    id: number;
+    type: string;
+    task?: string;
+    env?: Record<string, string>;
+    pattern?: string;
+    remote?: string;
+  };
   if (msg.type !== "run") return;
   try {
-    await handleRun(msg.id, msg.task ?? "", msg.env ?? {}, msg.pattern ?? "patterns/agent_demo.mjs");
+    await handleRun(msg.id, msg.task ?? "", msg.env ?? {}, msg.pattern ?? "patterns/agent_demo.mjs", msg.remote ?? "");
   } catch (err) {
     post({
       id: msg.id,

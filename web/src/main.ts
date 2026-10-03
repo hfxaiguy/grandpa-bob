@@ -31,6 +31,8 @@ const chatInput = document.getElementById("chat-input") as HTMLInputElement;
 const chatSend = document.getElementById("chat-send") as HTMLButtonElement;
 const agent = new AgentClient();
 let agentReady = false;
+/** Git remote configured for this session (settings or ?remote=). */
+let configuredRemote = "";
 
 function appendMessage(role: "user" | "assistant", text: string): void {
   const div = document.createElement("div");
@@ -55,7 +57,7 @@ chatForm.addEventListener("submit", (event) => {
   chatInput.value = "";
   chatSend.disabled = true;
   void agent
-    .run(text, loadEnv())
+    .run(text, loadEnv(), "patterns/agent_demo.mjs", configuredRemote)
     .then(({ result }) => appendMessage("assistant", answerText(result)))
     .catch((err: unknown) => appendMessage("assistant", `error: ${err instanceof Error ? err.message : String(err)}`))
     .finally(() => {
@@ -212,11 +214,28 @@ async function bootstrapWorkspace(root: string): Promise<void> {
       "",
     ].join("\n"),
   );
+  await fs.writeFile(
+    path.join(root, "patterns", "git_demo.mjs"),
+    [
+      'import { Tree, name, Call, Tools, Return } from "grandma-kat";',
+      "",
+      "const pattern = Tree(",
+      '  name("git_demo"),',
+      '  Tools("git_status", "git_log"),',
+      '  Call("status", "git_status", {}),',
+      '  Call("log", "git_log", {}),',
+      "  Return((m) => ({ status: m.branch.status, log: m.branch.log })),",
+      ");",
+      "",
+      "export default pattern;",
+      "",
+    ].join("\n"),
+  );
 }
 
 async function agentDemo(root: string): Promise<void> {
   await bootstrapWorkspace(root);
-  const { result, events } = await agent.run("the notes file", loadEnv(), "patterns/multi.mjs");
+  const { result, events } = await agent.run("the notes file", loadEnv(), "patterns/multi.mjs", configuredRemote);
   log(`agent-worker: events=${events.length}`);
   log(`agent-worker: result=${JSON.stringify(result)}`);
   const answer = (result as { answer?: unknown })?.answer;
@@ -260,6 +279,7 @@ async function prepareWorkspace(root: string): Promise<void> {
   const { fs, path } = platform;
   const params = new URLSearchParams(location.search);
   const remote = params.get("remote") ?? loadRemote();
+  configuredRemote = remote;
   const isDir = (p: string): Promise<boolean> => fs.stat(p).then(() => true).catch(() => false);
 
   if (!remote) {
@@ -329,6 +349,15 @@ async function main(): Promise<void> {
   await agentDemo(root);
   log("");
   await gitDemo(root);
+  log("");
+  const gitTools = await agent.run("", loadEnv(), "patterns/git_demo.mjs", configuredRemote);
+  const gitResult = gitTools.result as {
+    status?: { branch?: string; changes?: unknown[] };
+    log?: { commits?: unknown[] };
+  };
+  log(
+    `git-tools: branch=${gitResult?.status?.branch ?? "?"} changes=${gitResult?.status?.changes?.length ?? "?"} commits=${gitResult?.log?.commits?.length ?? "?"}`,
+  );
   log("");
   await durabilityDemo();
   log("");
