@@ -272,6 +272,14 @@ export class Agent {
     const katTools = this.deps.tools.toKatTools();
     const treeTools = await this.discoverTreeTools();
 
+    // Guidance for the tools in scope (host + app + tree), assembled by the
+    // registry so nothing about "how to use a tool" lives in the trunk.
+    const treeGuides = Object.entries(treeTools).map(([name, tool]) => ({
+      name,
+      guide: String((tool as { guide?: unknown } | null)?.guide ?? ""),
+    }));
+    const guide = this.deps.tools.toolGuide({ treeGuides });
+
     // Resolve the session's pinned version. A fresh session adopts the
     // active ref; a resumed session keeps the ref it started on, so editing
     // or promoting another version never disturbs it.
@@ -358,6 +366,7 @@ export class Agent {
           messages: [],
           workspace: this.deps.workspace,
           main_input: humanInput,
+          guide,
           ...(needsInput ? { input: humanInput } : {}),
         },
       });
@@ -536,6 +545,7 @@ export class Agent {
             ...(required.length ? { required } : {}),
           },
           tree: source.name,
+          guide: source.guide ?? "",
         };
       } catch (error) {
         // Helper modules (e.g. patterns/shared.mjs) and broken trees land

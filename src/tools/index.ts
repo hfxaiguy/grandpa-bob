@@ -8,6 +8,7 @@ import { DuckdbTools } from "./duckdb.js";
 import { GitTools, GIT_DEFINITIONS } from "./git-tools.js";
 import { createNodePlatform } from "../platform/node.js";
 import type { AppTool } from "../app-tools.js";
+import { assembleGuides, HOST_GUIDES } from "../tool-guides.js";
 
 type Json = Record<string, unknown>;
 
@@ -367,6 +368,28 @@ export class ToolRegistry {
     } catch (err) {
       return `error: ${err instanceof Error ? err.message : String(err)}`;
     }
+  }
+
+  /**
+   * Prompt guidance for the tools in scope, assembled here (next to the tool
+   * definitions) from host guides, app-tool guides, and tree guides supplied
+   * by the caller. The result is injected as the trunk's `guide` memory slot.
+   */
+  toolGuide(opts: { treeGuides?: { name: string; guide: string }[]; inScope?: Iterable<string> } = {}): string {
+    const treeGuides = new Map(
+      (opts.treeGuides ?? []).filter((g) => g.guide && g.guide.trim()).map((g) => [g.name, g.guide]),
+    );
+    const names = new Set<string>(opts.inScope ?? []);
+    for (const d of this.definitions) {
+      if (d.type !== "function") continue;
+      if (d.function.name) names.add(d.function.name);
+    }
+    for (const n of treeGuides.keys()) names.add(n);
+    const appGuides = new Map<string, string>();
+    for (const tool of this.appTools.values()) {
+      if (tool.guide) appGuides.set(tool.name, tool.guide);
+    }
+    return assembleGuides({ hostGuides: HOST_GUIDES, appGuides, treeGuides, inScope: names });
   }
 
   /**

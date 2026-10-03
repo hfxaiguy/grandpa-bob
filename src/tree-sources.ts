@@ -42,7 +42,7 @@ export async function listAppTrees(workspaceDir: string) {
   const appDir = path.join(workspaceDir, "app");
   try {
     const entries = await readdir(appDir, { withFileTypes: true });
-    const out: { file: string; name: string; description: string; group: string }[] = [];
+    const out: { file: string; name: string; description: string; guide: string; group: string }[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const dir = path.join(appDir, entry.name);
@@ -55,6 +55,7 @@ export async function listAppTrees(workspaceDir: string) {
         file: `app/${entry.name}/tree.mjs`,
         name: entry.name,
         description: await appTreeDescription(dir),
+        guide: await appTreeGuide(dir),
         group: "app",
       });
     }
@@ -94,12 +95,38 @@ async function appTreeDescription(appDir: string): Promise<string> {
   return "(app tree)";
 }
 
+/** The spec's `## Guide` section (the agent-facing "how to use me" text), or "". */
+async function appTreeGuide(appDir: string): Promise<string> {
+  for (const file of ["tree.spec.md", "tree.md"]) {
+    try {
+      const lines = (await readFile(path.join(appDir, file), "utf8")).split("\n");
+      const out: string[] = [];
+      let inside = false;
+      for (const line of lines) {
+        const heading = line.match(/^##\s+(.*)$/);
+        if (heading) {
+          inside = heading[1].trim().toLowerCase() === "guide";
+          continue;
+        }
+        if (inside) out.push(line);
+      }
+      const text = out.join("\n").trim();
+      if (text) return text;
+    } catch {
+      // try the next file
+    }
+  }
+  return "";
+}
+
 /** One runnable logical tree, with the versions currently on disk. */
 export interface TreeSource {
   file: string;
   name: string;
   description: string;
   group: string;
+  /** Agent-facing guidance from the spec's `## Guide` section, when present. */
+  guide?: string;
   /** Version ids present, ascending (`["v1", "v2"]`). */
   versions: string[];
   /** Version ids whose paired `.spec.md` exists, ascending. */

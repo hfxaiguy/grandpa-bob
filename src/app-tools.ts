@@ -38,6 +38,12 @@ export interface AppTool {
   /** Set by the loader: owning app directory + its secret context. */
   app?: string;
   appContext?: AppToolContext;
+  /**
+   * Optional prompt guidance for the agent ("how to use this app well").
+   * Declared as a module-level `export const guide = "…"` in tools.mjs (a
+   * per-tool `guide` field wins). Never sent in the tool schema.
+   */
+  guide?: string;
 }
 
 /**
@@ -88,6 +94,9 @@ export async function loadAppTools(workspace: string, secrets?: SecretsStore): P
         names.add(appTool.name);
         appTool.app = entry.name;
         appTool.appContext = ctx;
+        if (!appTool.guide && typeof mod.guide === "string" && mod.guide.trim()) {
+          appTool.guide = mod.guide.trim();
+        }
         tools.push(appTool);
       }
     } catch (error) {

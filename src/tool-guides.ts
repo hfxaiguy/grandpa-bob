@@ -1,0 +1,76 @@
+// src/tool-guides.ts
+//
+// Prompt guidance for tools, kept out of the trunk. Each tool/app owns its own
+// "how to use me well" text; the registry (Node) and the browser worker both
+// assemble it with `assembleGuides`, so the two targets share one source for
+// host-tool guidance.
+//
+// This module is deliberately node-free: the browser build imports it too.
+
+export interface HostGuide {
+  /** Tool names this guidance covers; it is included if any is in scope. */
+  tools: string[];
+  guide: string;
+}
+
+/**
+ * Guidance owned by host tools (BOB's own tool set). App/tree guides come from
+ * the workspace; these are versioned with BOB.
+ */
+export const HOST_GUIDES: HostGuide[] = [
+  {
+    tools: ["read_runs"],
+    guide:
+      'RECALLING THE PAST: the run log records every past session. To answer ' +
+      '"what have we been doing", "who did I talk to recently", or "I just spoke ' +
+      'to her", call read_runs with mode "condensed" — the recent emit timeline ' +
+      "(what the bot told the user, newest first) — then mode \"expanded\" with an " +
+      "emit's seq for the trace behind it (the llm calls, tool calls and results). " +
+      "The emits carry the names the apps resolved, so recall does not depend on " +
+      'spelling, and the log is the source of truth for "recently", not the current ' +
+      "conversation.",
+  },
+  {
+    tools: ["git_status", "git_commit", "git_push", "git_fetch", "git_log"],
+    guide:
+      "GIT SYNC: the workspace is a git repository (every write_file/edit_file/" +
+      "delete_file is committed automatically). When the user asks to sync, push, " +
+      'or "sync workspace git to main", call git_status to see changes, then ' +
+      'git_commit with a short message, then git_push with branch "main", and ' +
+      "report what was committed and pushed. Never force-push or reset.",
+  },
+];
+
+/**
+ * Join the guidance that applies to a set of in-scope tool names:
+ *  - a host guide is included when any of its tools is in scope;
+ *  - an app/tree guide is included when its name is in scope.
+ * Identical text is deduplicated; the order is host, then tree, then app.
+ */
+export function assembleGuides(opts: {
+  hostGuides?: HostGuide[];
+  appGuides?: Map<string, string>;
+  treeGuides?: Map<string, string>;
+  inScope: Iterable<string>;
+}): string {
+  const scope = new Set(opts.inScope);
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  const add = (text: string) => {
+    const t = String(text ?? "").trim();
+    if (!t || seen.has(t)) return;
+    seen.add(t);
+    parts.push(t);
+  };
+
+  for (const { tools, guide } of opts.hostGuides ?? []) {
+    if (tools.some((t) => scope.has(t))) add(guide);
+  }
+  for (const [name, guide] of [...(opts.treeGuides ?? new Map())].sort(([a], [b]) => a.localeCompare(b))) {
+    if (scope.has(name)) add(guide);
+  }
+  for (const [name, guide] of [...(opts.appGuides ?? new Map())].sort(([a], [b]) => a.localeCompare(b))) {
+    if (scope.has(name)) add(guide);
+  }
+  return parts.join("\n\n");
+}

@@ -11,6 +11,7 @@ import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { createDesktopPlatform } from "../platform/desktop";
 import type { Platform } from "../../../src/platform/types";
 import { browserTools } from "./browser-tools";
+import { assembleGuides, HOST_GUIDES } from "../../../src/tool-guides";
 import { createMemoryLogger, type MemoryLogger } from "./logger";
 import { createModuleLoader } from "./module-loader";
 import { loadBrowserModels } from "./models";
@@ -79,6 +80,9 @@ async function handleRun(opts: RunOptions): Promise<void> {
   session.currentId = opts.id;
 
   const tools = browserTools(platform, { remote: opts.remote ?? "" });
+  // Host-tool guidance comes from the shared module, so the browser and Node
+  // targets teach the model the same tool etiquette.
+  const guide = assembleGuides({ hostGuides: HOST_GUIDES, inScope: Object.keys(tools) });
   const registry = await loadBrowserModels(platform, opts.env ?? {});
   const models =
     Object.keys(registry).length > 0
@@ -98,7 +102,7 @@ async function handleRun(opts: RunOptions): Promise<void> {
     res = (await resume(session.continuation, { ...runtime, humanInput: task })) as typeof res;
   } else {
     const pattern = await loadPattern(platform, patternPath);
-    res = (await knit(pattern, { ...runtime, memory: {} })) as typeof res;
+    res = (await knit(pattern, { ...runtime, memory: { guide } })) as typeof res;
     if (res.status === "waiting") {
       if (task) res = (await resume(res.continuation!, { ...runtime, humanInput: task })) as typeof res;
       else {
