@@ -7,7 +7,7 @@
  * storage backend; everything else — including git sync — is the shared UI.
  */
 import "./shims/process";
-import { setActiveFs } from "./shims/node-fs-promises";
+import { setActiveFs, setFsIndex } from "./shims/node-fs-promises";
 import { createBrowserPlatform, initSqlite } from "./platform/browser";
 import { createDesktopPlatform } from "./platform/desktop";
 import { AgentClient } from "./agent/agent-client";
@@ -120,6 +120,21 @@ async function ensureModels(platform: Platform): Promise<void> {
   );
 }
 
+/** Load the sync fs index so tree patterns' `appTreeNames()` works on this thread. */
+async function buildFsIndex(platform: Platform): Promise<void> {
+  const files: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    const entries = await platform.fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const full = platform.path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else files.push(full);
+    }
+  };
+  await walk(platform.workspaceRoot);
+  setFsIndex(files);
+}
+
 async function detectPattern(platform: Platform): Promise<string> {
   try {
     const sources = await listTreeSources(platform.workspaceRoot);
@@ -138,6 +153,7 @@ async function main(): Promise<void> {
 
   const platform = activePlatform();
   setActiveFs(platform.fs);
+  await buildFsIndex(platform);
   await ensureModels(platform);
 
   const pattern = await detectPattern(platform);

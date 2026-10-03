@@ -11,6 +11,9 @@ import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { createDesktopPlatform } from "../platform/desktop";
 import type { Platform } from "../../../src/platform/types";
 import { browserTools, STUB_TOOL_NAMES } from "./browser-tools";
+import { setActiveFs, setFsIndex } from "../shims/node-fs-promises";
+import { listAppTrees } from "../../../src/tree-sources";
+import { resolveTreeEntry } from "../../../src/tree-versions";
 import { assembleGuides, HOST_GUIDES } from "../../../src/tool-guides";
 import { createMemoryLogger, type MemoryLogger } from "./logger";
 import { createModuleLoader } from "./module-loader";
@@ -99,6 +102,88 @@ async function loadPattern(platform: Platform, patternPath: string): Promise<unk
   }
 }
 
+const indexed = new Set<string>();
+
+/** Build the sync fs index (used by `appTreeNames()` inside tree patterns). */
+async function ensureIndex(platform: Platform, key: string): Promise<void> {
+  if (indexed.has(key)) return;
+  const files: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    const entries = await platform.fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const full = platform.path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else files.push(full);
+    }
+  };
+  await walk(platform.workspaceRoot);
+  setFsIndex(files);
+  indexed.add(key);
+}
+
+const treeCache = new Map<string, Promise<unknown>>();
+
+/** Resolve + load a tree by logical name (or `name@ref`) from the workspace. */
+async function loadTreeRef(platform: Platform, name: string): Promise<unknown> {
+  const key = `${platform.workspaceRoot}|${name}`;
+  let pending = treeCache.get(key);
+  if (!pending) {
+    pending = (async () => {
+      const at = name.lastIndexOf("@");
+      const entry = await resolveTreeEntry(
+        platform.workspaceRoot,
+        at >= 0 ? name.slice(0, at) : name,
+        at >= 0 ? name.slice(at + 1) : null,
+      );
+      const file = entry?.file ?? `app/${name}/tree.mjs`;
+      const mod = await createModuleLoader(platform).load(file);
+      return (mod as { default?: unknown }).default ?? mod;
+    })();
+    treeCache.set(key, pending);
+  }
+  return pending;
+}
+
+/** Every runnable app tree (`app/<name>/tree.mjs`) as a callable tool. */
+async function buildAppTreeTools(
+  platform: Platform,
+  ctx: { models: unknown; tools: unknown; logger: MemoryLogger; onEmit: (value: unknown) => void },
+): Promise<Record<string, unknown>> {
+  const apps = await listAppTrees(platform.workspaceRoot).catch(() => []);
+  const out: Record<string, unknown> = {};
+  for (const app of apps) {
+    out[app.name] = {
+      description: app.description,
+      parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
+      execute: async (args: Record<string, unknown>) => {
+        try {
+          const def = await loadTreeRef(platform, app.name);
+          const res = (await knit(def, {
+            models: ctx.models as ModelRegistry,
+            tools: ctx.tools as Record<string, unknown>,
+            logger: ctx.logger,
+            loadTree: (name: string) => loadTreeRef(platform, name),
+            memory: { input: String(args.input ?? "") },
+            onEmit: ctx.onEmit,
+          })) as { result?: unknown; status?: string };
+          const text =
+            res.result != null
+              ? typeof res.result === "string"
+                ? res.result
+                : JSON.stringify(res.result)
+              : res.status === "waiting"
+                ? "the app tree paused for human input"
+                : "";
+          return { handled: true, text };
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : String(err) };
+        }
+      },
+    };
+  }
+  return out;
+}
+
 async function handleRun(opts: RunOptions): Promise<void> {
   const task = opts.task ?? "";
   const storage = opts.storage ?? "browser";
@@ -110,14 +195,9 @@ async function handleRun(opts: RunOptions): Promise<void> {
   const session = getSession(`${storage}|${server}|${patternPath}`);
   session.currentId = opts.id;
 
-  const tools = withStubs(browserTools(platform, { remote: opts.remote ?? "" }));
-  // Host-tool guidance comes from the shared module, so the browser and Node
-  // targets teach the model the same tool etiquette. Stubs are excluded so a
-  // guide never points at a tool this target only stands in for.
-  const guide = assembleGuides({
-    hostGuides: HOST_GUIDES,
-    inScope: Object.keys(tools).filter((name) => !STUB_TOOL_NAMES.includes(name)),
-  });
+  setActiveFs(platform.fs);
+  await ensureIndex(platform, `${storage}|${server}`);
+
   const registry = await (async (): Promise<ModelRegistry> => {
     if (opts.modelsJson && opts.modelsJson.trim()) {
       try {
@@ -133,12 +213,25 @@ async function handleRun(opts: RunOptions): Promise<void> {
       ? registry
       : { default: { model: "mock", handler: async () => ({ content: `mock: ${task}` }) } };
 
+  const onEmit = (value: unknown): void => post({ id: opts.id, type: "emit", value });
+  const toolsMap: Record<string, unknown> = { ...browserTools(platform, { remote: opts.remote ?? "" }) };
+  const tools = withStubs(toolsMap);
+  Object.assign(toolsMap, await buildAppTreeTools(platform, { models, tools, logger: session.logger, onEmit }));
+
+  // Host-tool guidance comes from the shared module, so the browser and Node
+  // targets teach the model the same tool etiquette. Stubs are excluded so a
+  // guide never points at a tool this target only stands in for.
+  const guide = assembleGuides({
+    hostGuides: HOST_GUIDES,
+    inScope: Object.keys(toolsMap).filter((name) => !STUB_TOOL_NAMES.includes(name)),
+  });
+
   const runtime = {
     models,
     tools,
     logger: session.logger,
-    loadTree: async () => null,
-    onEmit: (value: unknown) => post({ id: opts.id, type: "emit", value }),
+    loadTree: (name: string) => loadTreeRef(platform, name),
+    onEmit,
   };
 
   let res: { result?: unknown; status?: string; continuation?: string; humanSlot?: unknown };
