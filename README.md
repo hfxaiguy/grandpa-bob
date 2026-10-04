@@ -179,6 +179,38 @@ next message resumes inside the tree (the calling prompt round is replayed
 from the log, not re-sent to the model). Because tree tools are built fresh
 each turn, edits to an app tree take effect immediately — no restart.
 
+#### How a tree describes itself: description and `## Guide`
+
+When a tree is offered as a tool, the model that decides whether to call it
+sees two things drawn from the tree's spec:
+
+- **The first prose paragraph** of `app/<name>/tree.spec.md` (falling back to
+  `tree.md`, then `README.md`) becomes the tool's schema `description` — one
+  sentence saying what the tree is for. BOB appends a fixed line:
+  `Call this to run the "<name>" tree; the tree's result is returned as the
+  tool result.`
+- **The `## Guide` section** becomes longer usage guidance, assembled into the
+  `TOOL GUIDANCE` block of the calling prompt — but only when the tree is
+  inside that prompt's `Tools()` scope.
+
+Write `## Guide` for the **caller** — the model invoking the tree — and nobody
+else:
+
+- **When to call** it, in the caller's words ("To send an email, call this tree
+  with the request").
+- **What to pass** — the `Needs(...)` slots and what they mean.
+- **What to do with the result** — e.g. "relay the returned `text` — and nothing
+  else".
+- **Boundaries** — when not to call it, and what *not* to do by hand instead
+  ("do not write SQL against `email.db` by hand").
+
+Do **not** put the tree's implementation or authoring philosophy in it. "Write
+the tree in code, not prompts" is advice for the tree's own prompts and code; in
+a `## Guide` it is noise the caller cannot act on. Do not restate the short
+description either. Keep the section short — it rides in the caller's prompt on
+every turn. `app/email/tree.spec.md` and `app/contacts/tree.spec.md` are the
+shape to copy.
+
 ## Setup
 
 1. **Telegram bot**: create one with @BotFather, copy the token. Get your numeric
