@@ -7,6 +7,8 @@
 
 import type OpenAI from "openai";
 import { autoCommit, ensureRepo, git } from "./git.js";
+import { createNodePlatform } from "../platform/node.js";
+import { writeDatabaseDumps } from "../db-sync.js";
 
 export interface GitStatus {
   branch: string;
@@ -49,8 +51,10 @@ export class GitTools {
   /** Stage + commit workspace-relative paths (default all). */
   async commit(message: string, paths?: unknown): Promise<{ commit: string }> {
     await ensureRepo(this.workspace);
-    const relPaths = Array.isArray(paths) && paths.length ? (paths as unknown[]).map(String) : ["."];
-    const result = await autoCommit(this.workspace, relPaths, String(message || "agent commit"));
+    const relPaths = Array.isArray(paths) && paths.length ? (paths as unknown[]).map(String) : null;
+    // Committing the whole workspace also refreshes the app-DB text dumps.
+    if (!relPaths) await writeDatabaseDumps(createNodePlatform(this.workspace)).catch(() => {});
+    const result = await autoCommit(this.workspace, relPaths ?? ["."], String(message || "agent commit"));
     return { commit: result };
   }
 
@@ -118,6 +122,8 @@ export class GitTools {
   /** Push the current branch (unless one is given) to a remote (default: origin/first). */
   async push(remote = "", branch = ""): Promise<Record<string, unknown>> {
     try {
+      // A sync pushes the latest dumps, so commit them first.
+      await this.commit("sync: database dumps");
       const br = branch || (await git(this.workspace, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
       const rem = remote || (await this.defaultRemote());
       const output = await git(this.workspace, ["push", rem, br]);

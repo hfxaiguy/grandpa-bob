@@ -68,6 +68,25 @@ export async function gitPush(root: string, url: string, branch?: string): Promi
   return { ok: result.ok, refs: Object.fromEntries(Object.entries(result.refs ?? {}).map(([k, v]) => [k, String(v).slice(0, 7)])) };
 }
 
+/** Fetch and fast-forward the working tree (a real "pull"). */
+export async function gitPull(root: string, url: string, branch?: string): Promise<unknown> {
+  if (!url) throw new Error("no git remote configured");
+  const fs = await gitFs();
+  const ref =
+    branch ?? (await git.currentBranch({ fs, dir: root, fullname: false }).catch(() => null)) ?? "main";
+  await git.pull({
+    fs,
+    http,
+    dir: root,
+    url,
+    ref,
+    singleBranch: true,
+    fastForwardOnly: true,
+    author: { name: "BOB", email: "bob@browser" },
+  });
+  return { ok: true };
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     promise,
@@ -114,6 +133,7 @@ export function createOpfsGit(root: string): GitOps {
     log: (depth = 5) => gitLog(dir, depth),
     fetch: (url: string) => gitFetch(dir, url),
     push: (url: string, branch?: string) => gitPush(dir, url, branch),
+    pull: (url: string, branch?: string) => gitPull(dir, url, branch),
     async commitAll(message: string): Promise<string> {
       await (opfs as unknown as { ready?: () => Promise<void> }).ready?.();
       if (!(await hasRepo())) await withTimeout(git.init({ fs, dir, defaultBranch: "main" }), 4000, "init");

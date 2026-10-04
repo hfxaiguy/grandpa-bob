@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -67,3 +68,76 @@ export async function autoCommit(dir: string, relPaths: string[], message: strin
     return "failed";
   }
 }
+
+/** Stage every change (including deletions) and commit. */
+export async function commitAll(dir: string, message: string): Promise<string> {
+  await git(dir, ["add", "-A"]);
+  const status = await git(dir, ["status", "--porcelain"]);
+  if (!status.trim()) return "no-changes";
+  await git(dir, ["commit", "-q", "-m", message]);
+  return (await git(dir, ["rev-parse", "--short", "HEAD"])).trim();
+}
+
+export async function currentBranch(dir: string): Promise<string> {
+  return (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+}
+
+export async function fetchFrom(dir: string, remote: string, branch?: string): Promise<string> {
+  return git(dir, branch ? ["fetch", remote, branch] : ["fetch", remote]);
+}
+
+export async function pushTo(dir: string, remote: string, local: string, remoteBranch?: string): Promise<string> {
+  return git(dir, ["push", remote, `${local}:${remoteBranch ?? local}`]);
+}
+
+export async function pullFrom(dir: string, remote: string, branch: string): Promise<string> {
+  return git(dir, ["pull", "--no-edit", remote, branch]);
+}
+
+/** The advisory cross-device lock ref (see src/db-sync.ts). */
+export const SYNC_LOCK_REF = "refs/bob/sync-lock";
+
+/** A fresh, unique orphan commit to use as a lock value. */
+function makeLockCommit(dir: string, owner: string): string {
+  const tree = execFileSync("git", ["mktree"], { cwd: dir, input: "" }).toString().trim();
+  const message = `bob-sync-lock ${owner} ${Date.now()}`;
+  return execFileSync("git", ["commit-tree", tree, "-m", message], { cwd: dir }).toString().trim();
+}
+
+/**
+ * Take the sync lock by pushing a unique commit to `refs/bob/sync-lock`.
+ * Creating the ref (absent) succeeds; updating an existing ref with an
+ * unrelated commit is a non-fast-forward and is rejected — so this is an
+ * atomic create-if-absent. A lock older than `ttlMs` is broken and retried.
+ */
+export async function lockRef(dir: string, remote: string, owner: string, ttlMs: number): Promise<boolean> {
+  const commit = makeLockCommit(dir, owner);
+  const create = async (): Promise<boolean> => {
+    try {
+      await git(dir, ["push", remote, `${commit}:${SYNC_LOCK_REF}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (await create()) return true;
+  try {
+    const ls = (await git(dir, ["ls-remote", remote, SYNC_LOCK_REF])).trim();
+    const sha = ls.split(/\s+/)[0];
+    if (!sha) return create();
+    await git(dir, ["fetch", "--no-tags", remote, sha]);
+    const ts = Number((await git(dir, ["show", "-s", "--format=%ct", sha])).trim()) * 1000;
+    if (Number.isFinite(ts) && Date.now() - ts > ttlMs) {
+      await git(dir, ["push", remote, `:${SYNC_LOCK_REF}`]).catch(() => {});
+      return create();
+    }
+  } catch {
+    /* fall through: treat as held */
+  }
+  return false;
+}
+
+export async function unlockRef(dir: string, remote: string, _owner: string): Promise<void> {
+  await git(dir, ["push", remote, `:${SYNC_LOCK_REF}`]).catch(() => {});
+}
+

@@ -16,6 +16,7 @@ import { promoteTree, resolveTreeEntry, scanTreeVersions, snapshotTree } from ".
 import { serializeTree } from "../../../src/tree-serialize";
 import { createModuleLoader } from "../agent/module-loader";
 import { loadEnv, saveEnv, saveModelsJson } from "../settings";
+import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "../../../src/db-sync";
 
 export interface BackendResponse {
   status: number;
@@ -402,6 +403,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       const message = (parseBody<{ message?: string }>(body).message || "").trim() || "manual commit from admin UI";
       try {
         await platform.git.ensureRepo();
+        await writeDatabaseDumps(platform).catch(() => {});
         const hash = platform.git.commitAll
           ? await platform.git.commitAll(message)
           : await platform.git.autoCommit(["."], message);
@@ -415,11 +417,20 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       const posted = p.remote ?? "";
       const url = opts.remote || (/[:\/]/.test(posted) ? posted : "");
       if (!url) return { status: 400, body: { error: "set a git remote first" } };
+      const branch = posted || p.local || "master";
       try {
-        const out =
-          pathname === "/api/sync/push"
-            ? await platform.git.push?.(url, posted || p.local || "master")
+        if (pathname === "/api/sync/pull") {
+          const out = platform.git.pull
+            ? await platform.git.pull(url, branch)
             : await platform.git.fetch?.(url);
+          const dbSync = await applyDatabaseDumps(platform).catch(() => null);
+          return { status: 200, body: { ok: true, output: typeof out === "string" ? out : JSON.stringify(out ?? {}), dbSync } };
+        }
+        const out = await withSyncLock(platform, { remote: url }, async () => {
+          await writeDatabaseDumps(platform).catch(() => {});
+          await platform.git.commitAll?.("sync: database dumps").catch(() => {});
+          return platform.git.push?.(url, branch);
+        });
         return { status: 200, body: { ok: true, output: typeof out === "string" ? out : JSON.stringify(out ?? {}) } };
       } catch (err) {
         return { status: 200, body: { ok: false, error: err instanceof Error ? err.message : String(err) } };

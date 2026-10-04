@@ -25,6 +25,7 @@ import {
 } from "./settings";
 import { importWorkspace } from "./workspace-transfer";
 import { cloneWorkspace } from "./platform/git-opfs";
+import { applyDatabaseDumps } from "../../src/db-sync";
 import { listTreeSources } from "../../src/tree-sources";
 import type { Platform } from "../../src/platform/types";
 
@@ -98,11 +99,13 @@ async function prepareWorkspace(): Promise<void> {
       if (await isFile("/workspace")) await platform.fs.rm("/workspace");
       await cloneWorkspace("/workspace", configuredRemote);
     }
+    await applyDatabaseDumps(platform, { onlyMissing: true }).catch(() => {});
     setStatus("workspace ready");
     return;
   }
   setStatus("seeding workspace…");
   await seedWorkspace("/workspace", platform);
+  await applyDatabaseDumps(platform, { onlyMissing: true }).catch(() => {});
   setStatus("workspace ready");
 }
 

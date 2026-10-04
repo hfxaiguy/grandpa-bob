@@ -22,7 +22,17 @@ import type {
   SqliteFactory,
 } from "./types.js";
 import { ShellTools } from "../tools/shell.js";
-import { autoCommit, ensureRepo } from "../tools/git.js";
+import {
+  autoCommit,
+  commitAll,
+  currentBranch,
+  ensureRepo,
+  fetchFrom,
+  lockRef,
+  pullFrom,
+  pushTo,
+  unlockRef,
+} from "../tools/git.js";
 
 /** Node path ops. On Linux these are POSIX; use `posixPath`-equivalent output. */
 export const nodePathOps: PathOps = {
@@ -101,6 +111,15 @@ export function createNodePlatform(workspaceRoot: string, allowedCommands: strin
   const git: GitOps = {
     ensureRepo: () => ensureRepo(workspaceRoot),
     autoCommit: (paths, message) => autoCommit(workspaceRoot, paths, message),
+    commitAll: (message) => commitAll(workspaceRoot, message),
+    fetch: (remote, branch) => fetchFrom(workspaceRoot, remote, branch),
+    push: async (remote, branch) => {
+      const b = branch ?? (await currentBranch(workspaceRoot));
+      return pushTo(workspaceRoot, remote, b, b);
+    },
+    pull: (remote, branch) => pullFrom(workspaceRoot, remote, branch ?? "master"),
+    lockRef: (remote, owner, ttlMs) => lockRef(workspaceRoot, remote, owner, ttlMs),
+    unlockRef: (remote, owner) => unlockRef(workspaceRoot, remote, owner),
   };
   return {
     kind: "node",

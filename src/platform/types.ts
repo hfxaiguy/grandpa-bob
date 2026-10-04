@@ -53,8 +53,16 @@ export interface GitOps {
   log?(depth?: number): Promise<unknown>;
   fetch?(url: string, branch?: string): Promise<unknown>;
   push?(url: string, branch?: string): Promise<unknown>;
+  /** Fetch + fast-forward the working tree (a real "pull"). */
+  pull?(url: string, branch?: string): Promise<unknown>;
   /** Stage every change (including deletions) and commit. */
   commitAll?(message: string): Promise<string>;
+  /**
+   * Atomically take a remote lock ref (`refs/bob/sync-lock`). True when held.
+   * Only implemented where the git backend can create-if-absent (Node).
+   */
+  lockRef?(remote: string, owner: string, ttlMs: number): Promise<boolean>;
+  unlockRef?(remote: string, owner: string): Promise<void>;
 }
 
 /** One column in a statement's result set. */

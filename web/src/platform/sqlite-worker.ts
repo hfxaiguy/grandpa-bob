@@ -14,7 +14,8 @@ type Any = any;
 
 interface DbRecord {
   db: Any;
-  name: string;
+  /** Absolute workspace path, e.g. `/workspace/email.db`. */
+  path: string;
 }
 
 let sqlite3: Any = null;
@@ -24,8 +25,21 @@ const stmts = new Map<number, { stmt: Any; dbId: number }>();
 let nextDbId = 1;
 let nextStmtId = 1;
 
-function sanitize(workspacePath: string): string {
-  return workspacePath.replace(/[^a-zA-Z0-9._-]/g, "_") || "db.sqlite3";
+/**
+ * Databases live at their workspace path inside OPFS, so they are ordinary
+ * workspace files: the seed, git, file tools, and SQL all agree on one copy.
+ */
+function segments(p: string): string[] {
+  return String(p).split("/").filter((s) => s.length > 0 && s !== ".");
+}
+
+async function fileHandleFor(path: string): Promise<FileSystemFileHandle> {
+  const parts = segments(path);
+  const name = parts.pop();
+  if (!name) throw new Error(`invalid database path: ${path}`);
+  let dir = await navigator.storage.getDirectory();
+  for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: true });
+  return dir.getFileHandle(name, { create: true });
 }
 
 function ensureInit(): Promise<void> {
@@ -40,14 +54,10 @@ async function doInit(): Promise<void> {
   });
 }
 
-async function opfsDir(): Promise<FileSystemDirectoryHandle> {
-  return navigator.storage.getDirectory();
-}
-
-async function loadInto(db: Any, name: string): Promise<void> {
+async function loadInto(db: Any, path: string): Promise<void> {
   let bytes: Uint8Array;
   try {
-    const handle = await (await opfsDir()).getFileHandle(name);
+    const handle = await fileHandleFor(path);
     bytes = new Uint8Array(await (await handle.getFile()).arrayBuffer());
   } catch {
     return; // no existing database
@@ -61,7 +71,7 @@ async function loadInto(db: Any, name: string): Promise<void> {
 
 async function persist(rec: DbRecord): Promise<void> {
   const bytes = sqlite3.capi.sqlite3_js_db_export(rec.db.pointer) as Uint8Array;
-  const handle = await (await opfsDir()).getFileHandle(rec.name, { create: true });
+  const handle = await fileHandleFor(rec.path);
   const writable = await handle.createWritable();
   await writable.write(bytes as Parameters<typeof writable.write>[0]);
   await writable.close();
@@ -97,11 +107,11 @@ async function handle(op: string, msg: Any): Promise<unknown> {
     case "init":
       return true;
     case "open": {
-      const name = sanitize(String(msg.path));
+      const path = String(msg.path);
       const db = new sqlite3.oo1.DB(":memory:");
-      await loadInto(db, name);
+      await loadInto(db, path);
       const dbId = nextDbId++;
-      dbs.set(dbId, { db, name });
+      dbs.set(dbId, { db, path });
       return { dbId };
     }
     case "prepare": {

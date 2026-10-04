@@ -5,6 +5,7 @@
 import { FileTools } from "../../../src/tools/files";
 import { SqliteTools } from "../../../src/tools/sqlite";
 import { runCommand } from "../../../src/platform/coreutils";
+import { writeDatabaseDumps } from "../../../src/db-sync";
 import { runLogToolFromQuery } from "grandma-kat";
 import type { Platform } from "../../../src/platform/types";
 
@@ -152,8 +153,13 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         required: ["message"],
       },
       execute: async (a) => {
-        const paths = Array.isArray(a.paths) && a.paths.length ? (a.paths as unknown[]).map(String) : ["."];
-        return { commit: await platform.git.autoCommit(paths, String(a.message ?? "agent commit")) };
+        const paths = Array.isArray(a.paths) && a.paths.length ? (a.paths as unknown[]).map(String) : null;
+        const message = String(a.message ?? "agent commit");
+        if (!paths) {
+          await writeDatabaseDumps(platform).catch(() => {});
+          if (platform.git.commitAll) return { commit: await platform.git.commitAll(message) };
+        }
+        return { commit: await platform.git.autoCommit(paths ?? ["."], message) };
       },
     },
     git_fetch: {
@@ -163,12 +169,14 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         platform.git.fetch ? platform.git.fetch(opts.remote ?? "") : { error: "git fetch unavailable" },
     },
     git_push: {
-      description: "Commit is not implied: push the workspace branch to the remote (default branch 'main').",
+      description: "Commit database dumps, then push the workspace branch to the remote (default 'main').",
       parameters: { type: "object", properties: { branch: { type: "string" } } },
-      execute: async (a) =>
-        platform.git.push
-          ? platform.git.push(opts.remote ?? "", String(a.branch ?? "main"))
-          : { error: "git push unavailable" },
+      execute: async (a) => {
+        if (!platform.git.push) return { error: "git push unavailable" };
+        await writeDatabaseDumps(platform).catch(() => {});
+        await platform.git.commitAll?.("sync: database dumps").catch(() => {});
+        return platform.git.push(opts.remote ?? "", String(a.branch ?? "main"));
+      },
     },
     ...Object.fromEntries(STUB_TOOL_NAMES.map((n) => [n, notAvailable(n)])),
   };

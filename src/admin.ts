@@ -52,6 +52,7 @@ import {
 import { serializeTree } from "./tree-serialize.js";
 import { attachmentPrompt, saveAttachment, MAX_ATTACHMENT_BYTES } from "./attachments.js";
 import { createNodePlatform } from "./platform/node.js";
+import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "./db-sync.js";
 
 /** Secret config files are small (credentials, JSON, keys). */
 const MAX_SECRET_BYTES = 1024 * 1024;
@@ -1585,8 +1586,9 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         const local = JSON.parse(body).local || "master";
         const remote = JSON.parse(body).remote || local;
         const result = await gitSync(config.workspaceDir, "pull", local, remote);
+        const dbSync = await applyDatabaseDumps(createNodePlatform(config.workspaceDir)).catch(() => null);
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(result));
+        res.end(JSON.stringify({ ...result, dbSync }));
         return;
       }
 
@@ -1594,7 +1596,12 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         const body = await readBody(req);
         const local = JSON.parse(body).local || "master";
         const remote = JSON.parse(body).remote || local;
-        const result = await gitSync(config.workspaceDir, "push", local, remote);
+        const platform = createNodePlatform(config.workspaceDir);
+        const result = await withSyncLock(platform, { remote: "sync" }, async () => {
+          await writeDatabaseDumps(platform).catch(() => {});
+          await gitCommitAll(config.workspaceDir, "sync: database dumps");
+          return gitSync(config.workspaceDir, "push", local, remote);
+        });
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(result));
         return;
@@ -1603,6 +1610,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       if (req.method === "POST" && url.pathname === "/api/commit") {
         const body = await readBody(req);
         const msg = (JSON.parse(body).message || "manual commit from admin UI").trim();
+        await writeDatabaseDumps(createNodePlatform(config.workspaceDir)).catch(() => {});
         const result = await gitCommitAll(config.workspaceDir, msg);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(result));
