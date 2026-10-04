@@ -1,4 +1,5 @@
 import { resolveInWorkspace, toRel } from "../util/paths.js";
+import { flushDirtyDumps } from "../db-sync.js";
 import type { Platform } from "../platform/types.js";
 
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", "tmp"]);
@@ -74,7 +75,8 @@ export class FileTools {
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, content);
     const relPath = toRel(this.workspace, abs);
-    const hash = await git.autoCommit([relPath], `agent(write_file): ${relPath}`);
+    const dumps = await flushDirtyDumps(this.platform).catch(() => []);
+    const hash = await git.autoCommit([relPath, ...dumps], `agent(write_file): ${relPath}`);
     return `wrote ${content.length} chars to ${relPath} (commit: ${hash})`;
   }
 
@@ -93,7 +95,8 @@ export class FileTools {
     const updated = replaceAll ? content.split(oldString).join(newString) : content.replace(oldString, newString);
     await fs.writeFile(abs, updated);
     const relPath = toRel(this.workspace, abs);
-    const hash = await git.autoCommit([relPath], `agent(edit_file): ${relPath}`);
+    const dumps = await flushDirtyDumps(this.platform).catch(() => []);
+    const hash = await git.autoCommit([relPath, ...dumps], `agent(edit_file): ${relPath}`);
     return `edited ${relPath} (${count} replacement${count > 1 ? "s" : ""}, commit: ${hash})`;
   }
 
@@ -102,7 +105,8 @@ export class FileTools {
     const abs = this.resolve(rel);
     await fs.rm(abs); // errors if missing or a non-empty directory
     const relPath = toRel(this.workspace, abs);
-    const hash = await git.autoCommit([relPath], `agent(delete_file): ${relPath}`);
+    const dumps = await flushDirtyDumps(this.platform).catch(() => []);
+    const hash = await git.autoCommit([relPath, ...dumps], `agent(delete_file): ${relPath}`);
     return `deleted ${relPath} (commit: ${hash})`;
   }
 }

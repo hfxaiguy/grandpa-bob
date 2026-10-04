@@ -21,6 +21,11 @@ import type { Platform, SqliteDatabase } from "./platform/types.js";
 
 /** Workspace-relative directory holding the committed dumps. */
 export const SYNC_DIR = "db";
+/**
+ * Workspace-relative marker listing app DBs changed since the last dump.
+ * Kept under logs/scratch (already gitignored) so it is never committed.
+ */
+export const DIRTY_PATH = "logs/scratch/db-dirty";
 /** Workspace-relative path of the advisory git lock file. */
 export const LOCK_PATH = `${SYNC_DIR}/.sync-lock.json`;
 /** The lock is a lease: a stale lock is broken after this long. */
@@ -165,7 +170,78 @@ export async function writeDatabaseDumps(platform: Platform): Promise<string[]> 
       /* a broken/missing DB must not break the commit */
     }
   }
+  await clearDirty(platform, written);
   return written;
+}
+
+// ── dirty tracking ──────────────────────────────────────────────────────
+// A DB is "dirty" once something writes to it (SqliteTools.write marks it).
+// Cheap commit paths (per-file auto-commits, the auto-sync tick) then dump
+// only what changed instead of regenerating every dump.
+
+/** App DB names recorded as changed since the last dump. */
+export async function readDirtyNames(platform: Platform): Promise<string[]> {
+  try {
+    const raw = await platform.fs.readFile(platform.path.join(platform.workspaceRoot, DIRTY_PATH), "utf8");
+    return [...new Set(raw.split("\n").map((s) => s.trim()).filter(Boolean))];
+  } catch {
+    return [];
+  }
+}
+
+/** Record that a workspace-root app DB changed. Best-effort, never throws. */
+export async function markDatabaseDirty(platform: Platform, name: string): Promise<void> {
+  // Only root-level app DBs are synced; ignore nested paths and non-.db files.
+  if (!name || name.includes("/") || name.includes("\\") || !name.endsWith(".db")) return;
+  try {
+    const current = await readDirtyNames(platform);
+    if (current.includes(name)) return;
+    current.push(name);
+    const abs = platform.path.join(platform.workspaceRoot, DIRTY_PATH);
+    await platform.fs.mkdir(platform.path.dirname(abs), { recursive: true }).catch(() => {});
+    await platform.fs.writeFile(abs, current.join("\n") + "\n");
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Dump only the DBs marked dirty and return their dump paths (workspace-
+ * relative, ready to stage). No-op when nothing is dirty. Names appended while
+ * dumping are kept for the next flush.
+ */
+export async function flushDirtyDumps(platform: Platform): Promise<string[]> {
+  const dirty = await readDirtyNames(platform);
+  if (dirty.length === 0) return [];
+  const available = new Set(await listSyncDatabases(platform));
+  const names = dirty.filter((n) => available.has(n));
+  const dir = platform.path.join(platform.workspaceRoot, SYNC_DIR);
+  await platform.fs.mkdir(dir, { recursive: true }).catch(() => {});
+  const written: string[] = [];
+  for (const name of names) {
+    try {
+      const sql = await dumpDatabase(platform, name);
+      await platform.fs.writeFile(platform.path.join(dir, `${name}.sql`), sql);
+      written.push(`${SYNC_DIR}/${name}.sql`);
+    } catch {
+      /* skip a broken DB */
+    }
+  }
+  await clearDirty(platform, names);
+  return written;
+}
+
+/** Remove `names` from the dirty marker (keep anything appended meanwhile). */
+async function clearDirty(platform: Platform, names: string[]): Promise<void> {
+  if (!names.length) return;
+  try {
+    const remaining = (await readDirtyNames(platform)).filter((n) => !names.includes(n));
+    const abs = platform.path.join(platform.workspaceRoot, DIRTY_PATH);
+    if (remaining.length) await platform.fs.writeFile(abs, remaining.join("\n") + "\n");
+    else await platform.fs.rm(abs);
+  } catch {
+    /* best-effort */
+  }
 }
 
 // ── apply ───────────────────────────────────────────────────────────────

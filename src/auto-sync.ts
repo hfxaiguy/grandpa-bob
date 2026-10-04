@@ -15,7 +15,7 @@
 // The run log is not touched here (it has its own retention).
 
 import type { Platform } from "./platform/types.js";
-import { applyDatabaseDumps, SYNC_DIR, withSyncLock, writeDatabaseDumps } from "./db-sync.js";
+import { applyDatabaseDumps, flushDirtyDumps, withSyncLock } from "./db-sync.js";
 
 export const DEFAULT_INTERVAL_MS = 5 * 60_000;
 export const MIN_INTERVAL_MS = 15_000;
@@ -87,14 +87,13 @@ export function createAutoSync(opts: AutoSyncOptions): AutoSync {
 
       // 2) dump + commit + push under the lock (node: real ref; browser: mutex).
       const out = await withSyncLock(opts.platform, { remote }, async () => {
-        const written = await writeDatabaseDumps(opts.platform).catch(() => []);
-        const paths = written.map((name) => `${SYNC_DIR}/${name}.sql`);
+        const paths = await flushDirtyDumps(opts.platform).catch(() => []);
         let committed = "no-changes";
         if (autoCommit && paths.length) {
           committed = await autoCommit(paths, "auto-sync: database dumps").catch((e) => `failed: ${message(e)}`);
         }
         if (gitPush) await gitPush(remote, branch);
-        return { written, committed };
+        return { written: paths, committed };
       });
 
       const result: AutoSyncResult = {

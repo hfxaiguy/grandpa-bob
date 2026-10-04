@@ -15,6 +15,7 @@
 
 import type { Platform } from "../platform/types.js";
 import { resolveInWorkspace } from "../util/paths.js";
+import { markDatabaseDirty } from "../db-sync.js";
 
 const MAX_ROWS = 100;
 const MAX_CELL = 200;
@@ -103,6 +104,9 @@ export class SqliteTools {
     if (!statement) throw new Error("no SQL statement provided");
 
     const database = this.resolveDatabase(pathArg);
+    // A write makes the app DB dirty, so a later cheap commit dumps only it.
+    const rel = this.platform.path.relative(this.platform.workspaceRoot, database);
+    if (rel && rel !== database) await markDatabaseDirty(this.platform, rel).catch(() => {});
     const db = await this.platform.sqlite.open(database, { readOnly: false });
     try {
       const stmt = await db.prepare(statement);
