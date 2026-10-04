@@ -264,7 +264,8 @@ export async function withSyncLock<T>(
     const deadline = Date.now() + 30_000;
     let held = false;
     while (!held) {
-      if (await lockRef(remote, owner, LOCK_TTL_MS).catch(() => false)) {
+      // lockRef throws (e.g. unreachable remote) rather than reporting "held".
+      if (await lockRef(remote, owner, LOCK_TTL_MS)) {
         held = true;
         break;
       }

@@ -840,6 +840,11 @@ let webQueue: Promise<void> = Promise.resolve();
 let activeTurns = 0;
 let pendingTurns = 0;
 
+/** True while a web turn is running; the auto-sync timer waits for a quiet moment. */
+export function isAdminBusy(): boolean {
+  return activeTurns > 0;
+}
+
 function broadcast(msg: unknown): void {
   const data = `data: ${JSON.stringify(msg)}\n\n`;
   for (const res of sseClients) {
@@ -1597,11 +1602,16 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         const local = JSON.parse(body).local || "master";
         const remote = JSON.parse(body).remote || local;
         const platform = createNodePlatform(config.workspaceDir);
-        const result = await withSyncLock(platform, { remote: "sync" }, async () => {
-          await writeDatabaseDumps(platform).catch(() => {});
-          await gitCommitAll(config.workspaceDir, "sync: database dumps");
-          return gitSync(config.workspaceDir, "push", local, remote);
-        });
+        let result: unknown;
+        try {
+          result = await withSyncLock(platform, { remote: "sync" }, async () => {
+            await writeDatabaseDumps(platform).catch(() => {});
+            await gitCommitAll(config.workspaceDir, "sync: database dumps");
+            return gitSync(config.workspaceDir, "push", local, remote);
+          });
+        } catch (err) {
+          result = { ok: false, output: err instanceof Error ? err.message : String(err) };
+        }
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(result));
         return;

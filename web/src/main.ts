@@ -26,6 +26,7 @@ import {
 import { importWorkspace } from "./workspace-transfer";
 import { cloneWorkspace } from "./platform/git-opfs";
 import { applyDatabaseDumps } from "../../src/db-sync";
+import { createAutoSync, DEFAULT_INTERVAL_MS } from "../../src/auto-sync";
 import { listTreeSources } from "../../src/tree-sources";
 import type { Platform } from "../../src/platform/types";
 
@@ -158,6 +159,17 @@ async function main(): Promise<void> {
   setActiveFs(platform.fs);
   await buildFsIndex(platform);
   await ensureModels(platform);
+
+  // Periodic two-way git sync (pull then push) when a remote is configured.
+  if (storageMode !== "desktop" && configuredRemote) {
+    const intervalMs = Number(localStorage.getItem("autoSyncIntervalMs") ?? "") || DEFAULT_INTERVAL_MS;
+    createAutoSync({
+      platform,
+      remote: () => configuredRemote,
+      intervalMs,
+      log: (m, r) => console.log(`[auto-sync] ${m}${r?.error ? `: ${r.error}` : ""}`),
+    }).start();
+  }
 
   const pattern = await detectPattern(platform);
   const agent = new AgentClient();

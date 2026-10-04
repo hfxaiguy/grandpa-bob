@@ -117,7 +117,8 @@ export function createNodePlatform(workspaceRoot: string, allowedCommands: strin
       const b = branch ?? (await currentBranch(workspaceRoot));
       return pushTo(workspaceRoot, remote, b, b);
     },
-    pull: (remote, branch) => pullFrom(workspaceRoot, remote, branch ?? "master"),
+    pull: async (remote, branch) =>
+      pullFrom(workspaceRoot, remote, branch ?? (await currentBranch(workspaceRoot))),
     lockRef: (remote, owner, ttlMs) => lockRef(workspaceRoot, remote, owner, ttlMs),
     unlockRef: (remote, owner) => unlockRef(workspaceRoot, remote, owner),
   };

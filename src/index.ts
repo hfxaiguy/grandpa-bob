@@ -3,13 +3,15 @@ import path from "node:path";
 // @ts-ignore — grandma-kat ships no .d.ts files.
 import { createLogger, runLogTools } from "grandma-kat";
 import { config } from "./config.js";
-import { ensureRepo, ensureWorkspaceGitignore } from "./tools/git.js";
+import { ensureRepo, ensureWorkspaceGitignore, defaultRemoteName } from "./tools/git.js";
 import { ToolRegistry } from "./tools/index.js";
 import { Agent, checkLlmEntry } from "./agent.js";
 import { loadModels } from "./models.js";
 import { createBot } from "./bot.js";
 import { checkStt } from "./stt.js";
-import { startAdmin, getSelectedPattern, getSelectedRef, telegramFollowKey, remoteTurnStart, remoteTurnEvent, remoteTurnEnd } from "./admin.js";
+import { startAdmin, getSelectedPattern, getSelectedRef, telegramFollowKey, remoteTurnStart, remoteTurnEvent, remoteTurnEnd, isAdminBusy } from "./admin.js";
+import { createNodePlatform } from "./platform/node.js";
+import { createAutoSync, DEFAULT_INTERVAL_MS, MIN_INTERVAL_MS } from "./auto-sync.js";
 import type { Bot } from "grammy";
 import { loadAppTools } from "./app-tools.js";
 import { SecretsStore } from "./secrets.js";
@@ -89,6 +91,23 @@ async function main(): Promise<void> {
     }
   } catch (err) {
     console.warn(`[tree-versions] startup prune skipped: ${err instanceof Error ? err.message : err}`);
+  }
+
+  // Periodic two-way git sync (pull then push). On by default when the
+  // workspace has a remote; set AUTO_SYNC=0 to disable, AUTO_SYNC_INTERVAL_MS
+  // to change the interval (min 15s).
+  const autoSyncRemote = await defaultRemoteName(config.workspaceDir);
+  if (autoSyncRemote && process.env.AUTO_SYNC !== "0") {
+    const intervalMs = Math.max(MIN_INTERVAL_MS, Number(process.env.AUTO_SYNC_INTERVAL_MS ?? "") || DEFAULT_INTERVAL_MS);
+    const autoSync = createAutoSync({
+      platform: createNodePlatform(config.workspaceDir),
+      remote: () => autoSyncRemote,
+      isBusy: () => isAdminBusy(),
+      intervalMs,
+      log: (m, r) => console.log(`[auto-sync] ${m}${r?.error ? `: ${r.error}` : ""}`),
+    });
+    autoSync.start();
+    console.log(`[auto-sync] every ${Math.round(intervalMs / 1000)}s via '${autoSyncRemote}'`);
   }
 
   const modelReachable = await Promise.all(

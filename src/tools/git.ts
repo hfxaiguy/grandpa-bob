@@ -82,6 +82,20 @@ export async function currentBranch(dir: string): Promise<string> {
   return (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
 }
 
+/** The remote to sync with: origin, else sync, else the first configured. */
+export async function defaultRemoteName(dir: string): Promise<string | null> {
+  try {
+    const names = (await git(dir, ["remote"]))
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (names.length === 0) return null;
+    return names.includes("origin") ? "origin" : names.includes("sync") ? "sync" : names[0];
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchFrom(dir: string, remote: string, branch?: string): Promise<string> {
   return git(dir, branch ? ["fetch", remote, branch] : ["fetch", remote]);
 }
@@ -109,30 +123,42 @@ function makeLockCommit(dir: string, owner: string): string {
  * Creating the ref (absent) succeeds; updating an existing ref with an
  * unrelated commit is a non-fast-forward and is rejected — so this is an
  * atomic create-if-absent. A lock older than `ttlMs` is broken and retried.
+ * An unreachable remote throws (so callers fail fast instead of retrying).
  */
 export async function lockRef(dir: string, remote: string, owner: string, ttlMs: number): Promise<boolean> {
   const commit = makeLockCommit(dir, owner);
-  const create = async (): Promise<boolean> => {
+
+  const attempt = async (): Promise<"ok" | "held" | "unreachable"> => {
     try {
       await git(dir, ["push", remote, `${commit}:${SYNC_LOCK_REF}`]);
-      return true;
-    } catch {
-      return false;
+      return "ok";
+    } catch (err) {
+      const e = err as { stderr?: string; stdout?: string; message?: string };
+      const text = `${e.stderr ?? ""} ${e.stdout ?? ""} ${e.message ?? ""}`;
+      return /non-fast-forward|\[rejected\]|failed to push|fetch first|remote contains work|stale info|already exists/i.test(text)
+        ? "held"
+        : "unreachable";
     }
   };
-  if (await create()) return true;
+
+  const first = await attempt();
+  if (first === "ok") return true;
+  if (first === "unreachable") throw new Error(`cannot reach git remote '${remote}'`);
+
+  // The ref exists. Break it if it is stale, otherwise it is genuinely held.
+  let ls: string;
   try {
-    const ls = (await git(dir, ["ls-remote", remote, SYNC_LOCK_REF])).trim();
-    const sha = ls.split(/\s+/)[0];
-    if (!sha) return create();
-    await git(dir, ["fetch", "--no-tags", remote, sha]);
-    const ts = Number((await git(dir, ["show", "-s", "--format=%ct", sha])).trim()) * 1000;
-    if (Number.isFinite(ts) && Date.now() - ts > ttlMs) {
-      await git(dir, ["push", remote, `:${SYNC_LOCK_REF}`]).catch(() => {});
-      return create();
-    }
+    ls = (await git(dir, ["ls-remote", remote, SYNC_LOCK_REF])).trim();
   } catch {
-    /* fall through: treat as held */
+    throw new Error(`cannot reach git remote '${remote}'`);
+  }
+  const sha = ls.split(/\s+/)[0];
+  if (!sha) return (await attempt()) === "ok";
+  await git(dir, ["fetch", "--no-tags", remote, sha]);
+  const ts = Number((await git(dir, ["show", "-s", "--format=%ct", sha])).trim()) * 1000;
+  if (Number.isFinite(ts) && Date.now() - ts > ttlMs) {
+    await git(dir, ["push", remote, `:${SYNC_LOCK_REF}`]).catch(() => {});
+    return (await attempt()) === "ok";
   }
   return false;
 }
