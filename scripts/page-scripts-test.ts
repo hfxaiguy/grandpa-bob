@@ -67,6 +67,10 @@ assert.match(chatHtml, /id="session-new"/, "new-session button present");
 assert.match(chatHtml, /id="health-dots"/, "chat header carries service health dots");
 assert.match(chatHtml, /loadHealth\(\);/, "health dots are populated on load");
 assert.match(chatHtml, /function checkFollow\(\)/, "follow watcher present");
+// A sent message is rendered immediately (an optimistic bubble replaced when
+// the turn starts), not held back until the SSE turn_start arrives.
+assert.match(chatHtml, /function addPending\(turnId, text, queued\)/, "pending bubble takes a queued flag");
+assert.match(chatHtml, /if \(d\.turnId\) addPending\(d\.turnId, text, d\.queued\);/, "send shows the message at once");
 
 // /api/status must report real service health (telegram / voice / llm),
 // each a tri-state (up/down/n-a) with a detail line — the old dots were a

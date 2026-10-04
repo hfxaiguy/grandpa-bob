@@ -947,6 +947,23 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
   while (session.turns.length > MAX_TURNS_KEPT) session.turns.shift();
   broadcast({ type: "turn_start", turnId, session: key, input: displayText, ts: record.startedAt });
 
+  // A web-run turn that belongs to (or is followed by) a Telegram chat is
+  // mirrored to the phone LIVE — the user's line now, each emit as it is
+  // produced, and any final/error line at turn end. Previously everything was
+  // sent once at turn end, so a long run (e.g. enrich-profile) left the phone
+  // silent until it finished. Sends share one chain to keep their order.
+  const mirrorTarget = key.startsWith("web:") ? webFollowTarget(key) : key;
+  let mirrorChain: Promise<void> = Promise.resolve();
+  const mirror = (text: string | null | undefined) => {
+    const target = mirrorTarget;
+    if (!telegramNotify || !target || !text) return;
+    const body = text;
+    mirrorChain = mirrorChain
+      .then(() => telegramNotify!(target, body))
+      .catch((e) => console.warn("[web-chat] telegram notify failed:", e));
+  };
+  mirror(`\ud83d\udcbb ${displayText}`);
+
   const onEvent = (e: unknown) => {
     trackMemoryWrite(e);
     const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0]);
@@ -976,6 +993,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
             record.output = record.output ? record.output + "\n\n" + text : text;
             (record.emits ??= []).push(text);
             (record.levels ??= []).push(level ?? null);
+            mirror(text);
           }
           // Stream it now; turn_end still carries the final list, so the UI
           // can overwrite whatever a rewound/retried branch emitted.
@@ -1012,24 +1030,13 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       ts: record.endedAt,
     });
     saveTurns();
-    // A browser-run turn belongs on the phone too: directly when it ran into
-    // a Telegram conversation, or via the reverse-follow binding when the
-    // phone has adopted this web session (send to telegram). A phone-run turn
-    // arrives through remoteTurn* instead, so it is never mirrored back.
-    const mirrorTarget = key.startsWith("web:") ? webFollowTarget(key) : key;
-    if (telegramNotify && mirrorTarget) {
-      const parts = record.status === "error"
-        ? [`\u26a0\ufe0f ${record.error ?? "error"}`]
-        : (record.emits?.length ? record.emits : [record.output ?? "(no reply)"]);
-      try {
-        // Send in order: each send is awaited so Telegram receives the user's
-        // line before the emits, and the emits in emit order. Firing them
-        // fire-and-forget races the HTTP calls and delivers out of order.
-        await telegramNotify(mirrorTarget, `\ud83d\udcbb ${displayText}`);
-        for (const body of parts) await telegramNotify(mirrorTarget, body);
-      } catch (e) {
-        console.warn("[web-chat] telegram notify failed:", e);
-      }
+    // The mirror was live (see `mirror` above): everything streamed already
+    // reached the phone. Send only what did not stream — the final result of a
+    // non-looping tree, or the error line — then flush the chain.
+    if (mirrorTarget) {
+      if (record.status === "error") mirror(`\u26a0\ufe0f ${record.error ?? "error"}`);
+      else if (!record.emits?.length && record.output) mirror(record.output);
+      await mirrorChain;
     }
   }
 }

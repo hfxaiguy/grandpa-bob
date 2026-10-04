@@ -1150,8 +1150,12 @@ async function copyTurnLog(turn, btn) {
 function startTurn(turnId, input) {
   // A re-sync may render a turn the SSE turn_start then repeats — and a turn
   // that already ENDED must never be appended a second time by a later
-  // re-sync (its block left the live map at turn_end).
-  if (blocks.has(turnId) || rendered.has(turnId)) return;
+  // re-sync (its block left the live map at turn_end). Drop the optimistic
+  // bubble the send added so it cannot linger beside the rendered turn.
+  if (blocks.has(turnId) || rendered.has(turnId)) {
+    conv.querySelector('.msg-user.pending[data-turnid="' + turnId + '"]')?.remove();
+    return;
+  }
   hideEmpty();
   // Only the newest turn's buttons stay live: an older pause's keyboard
   // must not accept a tap aimed at the current one.
@@ -1473,13 +1477,13 @@ function endTurn(turnId, status, error, output, buttons, emits, levels) {
   maybeScroll(true);
 }
 
-function addPending(turnId, text) {
+function addPending(turnId, text, queued) {
   const wrap = document.createElement("div");
   wrap.className = "msg-user pending";
   wrap.dataset.turnid = turnId;
   const tag = document.createElement("span");
   tag.className = "qtag";
-  tag.textContent = "queued";
+  tag.textContent = queued ? "queued" : "sending\\u2026";
   const bub = document.createElement("div");
   bub.className = "bubble";
   bub.textContent = text;
@@ -1498,7 +1502,10 @@ async function sendText(text) {
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { toast(d.error || "send failed", true); return; }
-    if (d.queued) addPending(d.turnId, text);
+    // Show the message immediately — do not wait for the SSE turn_start. The
+    // bubble is replaced in place when the turn renders (startTurn), or removed
+    // if the turn was already rendered by a re-sync.
+    if (d.turnId) addPending(d.turnId, text, d.queued);
     hideEmpty();
   } catch (e) {
     toast("send failed: " + e.message, true);
@@ -1515,7 +1522,7 @@ async function uploadAttachment(file) {
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { toast(d.error || "upload failed", true); return; }
     const display = caption ? caption + "\\n[attached: " + file.name + "]" : "[attached: " + file.name + "]";
-    if (d.queued) addPending(d.turnId, display);
+    if (d.turnId) addPending(d.turnId, display, d.queued);
     input.value = "";
     input.dispatchEvent(new Event("input"));
     hideEmpty();

@@ -32,6 +32,11 @@ function freePort(): Promise<number> {
 
 const sent: Array<{ key: string; text: string }> = [];
 const usedKeys: string[] = [];
+// Streaming checks for the mirrored "again" turn (bug fix: the phone must get
+// the user line at turn start and each emit as it is produced, not one batch
+// at turn end).
+let userLineMirroredBeforeRun: boolean | null = null;
+let emitMirroredDuringRun = false;
 const mockAgent = () =>
   ({
     sessionKeys: () => ["12345:0"],
@@ -43,7 +48,18 @@ const mockAgent = () =>
     clear() {},
     async run(key: string, content: unknown, onEmit?: (v: unknown) => void) {
       usedKeys.push(key);
-      if (onEmit) onEmit({ text: "echo:" + String(content) });
+      const c = String(content);
+      if (c === "again") {
+        userLineMirroredBeforeRun = sent.some(
+          (s) => s.key === "12345:0" && s.text.includes("\ud83d\udcbb") && s.text.includes("again"),
+        );
+      }
+      if (onEmit) onEmit({ text: "echo:" + c });
+      // Let the mirror chain's microtask run before the turn ends.
+      await new Promise((r) => setImmediate(r));
+      if (c === "again") {
+        emitMirroredDuringRun = sent.some((s) => s.key === "12345:0" && s.text.includes("echo:again"));
+      }
       return { status: "waiting", continuation: "mock:1" };
     },
   }) as any;
@@ -113,6 +129,8 @@ try {
   const mirrored = sent.slice(before).filter((s) => s.key === "12345:0");
   assert.ok(mirrored.some((s) => s.text.includes("again")), "web turn mirrored to the phone");
   assert.ok(mirrored.some((s) => s.text.includes("echo:again")), "web reply mirrored too");
+  assert.equal(userLineMirroredBeforeRun, true, "user line reached the phone before the run body");
+  assert.equal(emitMirroredDuringRun, true, "emit reached the phone before the turn ended (live, not batched)");
 
   // A Telegram-origin turn recorded under the web key lands in its transcript.
   mod.remoteTurnStart(webKey, "from phone");
