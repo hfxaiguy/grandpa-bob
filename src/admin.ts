@@ -492,6 +492,8 @@ interface TurnRecord {
   output: string | null;
   /** Chat-facing text of each emit, in order — one bubble per entry. */
   emits?: string[] | null;
+  /** Channel level per emit (parallel to `emits`): "machine", or null. */
+  levels?: (string | null)[] | null;
   /** Buttons of the last emit that carried any; null when none ever did. */
   buttons?: EmitButton[] | null;
   events: SanitizedEvent[];
@@ -965,17 +967,19 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       key,
       content,
       (value) => {
-        // Trees emit { text, buttons? }; the chat shows the text, not the JSON.
-        const { text, buttons } = emitValue(value);
+        // Trees emit { text, buttons? } or engine narration ({ machine, level? });
+        // the chat shows the text (a readable line for narration), never the JSON.
+        const { text, buttons, level } = emitValue(value);
         if (buttons?.length) record.buttons = buttons;
         if (text || buttons?.length) {
           if (text) {
             record.output = record.output ? record.output + "\n\n" + text : text;
             (record.emits ??= []).push(text);
+            (record.levels ??= []).push(level ?? null);
           }
           // Stream it now; turn_end still carries the final list, so the UI
           // can overwrite whatever a rewound/retried branch emitted.
-          broadcast({ type: "emit", turnId, text, buttons });
+          broadcast({ type: "emit", turnId, text, buttons, level });
         }
       },
       { onEvent },
@@ -1003,6 +1007,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       error: record.error,
       output: record.output,
       emits: record.emits ?? null,
+      levels: record.levels ?? null,
       buttons: record.buttons,
       ts: record.endedAt,
     });

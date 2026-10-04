@@ -853,6 +853,9 @@ export function buildChatHtml(config: UiConfig, sttLabel: string): string {
   .msg-answer { display: flex; gap: 8px; margin: 8px 0; align-items: flex-start; }
   .msg-answer .who { flex: none; font-size: 12px; font-weight: 700; color: var(--green); padding-top: 10px; }
   .msg-answer .bubble { background: var(--card); border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; padding: 10px 14px; max-width: 90%; white-space: pre-wrap; word-break: break-word; }
+  .msg-answer[data-level="machine"] .bubble { background: transparent; border-style: dashed; color: var(--muted); font: 12px ui-monospace, monospace; }
+  .msg-answer[data-level="machine"] .who { color: var(--muted); font-weight: 600; }
+  body.hide-machine .msg-answer[data-level="machine"] { display: none; }
   .emit-btns { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 6px 34px; }
   .emit-btn { background: var(--accent); color: #fff; border: none; padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
   .emit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -887,6 +890,8 @@ export function buildChatHtml(config: UiConfig, sttLabel: string): string {
   #tg-btn:disabled { opacity: 0.4; }
   #internals-btn { background: #475569; font-size: 12px; padding: 4px 10px; }
   #internals-btn.on { background: #2563eb; color: #fff; }
+  #machine-btn { background: #475569; font-size: 12px; padding: 4px 10px; }
+  #machine-btn.on { background: #2563eb; color: #fff; }
   body:not(.show-internals) .step.k-internals { display: none; }
   #tree-panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(430px, 92vw); background: #0b1224; border-left: 1px solid var(--border); transform: translateX(105%); transition: transform 0.22s ease; z-index: 21; display: flex; flex-direction: column; }
   #tree-panel.open { transform: none; box-shadow: 0 0 40px rgba(0,0,0,0.5); }
@@ -945,6 +950,7 @@ export function buildChatHtml(config: UiConfig, sttLabel: string): string {
   <button id="tree-btn" title="show the structure of the active tree">tree</button>
   <button id="tg-btn" title="send this session's transcript to your telegram chat">✈ telegram</button>
   <button id="internals-btn" title="show runtime bookkeeping steps (record, scope)">internals</button>
+  <button id="machine-btn" title="show or hide machine narration (engine &lt;&lt;! notes)">machine</button>
   <nav><a href="/settings">settings</a></nav>
 </header>
 <div id="session-bar" hidden>
@@ -1405,9 +1411,10 @@ function renderEmitButtons(block, buttons) {
   block.emitBtns = wrap;
 }
 
-function appendAnswer(block, text, withWho) {
+function appendAnswer(block, text, withWho, level) {
   const ans = document.createElement("div");
   ans.className = "msg-answer";
+  if (level) ans.dataset.level = level;
   const who = document.createElement("div");
   who.className = "who";
   who.textContent = withWho ? "bob" : "";
@@ -1421,16 +1428,16 @@ function appendAnswer(block, text, withWho) {
   return bub;
 }
 
-function emitToTurn(turnId, text, buttons) {
+function emitToTurn(turnId, text, buttons, level) {
   const block = blocks.get(turnId);
   if (!block) return;
   // One Emit = one bubble; the "bob" label rides the first only.
-  if (text) appendAnswer(block, text, (block.answerBubs || []).length === 0);
+  if (text) appendAnswer(block, text, (block.answerBubs || []).length === 0, level);
   if (buttons) renderEmitButtons(block, buttons);
   maybeScroll(false);
 }
 
-function endTurn(turnId, status, error, output, buttons, emits) {
+function endTurn(turnId, status, error, output, buttons, emits, levels) {
   const block = blocks.get(turnId);
   if (!block) return;
   blocks.delete(turnId);
@@ -1445,6 +1452,7 @@ function endTurn(turnId, status, error, output, buttons, emits) {
   // The authoritative reply: one bubble per emit. Older records (and remote
   // turns) carry only the joined output, so fall back to a single bubble.
   const texts = Array.isArray(emits) && emits.length ? emits : (output ? [output] : []);
+  const lvls = Array.isArray(levels) ? levels : [];
   if (texts.length) {
     const streamed = block.answerBubs || [];
     const matches = streamed.length === texts.length &&
@@ -1454,7 +1462,7 @@ function endTurn(turnId, status, error, output, buttons, emits) {
       // streamed and render the final list.
       for (const b of streamed) b.closest(".msg-answer")?.remove();
       block.answerBubs = [];
-      for (let i = 0; i < texts.length; i++) appendAnswer(block, texts[i], i === 0);
+      for (let i = 0; i < texts.length; i++) appendAnswer(block, texts[i], i === 0, lvls[i]);
     }
   }
   // Replay renders the settled buttons once; a live turn already streamed
@@ -1838,6 +1846,20 @@ $("internals-btn").onclick = () =>
 try {
   setInternals(localStorage.getItem(INTERNALS_KEY) === "1");
 } catch { setInternals(false); }
+
+// Machine narration (level "machine") is engine bookkeeping the chat can show
+// or hide; visible by default, toggled from the header.
+const MACHINE_KEY = "gb_show_machine";
+function setMachine(on) {
+  document.body.classList.toggle("hide-machine", !on);
+  $("machine-btn").classList.toggle("on", on);
+  try { localStorage.setItem(MACHINE_KEY, on ? "1" : "0"); } catch { /* private mode */ }
+}
+$("machine-btn").onclick = () =>
+  setMachine(document.body.classList.contains("hide-machine"));
+try {
+  setMachine(localStorage.getItem(MACHINE_KEY) !== "0");
+} catch { setMachine(true); }
 try {
   if (localStorage.getItem(TREE_OPEN_KEY) !== "0") setTreePanelOpen(true);
 } catch { setTreePanelOpen(true); }
@@ -2076,8 +2098,8 @@ function connect() {
     try { msg = JSON.parse(e.data); } catch { return; }
     if (msg.type === "turn_start") { startTurn(msg.turnId, msg.input); treeOnTurnStart(); }
     else if (msg.type === "event") { addStep(msg.turnId, msg.event); treeOnEvent(msg.event); }
-    else if (msg.type === "emit") { emitToTurn(msg.turnId, msg.text, msg.buttons); }
-    else if (msg.type === "turn_end") { endTurn(msg.turnId, msg.status, msg.error, msg.output, msg.buttons, msg.emits); treeOnTurnEnd(); }
+    else if (msg.type === "emit") { emitToTurn(msg.turnId, msg.text, msg.buttons, msg.level); }
+    else if (msg.type === "turn_end") { endTurn(msg.turnId, msg.status, msg.error, msg.output, msg.buttons, msg.emits, msg.levels); treeOnTurnEnd(); }
     else if (msg.type === "cleared") {
       conv.innerHTML = ""; blocks.clear(); rendered.clear(); showEmpty(); treeMemory.clear(); for (const btn of treeMemBtns.values()) btn.textContent = "(no value)";
       // Re-check whether a session is still active (deleting the active

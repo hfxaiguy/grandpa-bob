@@ -60,4 +60,25 @@ assert.equal(emitText({ text: "hi", buttons: [{ label: "a", value: "b" }] }), "h
 assert.equal(emitText("hi"), "hi");
 assert.equal(emitText(null), "");
 
+// ── 8. machine narration ({ machine }) is readable and tagged "machine" ──
+assert.deepEqual(
+  emitValue({ machine: { tree: "trunk", doing: "idle", at: "loop_input" } }),
+  { text: "trunk idle at loop_input", level: "machine" },
+);
+assert.deepEqual(
+  emitValue({ machine: { tree: "email", doing: "waiting", at: "reply", detail: "Send gate — draft to a@b" } }),
+  { text: "Send gate — draft to a@b", level: "machine" },
+);
+assert.deepEqual(
+  emitValue({ machine: { tree: "trunk", doing: "turn", priority: "Identify last enriched contact" } }),
+  { text: "trunk turn — Identify last enriched contact", level: "machine" },
+);
+
+// ── 9. an explicit level rides along, overriding the machine default ──
+assert.deepEqual(emitValue({ text: "hi", level: "debug" }), { text: "hi", level: "debug" });
+assert.deepEqual(
+  emitValue({ machine: { doing: "idle" }, level: "trace" }),
+  { text: "idle", level: "trace" },
+);
+
 console.log("emit-value-test: emit value parsing OK");
