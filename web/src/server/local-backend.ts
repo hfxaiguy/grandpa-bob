@@ -515,6 +515,57 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       writeSecrets(map);
       return { status: 200, body: { ok: true, app: appName, name: secretName, size: text.length } };
     }
+    // Import a desktop secrets.db (app_secrets table) into the localStorage
+    // store. Body: { base64 }. The uploaded DB is written to a temp OPFS path
+    // (not *.db, so the auto-sync dumper ignores it), read, then removed.
+    if (pathname === "/api/secrets/import" && method === "POST") {
+      const b64 = parseBody<{ base64?: string }>(body).base64 ?? "";
+      if (!b64) return { status: 400, body: { error: "base64 required" } };
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const tmpAbs = platform.path.join(platform.workspaceRoot, ".secrets-import.tmp");
+      try {
+        await platform.fs.writeFile(tmpAbs, bytes);
+        const db = await platform.sqlite.open(tmpAbs, { readOnly: true });
+        let imported = 0;
+        try {
+          const stmt = await db.prepare("SELECT app, name, content, content_type, updated_at FROM app_secrets");
+          const rows = (await stmt.all()) as Array<Record<string, unknown>>;
+          const map = readSecrets();
+          for (const row of rows) {
+            const app = String(row.app ?? "");
+            const name = String(row.name ?? "");
+            if (!app || !name) continue;
+            const raw = row.content;
+            const bytesOf =
+              raw instanceof Uint8Array
+                ? raw
+                : raw instanceof ArrayBuffer
+                  ? new Uint8Array(raw)
+                  : Array.isArray(raw)
+                    ? Uint8Array.from(raw as number[])
+                    : typeof raw === "string"
+                      ? new TextEncoder().encode(raw)
+                      : new Uint8Array();
+            map[`${app}/${name}`] = {
+              contentType: row.content_type == null ? null : String(row.content_type),
+              base64: base64Of(bytesOf),
+              updatedAt: row.updated_at == null ? new Date().toISOString() : String(row.updated_at),
+            };
+            imported++;
+          }
+          writeSecrets(map);
+        } finally {
+          await db.close();
+        }
+        return { status: 200, body: { ok: true, imported } };
+      } catch (err) {
+        return { status: 200, body: { ok: false, error: err instanceof Error ? err.message : String(err) } };
+      } finally {
+        await platform.fs.rm(tmpAbs).catch(() => {});
+      }
+    }
     if (pathname === "/api/secrets" && method === "DELETE") {
       const appName = search.get("app") ?? "";
       const secretName = search.get("name") ?? "";

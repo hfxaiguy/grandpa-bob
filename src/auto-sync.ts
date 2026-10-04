@@ -4,6 +4,9 @@
 // dump → commit → push local changes, under the sync lock. Shared by the Node
 // server and the browser target; each supplies its own Platform and timers.
 //
+// Default is every 5 minutes; override with AUTO_SYNC_INTERVAL_MS (Node) or
+// localStorage.autoSyncIntervalMs (browser). Min 15s.
+//
 // Guards:
 //   - never runs while an agent turn is in flight (isBusy)
 //   - never overlaps itself
@@ -14,7 +17,7 @@
 import type { Platform } from "./platform/types.js";
 import { applyDatabaseDumps, SYNC_DIR, withSyncLock, writeDatabaseDumps } from "./db-sync.js";
 
-export const DEFAULT_INTERVAL_MS = 60_000;
+export const DEFAULT_INTERVAL_MS = 5 * 60_000;
 export const MIN_INTERVAL_MS = 15_000;
 
 export interface AutoSyncResult {

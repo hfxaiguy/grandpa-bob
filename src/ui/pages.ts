@@ -76,6 +76,11 @@ export function buildSettingsHtml(config: UiConfig): string {
   <h2 style="margin-top:0">App secrets</h2>
   <p style="margin:4px 0"><small>Files an app requested in <code>app/&lt;name&gt;/secrets.json</code>. Uploaded bytes live in <code>logs/secrets.db</code> &mdash; local, gitignored, invisible to the file browser and to the bot's file tools. An app reads only its own secrets.</small></p>
   <div id="secrets-list">(loading...)</div>
+  <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <input id="secrets-import-file" type="file" accept=".db,application/octet-stream" style="max-width:260px">
+    <button id="secrets-import-btn">import secrets.db</button>
+    <small style="color:var(--muted)">load a desktop <code>secrets.db</code> (its <code>app_secrets</code> rows) into this platform</small>
+  </div>
 </div>
 
 <div class="card">
@@ -469,6 +474,37 @@ async function loadSecrets() {
   } catch {
     box.textContent = "(failed to load secrets)";
   }
+}
+
+// Import a desktop secrets.db (its app_secrets table) into this platform's
+// store — the browser keeps secrets in localStorage, so it can't read the
+// file directly; the backend opens it and copies the rows.
+const secretsImportFile = $("secrets-import-file");
+const secretsImportBtn = $("secrets-import-btn");
+if (secretsImportBtn && secretsImportFile) {
+  secretsImportBtn.onclick = async () => {
+    const file = secretsImportFile.files && secretsImportFile.files[0];
+    if (!file) { toast("pick a secrets.db file first", true); return; }
+    try {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      let bin = "";
+      const chunk = 0x8000;
+      for (let i = 0; i < buf.length; i += chunk) {
+        bin += String.fromCharCode.apply(null, buf.subarray(i, i + chunk));
+      }
+      const r = await fetch("/api/secrets/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ base64: btoa(bin) }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || d.error || d.ok === false) { toast(d.error || "import failed", true); return; }
+      toast("imported " + (d.imported || 0) + " secret(s)");
+      loadSecrets();
+    } catch (e) {
+      toast("import failed: " + e.message, true);
+    }
+  };
 }
 
 async function loadModels() {

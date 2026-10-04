@@ -25,7 +25,9 @@ import { readFile, writeFile, readdir, stat, mkdir, unlink } from "node:fs/promi
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
+import os from "node:os";
 import fs from "node:fs";
 import type { Agent } from "./agent.js";
 import { checkLlmEntry } from "./agent.js";
@@ -1940,6 +1942,47 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         console.log(`[secrets] stored ${appName}/${secretName} (vars, ${bytes.length} bytes)`);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, app: appName, name: secretName, size: bytes.length }));
+        return;
+      }
+
+      // Import a desktop secrets.db (app_secrets table) — e.g. copied from
+      // another machine. Body: { base64 }. Upserts every row it can read.
+      if (req.method === "POST" && url.pathname === "/api/secrets/import") {
+        if (!secretsStore) { res.writeHead(503, { "content-type": "application/json" }); res.end('{"error":"secret store not available"}'); return; }
+        const body = await readBody(req);
+        let b64 = "";
+        try { b64 = String(JSON.parse(body).base64 ?? ""); } catch { /* invalid JSON */ }
+        if (!b64) { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"base64 required"}'); return; }
+        const tmp = path.join(os.tmpdir(), `secrets-import-${randomUUID()}.db`);
+        try {
+          await writeFile(tmp, Buffer.from(b64, "base64"));
+          const db = new DatabaseSync(tmp, { readOnly: true });
+          let imported = 0;
+          try {
+            const rows = db
+              .prepare("SELECT app, name, content, content_type FROM app_secrets")
+              .all() as Array<Record<string, unknown>>;
+            for (const row of rows) {
+              const app = String(row.app ?? "");
+              const name = String(row.name ?? "");
+              if (!app || !name) continue;
+              const raw = row.content;
+              const buf = Buffer.isBuffer(raw) ? raw : Buffer.from((raw as ArrayLike<number>) ?? []);
+              secretsStore.put(app, name, buf, row.content_type == null ? null : String(row.content_type));
+              imported++;
+            }
+          } finally {
+            db.close();
+          }
+          console.log(`[secrets] imported ${imported} secret(s)`);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, imported }));
+        } catch (err) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+        } finally {
+          await unlink(tmp).catch(() => {});
+        }
         return;
       }
 
