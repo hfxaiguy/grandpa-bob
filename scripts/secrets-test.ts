@@ -50,6 +50,15 @@ function freePort(): Promise<number> {
   assert.equal(got.contentType, "application/json");
   assert.equal(store.list("calendar").length, 1);
   assert.equal(store.list("other").length, 0);
+  // setFields merges (dotted keys -> nested, null removes) instead of replacing.
+  store.put("calendar", "vars.json", Buffer.from('{"keep":1,"drop":2}'), "application/json");
+  store.setFields("calendar", "vars.json", { "auth.token": "t", drop: null });
+  assert.deepEqual(
+    JSON.parse(store.get("calendar", "vars.json")!.content.toString()),
+    { keep: 1, auth: { token: "t" } },
+    "setFields merges the named fields, keeping the rest",
+  );
+  store.delete("calendar", "vars.json");
   store.close();
 
   const reopened = new SecretsStore(storePath);
@@ -186,6 +195,43 @@ function freePort(): Promise<number> {
   assert.ok(!files.files.some((f: any) => f.name.startsWith("custom-secrets.db")), "file browser hides the secret store");
   const dl = await fetch(`${base}/api/files/download?path=logs/custom-secrets.db`);
   assert.ok(dl.status >= 400, "download of the secret store refused");
+
+  // ── vars: save ONE field at a time, without overwriting the rest ──
+  const varsUrl = `${base}/api/secrets/vars?app=calendar&name=creds.json`;
+  const postVars = (b: unknown) =>
+    fetch(varsUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) });
+  const storedVars = () => JSON.parse(store.get("calendar", "creds.json")!.content.toString());
+
+  const one = await postVars({ key: "auth.token", value: "tok-1" });
+  assert.equal(one.status, 200, "a single field saves");
+  assert.deepEqual(storedVars(), { client_email: "bot@example.com", auth: { token: "tok-1" } }, "only the named field changed");
+
+  await postVars({ key: "from", value: "bot@example.com" });
+  assert.deepEqual(
+    storedVars(),
+    { client_email: "bot@example.com", auth: { token: "tok-1" }, from: "bot@example.com" },
+    "saving a field does not drop the earlier ones",
+  );
+
+  await postVars({ set: { provider: "mock", from: null } });
+  assert.deepEqual(
+    storedVars(),
+    { client_email: "bot@example.com", auth: { token: "tok-1" }, provider: "mock" },
+    "set merges several and a null removes one",
+  );
+
+  assert.equal((await postVars({ key: "../evil", value: "x" })).status, 400, "path-like key rejected");
+  assert.equal((await postVars({ key: "a..b", value: "x" })).status, 400, "doubled dot rejected");
+  const undeclared = await fetch(`${base}/api/secrets/vars?app=calendar&name=not-declared`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: "x", value: "y" }),
+  });
+  assert.equal(undeclared.status, 404, "undeclared secret rejected");
+
+  // Legacy full-replace still replaces; merging a non-JSON secret is refused.
+  await postVars({ value: { only: "this" } });
+  assert.deepEqual(storedVars(), { only: "this" }, "value replaces the whole document");
+  store.put("calendar", "creds.json", Buffer.from("not-json"), "text/plain");
+  assert.equal((await postVars({ key: "x", value: "y" })).status, 409, "a non-JSON secret cannot be merged into");
 
   const del = await fetch(`${base}/api/secrets?app=calendar&name=creds.json`, { method: "DELETE" });
   assert.equal(del.status, 200);

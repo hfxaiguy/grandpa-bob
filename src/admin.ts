@@ -32,7 +32,7 @@ import fs from "node:fs";
 import type { Agent } from "./agent.js";
 import { checkLlmEntry } from "./agent.js";
 import { loadModels } from "./models.js";
-import { listSecretRequests, validSecretName, type SecretsStore } from "./secrets.js";
+import { listSecretRequests, validSecretName, validSecretKey, type SecretsStore } from "./secrets.js";
 import {
   transcribeAudioBytes,
   convertToWav,
@@ -1952,21 +1952,58 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         if (!declared.find((r) => r.app === appName && r.name === secretName)) {
           res.writeHead(404, { "content-type": "application/json" }); res.end('{"error":"no declared secret request with that app/name"}'); return;
         }
-        let value: unknown;
+        let body: { value?: unknown; key?: unknown; set?: unknown };
         try {
-          value = (JSON.parse((await readBody(req)) || "{}") as { value?: unknown }).value;
+          body = JSON.parse((await readBody(req)) || "{}") as typeof body;
         } catch {
           res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid JSON body"}'); return;
         }
-        if (!value || typeof value !== "object" || Array.isArray(value)) {
-          res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"value must be an object"}'); return;
+        // `key`+`value` saves ONE field, `set` saves several, both merged into
+        // the stored JSON so the fields not named are left alone. Without either,
+        // the legacy `value` object replaces the whole document.
+        const merge = typeof body.key === "string" || (body.set != null && typeof body.set === "object" && !Array.isArray(body.set));
+        let bytes: Buffer;
+        let how: string;
+        try {
+          if (merge) {
+            const patch: Record<string, string | null> = {};
+            if (typeof body.key === "string") {
+              patch[body.key] = body.value === null ? null : String(body.value ?? "");
+            } else {
+              for (const [k, v] of Object.entries(body.set as Record<string, unknown>)) {
+                patch[k] = v === null ? null : String(v ?? "");
+              }
+            }
+            const keys = Object.keys(patch);
+            if (!keys.length) {
+              res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"no fields to save"}'); return;
+            }
+            const bad = keys.find((k) => !validSecretKey(k));
+            if (bad) {
+              res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: `invalid key: ${bad}` })); return;
+            }
+            const merged = secretsStore.setFields(appName, secretName, patch);
+            bytes = Buffer.from(JSON.stringify(merged, null, 2));
+            how = `merged ${keys.join(", ")}`;
+          } else {
+            const value = body.value;
+            if (!value || typeof value !== "object" || Array.isArray(value)) {
+              res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"value must be an object"}'); return;
+            }
+            bytes = Buffer.from(JSON.stringify(value, null, 2));
+            how = "replace";
+          }
+        } catch (err) {
+          // A stored secret that is not a JSON object cannot be merged into.
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+          return;
         }
-        const bytes = Buffer.from(JSON.stringify(value, null, 2));
         if (bytes.length > MAX_SECRET_BYTES) {
           res.writeHead(413, { "content-type": "application/json" }); res.end('{"error":"secret too large (max 1 MB)"}'); return;
         }
-        secretsStore.put(appName, secretName, bytes, "application/json");
-        console.log(`[secrets] stored ${appName}/${secretName} (vars, ${bytes.length} bytes)`);
+        if (!merge) secretsStore.put(appName, secretName, bytes, "application/json");
+        console.log(`[secrets] stored ${appName}/${secretName} (${how}, ${bytes.length} bytes)`);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, app: appName, name: secretName, size: bytes.length }));
         return;

@@ -49,6 +49,39 @@ export function validSecretName(name: string): boolean {
   return NAME_RE.test(name) && !name.includes("..");
 }
 
+const KEY_RE = /^[A-Za-z0-9_.-]+$/;
+
+/**
+ * A JSON secret field key: a dotted path like `auth.token`. No leading,
+ * trailing or doubled dots — the same shape the WebUI's editor accepts.
+ */
+export function validSecretKey(key: string): boolean {
+  return KEY_RE.test(key) && !key.startsWith(".") && !key.endsWith(".") && !key.includes("..");
+}
+
+/** Set a dotted path on a plain object, creating intermediate objects. */
+function setPath(obj: Record<string, unknown>, key: string, value: unknown): void {
+  const parts = key.split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const k = parts[i];
+    if (!cur[k] || typeof cur[k] !== "object" || Array.isArray(cur[k])) cur[k] = {};
+    cur = cur[k] as Record<string, unknown>;
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
+/** Remove a dotted path from a plain object. */
+function delPath(obj: Record<string, unknown>, key: string): void {
+  const parts = key.split(".");
+  let cur: Record<string, unknown> | undefined = obj;
+  for (let i = 0; i < parts.length - 1 && cur; i += 1) {
+    const next: unknown = cur[parts[i]];
+    cur = next && typeof next === "object" && !Array.isArray(next) ? (next as Record<string, unknown>) : undefined;
+  }
+  if (cur) delete cur[parts[parts.length - 1]];
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS app_secrets (
   app          TEXT NOT NULL,
@@ -116,6 +149,35 @@ export class SecretsStore {
            updated_at = excluded.updated_at`,
       )
       .run(app, name, content, contentType ?? null, new Date().toISOString());
+  }
+
+  /**
+   * Merge fields into a JSON secret without replacing the rest. Each key is a
+   * dotted path (`auth.token` → `{ auth: { token } }`); a `null` value removes
+   * that path. Throws when the stored bytes exist but are not a JSON object —
+   * replace those with `put()`.
+   */
+  setFields(app: string, name: string, patch: Record<string, string | null>): Record<string, unknown> {
+    const existing = this.get(app, name);
+    let current: Record<string, unknown> = {};
+    if (existing) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(existing.content.toString("utf8"));
+      } catch {
+        throw new Error("the stored secret is not JSON — replace it instead");
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("the stored secret is not a JSON object — replace it instead");
+      }
+      current = parsed as Record<string, unknown>;
+    }
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null) delPath(current, key);
+      else setPath(current, key, value);
+    }
+    this.put(app, name, Buffer.from(JSON.stringify(current, null, 2)), "application/json");
+    return current;
   }
 
   delete(app: string, name: string): boolean {

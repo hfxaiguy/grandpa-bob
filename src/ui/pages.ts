@@ -330,16 +330,9 @@ async function saveAllEnv() {
 }
 
 // ---- app secrets -----------------------------------------------------
-// Expand dotted keys ("auth.token") into a nested object when building JSON.
-function setPath(obj, path, value) {
-  const parts = String(path).split(".");
-  let cur = obj;
-  for (let i = 0; i < parts.length - 1; i++) {
-    const k = parts[i];
-    if (!cur[k] || typeof cur[k] !== "object") cur[k] = {};
-    cur = cur[k];
-  }
-  cur[parts[parts.length - 1]] = value;
+// A dotted field key, the shape the vars endpoint accepts ("auth.token").
+function validFieldKey(key) {
+  return /^[A-Za-z0-9_.-]+$/.test(key) && !key.startsWith(".") && !key.endsWith(".") && !key.includes("..");
 }
 
 async function loadSecrets() {
@@ -392,12 +385,27 @@ async function loadSecrets() {
       };
 
       if (isJson) {
-        // Key/value editor for JSON secrets; dotted keys expand to nested
-        // objects (auth.token -> { auth: { token } }).
+        // Key/value editor for JSON secrets. Each row saves just its own field
+        // (dotted keys expand to nested: auth.token -> { auth: { token } });
+        // the endpoint merges, so the fields you did not touch stay put.
         const editor = document.createElement("div");
         editor.style.cssText = "flex:1 1 100%;display:flex;flex-direction:column;gap:6px";
         const rowsBox = document.createElement("div");
         rowsBox.style.cssText = "display:flex;flex-direction:column;gap:4px";
+        const saveField = async (key, value) => {
+          if (!key) { toast("enter a key first", true); return; }
+          if (!validFieldKey(key)) { toast("invalid key: " + key, true); return; }
+          try {
+            const r = await fetch("/api/secrets/vars?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ key, value }),
+            });
+            const d2 = await r.json().catch(() => ({}));
+            if (!r.ok) { toast(d2.error || "save failed", true); return; }
+            toast("saved " + key + " for " + s.name);
+          } catch (e) { toast("save failed: " + e.message, true); }
+        };
         const addRow = (key, hint) => {
           const r = document.createElement("div");
           r.style.cssText = "display:flex;gap:6px;align-items:center";
@@ -408,11 +416,17 @@ async function loadSecrets() {
           const v = document.createElement("input");
           v.placeholder = hint || "value";
           v.style.flex = "1 1 auto";
+          const sv = document.createElement("button");
+          sv.className = "secondary";
+          sv.textContent = "save";
+          sv.title = "save just this field; the others are left alone";
+          sv.onclick = () => saveField(k.value.trim(), v.value);
+          v.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveField(k.value.trim(), v.value); } });
           const rm = document.createElement("button");
           rm.className = "secondary";
           rm.textContent = "\u00d7";
           rm.onclick = () => r.remove();
-          r.append(k, v, rm);
+          r.append(k, v, sv, rm);
           rowsBox.appendChild(r);
         };
         const fieldKeys = s.fields ? Object.keys(s.fields) : [];
@@ -425,30 +439,31 @@ async function loadSecrets() {
         add.textContent = "+ add var";
         add.onclick = () => addRow("", "");
         const save = document.createElement("button");
-        save.textContent = "Save vars";
+        save.textContent = "Save all";
+        save.title = "save every filled field; the fields you leave blank are not touched";
         save.onclick = async () => {
-          const value = {};
+          const set = {};
           let bad = "";
           rowsBox.querySelectorAll("div").forEach((r) => {
             const inputs = r.querySelectorAll("input");
             const key = inputs[0].value.trim();
             const val = inputs[1].value;
             if (!key) return;
-            if (!/^[A-Za-z0-9_.-]+$/.test(key)) { bad = key; return; }
+            if (!validFieldKey(key)) { bad = key; return; }
             if (val === "") return;
-            setPath(value, key, val);
+            set[key] = val;
           });
           if (bad) { toast("invalid key: " + bad, true); return; }
-          if (!Object.keys(value).length) { toast("enter at least one value", true); return; }
+          if (!Object.keys(set).length) { toast("enter at least one value", true); return; }
           try {
             const r = await fetch("/api/secrets/vars?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ value }),
+              body: JSON.stringify({ set }),
             });
             const d2 = await r.json().catch(() => ({}));
             if (!r.ok) { toast(d2.error || "save failed", true); return; }
-            toast("stored vars for " + s.app + "/" + s.name);
+            toast("saved vars for " + s.app + "/" + s.name);
             loadSecrets();
           } catch (e) { toast("save failed: " + e.message, true); }
         };
