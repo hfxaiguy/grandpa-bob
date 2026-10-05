@@ -23,12 +23,14 @@ export const HOST_GUIDES: HostGuide[] = [
     guide:
       'RECALLING THE PAST: the run log records every past session. To answer ' +
       '"what have we been doing", "who did I talk to recently", or "I just spoke ' +
-      'to her", call read_runs with mode "condensed" — the recent emit timeline ' +
-      "(what the bot told the user, newest first) — then mode \"expanded\" with an " +
-      "emit's seq for the trace behind it (the llm calls, tool calls and results). " +
-      "The emits carry the names the apps resolved, so recall does not depend on " +
-      'spelling, and the log is the source of truth for "recently", not the current ' +
-      "conversation.",
+      'to her", call read_runs with type "emit" — the recent emit timeline ' +
+      "(what the bot told the user, newest first). By default read_runs returns the " +
+      'most recent rows of every kind, so set `type` explicitly ("emit" for what the ' +
+      'bot said, "human" for what the user said) and use `limit` / `before` / `after` ' +
+      '/ `run_id` to narrow it. Then mode "expanded" with a row\'s seq for the trace ' +
+      "behind it (the llm calls, tool calls and results). The emits carry the names the " +
+      "apps resolved, so recall does not depend on spelling, and the log is the source " +
+      'of truth for "recently", not the current conversation.',
   },
   {
     tools: ["git_status", "git_commit", "git_push", "git_fetch", "git_log"],
