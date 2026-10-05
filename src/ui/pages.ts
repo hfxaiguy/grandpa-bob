@@ -1030,6 +1030,13 @@ function showEmpty() {
   conv.appendChild(hint);
 }
 
+/** Provenance: the memory slots an event read, if the run log recorded them. */
+function readsNote(c) {
+  return Array.isArray(c?.reads) && c.reads.length
+    ? "  [reads: " + c.reads.map((r) => r.name ?? "?").join(", ") + "]"
+    : "";
+}
+
 function describeEvent(ev) {
   const c = ev.content || {};
   const iter = ev.iteration > 1 ? " #" + ev.iteration : "";
@@ -1044,7 +1051,7 @@ function describeEvent(ev) {
       } else if (c.content) {
         t += " \\u2192 " + jshort(c.content, 160);
       }
-      return { badge: "llm", cls: "k-llm", text: t };
+      return { badge: "llm", cls: "k-llm", text: t + readsNote(c) };
     }
     case "llm_error":
       return { badge: "llm-err", cls: "k-err", text: (c.model ?? "?") + " failed: " + jshort(c.error, 160) };
@@ -1081,13 +1088,13 @@ function describeEvent(ev) {
         text: (c.type ?? "?") + (c.n ? "(" + c.n + ")" : "") + (c.child ? " from " + c.child : "") + (c.used ? " (" + c.used + "/" + (c.max ?? "?") + ")" : ""),
       };
     case "memory":
-      return { badge: "memory", cls: "k-memory", text: (c.child ?? "?") + " = " + jshort(c.value, 100) };
+      return { badge: "memory", cls: "k-memory", text: (c.child ?? "?") + " = " + jshort(c.value, 100) + readsNote(c) };
     case "emit":
       return { badge: "emit", cls: "k-emit", text: jshort(c.value, 200) };
     case "record":
       // Memory writes are record rows with an op flag; they stay visible.
       if (c.op === "memory" || c.op === "memoryUpdate") {
-        return { badge: "memory", cls: "k-memory", text: (c.child ?? "?") + " = " + jshort(c.value, 100) };
+        return { badge: "memory", cls: "k-memory", text: (c.child ?? "?") + " = " + jshort(c.value, 100) + readsNote(c) };
       }
       return { badge: "record", cls: "k-dim", internals: true, text: (c.child ?? "?") + " = " + jshort(c.value, 80) };
     case "scope_init":
