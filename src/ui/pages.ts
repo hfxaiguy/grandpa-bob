@@ -395,6 +395,7 @@ async function loadSecrets() {
         const saveField = async (key, value) => {
           if (!key) { toast("enter a key first", true); return; }
           if (!validFieldKey(key)) { toast("invalid key: " + key, true); return; }
+          if (value === "") { toast("enter a value (delete the secret to remove it)", true); return; }
           try {
             const r = await fetch("/api/secrets/vars?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), {
               method: "POST",
