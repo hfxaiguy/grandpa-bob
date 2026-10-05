@@ -67,10 +67,13 @@ assert.match(chatHtml, /id="session-new"/, "new-session button present");
 assert.match(chatHtml, /id="health-dots"/, "chat header carries service health dots");
 assert.match(chatHtml, /loadHealth\(\);/, "health dots are populated on load");
 assert.match(chatHtml, /function checkFollow\(\)/, "follow watcher present");
-// A sent message is rendered immediately (an optimistic bubble replaced when
-// the turn starts), not held back until the SSE turn_start arrives.
-assert.match(chatHtml, /function addPending\(turnId, text, queued\)/, "pending bubble takes a queued flag");
-assert.match(chatHtml, /if \(d\.turnId\) addPending\(d\.turnId, text, d\.queued\);/, "send shows the message at once");
+// A sent message is echoed BEFORE the round-trip (a placeholder keyed by a
+// client id, re-keyed to the server turn id), so a slow /api/chat or a proxy
+// cannot swallow it; a failed send restores the text to the box.
+assert.match(chatHtml, /function addPending\(pendingId, text, queued\)/, "pending bubble takes a queued flag");
+assert.match(chatHtml, /addPending\(pendingId, text, null\);/, "send echoes the message before the round-trip");
+assert.match(chatHtml, /settlePending\(pendingId, d\.turnId, d\.queued\);/, "placeholder re-keys to the server turn id");
+assert.match(chatHtml, /failPending\(pendingId, text, restore\);/, "a failed send restores the text");
 // A turn_start missed while the SSE stream is still opening is reconciled on
 // the next open (including the first) and right after a send — not left until
 // the turn ends (updatedAt only moves at turn end).

@@ -1493,10 +1493,15 @@ function endTurn(turnId, status, error, output, buttons, emits, levels) {
   maybeScroll(true);
 }
 
-function addPending(turnId, text, queued) {
+// A sent message is echoed before the round-trip; the placeholder is keyed by a
+// client id, then re-keyed to the server turn id (or dropped when the turn has
+// already rendered). A slow /api/chat can therefore never swallow it.
+let sendSeq = 0;
+function addPending(pendingId, text, queued) {
   const wrap = document.createElement("div");
   wrap.className = "msg-user pending";
-  wrap.dataset.turnid = turnId;
+  wrap.dataset.pendingid = pendingId;
+  wrap.dataset.turnid = pendingId;
   const tag = document.createElement("span");
   tag.className = "qtag";
   tag.textContent = queued ? "queued" : "sending\\u2026";
@@ -1508,8 +1513,39 @@ function addPending(turnId, text, queued) {
   maybeScroll(true);
 }
 
-async function sendText(text) {
+function dropPending(pendingId) {
+  conv.querySelector('.msg-user.pending[data-pendingid="' + pendingId + '"]')?.remove();
+}
+
+// Re-key the placeholder to the server turn id so startTurn renders the turn in
+// its place; drop it when the turn is already on screen.
+function settlePending(pendingId, turnId, queued) {
+  const el = conv.querySelector('.msg-user.pending[data-pendingid="' + pendingId + '"]');
+  if (!el) return;
+  if (turnId && (blocks.has(turnId) || rendered.has(turnId))) { el.remove(); return; }
+  if (turnId) el.dataset.turnid = turnId;
+  const tag = el.querySelector(".qtag");
+  if (tag) tag.textContent = queued ? "queued" : "sending…";
+}
+
+// A failed send drops the placeholder and, for a typed message, puts the text
+// back in the box so it is never lost.
+function failPending(pendingId, text, restore) {
+  dropPending(pendingId);
+  if (restore && text && !input.value.trim()) {
+    input.value = text;
+    input.dispatchEvent(new Event("input"));
+    input.focus();
+  }
+}
+
+async function sendText(text, restore) {
   if (!sessionActive) { toast("select or start a session first", true); return; }
+  // Echo the message before the round-trip; settlePending/startTurn replaces
+  // this placeholder in place once /api/chat returns the real turn id.
+  const pendingId = "local:" + (++sendSeq);
+  addPending(pendingId, text, null);
+  hideEmpty();
   try {
     const r = await fetch("/api/chat", {
       method: "POST",
@@ -1517,37 +1553,38 @@ async function sendText(text) {
       body: JSON.stringify({ text }),
     });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) { toast(d.error || "send failed", true); return; }
-    // Show the message immediately — do not wait for the SSE turn_start. The
-    // bubble is replaced in place when the turn renders (startTurn), or removed
-    // if the turn was already rendered by a re-sync.
-    if (d.turnId) addPending(d.turnId, text, d.queued);
-    hideEmpty();
+    if (!r.ok) { failPending(pendingId, text, restore); toast(d.error || "send failed", true); return; }
+    settlePending(pendingId, d.turnId, d.queued);
     // Reconcile now: if the SSE turn_start was missed (the stream was not open
     // yet), this renders the just-started turn at once instead of waiting for
     // the next poll — or for the whole run to end.
     checkFollow();
   } catch (e) {
+    failPending(pendingId, text, restore);
     toast("send failed: " + e.message, true);
   }
 }
 
 async function uploadAttachment(file) {
   const caption = input.value.trim();
+  const pendingId = "local:" + (++sendSeq);
+  addPending(pendingId, caption ? caption + " [attached: " + file.name + "]" : "[attached: " + file.name + "]", null);
+  hideEmpty();
   const fd = new FormData();
   fd.append("file", file);
   if (caption) fd.append("caption", caption);
   try {
     const r = await fetch("/api/chat/upload", { method: "POST", body: fd });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) { toast(d.error || "upload failed", true); return; }
+    if (!r.ok) { dropPending(pendingId); toast(d.error || "upload failed", true); return; }
     const display = caption ? caption + "\\n[attached: " + file.name + "]" : "[attached: " + file.name + "]";
-    if (d.turnId) addPending(d.turnId, display, d.queued);
+    settlePending(pendingId, d.turnId, d.queued);
     input.value = "";
     input.dispatchEvent(new Event("input"));
     hideEmpty();
     checkFollow();
   } catch (e) {
+    dropPending(pendingId);
     toast("upload failed: " + e.message, true);
   }
 }
@@ -1565,9 +1602,10 @@ input.addEventListener("input", () => {
 function doSend() {
   const text = input.value.trim();
   if (!text) return;
+  if (!sessionActive) { toast("select or start a session first", true); return; }
   input.value = "";
   input.style.height = "auto";
-  sendText(text);
+  sendText(text, true);
 }
 
 // ---- voice input (MediaRecorder -> /api/transcribe -> auto-send) ----
@@ -2261,11 +2299,16 @@ async function checkFollow() {
     if (active !== trackedActive) {
       trackedActive = active;
       trackedUpdatedAt = updated;
+      // Keep un-settled sends visible across the re-render: a session switch
+      // detected mid-send must not swallow the user's message.
+      const pending = Array.from(conv.querySelectorAll(".msg-user.pending"));
       conv.innerHTML = "";
       blocks.clear();
       rendered.clear();
       showEmpty();
       if (active) { renderTurns(d.turns); hideEmpty(); }
+      for (const p of pending) conv.appendChild(p);
+      if (pending.length) maybeScroll(true);
       setSessionUi(!!active, active);
       if (active) toast("now following: " + (d.label || active));
       return;
