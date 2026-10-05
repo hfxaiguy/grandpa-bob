@@ -839,6 +839,7 @@ export function buildChatHtml(config: UiConfig, sttLabel: string): string {
   .k-emit .stext { color: #a7f3d0; font-weight: 600; }
   .k-human .badge { background: #374151; color: #fff; }
   .k-flow .badge { background: #1e3a8a; }
+  .k-hook .badge { background: #5b21b6; }
   .k-check .badge { background: #4a044e; }
   .k-loop .badge { background: #4a044e; }
   .k-memory .badge { background: #312e81; }
@@ -1060,6 +1061,14 @@ function describeEvent(ev) {
       };
     case "tool_error":
       return { badge: "error", cls: "k-err", text: (c.tool ?? "?") + " failed: " + jshort(c.error, 160) };
+    case "hook": {
+      const on = [c.phase, c.tool].filter(Boolean).join(" ");
+      return {
+        badge: "hook",
+        cls: "k-hook",
+        text: (c.trigger ?? "?") + " " + (c.hook ?? "?") + (on ? " (on " + on + ")" : ""),
+      };
+    }
     case "check":
       return { badge: "check", cls: c.pass ? "k-check" : "k-err", text: (c.child ?? "?") + (c.pass ? " \\u2014 pass" : " \\u2014 FAIL: " + jshort(c.feedback, 120)) };
     case "until":
