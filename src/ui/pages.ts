@@ -225,8 +225,16 @@ async function api(path, opts) {
   return data;
 }
 
+// After a server restart with changed page code, a tab keeps running the JS it
+// loaded (and would miss fixes) until a manual reload. The server fingerprints
+// its pages; reload when ours no longer matches.
+function checkUiVersion(v) {
+  if (v && window.__UI_VERSION__ && v !== window.__UI_VERSION__) location.reload();
+}
+
 async function refreshStatus() {
   const s = await api("/api/status");
+  checkUiVersion(s.uiVersion);
   // Service health: telegram / voice / llm dots with detail tooltips,
   // probed server-side (getMe, HTTP health endpoints, model reachability).
   const dots = $("service-dots");
@@ -1003,6 +1011,12 @@ function toast(msg, isErr, ms) {
   t.textContent = msg;
   t.className = "toast show" + (isErr ? " err" : "");
   setTimeout(() => (t.className = "toast" + (isErr ? " err" : "")), ms || (isErr ? 6000 : 3000));
+}
+
+// Reload when the server's page fingerprint changes (a restart with new page
+// code would otherwise leave this tab on a stale client).
+function checkUiVersion(v) {
+  if (v && window.__UI_VERSION__ && v !== window.__UI_VERSION__) location.reload();
 }
 
 function short(s, n) {
@@ -2531,6 +2545,7 @@ async function loadHealth() {
   try {
     const r = await fetch("/api/status");
     const d = await r.json();
+    checkUiVersion(d.uiVersion);
     const host = $("health-dots");
     if (!host) return;
     host.innerHTML = "";

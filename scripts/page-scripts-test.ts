@@ -66,6 +66,8 @@ assert.match(chatHtml, /id="session-resume"/, "resume button present");
 assert.match(chatHtml, /id="session-new"/, "new-session button present");
 assert.match(chatHtml, /id="health-dots"/, "chat header carries service health dots");
 assert.match(chatHtml, /loadHealth\(\);/, "health dots are populated on load");
+assert.match(chatHtml, /window\.__UI_VERSION__=/, "chat carries the server's page fingerprint");
+assert.match(chatHtml, /function checkUiVersion\(v\)/, "chat reloads itself when the page fingerprint changes");
 assert.match(chatHtml, /function checkFollow\(\)/, "follow watcher present");
 // A sent message is echoed BEFORE the round-trip (a placeholder keyed by a
 // client id, re-keyed to the server turn id), so a slow /api/chat or a proxy
@@ -103,6 +105,7 @@ assert.match(chatHtml, /Reconcile now: if the SSE turn_start was missed/, "a sen
   }
   assert.ok(typeof s.uptimeSec === "number" && s.uptimeSec >= 0, "bot uptime reported");
   assert.ok(Number.isInteger(s.pid) && s.pid > 0, "bot pid reported");
+  assert.match(String(s.uiVersion), /^[0-9a-f]{12}$/, "status carries the page fingerprint");
   console.log(`/api/status: ${s.services.map((x: any) => `${x.name}=${x.up === null ? "n/a" : x.up}`).join(" ")}`);
 }
 
@@ -111,6 +114,7 @@ assert.match(settingsHtml, /id="service-dots"/, "settings page renders the servi
 assert.match(settingsHtml, /id="follow-chk"/, "settings follow toggle present");
 assert.match(settingsHtml, /id="secrets-list"/, "app secrets card present");
 assert.match(settingsHtml, /loadSecrets\(\);/, "app secrets load on page open");
+assert.match(settingsHtml, /function checkUiVersion\(v\)/, "settings reloads itself when the page fingerprint changes");
 
 server.close();
 console.log("page-scripts-test: all assertions passed");

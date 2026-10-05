@@ -24,7 +24,7 @@ import http from "node:http";
 import { readFile, writeFile, readdir, stat, mkdir, unlink } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import os from "node:os";
@@ -1075,6 +1075,20 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
     : "voice: not configured";
   const CHAT_HTML = buildChatHtml(config, sttLabel);
 
+  // A fingerprint of the served pages. A browser tab keeps running the JS it
+  // loaded; after a restart with changed page code it would keep the old client
+  // (and miss fixes) until a manual reload. Embed the fingerprint and expose it
+  // on /api/status so the client can reload itself when it goes stale.
+  const UI_VERSION = createHash("sha256")
+    .update(CHAT_HTML)
+    .update(SETTINGS_HTML)
+    .digest("hex")
+    .slice(0, 12);
+  const injectUiVersion = (html: string): string =>
+    html.replace("</head>", `<script>window.__UI_VERSION__=${JSON.stringify(UI_VERSION)}</script></head>`);
+  const CHAT_PAGE = injectUiVersion(CHAT_HTML);
+  const SETTINGS_PAGE = injectUiVersion(SETTINGS_HTML);
+
   // Restore the web chat history from the previous run (before any browser
   // polls /api/turns).
   webTurnsPath = path.resolve(config.workspaceDir, "logs", "web-turns.json");
@@ -1140,13 +1154,13 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
 
       if (req.method === "GET" && url.pathname === "/") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        res.end(CHAT_HTML);
+        res.end(CHAT_PAGE);
         return;
       }
 
       if (req.method === "GET" && url.pathname === "/settings") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        res.end(SETTINGS_HTML);
+        res.end(SETTINGS_PAGE);
         return;
       }
 
@@ -1557,6 +1571,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           env: env || {},
           ...status,
           services,
+          uiVersion: UI_VERSION,
           uptimeSec: Math.round(process.uptime()),
           pid: process.pid,
         }));
