@@ -404,6 +404,8 @@ async function loadSecrets() {
             const d2 = await r.json().catch(() => ({}));
             if (!r.ok) { toast(d2.error || "save failed", true); return; }
             toast("saved " + key + " for " + s.name);
+            status.textContent = "\u2713 saved";
+            status.style.color = "var(--green,#10b981)";
           } catch (e) { toast("save failed: " + e.message, true); }
         };
         const addRow = (key, hint) => {
