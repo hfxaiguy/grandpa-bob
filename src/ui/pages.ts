@@ -1523,6 +1523,10 @@ async function sendText(text) {
     // if the turn was already rendered by a re-sync.
     if (d.turnId) addPending(d.turnId, text, d.queued);
     hideEmpty();
+    // Reconcile now: if the SSE turn_start was missed (the stream was not open
+    // yet), this renders the just-started turn at once instead of waiting for
+    // the next poll — or for the whole run to end.
+    checkFollow();
   } catch (e) {
     toast("send failed: " + e.message, true);
   }
@@ -1542,6 +1546,7 @@ async function uploadAttachment(file) {
     input.value = "";
     input.dispatchEvent(new Event("input"));
     hideEmpty();
+    checkFollow();
   } catch (e) {
     toast("upload failed: " + e.message, true);
   }
@@ -2107,15 +2112,12 @@ function treeOnTurnEnd() {
 }
 
 // ---- live events over SSE ----
-let sseOpened = false;
 function connect() {
   const es = new EventSource("/api/events");
-  // SSE has no replay: whatever was broadcast while the stream was down is
-  // gone, so re-sync the transcript on every open after the first.
-  es.onopen = () => {
-    if (sseOpened) checkFollow();
-    sseOpened = true;
-  };
+  // SSE has no replay: anything broadcast before this stream opened (a send
+  // during page load, or a reconnect after a restart) is gone, so re-sync the
+  // transcript on EVERY open — including the first.
+  es.onopen = () => checkFollow();
   es.onmessage = (e) => {
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
@@ -2163,7 +2165,9 @@ function renderTurns(list) {
   for (const t of list || []) {
     startTurn(t.turnId, t.input);
     for (const ev of t.events || []) addStep(t.turnId, ev);
-    endTurn(t.turnId, t.status, t.error, t.output, t.buttons, t.emits);
+    // A turn still running keeps its live block (so its SSE emits and the real
+    // turn_end land on it); only a finished turn is finalized here.
+    if (t.status !== "running") endTurn(t.turnId, t.status, t.error, t.output, t.buttons, t.emits);
   }
 }
 
@@ -2266,11 +2270,12 @@ async function checkFollow() {
       if (active) toast("now following: " + (d.label || active));
       return;
     }
-    if (updated !== trackedUpdatedAt) {
-      trackedUpdatedAt = updated;
-      const missing = (d.turns || []).filter((t) => !rendered.has(t.turnId));
-      if (missing.length) { renderTurns(missing); hideEmpty(); }
-    }
+    // Reconcile regardless of updatedAt: a running turn's updatedAt does not
+    // change until it ends, so a turn_start missed before the stream opened
+    // would otherwise stay invisible for the whole run.
+    trackedUpdatedAt = updated;
+    const missing = (d.turns || []).filter((t) => !rendered.has(t.turnId));
+    if (missing.length) { renderTurns(missing); hideEmpty(); }
     setSessionUi(!!active, active);
   } catch { /* transient */ }
 }

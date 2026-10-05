@@ -1139,13 +1139,13 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       const url = new URL(req.url!, `http://localhost:${config.port}`);
 
       if (req.method === "GET" && url.pathname === "/") {
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
         res.end(CHAT_HTML);
         return;
       }
 
       if (req.method === "GET" && url.pathname === "/settings") {
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
         res.end(SETTINGS_HTML);
         return;
       }

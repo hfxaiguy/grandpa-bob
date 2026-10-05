@@ -71,6 +71,12 @@ assert.match(chatHtml, /function checkFollow\(\)/, "follow watcher present");
 // the turn starts), not held back until the SSE turn_start arrives.
 assert.match(chatHtml, /function addPending\(turnId, text, queued\)/, "pending bubble takes a queued flag");
 assert.match(chatHtml, /if \(d\.turnId\) addPending\(d\.turnId, text, d\.queued\);/, "send shows the message at once");
+// A turn_start missed while the SSE stream is still opening is reconciled on
+// the next open (including the first) and right after a send — not left until
+// the turn ends (updatedAt only moves at turn end).
+assert.match(chatHtml, /es\.onopen = \(\) => checkFollow\(\)/, "every SSE open reconciles");
+assert.match(chatHtml, /t\.status !== "running"/, "a running turn reconciled from history stays live");
+assert.match(chatHtml, /Reconcile now: if the SSE turn_start was missed/, "a send reconciles the started turn at once");
 
 // /api/status must report real service health (telegram / voice / llm),
 // each a tri-state (up/down/n-a) with a detail line — the old dots were a
