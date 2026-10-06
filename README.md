@@ -179,6 +179,14 @@ next message resumes inside the tree (the calling prompt round is replayed
 from the log, not re-sent to the model). Because tree tools are built fresh
 each turn, edits to an app tree take effect immediately — no restart.
 
+Because tree tools resolve through the version loader, a tree that attaches
+another tree must do so **by name** (`From`/`Hook`/tree tool), never by a
+relative JS import: the loader resolves the pinned `prod`, so a snapshot stays
+isolated, whereas a relative import binds the draft and leaks edits through it.
+And a tree invoked as a tool gets **only its own `Tools()`** — host tools are
+not inherited into a called tree (only a `From()`-attached subtree inherits).
+Together these are the host's isolation + least-privilege contract.
+
 #### How a tree describes itself: description and `## Guide`
 
 When a tree is offered as a tool, the model that decides whether to call it
