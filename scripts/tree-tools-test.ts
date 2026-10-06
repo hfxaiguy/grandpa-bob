@@ -94,4 +94,13 @@ assert.equal(r2.status, "done", "mini finished and the router tree completed");
 assert.equal(calls, 3, "the router round was replayed, not re-called; the auto loop then ran one fresh round");
 assert.deepEqual(emitted, [{ text: 'mini-result:"answered:yes"' }], "the subtree result came back as the tool result");
 
+// ── 3. a tree's `## Guide` is discovered — for apps AND patterns ──
+const { listTreeSources } = await import("../src/tree-sources.js");
+await fs.writeFile(path.join(ws, "patterns", "router.spec.md"), "# router\n\n## Guide\n\nROUTER GUIDE.\n");
+await fs.writeFile(path.join(ws, "app", "mini", "tree.spec.md"), "# mini\n\n## Guide\n\nMINI GUIDE.\n");
+const sources = new Map((await listTreeSources(ws)).map((s) => [s.name, s]));
+assert.equal(sources.get("router")?.guide, "ROUTER GUIDE.", "a pattern's ## Guide is read");
+assert.equal(sources.get("mini")?.guide, "MINI GUIDE.", "an app's ## Guide is read");
+console.log("tree-tools-test: guides: pattern + app ## Guide read");
+
 console.log("tree-tools-test: all assertions passed");

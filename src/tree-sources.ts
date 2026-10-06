@@ -12,7 +12,7 @@ export async function listPatterns(workspaceDir: string) {
   const patternsDir = path.join(workspaceDir, PATTERNS_DIR_NAME);
   try {
     const files = await readdir(patternsDir);
-    const out: { file: string; name: string; description: string }[] = [];
+    const out: { file: string; name: string; description: string; guide: string }[] = [];
     for (const f of files) {
       if (!f.endsWith(".mjs")) continue;
       if (f.endsWith(".test.mjs")) continue; // smoke tests, not runnable patterns
@@ -22,9 +22,22 @@ export async function listPatterns(workspaceDir: string) {
         const m = content.match(/^\/\/\s*(\S+\.mjs)\s*[—–-]\s*(.+)/m);
         const name = m ? m[1].replace(/\.mjs$/, "") : f.replace(/\.mjs$/, "");
         const desc = m ? m[2] : "(no description)";
-        out.push({ file: f, name, description: desc });
+        // The spec paired with a pattern is patterns/<filebase>.spec.md; the
+        // `## Guide` there is the agent-facing "how to use me" text, same as an
+        // app tree carries. Read it here too, or a pattern's guide never reaches
+        // the prompt.
+        const base = f.replace(/\.mjs$/, "");
+        out.push({
+          file: f,
+          name,
+          description: desc,
+          guide: await guideFrom([
+            path.join(patternsDir, `${base}.spec.md`),
+            path.join(patternsDir, `${base}.md`),
+          ]),
+        });
       } catch {
-        out.push({ file: f, name: f, description: "(read error)" });
+        out.push({ file: f, name: f, description: "(read error)", guide: "" });
       }
     }
     return out;
@@ -55,7 +68,7 @@ export async function listAppTrees(workspaceDir: string) {
         file: `app/${entry.name}/tree.mjs`,
         name: entry.name,
         description: await appTreeDescription(dir),
-        guide: await appTreeGuide(dir),
+        guide: await guideFrom([path.join(dir, "tree.spec.md"), path.join(dir, "tree.md")]),
         group: "app",
       });
     }
@@ -95,11 +108,14 @@ async function appTreeDescription(appDir: string): Promise<string> {
   return "(app tree)";
 }
 
-/** The spec's `## Guide` section (the agent-facing "how to use me" text), or "". */
-async function appTreeGuide(appDir: string): Promise<string> {
-  for (const file of ["tree.spec.md", "tree.md"]) {
+/**
+ * The `## Guide` section of the first spec file that has one, trimmed, else "".
+ * This is the agent-facing "how to use me" text, injected as TOOL GUIDANCE.
+ */
+async function guideFrom(files: string[]): Promise<string> {
+  for (const file of files) {
     try {
-      const lines = (await readFile(path.join(appDir, file), "utf8")).split("\n");
+      const lines = (await readFile(file, "utf8")).split("\n");
       const out: string[] = [];
       let inside = false;
       for (const line of lines) {
