@@ -219,6 +219,42 @@ description either. Keep the section short — it rides in the caller's prompt o
 every turn. `app/email/tree.spec.md` and `app/contacts/tree.spec.md` are the
 shape to copy.
 
+#### How a function tool describes itself: `description` and `guide`
+
+An app's `tools.mjs` (or `tools.js`) exports an array of **function tools** —
+individual actions, not a tree. Each tool carries two independent strings:
+
+- **`description`** — the tool's schema text, sent to the model in its tool
+  list (`function.description`); the model reads it to decide whether to call
+  the tool. Always declared.
+- **`guide`** — longer "how to use me" text. It is **not** in the schema;
+  `ToolRegistry.toolGuide` assembles it into the `TOOL GUIDANCE` block of the
+  calling prompt, when the tool is in scope, prefixed `Tool "<name>": `.
+  Optional.
+
+```js
+// app/<name>/tools.mjs
+export const guide = "How to use this app's tools well: …"; // default for tools without their own
+
+export const tools = [
+  { name: "upsert_contact",
+    description: "Add a contact, or update the one that already exists. …",
+    parameters: { /* … */ },
+    guide: "How to use upsert_contact well: match id → email → name; …", // per-tool wins
+    execute(input) { /* … */ } },
+  { name: "log_message",
+    description: "Log a message sent to or received from a contact. …",
+    parameters: { /* … */ },
+    execute(input) { /* … */ } }, // no per-tool guide → falls back to export const guide
+];
+```
+
+Precedence: a per-tool `guide` wins; the module-level `export const guide` only
+fills tools that did not set their own (`src/app-tools.ts`). `description` feeds
+the schema (`toOpenAiDefinition`); `guide` feeds `TOOL GUIDANCE` — never the
+schema. Guides are assembled host → tree → app, so an app function tool's guide
+follows the tree guides.
+
 ## Setup
 
 1. **Telegram bot**: create one with @BotFather, copy the token. Get your numeric
