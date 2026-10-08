@@ -338,6 +338,11 @@ export class Agent {
       // app/ when the engine needs one that was never built into this
       // process (tree tools, and resume after a restart).
       loadTree: (name: string) => this.loadTreeByName(name),
+      // Session memory: a tree invoked as a TOOL keeps its slots across
+      // invocations within one conversation, keyed (sessionId × tree name).
+      // The conversation key is that id, so an app that yields to the trunk
+      // (e.g. email's hand_off) can resume its own state on re-entry.
+      sessionId: key,
       logger: this.wrapLogger(opts?.onEvent),
       onEmit,
       // Only set logLevel when using the default (string path) logger.
