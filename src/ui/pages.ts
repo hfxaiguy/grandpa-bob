@@ -877,6 +877,12 @@ export function buildChatHtml(config: UiConfig, sttLabel: string): string {
   .k-map .stext { color: #c7d2fe; }
   .k-map-item .badge { background: #1e1b4b; }
   .step-list.nested { border-top: none; padding: 0 0 6px 12px; }
+  /* App (tree-tool) boundaries: a horizontal pink line as the flow enters or
+     leaves an app. Enter and exit are paired; suspend marks a pause inside. */
+  .app-boundary { list-style: none; display: flex; align-items: center; margin: 8px 0 3px; padding-top: 5px; border-top: 2px solid #ec4899; color: #f9a8d4; font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+  .app-boundary.app-exit { border-top-color: #be185d; color: #f472b6; }
+  .app-boundary.app-suspend { border-top-style: dashed; border-top-color: #db2777; }
+  .k-app .badge { background: #9d174d; }
   .msg-answer { display: flex; gap: 8px; margin: 8px 0; align-items: flex-start; }
   .msg-answer .who { flex: none; font-size: 12px; font-weight: 700; color: var(--green); padding-top: 10px; }
   .msg-answer .bubble { background: var(--card); border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; padding: 10px 14px; max-width: 90%; white-space: pre-wrap; word-break: break-word; }
@@ -1131,6 +1137,12 @@ function describeEvent(ev) {
       return { badge: "record", cls: "k-dim", internals: true, text: (c.child ?? "?") + " = " + jshort(c.value, 80) };
     case "scope_init":
       return { badge: "scope", cls: "k-dim", internals: true, text: "#" + c.scopeId + (c.parentScopeId != null ? " (parent #" + c.parentScopeId + ")" : "") };
+    case "tree_enter":
+      return { badge: "app", cls: "k-app", text: "\\u25b6 " + (c.tool ?? c.tree ?? "?") + " \\u2014 enter" };
+    case "tree_exit":
+      return { badge: "app", cls: "k-app", text: "\\u25c0 " + (c.tool ?? c.tree ?? "?") + " \\u2014 exit" + (c.error ? " (error)" : "") };
+    case "tree_suspend":
+      return { badge: "app", cls: "k-app", text: "\\u23f8 " + (c.tool ?? c.tree ?? "?") + " \\u2014 suspended" };
     case "map":
       return { badge: "map", cls: "k-dim", text: (c.child ?? "?") + " \\u2014 " + c.count + " item(s)" };
     case "map_item":
@@ -1144,6 +1156,10 @@ function describeEvent(ev) {
 
 function collectStepLines(list, depth, lines) {
   for (const li of Array.from(list.children)) {
+    if (li.classList && li.classList.contains("app-boundary")) {
+      lines.push("    ".repeat(depth) + li.textContent);
+      continue;
+    }
     if (!li.classList || !li.classList.contains("step")) continue;
     const sum = li.querySelector(":scope > details > summary");
     if (sum) {
@@ -1256,7 +1272,24 @@ function startTurn(turnId, input) {
   return block;
 }
 
+// An app boundary: a horizontal pink line marking entry into / exit from a
+// tree tool (an app). Enter and exit are paired; a suspend marks a pause inside.
+function appBoundaryLi(ev) {
+  const c = ev.content || {};
+  const app = c.tool ?? c.tree ?? "?";
+  const entering = ev.kind === "tree_enter";
+  const suspending = ev.kind === "tree_suspend";
+  const li = document.createElement("li");
+  li.className = "app-boundary " + (entering ? "app-enter" : suspending ? "app-suspend" : "app-exit");
+  li.textContent = (entering ? "\\u25b6 " : suspending ? "\\u23f8 " : "\\u25c0 ") + app +
+    (entering ? " \\u2014 enter" : suspending ? " \\u2014 suspended" : " \\u2014 exit" + (c.error ? " (error)" : ""));
+  return li;
+}
+
 function renderStepLi(ev) {
+  if (ev.kind === "tree_enter" || ev.kind === "tree_exit" || ev.kind === "tree_suspend") {
+    return appBoundaryLi(ev);
+  }
   const d = describeEvent(ev);
   const li = document.createElement("li");
   li.className = "step " + d.cls;
@@ -2158,6 +2191,8 @@ function applyTreeMarks() {
 }
 
 function treeOnEvent(ev) {
+  // App boundaries are flow markers, not tree-structure steps.
+  if (ev.kind === "tree_enter" || ev.kind === "tree_exit" || ev.kind === "tree_suspend") return;
   const c = ev.content || {};
   let p = ev.branch_path || "";
   if (c.child) p = p ? p + "/" + c.child : String(c.child);
