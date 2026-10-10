@@ -219,6 +219,12 @@ description either. Keep the section short — it rides in the caller's prompt o
 every turn. `app/email/tree.spec.md` and `app/contacts/tree.spec.md` are the
 shape to copy.
 
+A `tree.spec.md` is a **line-notation** sketch of its `tree.mjs` (canonical
+symbol reference: `grandma-kat/examples/notation/README.md`). One symbol worth
+naming for sketch authors: `**` opens a branch, and a condition is **not**
+required — `** if COND → …` is a *gated* branch, while a bare `**` is an
+*unconditional* grouping subtree.
+
 #### How a function tool describes itself: `description` and `guide`
 
 An app's `tools.mjs` (or `tools.js`) exports an array of **function tools** —
