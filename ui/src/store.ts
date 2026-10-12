@@ -1,7 +1,7 @@
 /** App state + actions, shared by every component. A module-level Solid store
  *  keeps the tree simple: one screen follows one session, exactly like the old
  *  chat page, but the stream is split per app. */
-import { createStore, produce } from "solid-js/store";
+import { createStore, produce, reconcile } from "solid-js/store";
 import { getJSON, postJSON, openEventStream } from "./api";
 import type { AppInfo, PatternInfo, SessionInfo, Slot, Turn } from "./types";
 
@@ -131,7 +131,8 @@ export async function refreshVersions(name?: string): Promise<void> {
 export async function refreshModels(): Promise<void> {
   try {
     const d = await getJSON<{ slots: Slot[]; models: Record<string, string> }>("/api/models/slots");
-    setState({ slots: d.slots || [], models: d.models || {} });
+    setState("slots", d.slots || []);
+    setState("models", reconcile(d.models || {}));
   } catch (e) {
     console.warn("models:", e);
   }
@@ -160,11 +161,11 @@ export async function refreshSession(): Promise<void> {
     active: d.active,
     label: d.label || "",
     follow: !!d.follow,
-    models: d.models || {},
     awaiting: d.awaiting ?? null,
     sessions: d.sessions || [],
     turns: d.turns || [],
   });
+  setState("models", reconcile(d.models || {}));
   await Promise.all([refreshMemory(), refreshModels()]);
 }
 
@@ -254,7 +255,7 @@ export async function setRef(ref: string): Promise<void> {
 export async function setModel(role: string, slot: string): Promise<void> {
   try {
     const d = await postJSON<{ models: Record<string, string> }>("/api/chat/model", { role, slot: slot || null });
-    setState("models", d.models || {});
+    setState("models", reconcile(d.models || {}));
     toast(slot ? `${role}: ${slot}` : `${role}: default`);
   } catch (e) {
     toast(e instanceof Error ? e.message : "model switch failed", true);
@@ -329,6 +330,7 @@ function handleSSE(msg: any): void {
           s.turns.push({
             turnId: msg.turnId,
             input: msg.input ?? "",
+            inputApp: msg.inputApp ?? "trunk",
             startedAt: msg.ts ?? Date.now(),
             endedAt: null,
             status: "running",

@@ -574,6 +574,10 @@ interface SanitizedEvent {
 interface TurnRecord {
   turnId: string;
   input: string;
+  /** The app the input was replying to (the one that was paused), so the
+   *  user's bubble lands on the right tile; "trunk" for a fresh/complete
+   *  session. */
+  inputApp?: string | null;
   startedAt: number;
   endedAt: number | null;
   status: "running" | "done" | "error";
@@ -883,7 +887,7 @@ export function remoteTurnStart(key: string, input: string): void {
   const turnId = randomUUID();
   const now = Date.now();
   s.turns.push({
-    turnId, input, startedAt: now, endedAt: null, status: "running",
+    turnId, input, inputApp: s.awaiting ?? "trunk", startedAt: now, endedAt: null, status: "running",
     error: null, output: null, events: [],
   });
   while (s.turns.length > MAX_TURNS_KEPT) s.turns.shift();
@@ -891,7 +895,7 @@ export function remoteTurnStart(key: string, input: string): void {
   s.awaiting = null;
   beginTurnApps(key);
   saveTurns();
-  if (activeSession === key) broadcast({ type: "turn_start", turnId, session: key, input, ts: now, awaiting: null });
+  if (activeSession === key) broadcast({ type: "turn_start", turnId, session: key, input, inputApp: s.turns.at(-1)?.inputApp ?? "trunk", ts: now, awaiting: null });
 }
 
 export function remoteTurnEvent(key: string, event: unknown): void {
@@ -915,7 +919,7 @@ export function remoteTurnEnd(key: string, output: string, ok = true, paused = f
   if (!t || t.status !== "running") {
     // End without a start (e.g. the grow pass failed before start) —
     // record a one-line turn rather than dropping the exchange.
-    t = { turnId: randomUUID(), input: "", startedAt: now, endedAt: null, status: "running", error: null, output: null, events: [] };
+    t = { turnId: randomUUID(), input: "", inputApp: "trunk", startedAt: now, endedAt: null, status: "running", error: null, output: null, events: [] };
     s.turns.push(t);
     while (s.turns.length > MAX_TURNS_KEPT) s.turns.shift();
     if (activeSession === key) broadcast({ type: "turn_start", turnId: t.turnId, session: key, input: "", ts: now, awaiting: null });
@@ -1077,6 +1081,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
   const record: TurnRecord = {
     turnId,
     input: displayText,
+    inputApp: session.awaiting ?? "trunk",
     startedAt: Date.now(),
     endedAt: null,
     status: "running",
@@ -1089,7 +1094,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
   while (session.turns.length > MAX_TURNS_KEPT) session.turns.shift();
   session.awaiting = null;
   beginTurnApps(key);
-  broadcast({ type: "turn_start", turnId, session: key, input: displayText, ts: record.startedAt, awaiting: null });
+  broadcast({ type: "turn_start", turnId, session: key, input: displayText, inputApp: record.inputApp ?? "trunk", ts: record.startedAt, awaiting: null });
 
   // A web-run turn that belongs to (or is followed by) a Telegram chat is
   // mirrored to the phone LIVE — the user's line now, each emit as it is
@@ -1564,7 +1569,8 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         if (!role) {
           // No role: clear every override for this conversation.
           agent.clearSessionModel(activeSession);
-        } else if (!slot || slot === role || slot === "default") {
+        } else if (!slot || slot === "default") {
+          // Empty / the "default" entry: drop this role's override.
           agent.clearSessionModel(activeSession, role);
         } else if (!agent.setSessionModel(activeSession, role, slot)) {
           res.writeHead(400, { "content-type": "application/json" });

@@ -25,6 +25,9 @@ export interface EmitButton {
 export interface Turn {
   turnId: string;
   input: string;
+  /** The app the input was replying to (paused app), so the user's bubble
+   *  lands on the right tile. */
+  inputApp?: string | null;
   startedAt: number;
   endedAt: number | null;
   status: "running" | "done" | "error";

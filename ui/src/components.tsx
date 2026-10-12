@@ -25,7 +25,7 @@ const trunkOf = (a?: string | null) => a || "trunk";
 function bubblesFor(app: string): { turn: Turn; text: string; kind: "user" | "bot" | "err" }[] {
   const out: { turn: Turn; text: string; kind: "user" | "bot" | "err" }[] = [];
   for (const t of state.turns) {
-    if (app === "trunk" && t.input) out.push({ turn: t, text: t.input, kind: "user" });
+    if ((t.inputApp ?? "trunk") === app && t.input) out.push({ turn: t, text: t.input, kind: "user" });
     const emits = t.emits ?? [];
     const apps = t.emitApps ?? [];
     for (let i = 0; i < emits.length; i++) {
@@ -43,6 +43,7 @@ function bubblesFor(app: string): { turn: Turn; text: string; kind: "user" | "bo
 }
 
 function MemoryPanel(props: { app: string }) {
+  const [inspect, setInspect] = createSignal<{ path: string; value: unknown } | null>(null);
   const entries = createMemo(() => {
     const m = state.memory[props.app] || {};
     return Object.entries(m)
@@ -53,6 +54,7 @@ function MemoryPanel(props: { app: string }) {
     const t = typeof v === "string" ? v : JSON.stringify(v);
     return t.length > 200 ? t.slice(0, 200) + "…" : t;
   };
+  const full = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
   return (
     <div class="mem">
       <div class="panel-title">memory</div>
@@ -60,13 +62,31 @@ function MemoryPanel(props: { app: string }) {
         <ul class="mem-list">
           <For each={entries()}>
             {(e) => (
-              <li style={{ "padding-left": `${e.depth * 12}px` }} title={e.path}>
+              <li
+                style={{ "padding-left": `${e.depth * 12}px` }}
+                title={`${e.path} — click to inspect`}
+                onClick={() => setInspect({ path: e.path, value: e.value })}
+              >
                 <span class="mem-key">{e.path.split("/").pop()}</span>
                 <span class="mem-val">{shown(e.value)}</span>
               </li>
             )}
           </For>
         </ul>
+      </Show>
+      <Show when={inspect()}>
+        {(sel) => (
+          <div class="mem-modal" onClick={(ev) => ev.target === ev.currentTarget && setInspect(null)}>
+            <div class="mem-modal-card">
+              <div class="mem-modal-head">
+                <span class="mem-modal-path">{sel().path}</span>
+                <span class="spacer" />
+                <button onClick={() => setInspect(null)}>✕</button>
+              </div>
+              <pre class="mem-modal-body">{full(sel().value)}</pre>
+            </div>
+          </div>
+        )}
       </Show>
     </div>
   );
@@ -280,13 +300,13 @@ export function SessionPanel(props: { onClose: () => void }) {
         </label>
 
         <div class="row">
-          <select value={state.active ?? ""} onChange={(e) => e.currentTarget.value && void selectSession(e.currentTarget.value)}>
-            <option value="" disabled>
+          <select onChange={(e) => e.currentTarget.value && void selectSession(e.currentTarget.value)}>
+            <option value="" disabled selected={!state.active}>
               select a session…
             </option>
             <For each={state.sessions}>
               {(s) => (
-                <option value={s.key}>
+                <option value={s.key} selected={state.active === s.key}>
                   {s.label || s.key}
                   {s.remote ? " (remote)" : ""}
                 </option>
@@ -313,33 +333,43 @@ export function SessionPanel(props: { onClose: () => void }) {
         <hr />
         <label class="col">
           tree
-          <select value={state.pattern} onChange={(e) => void setPattern(e.currentTarget.value)}>
-            <For each={state.patterns}>{(p) => <option value={p.name}>{p.name}</option>}</For>
+          <select onChange={(e) => void setPattern(e.currentTarget.value)}>
+            <For each={state.patterns}>
+              {(p) => <option value={p.name} selected={state.pattern === p.name}>{p.name}</option>}
+            </For>
           </select>
         </label>
         <label class="col">
           version (new sessions)
-          <select value={state.ref || "prod"} onChange={(e) => void setRef(e.currentTarget.value)}>
-            <option value="prod">prod{state.versions.prod ? ` (${state.versions.prod})` : ""}</option>
-            <For each={state.versions.versions}>{(v) => <option value={v}>{v}</option>}</For>
+          <select onChange={(e) => void setRef(e.currentTarget.value)}>
+            <option value="prod" selected={(state.ref || "prod") === "prod"}>
+              prod{state.versions.prod ? ` (${state.versions.prod})` : ""}
+            </option>
+            <For each={state.versions.versions}>
+              {(v) => <option value={v} selected={state.ref === v}>{v}</option>}
+            </For>
             <Show when={state.versions.draft}>
-              <option value="draft">draft</option>
+              <option value="draft" selected={state.ref === "draft"}>draft</option>
             </Show>
           </select>
         </label>
         <div class="row">
           <label class="col">
             cheap model
-            <select value={state.models.cheap || ""} onChange={(e) => void setModel("cheap", e.currentTarget.value)}>
-              <option value="">default</option>
-              <For each={state.slots}>{(s) => <option value={s.name}>{s.name} · {s.model}</option>}</For>
+            <select onChange={(e) => void setModel("cheap", e.currentTarget.value)}>
+              <option value="" selected={!state.models.cheap}>default</option>
+              <For each={state.slots}>
+                {(s) => <option value={s.name} selected={state.models.cheap === s.name}>{s.name} · {s.model}</option>}
+              </For>
             </select>
           </label>
           <label class="col">
             strong model
-            <select value={state.models.strong || ""} onChange={(e) => void setModel("strong", e.currentTarget.value)}>
-              <option value="">default</option>
-              <For each={state.slots}>{(s) => <option value={s.name}>{s.name} · {s.model}</option>}</For>
+            <select onChange={(e) => void setModel("strong", e.currentTarget.value)}>
+              <option value="" selected={!state.models.strong}>default</option>
+              <For each={state.slots}>
+                {(s) => <option value={s.name} selected={state.models.strong === s.name}>{s.name} · {s.model}</option>}
+              </For>
             </select>
           </label>
         </div>

@@ -196,6 +196,20 @@ await new Promise((r) => setTimeout(r, 150));
   const sess = await api("GET", "/api/session");
   assert.equal(sess.json.awaiting, "enrich", "session exposes the awaiting app");
 
+  // 7. A reply is attributed to the app that was paused (enrich), not trunk,
+  //    so the user's bubble lands on the right tile.
+  assert.equal(turn.inputApp, "trunk", "the opening message belongs to trunk");
+  await api("POST", "/api/chat", { text: "here is the input" });
+  let turns2: any[] = [];
+  for (let i = 0; i < 60; i++) {
+    const t = await api("GET", "/api/turns");
+    turns2 = t.json.turns ?? [];
+    if (turns2.length >= 2 && turns2.at(-1).status !== "running") break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.equal(turns2.length, 2, "second turn recorded");
+  assert.equal(turns2[1].inputApp, "enrich", "the reply is attributed to the paused app, not trunk");
+
   console.log("2-5. events, emits, memory, and awaiting all attribute per app");
 }
 
@@ -205,6 +219,9 @@ await new Promise((r) => setTimeout(r, 150));
   const end = sse.find((m) => m.type === "turn_end");
   assert.ok(start, "turn_start broadcast");
   assert.equal(end?.awaiting, "enrich", "turn_end carries awaiting");
+  const starts = sse.filter((m) => m.type === "turn_start");
+  assert.equal(starts[0]?.inputApp, "trunk", "first turn_start inputApp = trunk");
+  assert.equal(starts[1]?.inputApp, "enrich", "second turn_start inputApp = the paused app");
   const evContacts = sse.find((m) => m.type === "event" && m.event?.kind === "tree_enter" && m.event.app === "contacts");
   assert.ok(evContacts, "event broadcast carries the app tag");
   const emitEnrich = sse.find((m) => m.type === "emit" && m.app === "enrich");

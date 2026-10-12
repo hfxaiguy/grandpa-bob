@@ -362,7 +362,8 @@ The admin server (port `ADMIN_PORT`, default 8080) serves:
 - **`/` — tiled app UI.** A tiling "mission control": one tile per app (the
   trunk plus every `app/<name>/tree.mjs` in the workspace). Each tile shows
   that app's **own chat bubbles**, a read-only **memory panel** (values
-  written inside that app, nested paths indented), and a **mini event log**;
+  written inside that app, nested paths indented; **click a value to inspect
+  its full content**), and a **mini event log**;
   a global **event-stream side panel** shows every step tagged by app. The
   **human-input box appears only on the tile whose tree is paused at
   `.human()`**, and the **trunk tile always has one** (start a conversation,

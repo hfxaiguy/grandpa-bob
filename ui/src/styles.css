@@ -139,9 +139,16 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .count { color: var(--accent); }
 
 .mem-list, .ev-list { list-style: none; margin: 0; padding: 4px 10px 8px; max-height: 150px; overflow: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.mem-list li { display: flex; gap: 8px; padding: 1px 0; }
+.mem-list li { display: flex; gap: 8px; padding: 1px 0; cursor: pointer; border-radius: 4px; }
+.mem-list li:hover { background: #1b2742; }
 .mem-key { color: var(--accent); flex: 0 0 auto; }
 .mem-val { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.mem-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 60; display: flex; align-items: center; justify-content: center; padding: 4vh 4vw; }
+.mem-modal-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; width: min(720px, 92vw); max-height: 88vh; display: flex; flex-direction: column; }
+.mem-modal-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.mem-modal-path { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-modal-body { margin: 0; padding: 12px; overflow: auto; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
 .ev-list li { display: flex; gap: 6px; padding: 1px 0; color: var(--muted); }
 .badge { color: var(--accent); flex: 0 0 auto; min-width: 42px; }
 .ev-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

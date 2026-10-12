@@ -179,6 +179,14 @@ async function api(method: string, p: string, body?: unknown) {
   const clearAll = await api("POST", "/api/chat/model", {});
   assert.deepEqual(clearAll.json.models, {}, "no role → clear everything");
   assert.equal(state.overrides.has(active), false);
+
+  // Selecting the slot named the same as the role is a real choice, not a
+  // silent clear (the common models.json names its slots cheap/strong).
+  const sameRole = await api("POST", "/api/chat/model", { role: "strong", slot: "strong" });
+  assert.equal(sameRole.status, 200);
+  assert.equal(sameRole.json.models.strong, "strong", "role-named slot persists");
+  const clearSame = await api("POST", "/api/chat/model", { role: "strong", slot: null });
+  assert.deepEqual(clearSame.json.models, {}, "the default entry still clears");
   console.log("5. per-role chat model overrides set and clear independently");
 }
 

@@ -41,6 +41,7 @@ export interface BackendOptions {
 interface TurnRecord {
   turnId: string;
   input: string;
+  inputApp?: string | null;
   startedAt: number;
   endedAt: number | null;
   status: "running" | "done" | "error";
@@ -126,6 +127,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     const record: TurnRecord = {
       turnId,
       input: text,
+      inputApp: activeAwaiting() ?? "trunk",
       startedAt: Date.now(),
       endedAt: null,
       status: "running",
@@ -142,7 +144,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     if (turns.length > 20) turns.shift();
     updatedAt = Date.now();
     const apps = newTurnApps();
-    broadcast({ type: "turn_start", turnId, session: sessionKey, input: text, ts: record.startedAt, awaiting: null });
+    broadcast({ type: "turn_start", turnId, session: sessionKey, input: text, inputApp: record.inputApp ?? "trunk", ts: record.startedAt, awaiting: null });
     try {
       const { result, emits } = await agent.run(
         {
