@@ -42,7 +42,7 @@ import {
 } from "./stt.js";
 import { TreeLogReader, logDbPath } from "./treeLog.js";
 import { DEFAULT_PATTERN, loadPattern, splitTreeRef } from "./pattern-loader.js";
-import { PATTERNS_DIR_NAME, listPatterns, listTreeSources } from "./tree-sources.js";
+import { PATTERNS_DIR_NAME, listAppTrees, listPatterns, listTreeSources } from "./tree-sources.js";
 import {
   KEEP_VERSIONS,
   scanTreeVersions,
@@ -496,14 +496,105 @@ function readBody(req: http.IncomingMessage) {
 // in-memory history, and broadcast to connected browsers over SSE.
 
 const WEB_KEY = "web:chat";
-// Current memory values for the web chat's tree, resolved by scope. A slot
-// is identified by (scope_id, name): .memoryUpdate() deep in a branch writes
-// to the slot's *declaring* scope, so keying by scope_id collapses updates
-// onto the .memory() node instead of leaving it stuck at its seed value.
-const webMemoryValues = new Map<string, unknown>(); // `${scopeId}/${name}` -> value
-const webMemoryPaths = new Map<string, Set<string>>(); // slot key -> node paths that write to it
+// Current memory values, grouped by the app (tree tool) that wrote them —
+// "trunk" for the top-level tree. A slot is identified by (scope_id, name):
+// .memoryUpdate() deep in a branch writes to the slot's *declaring* scope, so
+// keying by scope_id collapses updates onto the .memory() node instead of
+// leaving it stuck at its seed value.
+const webMemoryValues = new Map<string, Map<string, unknown>>(); // app -> slotKey -> value
+const webMemoryPaths = new Map<string, Map<string, Set<string>>>(); // app -> slotKey -> node paths
 const MAX_TURNS_KEPT = 20;
 const MAX_EVENT_STR = 400;
+
+/** Drop every app's tracked memory (session switch / restart / clear). */
+function clearWebMemory(): void {
+  webMemoryValues.clear();
+  webMemoryPaths.clear();
+}
+
+// Which app a turn's events belong to. A turn enters tree tools (apps) and
+// leaves them; events between enter and exit belong to that app. Kept per
+// conversation key because a web turn and a mirrored Telegram turn can be in
+// flight for different keys at once.
+interface TurnApps {
+  stack: string[];
+  current: string;
+  suspended: string | null;
+}
+const turnApps = new Map<string, TurnApps>();
+function beginTurnApps(key: string): TurnApps {
+  const st: TurnApps = { stack: [], current: "trunk", suspended: null };
+  turnApps.set(key, st);
+  return st;
+}
+function endTurnApps(key: string): void {
+  turnApps.delete(key);
+}
+/** The app name carried by a tree_enter/exit/suspend event. */
+function appNameOf(e: unknown): string {
+  const c = (e as { content?: { tool?: unknown; tree?: unknown } } | null)?.content;
+  if (typeof c?.tool === "string" && c.tool) return c.tool;
+  if (typeof c?.tree === "string" && c.tree) return c.tree;
+  return "";
+}
+/**
+ * Update a turn's app stack for one event and return the app it belongs to.
+ * `tree_enter` pushes, `tree_exit` pops back to the parent, `tree_suspend`
+ * records the app the turn paused in (the one that owns the human input).
+ */
+function tagEventApp(key: string, e: unknown): string {
+  const st = turnApps.get(key) ?? beginTurnApps(key);
+  const kind = (e as { kind?: string } | null)?.kind;
+  const name = appNameOf(e);
+  let app = st.current;
+  if (kind === "tree_enter" && name) {
+    st.stack.push(name);
+    st.current = name;
+    app = name;
+  } else if (kind === "tree_exit" && name) {
+    app = name;
+    const i = st.stack.lastIndexOf(name);
+    if (i >= 0) st.stack.splice(i, 1);
+    st.current = st.stack.at(-1) ?? "trunk";
+  } else if (kind === "tree_suspend" && name) {
+    app = name;
+    st.suspended = name;
+    st.current = name;
+  }
+  return app;
+}
+
+/**
+ * Recompute per-event app tags for a turn loaded from disk (turns recorded
+ * before attribution have none). The tree_enter/exit/suspend markers are in
+ * the stored stream, so the same walk reconstructs them. Emit apps are
+ * recovered when the `emit` events line up one-to-one with the stored emits.
+ */
+function retagTurnEvents(t: TurnRecord): void {
+  const stack: string[] = [];
+  let current = "trunk";
+  let suspended: string | null = null;
+  const emitApps: string[] = [];
+  for (const ev of t.events ?? []) {
+    const kind = ev.kind;
+    const name = appNameOf(ev);
+    let app = current;
+    if (kind === "tree_enter" && name) {
+      stack.push(name); current = name; app = name;
+    } else if (kind === "tree_exit" && name) {
+      app = name;
+      const i = stack.lastIndexOf(name);
+      if (i >= 0) stack.splice(i, 1);
+      current = stack.at(-1) ?? "trunk";
+    } else if (kind === "tree_suspend" && name) {
+      app = name; suspended = name; current = name;
+    }
+    ev.app = app;
+    if (kind === "emit") emitApps.push(app);
+  }
+  if (t.emits?.length && emitApps.length === t.emits.length) t.emitApps = emitApps;
+  if (t.awaiting === undefined) t.awaiting = suspended ?? null;
+}
 
 interface SanitizedEvent {
   kind: string;
@@ -512,6 +603,8 @@ interface SanitizedEvent {
   scope_id: number | null;
   content: Record<string, unknown> | null;
   ts: number;
+  /** The app (tree tool) this event belongs to; "trunk" at top level. */
+  app?: string;
 }
 
 interface TurnRecord {
@@ -526,6 +619,11 @@ interface TurnRecord {
   emits?: string[] | null;
   /** Channel level per emit (parallel to `emits`): "machine", or null. */
   levels?: (string | null)[] | null;
+  /** App each emit came from (parallel to `emits`); "trunk" at top level. */
+  emitApps?: (string | null)[] | null;
+  /** The app the tree paused on awaiting human input, when the turn ended
+   *  waiting at a `.human()`; null otherwise. */
+  awaiting?: string | null;
   /** Buttons of the last emit that carried any; null when none ever did. */
   buttons?: EmitButton[] | null;
   events: SanitizedEvent[];
@@ -543,6 +641,8 @@ interface WebSession {
   pattern: string;
   updatedAt: number;
   turns: TurnRecord[];
+  /** App the conversation is paused on awaiting human input, if any. */
+  awaiting?: string | null;
 }
 const sessionTurns = new Map<string, WebSession>();
 let activeSession: string | null = null;
@@ -610,11 +710,14 @@ function loadTurns(): void {
         ? v.turns.filter((t: TurnRecord) => t && t.status !== "running").slice(-MAX_TURNS_KEPT)
         : [];
       if (!turns.length && !v?.label) continue;
+      for (const t of turns) retagTurnEvents(t);
+      const last = turns.at(-1);
       sessionTurns.set(String(key), {
         label: typeof v?.label === "string" ? v.label : "",
         pattern: typeof v?.pattern === "string" ? v.pattern : "",
         updatedAt: Number(v?.updatedAt) || (turns.at(-1)?.endedAt ?? turns.at(-1)?.startedAt) || 0,
         turns,
+        awaiting: last?.awaiting ?? null,
       });
     }
     if (sessionTurns.size) console.log(`[admin] restored ${sessionTurns.size} web chat session(s) from disk`);
@@ -746,8 +849,7 @@ function resolveFollow(agent?: Agent): void {
   }
   if (activeSession !== target) {
     activeSession = target;
-    webMemoryValues.clear();
-    webMemoryPaths.clear();
+    clearWebMemory();
     broadcast({ type: "follow", key: target, label: sessionTurns.get(target)?.label ?? target });
   }
 }
@@ -765,7 +867,7 @@ let secretsStore: SecretsStore | undefined;
  * turns and mirrored Telegram turns so the tree panel stays truthful
  * whichever transport ran the step.
  */
-function trackMemoryWrite(e: unknown): void {
+function trackMemoryWrite(e: unknown, app = "trunk"): void {
   const raw = e as {
     scope_id?: number | null; branch_path?: string; kind?: string;
     content?: { child?: unknown; value?: unknown; op?: unknown };
@@ -778,11 +880,17 @@ function trackMemoryWrite(e: unknown): void {
   if (!memWrite || raw.scope_id == null) return;
   const child = typeof raw.content?.child === "string" ? raw.content.child : "";
   const slotKey = `${raw.scope_id}/${child}`;
-  if (raw.content && "value" in raw.content) webMemoryValues.set(slotKey, raw.content.value);
+  if (raw.content && "value" in raw.content) {
+    let slots = webMemoryValues.get(app);
+    if (!slots) { slots = new Map(); webMemoryValues.set(app, slots); }
+    slots.set(slotKey, raw.content.value);
+  }
   const nodePath = (raw.branch_path ?? "") + (child ? "/" + child : "");
   if (nodePath) {
-    let paths = webMemoryPaths.get(slotKey);
-    if (!paths) { paths = new Set(); webMemoryPaths.set(slotKey, paths); }
+    let slots = webMemoryPaths.get(app);
+    if (!slots) { slots = new Map(); webMemoryPaths.set(app, slots); }
+    let paths = slots.get(slotKey);
+    if (!paths) { paths = new Set(); slots.set(slotKey, paths); }
     paths.add(nodePath);
   }
 }
@@ -816,8 +924,10 @@ export function remoteTurnStart(key: string, input: string): void {
   });
   while (s.turns.length > MAX_TURNS_KEPT) s.turns.shift();
   s.updatedAt = now;
+  s.awaiting = null;
+  beginTurnApps(key);
   saveTurns();
-  if (activeSession === key) broadcast({ type: "turn_start", turnId, session: key, input, ts: now });
+  if (activeSession === key) broadcast({ type: "turn_start", turnId, session: key, input, ts: now, awaiting: null });
 }
 
 export function remoteTurnEvent(key: string, event: unknown): void {
@@ -825,13 +935,14 @@ export function remoteTurnEvent(key: string, event: unknown): void {
   const s = sessionTurns.get(key);
   const t = s?.turns.at(-1);
   if (!t || t.status !== "running") return;
-  trackMemoryWrite(event);
-  const clean = sanitizeEvent(event as Parameters<typeof sanitizeEvent>[0]);
+  const app = tagEventApp(key, event);
+  trackMemoryWrite(event, app);
+  const clean = sanitizeEvent(event as Parameters<typeof sanitizeEvent>[0], app);
   t.events.push(clean);
   if (activeSession === key) broadcast({ type: "event", turnId: t.turnId, event: clean });
 }
 
-export function remoteTurnEnd(key: string, output: string, ok = true): void {
+export function remoteTurnEnd(key: string, output: string, ok = true, paused = false): void {
   if (!key) return;
   const s = sessionTurns.get(key);
   if (!s) return;
@@ -843,24 +954,29 @@ export function remoteTurnEnd(key: string, output: string, ok = true): void {
     t = { turnId: randomUUID(), input: "", startedAt: now, endedAt: null, status: "running", error: null, output: null, events: [] };
     s.turns.push(t);
     while (s.turns.length > MAX_TURNS_KEPT) s.turns.shift();
-    if (activeSession === key) broadcast({ type: "turn_start", turnId: t.turnId, session: key, input: "", ts: now });
+    if (activeSession === key) broadcast({ type: "turn_start", turnId: t.turnId, session: key, input: "", ts: now, awaiting: null });
   }
+  const st = turnApps.get(key);
+  const awaiting = ok && paused ? (st?.suspended ?? st?.current ?? "trunk") : null;
   t.endedAt = now;
   t.status = ok ? "done" : "error";
   t.output = ok ? output || null : null;
   t.error = ok ? null : output || "agent error";
+  t.awaiting = awaiting;
+  s.awaiting = awaiting;
   s.updatedAt = now;
+  endTurnApps(key);
   saveTurns();
   pruneSessions(adminAgent);
   if (activeSession === key) {
-    broadcast({ type: "turn_end", turnId: t.turnId, status: t.status, error: t.error, output: t.output, ts: now });
+    broadcast({ type: "turn_end", turnId: t.turnId, status: t.status, error: t.error, output: t.output, awaiting, ts: now });
   }
 }
 
 function sessionList(agent?: Agent) {
   const local = [...sessionTurns.entries()].map(([key, s]) => ({
     key, label: s.label, pattern: s.pattern, updatedAt: s.updatedAt, turns: s.turns.length, remote: false,
-    ref: agent?.sessionRef?.(key) ?? "",
+    ref: agent?.sessionRef?.(key) ?? "", awaiting: s.awaiting ?? null,
   }));
   // Live continuations this page has no transcript for — Telegram topics
   // and web sessions pruned from the store. The web UI may FOLLOW any of
@@ -949,7 +1065,7 @@ function sanitizeValue(v: unknown, depth = 0): unknown {
   return out;
 }
 
-function sanitizeEvent(e: { kind?: string; branch_path?: string; iteration?: number; scope_id?: number | null; content?: Record<string, unknown> | null }): SanitizedEvent {
+function sanitizeEvent(e: { kind?: string; branch_path?: string; iteration?: number; scope_id?: number | null; content?: Record<string, unknown> | null }, app = "trunk"): SanitizedEvent {
   const content: Record<string, unknown> = { ...(e.content ?? {}) };
   // Keep the prompt input exactly as sent: attach it raw after generic
   // sanitization, which would otherwise truncate strings and collapse the
@@ -965,6 +1081,7 @@ function sanitizeEvent(e: { kind?: string; branch_path?: string; iteration?: num
     scope_id: e.scope_id ?? null,
     content: clean,
     ts: Date.now(),
+    app,
   };
 }
 
@@ -1006,7 +1123,9 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
   };
   session.turns.push(record);
   while (session.turns.length > MAX_TURNS_KEPT) session.turns.shift();
-  broadcast({ type: "turn_start", turnId, session: key, input: displayText, ts: record.startedAt });
+  session.awaiting = null;
+  beginTurnApps(key);
+  broadcast({ type: "turn_start", turnId, session: key, input: displayText, ts: record.startedAt, awaiting: null });
 
   // A web-run turn that belongs to (or is followed by) a Telegram chat is
   // mirrored to the phone LIVE — the user's line now, each emit as it is
@@ -1026,11 +1145,16 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
   mirror(`\ud83d\udcbb ${displayText}`);
 
   const onEvent = (e: unknown) => {
-    trackMemoryWrite(e);
-    const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0]);
+    const app = tagEventApp(key, e);
+    trackMemoryWrite(e, app);
+    const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0], app);
     record.events.push(s);
     broadcast({ type: "event", turnId, event: s });
   };
+
+  // The app the tree paused on awaiting human input; set when the run returns
+  // `waiting`, read by turn_end so a tile can show its input box.
+  let awaiting: string | null = null;
 
   try {
     // First message of the conversation: grow trunk-style trees to their
@@ -1048,17 +1172,19 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
         // Trees emit { text, buttons? } or engine narration ({ machine, level? });
         // the chat shows the text (a readable line for narration), never the JSON.
         const { text, buttons, level } = emitValue(value);
+        const app = turnApps.get(key)?.current ?? "trunk";
         if (buttons?.length) record.buttons = buttons;
         if (text || buttons?.length) {
           if (text) {
             record.output = record.output ? record.output + "\n\n" + text : text;
             (record.emits ??= []).push(text);
             (record.levels ??= []).push(level ?? null);
+            (record.emitApps ??= []).push(app);
             mirror(text);
           }
           // Stream it now; turn_end still carries the final list, so the UI
           // can overwrite whatever a rewound/retried branch emitted.
-          broadcast({ type: "emit", turnId, text, buttons, level });
+          broadcast({ type: "emit", turnId, text, buttons, level, app });
         }
       },
       { onEvent },
@@ -1070,6 +1196,10 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       if (text) record.output = text;
       if (buttons?.length) record.buttons = buttons;
     }
+    if (res.status === "waiting") {
+      const st = turnApps.get(key);
+      awaiting = st?.suspended ?? st?.current ?? "trunk";
+    }
     record.status = "done";
   } catch (err) {
     record.status = "error";
@@ -1078,7 +1208,10 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
   } finally {
     activeTurns--;
     record.endedAt = Date.now();
+    record.awaiting = awaiting;
+    session.awaiting = awaiting;
     session.updatedAt = record.endedAt;
+    endTurnApps(key);
     broadcast({
       type: "turn_end",
       turnId,
@@ -1087,6 +1220,8 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       output: record.output,
       emits: record.emits ?? null,
       levels: record.levels ?? null,
+      emitApps: record.emitApps ?? null,
+      awaiting,
       buttons: record.buttons,
       ts: record.endedAt,
     });
@@ -1245,8 +1380,9 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
 
       if (req.method === "GET" && url.pathname === "/api/turns") {
         const turns = activeSession ? sessionTurns.get(activeSession)?.turns ?? [] : [];
+        const awaiting = activeSession ? sessionTurns.get(activeSession)?.awaiting ?? null : null;
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ turns, session: activeSession }));
+        res.end(JSON.stringify({ turns, session: activeSession, awaiting }));
         return;
       }
 
@@ -1264,6 +1400,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           follow: autoFollowTelegram,
           model: activeSession ? agent?.sessionModel?.(activeSession) ?? null : null,
           models: activeSession ? agent?.sessionModelMap?.(activeSession) ?? {} : {},
+          awaiting: active?.awaiting ?? null,
           sessions: sessionList(agent),
           turns: active ? active.turns.map(slimTurn) : null,
         }));
@@ -1300,8 +1437,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
             pruneSessions(agent);
             activeSession = key;
           }
-          webMemoryValues.clear();
-          webMemoryPaths.clear();
+          clearWebMemory();
           saveTurns();
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true, active: activeSession, follow: autoFollowTelegram, turns: [] }));
@@ -1339,8 +1475,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           activeSession = sel.key;
           // Memory slots belong to the selected tree; the panel must not
           // show the previous session's values until this one logs again.
-          webMemoryValues.clear();
-          webMemoryPaths.clear();
+          clearWebMemory();
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true, active: sel.key, follow: autoFollowTelegram, turns: s.turns.map(slimTurn) }));
           return;
@@ -1592,8 +1727,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           sessionTurns.set(activeSession, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
           saveTurns();
         }
-        webMemoryValues.clear();
-        webMemoryPaths.clear();
+        clearWebMemory();
         broadcast({ type: "cleared" });
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, active: activeSession }));
@@ -1949,8 +2083,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           sessionTurns.set(activeSession, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
         }
         for (const key of sessionTurns.keys()) agent?.clear(key);
-        webMemoryValues.clear();
-        webMemoryPaths.clear();
+        clearWebMemory();
         saveTurns();
         broadcast({ type: "cleared" });
         notifyTreesChanged(name);
@@ -2346,19 +2479,46 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       // declaring .memory() node's value too. `?path=` returns one full value
       // (used by the popup); without it, the full map (used for inline values).
       if (req.method === "GET" && url.pathname === "/api/tree/memory") {
+        // Flat `values` (path -> value) keeps the old side panel working;
+        // `apps` groups the same values by the app that wrote them, which the
+        // tiled UI renders per tile (node-path depth gives the indentation).
         const values: Record<string, unknown> = {};
-        for (const [slotKey, paths] of webMemoryPaths) {
-          const v = webMemoryValues.get(slotKey);
-          if (v === undefined) continue;
-          for (const p of paths) values[p] = v;
+        const apps: Record<string, Record<string, unknown>> = {};
+        for (const [app, slots] of webMemoryValues) {
+          const pathMap = webMemoryPaths.get(app);
+          if (!pathMap) continue;
+          for (const [slotKey, v] of slots) {
+            if (v === undefined) continue;
+            for (const p of pathMap.get(slotKey) ?? []) {
+              values[p] = v;
+              (apps[app] ??= {})[p] = v;
+            }
+          }
         }
         res.writeHead(200, { "content-type": "application/json" });
         const pathParam = url.searchParams.get("path");
         if (pathParam) {
           res.end(JSON.stringify({ path: pathParam, value: values[pathParam] ?? null }));
         } else {
-          res.end(JSON.stringify({ values }));
+          res.end(JSON.stringify({ values, apps }));
         }
+        return;
+      }
+
+      // The app tiles: the trunk plus every `app/<name>/tree.mjs` in the
+      // workspace. The tiled UI lays one tile out per entry.
+      if (req.method === "GET" && url.pathname === "/api/apps") {
+        let appTrees: { name: string; description: string; guide?: string }[] = [];
+        try {
+          appTrees = await listAppTrees(config.workspaceDir);
+        } catch { /* no app dir — trunk only */ }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          apps: [
+            { name: "trunk", description: "The main conversation tree.", group: "trunk" },
+            ...appTrees.map((a) => ({ name: a.name, description: a.description, guide: a.guide, group: "app" })),
+          ],
+        }));
         return;
       }
 

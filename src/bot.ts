@@ -47,7 +47,7 @@ export interface BotDeps {
   turnRecorder?: {
     start: (key: string, input: string) => void;
     event: (key: string, event: unknown) => void;
-    end: (key: string, output: string, ok?: boolean) => void;
+    end: (key: string, output: string, ok?: boolean, paused?: boolean) => void;
   };
   /** Named model registry; the bot's /status command shows all entries. */
   models: ModelRegistry;
@@ -533,7 +533,7 @@ export function createBot(deps: BotDeps): Bot {
         const { text, buttons } = emitValue(res.result);
         if (text) { turnOutput.push(text); await reply(ctx, text, buttons); }
       }
-      rec?.end(key, turnOutput.join("\n\n"));
+      rec?.end(key, turnOutput.join("\n\n"), true, res.status === "waiting");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[agent]", err);
