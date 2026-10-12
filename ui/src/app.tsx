@@ -49,6 +49,9 @@ export function App() {
         <span class="spacer" />
         <TilesMenu />
         <button onClick={() => setShowSession(true)}>session</button>
+        <a class="link-btn" href="/classic" title="the classic single-thread chat (voice, file upload, tree panel)">
+          classic
+        </a>
         <a class="link-btn" href="/settings">
           settings
         </a>

@@ -78,8 +78,12 @@ async function get(port: number, p: string) {
   assert.equal(settings.status, 200);
   assert.match(settings.type, /text\/html/);
 
+  const classic = await get(port, "/classic");
+  assert.equal(classic.status, 200, "the classic chat page stays reachable");
+  assert.match(classic.type, /text\/html/);
+
   server.close();
-  console.log("1-3. built app served at / with assets; traversal refused; /settings intact");
+  console.log("1-3. built app served at / with assets; traversal refused; /settings + /classic intact");
 }
 
 // ── without a build: classic chat page fallback ──

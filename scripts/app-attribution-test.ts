@@ -25,6 +25,37 @@ import os from "node:os";
 import path from "node:path";
 import events from "node:events";
 import { startAdmin } from "../src/admin.js";
+import { newTurnApps, tagEventApp, retagEvents } from "../src/app-attribution.js";
+
+// ── 0. unit: the app stack walk ──
+{
+  const st = newTurnApps();
+  assert.equal(tagEventApp(st, { kind: "llm_call" }), "trunk", "top level is trunk");
+  assert.equal(tagEventApp(st, { kind: "tree_enter", content: { tool: "contacts" } }), "contacts");
+  assert.equal(tagEventApp(st, { kind: "tree_enter", content: { tool: "enrich" } }), "enrich", "nested app");
+  assert.equal(tagEventApp(st, { kind: "record", content: { op: "memoryUpdate" } }), "enrich", "inside nested");
+  assert.equal(tagEventApp(st, { kind: "tree_exit", content: { tool: "enrich" } }), "enrich", "exit tags the leaver");
+  assert.equal(tagEventApp(st, { kind: "llm_call" }), "contacts", "back to the parent after exit");
+  assert.equal(tagEventApp(st, { kind: "tree_exit", content: { tool: "contacts" } }), "contacts");
+  assert.equal(tagEventApp(st, { kind: "llm_call" }), "trunk", "back to trunk");
+
+  const st2 = newTurnApps();
+  tagEventApp(st2, { kind: "tree_enter", content: { tool: "email" } });
+  assert.equal(tagEventApp(st2, { kind: "tree_suspend", content: { tool: "email" } }), "email");
+  assert.equal(st2.suspended, "email", "suspend records the awaiting app");
+
+  const evs: { kind?: string; content?: unknown; app?: string }[] = [
+    { kind: "llm_call" },
+    { kind: "emit" },
+    { kind: "tree_enter", content: { tool: "contacts" } },
+    { kind: "emit" },
+    { kind: "tree_exit", content: { tool: "contacts" } },
+  ];
+  const r = retagEvents(evs);
+  assert.deepEqual(evs.map((e) => e.app), ["trunk", "trunk", "contacts", "contacts", "contacts"], "retag walks the stored stream");
+  assert.deepEqual(r.emitApps, ["trunk", "contacts"], "emitApps recovered in order");
+  console.log("0. unit: app stack walk (enter/exit/suspend + retag)");
+}
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-app-attr-"));
 await fs.mkdir(path.join(ws, "logs"), { recursive: true });

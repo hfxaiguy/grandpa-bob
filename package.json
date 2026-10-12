@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc",
+    "build:ui": "npm --prefix ui run build",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.ts",
@@ -14,6 +15,7 @@
     "test:admin-models": "tsx scripts/admin-models-test.ts",
     "test:app-attribution": "tsx scripts/app-attribution-test.ts",
     "test:ui-serve": "tsx scripts/ui-serve-test.ts",
+    "test:ui": "npm --prefix ui run typecheck && npm --prefix ui run build",
     "test:patterns": "tsx scripts/patterns-test.ts",
     "test:trees": "tsx scripts/tree-tools-test.ts",
     "test:tree": "tsx scripts/tree-serialize-test.ts",

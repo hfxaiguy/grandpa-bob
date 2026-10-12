@@ -1362,6 +1362,14 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         return;
       }
 
+      // The classic single-thread chat page (voice input, file upload, tree
+      // panel). Kept reachable while the tiled app fills in those controls.
+      if (req.method === "GET" && url.pathname === "/classic") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        res.end(CHAT_PAGE);
+        return;
+      }
+
       // --- web chat ---
 
       if (req.method === "GET" && url.pathname === "/api/events") {

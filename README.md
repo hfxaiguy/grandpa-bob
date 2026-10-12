@@ -357,25 +357,41 @@ Useful checks: `npm run typecheck`, `npm run smoke` (offline tool/git tests),
 
 ## Web UI
 
-The admin server (port `ADMIN_PORT`, default 8080) serves two pages:
+The admin server (port `ADMIN_PORT`, default 8080) serves:
 
-- **`/` — chat front page.** Talk to the agent by **text** or **voice**. Voice is
-  recorded in the browser (MediaRecorder), uploaded, and transcribed locally by the
-  same ffmpeg → whisper/sherpa pipeline as Telegram voice notes — no audio leaves the
-  machine. A **📎 button transcribes an audio file** (`.ogg`, `.webm`, `.mp3`, `.m4a`,
-  `.wav`, …): the transcript **streams live** as the file is processed — a progress
-  card shows `12s / 47s` plus the growing text, then the final transcript lands in the
-  input box for you to review and send. As the agent runs, **every grandma-kat tree
-  event streams live** (SSE) and is rendered as labeled steps under your message
-  (human → memory → gate/classify → llm → tool calls/results → emit), with the final
-  answer shown below. Each step expands to its full payload. The last 20 turns are kept
-  so a page reload restores the conversation. "clear conversation" starts a fresh tree.
-  - Streaming detail: with the `whisper` backend the file is sliced into 20s chunks
-    transcribed in order (partials flow after each chunk); with `sherpa` the online
-    decoder's live partials are forwarded directly.
+- **`/` — tiled app UI.** A tiling "mission control": one tile per app (the
+  trunk plus every `app/<name>/tree.mjs` in the workspace). Each tile shows
+  that app's **own chat bubbles**, a read-only **memory panel** (values
+  written inside that app, nested paths indented), and a **mini event log**;
+  a global **event-stream side panel** shows every step tagged by app. The
+  **human-input box appears only on the tile whose tree is paused at
+  `.human()`**. Tiles auto-arrange — drag to reorder, `⤢` to expand, `↔` to
+  widen, `✕` to hide (the layout is remembered). The **session** button opens
+  session controls (select / new / delete, follow-Telegram, tree + version,
+  and the cheap/strong model pickers). This is the same single-session model
+  as the classic page — the one stream is simply split per app. Built from
+  `ui/` (SolidJS + Vite): run **`npm run build:ui`** once; until it is built,
+  `/` falls back to the classic page.
+- **`/classic` — classic single-thread chat.** Talk to the agent by **text** or
+  **voice**. Voice is recorded in the browser (MediaRecorder), uploaded, and
+  transcribed locally by the same ffmpeg → whisper/sherpa pipeline as Telegram
+  voice notes — no audio leaves the machine. A **📎 button transcribes an audio
+  file** (`.ogg`, `.webm`, `.mp3`, `.m4a`, `.wav`, …): the transcript **streams
+  live** as the file is processed — a progress card shows `12s / 47s` plus the
+  growing text, then the final transcript lands in the input box for you to
+  review and send. As the agent runs, **every grandma-kat tree event streams
+  live** (SSE) and is rendered as labeled steps under your message (human →
+  memory → gate/classify → llm → tool calls/results → emit), with the final
+  answer shown below. Each step expands to its full payload. The last 20 turns
+  are kept so a page reload restores the conversation. "clear conversation"
+  starts a fresh tree. (Voice, file upload, and the tree-structure panel live
+  here; the tiled UI will grow them next.)
+  - Streaming detail: with the `whisper` backend the file is sliced into 20s
+    chunks transcribed in order (partials flow after each chunk); with `sherpa`
+    the online decoder's live partials are forwarded directly.
   - Note: browser microphone access needs a **secure context** — voice works on
-    `http://localhost:8080` but not on a plain-HTTP LAN IP (text and file upload still
-    work there).
+    `http://localhost:8080` but not on a plain-HTTP LAN IP (text and file upload
+    still work there).
 - **`/settings` — admin page.** Credentials & `.env` editor, bot/sherpa status +
   restart, log tails, workspace git sync/commit, tree-pattern editor, and the
   workspace file browser.
