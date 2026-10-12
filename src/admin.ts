@@ -113,6 +113,23 @@ async function readTail(file: string, lines = 60): Promise<string> {
   }
 }
 
+/** Content type for the built app UI's static assets. */
+function mimeFor(file: string): string {
+  switch (path.extname(file).toLowerCase()) {
+    case ".js": return "text/javascript; charset=utf-8";
+    case ".mjs": return "text/javascript; charset=utf-8";
+    case ".css": return "text/css; charset=utf-8";
+    case ".html": return "text/html; charset=utf-8";
+    case ".json": return "application/json";
+    case ".svg": return "image/svg+xml";
+    case ".png": return "image/png";
+    case ".ico": return "image/x-icon";
+    case ".woff2": return "font/woff2";
+    case ".map": return "application/json";
+    default: return "application/octet-stream";
+  }
+}
+
 async function readEnv(envPath: string): Promise<Record<string, string> | null> {
   try {
     const data = await readFile(envPath, "utf8");
@@ -1274,6 +1291,18 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
     : "voice: not configured";
   const CHAT_HTML = buildChatHtml(config, sttLabel);
 
+  // The tiled app UI (SolidJS, built by `npm run build` in ui/). Served at "/"
+  // when present; the old chat page is the fallback so a checkout that has not
+  // built the app still works. Assets live under ui/dist/assets/.
+  const UI_DIST = path.resolve(config.projectDir, "ui", "dist");
+  let appIndexHtml: string | null = null;
+  try {
+    appIndexHtml = fs.readFileSync(path.join(UI_DIST, "index.html"), "utf8");
+  } catch {
+    appIndexHtml = null;
+    console.log("[admin] ui/dist not built — serving the classic chat page at /");
+  }
+
   // A fingerprint of the served pages. A browser tab keeps running the JS it
   // loaded; after a restart with changed page code it would keep the old client
   // (and miss fixes) until a manual reload. Embed the fingerprint and expose it
@@ -1281,6 +1310,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
   const UI_VERSION = createHash("sha256")
     .update(CHAT_HTML)
     .update(SETTINGS_HTML)
+    .update(appIndexHtml ?? "")
     .digest("hex")
     .slice(0, 12);
   const injectUiVersion = (html: string): string =>
@@ -1353,7 +1383,29 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
 
       if (req.method === "GET" && url.pathname === "/") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        res.end(CHAT_PAGE);
+        // The tiled app UI when built; the classic chat page otherwise.
+        res.end(appIndexHtml ?? CHAT_PAGE);
+        return;
+      }
+
+      // Static assets for the built app UI (ui/dist/assets/*). Served with a
+      // long cache because Vite content-hashes the filenames.
+      if (req.method === "GET" && url.pathname.startsWith("/assets/")) {
+        const rel = path.posix.normalize(url.pathname.slice(1));
+        const file = path.resolve(UI_DIST, rel);
+        if (!file.startsWith(UI_DIST + path.sep)) {
+          res.writeHead(403);
+          res.end("forbidden");
+          return;
+        }
+        try {
+          const buf = await readFile(file);
+          res.writeHead(200, { "content-type": mimeFor(file), "cache-control": "public, max-age=31536000, immutable" });
+          res.end(buf);
+        } catch {
+          res.writeHead(404);
+          res.end("not found");
+        }
         return;
       }
 

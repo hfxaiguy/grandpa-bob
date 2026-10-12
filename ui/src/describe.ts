@@ -1,0 +1,80 @@
+/** Compact, human-readable summaries of grandma-kat events for the logs. */
+import type { SanitizedEvent, Turn } from "./types";
+
+function s(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  try {
+    const j = JSON.stringify(v);
+    return j.length > 160 ? j.slice(0, 160) + "…" : j;
+  } catch {
+    return String(v);
+  }
+}
+
+export interface EventLine {
+  badge: string;
+  text: string;
+  cls: string;
+  app: string;
+  ts: number;
+  emit: boolean;
+}
+
+/** One log line for an event, plus its app attribution. */
+export function describeEvent(ev: SanitizedEvent): EventLine {
+  const c = ev.content || {};
+  const app = ev.app ?? "trunk";
+  const base = { app, ts: ev.ts, emit: false };
+  switch (ev.kind) {
+    case "tree_enter":
+      return { ...base, badge: "▶", text: `${s(c.tool ?? c.tree)} — enter`, cls: "enter" };
+    case "tree_exit":
+      return { ...base, badge: "◀", text: `${s(c.tool ?? c.tree)} — exit${c.error ? " (error)" : ""}`, cls: "exit" };
+    case "tree_suspend":
+      return { ...base, badge: "⏸", text: `${s(c.tool ?? c.tree)} — suspended`, cls: "suspend" };
+    case "llm_call":
+      return { ...base, badge: "llm", text: s(c.child) || "prompt", cls: "llm" };
+    case "llm_error":
+      return { ...base, badge: "llm!", text: s(c.error ?? c.message), cls: "err" };
+    case "tool_call":
+      return { ...base, badge: "tool", text: `${s(c.tool)}(${s(c.args)})`, cls: "tool" };
+    case "tool_result":
+      return { ...base, badge: "↩", text: s(c.result), cls: "tool" };
+    case "tool_error":
+      return { ...base, badge: "tool!", text: s(c.error ?? c.message), cls: "err" };
+    case "human":
+      return { ...base, badge: "human", text: s(c.child) + (c.delivered ? " (delivered)" : ""), cls: "human" };
+    case "emit": {
+      const v = c.value as { text?: unknown } | string | undefined;
+      const text = typeof v === "string" ? v : v && typeof v === "object" && "text" in v ? s(v.text) : s(v);
+      return { ...base, badge: "emit", text, cls: "emit", emit: true };
+    }
+    case "gate":
+      return { ...base, badge: "gate", text: `${s(c.child)} ${c.result ?? ""}`.trim(), cls: "gate" };
+    case "check":
+      return { ...base, badge: "check", text: `${s(c.child)} ${c.pass ? "pass" : "fail"}${c.feedback ? " · " + s(c.feedback) : ""}`, cls: c.pass ? "ok" : "err" };
+    case "until":
+      return { ...base, badge: "until", text: `${s(c.child)} ${c.pass ? "pass" : "fail"}`, cls: c.pass ? "ok" : "warn" };
+    case "flow":
+      return { ...base, badge: "flow", text: `${s(c.type)}${c.target ? " → " + s(c.target) : ""}`, cls: "flow" };
+    case "return":
+      return { ...base, badge: "return", text: s(c.value), cls: "return" };
+    case "record":
+    case "memory": {
+      const op = s(c.op) || ev.kind;
+      return { ...base, badge: op === "memoryUpdate" ? "mem↻" : "mem", text: `${s(c.child)} = ${s(c.value)}`, cls: "mem" };
+    }
+    case "scope_init":
+      return { ...base, badge: "scope", text: `#${s(c.scopeId)}`, cls: "scope" };
+    default:
+      return { ...base, badge: ev.kind, text: s(c.child ?? c.name ?? c.value), cls: "" };
+  }
+}
+
+/** The global stream: every event across the session's turns, in order. */
+export function streamLines(turns: Turn[]): EventLine[] {
+  const out: EventLine[] = [];
+  for (const t of turns) for (const ev of t.events) out.push(describeEvent(ev));
+  return out;
+}
