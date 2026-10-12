@@ -12,6 +12,7 @@ import {
   setRef,
   setModel,
   clearConversation,
+  sendToTelegram,
   toggleExpanded,
   toggleWide,
   toggleHidden,
@@ -347,6 +348,9 @@ export function SessionPanel(props: { onClose: () => void }) {
             </button>
             <button class="secondary" onClick={() => void clearConversation()}>
               clear conversation
+            </button>
+            <button class="secondary" title="push this transcript to your linked Telegram chat" onClick={() => void sendToTelegram()}>
+              ✈ telegram
             </button>
           </div>
         </Show>

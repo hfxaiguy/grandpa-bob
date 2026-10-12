@@ -371,8 +371,8 @@ The admin server (port `ADMIN_PORT`, default 8080) serves:
   banner** at the top, marks its tile `error`, and keeps that tile's input so
   you can retry. Tiles auto-arrange — drag to reorder, `⤢` to expand, `↔` to
   widen, `✕` to hide (the layout is remembered). The **session** button opens
-  session controls (select / new / delete, follow-Telegram, tree + version,
-  and the cheap/strong model pickers). This is the same single-session model
+  session controls (select / new / delete, follow-Telegram, **✈ send to
+  telegram**, tree + version, and the cheap/strong model pickers). This is the same single-session model
   as the classic page — the one stream is simply split per app. Built from
   `ui/` (SolidJS + Vite): run **`npm run build:ui`** once; until it is built,
   `/` falls back to the classic page.

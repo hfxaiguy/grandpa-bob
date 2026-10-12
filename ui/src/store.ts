@@ -276,6 +276,19 @@ export async function clearConversation(): Promise<void> {
   }
 }
 
+/** Push the active session's transcript to the linked Telegram chat. */
+export async function sendToTelegram(): Promise<void> {
+  try {
+    const d = await postJSON<{ key?: string; followWeb?: string | null }>("/api/send-to-telegram", {});
+    toast(
+      `sent to telegram${d.key ? ` (${d.key})` : ""}` +
+        (d.followWeb ? " — that chat now follows this session" : ""),
+    );
+  } catch (e) {
+    toast(e instanceof Error ? e.message : "send to telegram failed", true);
+  }
+}
+
 // ── layout tweaks ───────────────────────────────────────────────────────
 
 /** Dismiss the global turn-failure banner. */
