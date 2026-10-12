@@ -91,6 +91,9 @@ const script = [
   { kind: "tree_suspend", branch_path: "0/1/0", scope_id: 9, content: { tool: "enrich", tree: "enrich" } },
 ];
 
+// A flag the mock flips to simulate a failed turn (e.g. an LLM timeout).
+let failNext = false;
+
 const mockAgent = () =>
   ({
     sessionKeys: () => [],
@@ -101,6 +104,10 @@ const mockAgent = () =>
     pinnedVersions: () => [],
     clear() {},
     async run(_key: string, _content: unknown, onEmit?: (v: unknown) => void, opts?: { onEvent?: (e: unknown) => void }) {
+      if (failNext) {
+        failNext = false;
+        throw new Error("LLM request timed out after 120s (mock)");
+      }
       for (const step of script) {
         if ("emit" in step) onEmit?.({ text: step.emit });
         else opts?.onEvent?.(step);
@@ -209,6 +216,23 @@ await new Promise((r) => setTimeout(r, 150));
   }
   assert.equal(turns2.length, 2, "second turn recorded");
   assert.equal(turns2[1].inputApp, "enrich", "the reply is attributed to the paused app, not trunk");
+
+  // 7b. A failed turn keeps the input on the app it was headed to (retryable),
+  //     instead of clearing to nowhere.
+  failNext = true;
+  await api("POST", "/api/chat", { text: "retry me" });
+  let turns3: any[] = [];
+  for (let i = 0; i < 60; i++) {
+    const t = await api("GET", "/api/turns");
+    turns3 = t.json.turns ?? [];
+    if (turns3.length >= 3 && turns3[turns3.length - 1].status !== "running") break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.equal(turns3[2].status, "error", "third turn failed");
+  assert.equal(turns3[2].inputApp, "enrich", "errored reply still targets the paused app");
+  assert.equal(turns3[2].awaiting, "enrich", "awaiting restored after the error");
+  const sess3 = await api("GET", "/api/session");
+  assert.equal(sess3.json.awaiting, "enrich", "session awaiting restored for a retry");
 
   console.log("2-5. events, emits, memory, and awaiting all attribute per app");
 }

@@ -368,7 +368,8 @@ The admin server (port `ADMIN_PORT`, default 8080) serves:
   **human-input box appears only on the tile whose tree is paused at
   `.human()`**, and the **trunk tile always has one** (start a conversation,
   reply, or queue while a turn runs). A **failed turn raises a dismissible
-  banner** at the top and marks its tile `error`. Tiles auto-arrange — drag to reorder, `⤢` to expand, `↔` to
+  banner** at the top, marks its tile `error`, and keeps that tile's input so
+  you can retry. Tiles auto-arrange — drag to reorder, `⤢` to expand, `↔` to
   widen, `✕` to hide (the layout is remembered). The **session** button opens
   session controls (select / new / delete, follow-Telegram, tree + version,
   and the cheap/strong model pickers). This is the same single-session model

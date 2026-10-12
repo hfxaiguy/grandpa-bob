@@ -925,7 +925,11 @@ export function remoteTurnEnd(key: string, output: string, ok = true, paused = f
     if (activeSession === key) broadcast({ type: "turn_start", turnId: t.turnId, session: key, input: "", ts: now, awaiting: null });
   }
   const st = turnApps.get(key);
-  const awaiting = ok && paused ? (st?.suspended ?? st?.current ?? "trunk") : null;
+  const awaiting = !ok
+    ? (t.inputApp ?? null)
+    : paused
+      ? (st?.suspended ?? st?.current ?? "trunk")
+      : null;
   t.endedAt = now;
   t.status = ok ? "done" : "error";
   t.output = ok ? output || null : null;
@@ -1173,6 +1177,9 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
   } catch (err) {
     record.status = "error";
     record.error = err instanceof Error ? err.message : String(err);
+    // The turn failed before the tree advanced, so keep the pause where the
+    // input was headed — the app's tile keeps its input for a retry.
+    awaiting = record.inputApp ?? null;
     console.error("[web-chat]", err);
   } finally {
     activeTurns--;

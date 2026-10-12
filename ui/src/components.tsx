@@ -197,8 +197,13 @@ function Tile(props: { app: AppInfo }) {
 
   // The trunk tile always has a composer (start a conversation, reply, or
   // queue while a turn runs); an app tile shows one only when its tree is the
-  // one paused at .human().
-  const showInput = () => name() === "trunk" || state.awaiting === name();
+  // one paused at .human() — or when the last turn failed and was headed there
+  // (so a retry is possible).
+  const retryApp = createMemo(() => {
+    const last = state.turns[state.turns.length - 1];
+    return last && last.status === "error" ? (last.inputApp ?? "trunk") : null;
+  });
+  const showInput = () => name() === "trunk" || state.awaiting === name() || retryApp() === name();
 
   const errored = createMemo(() => {
     const last = state.turns[state.turns.length - 1];
