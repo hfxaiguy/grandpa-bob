@@ -93,6 +93,23 @@ function MemoryPanel(props: { app: string }) {
   );
 }
 
+// A single log line, expandable to its full event payload. Native
+// <details>/<summary> keeps it keyboard-accessible for free.
+function LogRow(props: { line: EventLine; showApp?: boolean }) {
+  return (
+    <details class="log-row" classList={{ emit: props.line.emit, [props.line.cls]: !!props.line.cls }}>
+      <summary>
+        <Show when={props.showApp}>
+          <span class="stream-app">{props.line.app}</span>
+        </Show>
+        <span class="badge">{props.line.badge}</span>
+        <span class="log-text">{props.line.text}</span>
+      </summary>
+      <pre class="log-detail">{props.line.detail}</pre>
+    </details>
+  );
+}
+
 function EventLog(props: { app: string }) {
   const [open, setOpen] = createSignal(false);
   const lines = createMemo<EventLine[]>(() => {
@@ -106,16 +123,9 @@ function EventLog(props: { app: string }) {
         events <span class="count">{lines().length}</span> {open() ? "▾" : "▸"}
       </button>
       <Show when={open()}>
-        <ul class="ev-list">
-          <For each={lines().slice(-200)}>
-            {(l) => (
-              <li class={l.cls}>
-                <span class="badge">{l.badge}</span>
-                <span class="ev-text">{l.text}</span>
-              </li>
-            )}
-          </For>
-        </ul>
+        <div class="ev-list">
+          <For each={lines().slice(-200)}>{(l) => <LogRow line={l} />}</For>
+        </div>
       </Show>
     </div>
   );
@@ -185,8 +195,30 @@ function Tile(props: { app: AppInfo }) {
   const name = () => props.app.name;
   const expanded = () => state.layout.expanded.includes(name());
   const wide = () => state.layout.wide.includes(name());
-  const running = createMemo(() => state.turns.some((t) => t.status === "running"));
   const paused = () => state.awaiting === name();
+  // The app currently executing: walk the running turn's events through the
+  // same enter/exit/suspend stack the server uses, so only that one tile
+  // lights up (not every tile while any turn runs).
+  const currentApp = createMemo(() => {
+    const t = state.turns.find((x) => x.status === "running");
+    if (!t) return null;
+    const stack: string[] = [];
+    let current = "trunk";
+    for (const e of t.events) {
+      const nm =
+        typeof e.content?.tool === "string" ? e.content?.tool
+        : typeof e.content?.tree === "string" ? e.content?.tree
+        : "";
+      if (e.kind === "tree_enter" && nm) { stack.push(nm); current = nm; }
+      else if (e.kind === "tree_exit" && nm) {
+        const i = stack.lastIndexOf(nm);
+        if (i >= 0) stack.splice(i, 1);
+        current = stack[stack.length - 1] ?? "trunk";
+      } else if (e.kind === "tree_suspend" && nm) { current = nm; }
+    }
+    return current;
+  });
+  const running = () => currentApp() === name();
   const bubbles = createMemo(() => bubblesFor(name()));
   const chatRef = { el: undefined as HTMLDivElement | undefined };
 
@@ -210,7 +242,7 @@ function Tile(props: { app: AppInfo }) {
     const last = state.turns[state.turns.length - 1];
     return !!last && last.status === "error" && (last.inputApp ?? "trunk") === name();
   });
-  const statusText = () => (paused() ? "paused" : running() ? "running" : errored() ? "error" : "idle");
+  const statusText = () => (paused() ? "waiting" : running() ? "running" : errored() ? "error" : "idle");
 
   return (
     <section
@@ -226,7 +258,7 @@ function Tile(props: { app: AppInfo }) {
       }}
     >
       <header class="tile-head">
-        <span class="dot" classList={{ on: paused(), run: running(), err: errored() }} />
+        <span class="dot" classList={{ run: running(), wait: paused(), err: errored() }} />
         <span class="tile-name">{name()}</span>
         <span class="tile-status">{statusText()}</span>
         <span class="spacer" />
@@ -290,15 +322,7 @@ export function GlobalStream() {
       </button>
       <Show when={open()}>
         <div class="stream-body" ref={ref}>
-          <For each={lines().slice(-400)}>
-            {(l) => (
-              <div class="stream-line" classList={{ emit: l.emit }}>
-                <span class="stream-app">{l.app}</span>
-                <span class="badge">{l.badge}</span>
-                <span class="stream-text">{l.text}</span>
-              </div>
-            )}
-          </For>
+          <For each={lines().slice(-400)}>{(l) => <LogRow line={l} showApp />}</For>
         </div>
       </Show>
     </aside>

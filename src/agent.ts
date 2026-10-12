@@ -120,6 +120,16 @@ export class Agent {
   // entry it resolves to. Persisted in sessions.json so choices survive a
   // restart.
   private sessionModels = new Map<string, Record<string, string>>();
+  // Pin-on-open cache: key → the root pattern + tree-tool registry loaded on
+  // the session's first turn and frozen for its lifetime, so a later edit or
+  // promote of a `.prod` file never changes a live session's shape (a pause
+  // inside a sub-tree — a caller-list walk — resumes against the exact bytes
+  // it started on). In-memory only: a restart empties it, and the defId check
+  // in runExclusive then decides whether a restored continuation still maps.
+  private sessionCache = new Map<
+    string,
+    { pattern: unknown; defId: string; pinnedRef: string; treeTools: Record<string, unknown> }
+  >();
   // One run at a time per conversation key. Web and Telegram may both
   // drive the SAME key (the web "follow" feature), and two concurrent
   // resumes of one checkpoint would race on its load/save — the queue
@@ -310,7 +320,59 @@ export class Agent {
     let cont = this.continuations.get(key);
     let droppedContinuation = false;
     const katTools = this.deps.tools.toKatTools();
-    const treeTools = await this.discoverTreeTools();
+    let dropReason: string | null = null;
+
+    // Pin-on-open: the root pattern AND the tree-tool registry are loaded once,
+    // on the session's first turn, and frozen for its lifetime. A later edit or
+    // promote of a `.prod` file therefore never changes a live session's shape
+    // — a pause inside a sub-tree (a caller-list walk) resumes against the
+    // exact bytes it started on. A restart empties this cache; the defId check
+    // below then decides whether a restored continuation still maps to the
+    // freshly loaded tree.
+    let session = this.sessionCache.get(key);
+    if (!session) {
+      // Resolve the session's pinned version. A fresh session adopts the
+      // active ref; a resumed session keeps the ref it started on, so editing
+      // or promoting another version never disturbs it.
+      const logical = this.deps.patternName?.() ?? "trunk";
+      const activeRef = await this.resolveActiveRef(logical);
+      let pinnedRef = this.sessionRefs.get(key) ?? activeRef;
+      let pattern: unknown;
+
+      try {
+        pattern = await loadPattern(this.deps.workspace, pinnedRef);
+      } catch (err) {
+        // The pinned version was removed (manual prune/rename). Drop the
+        // session and restart on whatever is active now.
+        if (!cont) throw err;
+        dropReason = "its version was removed";
+        pinnedRef = activeRef;
+        pattern = await loadPattern(this.deps.workspace, pinnedRef);
+        cont = undefined;
+        droppedContinuation = true;
+      }
+
+      let defId = Agent.definitionHash(pattern);
+
+      // A checkpoint was grown under a specific tree shape; if the pinned tree
+      // changed (a draft edit, or the tree was replaced), the stored pause
+      // point no longer maps to any `.human()` slot — start fresh on the
+      // active ref. Immutable snapshots keep a stable hash, so only draft
+      // edits (or in-place snapshot edits) can trigger this.
+      if (!droppedContinuation && cont && this.sessionPatterns.get(key) !== defId) {
+        dropReason = "the tree changed since it paused (it was edited or the pattern was switched)";
+        pinnedRef = activeRef;
+        pattern = await loadPattern(this.deps.workspace, pinnedRef);
+        defId = Agent.definitionHash(pattern);
+        cont = undefined;
+        droppedContinuation = true;
+      }
+
+      session = { pattern, defId, pinnedRef, treeTools: await this.discoverTreeTools() };
+      this.sessionCache.set(key, session);
+    }
+
+    const { pattern, defId, pinnedRef, treeTools } = session;
 
     // Guidance for the tools in scope (host + app + tree), assembled by the
     // registry so nothing about "how to use a tool" lives in the trunk.
@@ -319,44 +381,6 @@ export class Agent {
       guide: String((tool as { guide?: unknown } | null)?.guide ?? ""),
     }));
     const guide = this.deps.tools.toolGuide({ treeGuides });
-
-    // Resolve the session's pinned version. A fresh session adopts the
-    // active ref; a resumed session keeps the ref it started on, so editing
-    // or promoting another version never disturbs it.
-    const logical = this.deps.patternName?.() ?? "trunk";
-    const activeRef = await this.resolveActiveRef(logical);
-    let pinnedRef = this.sessionRefs.get(key) ?? activeRef;
-    let pattern: unknown;
-    let dropReason: string | null = null;
-
-    try {
-      pattern = await loadPattern(this.deps.workspace, pinnedRef);
-    } catch (err) {
-      // The pinned version was removed (manual prune/rename). Drop the
-      // session and restart on whatever is active now.
-      if (!cont) throw err;
-      dropReason = "its version was removed";
-      pinnedRef = activeRef;
-      pattern = await loadPattern(this.deps.workspace, pinnedRef);
-      cont = undefined;
-      droppedContinuation = true;
-    }
-
-    let defId = Agent.definitionHash(pattern);
-
-    // A checkpoint was grown under a specific tree shape; if the pinned tree
-    // changed (a draft edit, or the tree was replaced), the stored pause
-    // point no longer maps to any `.human()` slot — start fresh on the
-    // active ref. Immutable snapshots keep a stable hash, so only draft
-    // edits (or in-place snapshot edits) can trigger this.
-    if (!droppedContinuation && cont && this.sessionPatterns.get(key) !== defId) {
-      dropReason = "the tree changed since it paused (it was edited or the pattern was switched)";
-      pinnedRef = activeRef;
-      pattern = await loadPattern(this.deps.workspace, pinnedRef);
-      defId = Agent.definitionHash(pattern);
-      cont = undefined;
-      droppedContinuation = true;
-    }
 
     if (droppedContinuation) {
       this.continuations.delete(key);
@@ -480,6 +504,7 @@ export class Agent {
     this.sessionPatterns.delete(key);
     this.sessionTimes.delete(key);
     this.sessionRefs.delete(key);
+    this.sessionCache.delete(key);
     this.saveSessions();
     return { status: "done", result: outcome.result };
   }
@@ -675,6 +700,7 @@ export class Agent {
     this.sessionTimes.delete(key);
     this.sessionRefs.delete(key);
     this.sessionModels.delete(key);
+    this.sessionCache.delete(key);
     this.saveSessions();
   }
 

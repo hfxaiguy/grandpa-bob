@@ -19,13 +19,25 @@ export interface EventLine {
   app: string;
   ts: number;
   emit: boolean;
+  /** Pretty-printed event payload for the expandable detail. */
+  detail: string;
 }
 
 /** One log line for an event, plus its app attribution. */
 export function describeEvent(ev: SanitizedEvent): EventLine {
   const c = ev.content || {};
   const app = ev.app ?? "trunk";
-  const base = { app, ts: ev.ts, emit: false };
+  // The raw prompt history is huge; summarize it in the detail rather than
+  // dumping the whole message array.
+  const { messages, ...rest } = c as Record<string, unknown>;
+  const detail = JSON.stringify(
+    messages !== undefined
+      ? { ...rest, messages: `[${Array.isArray(messages) ? messages.length : "?"} messages]` }
+      : rest,
+    null,
+    2,
+  );
+  const base = { app, ts: ev.ts, emit: false, detail };
   switch (ev.kind) {
     case "tree_enter":
       return { ...base, badge: "▶", text: `${s(c.tool ?? c.tree)} — enter`, cls: "enter" };

@@ -367,9 +367,13 @@ The admin server (port `ADMIN_PORT`, default 8080) serves:
   a global **event-stream side panel** shows every step tagged by app. The
   **human-input box appears only on the tile whose tree is paused at
   `.human()`**, and the **trunk tile always has one** (start a conversation,
-  reply, or queue while a turn runs). A **failed turn raises a dismissible
-  banner** at the top, marks its tile `error`, and keeps that tile's input so
-  you can retry. Tiles auto-arrange — drag to reorder, `⤢` to expand, `↔` to
+  reply, or queue while a turn runs). A tile's header **status dot** is
+  **blue** while that app is running, **yellow** while it waits on you, **red**
+  if its last turn failed, and blank otherwise — only the active app lights
+  up. A **failed turn raises a dismissible banner** at the top, marks its tile
+  `error`, and keeps that tile's input so you can retry. Event-log lines (and
+  the global stream) **expand on click** to their full payload. Tiles
+  auto-arrange — drag to reorder, `⤢` to expand, `↔` to
   widen, `✕` to hide (the layout is remembered). The **session** button opens
   session controls (select / new / delete, follow-Telegram, **✈ send to
   telegram**, tree + version, and the cheap/strong model pickers). This is the same single-session model
