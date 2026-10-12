@@ -55,6 +55,7 @@ import { serializeTree } from "./tree-serialize.js";
 import { attachmentPrompt, saveAttachment, MAX_ATTACHMENT_BYTES } from "./attachments.js";
 import { createNodePlatform } from "./platform/node.js";
 import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "./db-sync.js";
+import { newTurnApps, tagEventApp as sharedTagEventApp, retagEvents, type TurnApps } from "./app-attribution.js";
 
 /** Secret config files are small (credentials, JSON, keys). */
 const MAX_SECRET_BYTES = 1024 * 1024;
@@ -532,85 +533,31 @@ function clearWebMemory(): void {
 // Which app a turn's events belong to. A turn enters tree tools (apps) and
 // leaves them; events between enter and exit belong to that app. Kept per
 // conversation key because a web turn and a mirrored Telegram turn can be in
-// flight for different keys at once.
-interface TurnApps {
-  stack: string[];
-  current: string;
-  suspended: string | null;
-}
+// flight for different keys at once. The per-event walk lives in
+// src/app-attribution.ts, shared with the browser backend.
 const turnApps = new Map<string, TurnApps>();
 function beginTurnApps(key: string): TurnApps {
-  const st: TurnApps = { stack: [], current: "trunk", suspended: null };
+  const st = newTurnApps();
   turnApps.set(key, st);
   return st;
 }
 function endTurnApps(key: string): void {
   turnApps.delete(key);
 }
-/** The app name carried by a tree_enter/exit/suspend event. */
-function appNameOf(e: unknown): string {
-  const c = (e as { content?: { tool?: unknown; tree?: unknown } } | null)?.content;
-  if (typeof c?.tool === "string" && c.tool) return c.tool;
-  if (typeof c?.tree === "string" && c.tree) return c.tree;
-  return "";
-}
-/**
- * Update a turn's app stack for one event and return the app it belongs to.
- * `tree_enter` pushes, `tree_exit` pops back to the parent, `tree_suspend`
- * records the app the turn paused in (the one that owns the human input).
- */
 function tagEventApp(key: string, e: unknown): string {
   const st = turnApps.get(key) ?? beginTurnApps(key);
-  const kind = (e as { kind?: string } | null)?.kind;
-  const name = appNameOf(e);
-  let app = st.current;
-  if (kind === "tree_enter" && name) {
-    st.stack.push(name);
-    st.current = name;
-    app = name;
-  } else if (kind === "tree_exit" && name) {
-    app = name;
-    const i = st.stack.lastIndexOf(name);
-    if (i >= 0) st.stack.splice(i, 1);
-    st.current = st.stack.at(-1) ?? "trunk";
-  } else if (kind === "tree_suspend" && name) {
-    app = name;
-    st.suspended = name;
-    st.current = name;
-  }
-  return app;
+  return sharedTagEventApp(st, e);
 }
 
 /**
  * Recompute per-event app tags for a turn loaded from disk (turns recorded
- * before attribution have none). The tree_enter/exit/suspend markers are in
- * the stored stream, so the same walk reconstructs them. Emit apps are
- * recovered when the `emit` events line up one-to-one with the stored emits.
+ * before attribution have none). Emit apps are recovered when the `emit`
+ * events line up one-to-one with the stored emits.
  */
 function retagTurnEvents(t: TurnRecord): void {
-  const stack: string[] = [];
-  let current = "trunk";
-  let suspended: string | null = null;
-  const emitApps: string[] = [];
-  for (const ev of t.events ?? []) {
-    const kind = ev.kind;
-    const name = appNameOf(ev);
-    let app = current;
-    if (kind === "tree_enter" && name) {
-      stack.push(name); current = name; app = name;
-    } else if (kind === "tree_exit" && name) {
-      app = name;
-      const i = stack.lastIndexOf(name);
-      if (i >= 0) stack.splice(i, 1);
-      current = stack.at(-1) ?? "trunk";
-    } else if (kind === "tree_suspend" && name) {
-      app = name; suspended = name; current = name;
-    }
-    ev.app = app;
-    if (kind === "emit") emitApps.push(app);
-  }
+  const { emitApps, awaiting } = retagEvents(t.events ?? []);
   if (t.emits?.length && emitApps.length === t.emits.length) t.emitApps = emitApps;
-  if (t.awaiting === undefined) t.awaiting = suspended ?? null;
+  if (t.awaiting === undefined) t.awaiting = awaiting;
 }
 
 interface SanitizedEvent {

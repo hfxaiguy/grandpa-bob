@@ -21,6 +21,8 @@
     "noEmit": true,
     "isolatedModules": true,
     "allowImportingTsExtensions": false,
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
     "types": []
   },
   "include": [
@@ -29,6 +31,10 @@
     "../src/platform/sha256.ts",
     "../src/platform/types.ts",
     "../src/tree-sources.ts",
-    "../src/tree-versions.ts"
+    "../src/tree-versions.ts",
+    "../src/app-attribution.ts",
+    "../src/util/emit-text.ts",
+    "../ui/src/**/*.ts",
+    "../ui/src/**/*.tsx"
   ]
 }

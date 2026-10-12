@@ -11,9 +11,11 @@
  */
 import type { AgentClient } from "../agent/agent-client";
 import type { Platform } from "../../../src/platform/types";
-import { listPatterns, listTreeSources } from "../../../src/tree-sources";
+import { listAppTrees, listPatterns, listTreeSources } from "../../../src/tree-sources";
 import { promoteTree, resolveTreeEntry, scanTreeVersions, snapshotTree } from "../../../src/tree-versions";
 import { serializeTree } from "../../../src/tree-serialize";
+import { newTurnApps, tagEventApp, type TurnApps } from "../../../src/app-attribution";
+import { emitValue } from "../../../src/util/emit-text";
 import { createModuleLoader } from "../agent/module-loader";
 import { loadEnv, saveEnv, saveModelsJson } from "../settings";
 import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "../../../src/db-sync";
@@ -39,12 +41,17 @@ export interface BackendOptions {
 interface TurnRecord {
   turnId: string;
   input: string;
-  events: unknown[];
-  status: string;
+  startedAt: number;
+  endedAt: number | null;
+  status: "running" | "done" | "error";
   error: string | null;
-  output: string;
+  output: string | null;
+  emits: string[];
+  levels: (string | null)[];
+  emitApps: string[];
+  awaiting: string | null;
   buttons: unknown[];
-  emits: unknown[];
+  events: { kind?: string; app?: string; content?: Record<string, unknown> }[];
 }
 
 type EventMessage = Record<string, unknown>;
@@ -119,17 +126,23 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     const record: TurnRecord = {
       turnId,
       input: text,
-      events: [],
+      startedAt: Date.now(),
+      endedAt: null,
       status: "running",
       error: null,
-      output: "",
-      buttons: [],
+      output: null,
       emits: [],
+      levels: [],
+      emitApps: [],
+      awaiting: null,
+      buttons: [],
+      events: [],
     };
     turns.push(record);
     if (turns.length > 20) turns.shift();
     updatedAt = Date.now();
-    broadcast({ type: "turn_start", turnId, input: text });
+    const apps = newTurnApps();
+    broadcast({ type: "turn_start", turnId, session: sessionKey, input: text, ts: record.startedAt, awaiting: null });
     try {
       const { result, emits } = await agent.run(
         {
@@ -143,24 +156,93 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         },
         {
           onEvent: (event) => {
-            record.events.push(event);
-            broadcast({ type: "event", turnId, event });
+            const ev = event as { kind?: string; content?: Record<string, unknown>; scope_id?: number | null; branch_path?: string };
+            const app = tagEventApp(apps, ev);
+            trackMemory(app, ev);
+            const tagged = { ...ev, app };
+            record.events.push(tagged);
+            broadcast({ type: "event", turnId, event: tagged });
           },
           onEmit: (value) => {
-            record.emits.push(value);
-            broadcast({ type: "emit", turnId, text: typeof value === "string" ? value : JSON.stringify(value), buttons: [] });
+            const { text: t, buttons, level } = emitValue(value);
+            const app = apps.current;
+            if (t) {
+              record.emits.push(t);
+              record.levels.push(level ?? null);
+              record.emitApps.push(app);
+              record.output = record.output ? record.output + "\n\n" + t : t;
+            }
+            if (buttons?.length) record.buttons = buttons;
+            broadcast({ type: "emit", turnId, text: t, buttons, level, app });
           },
         },
       );
       record.status = "done";
       const last = emits.length ? emits[emits.length - 1] : result;
-      record.output = typeof last === "string" ? last : JSON.stringify(last);
-      broadcast({ type: "turn_end", turnId, status: "done", error: null, output: record.output, buttons: [], emits });
+      const lastText = emitValue(last).text;
+      if (!record.output && lastText) record.output = lastText;
+      // The browser agent does not report pause state, so assume the tree
+      // paused (the norm): the suspended app, else trunk. Keeps the input box
+      // available on the next turn.
+      record.awaiting = apps.suspended ?? "trunk";
+      record.endedAt = Date.now();
+      broadcast({
+        type: "turn_end", turnId, status: "done", error: null, output: record.output,
+        buttons: record.buttons, emits: record.emits, levels: record.levels, emitApps: record.emitApps,
+        awaiting: record.awaiting, ts: record.endedAt,
+      });
     } catch (err) {
       record.status = "error";
       record.error = err instanceof Error ? err.message : String(err);
-      broadcast({ type: "turn_end", turnId, status: "error", error: record.error, output: "", buttons: [], emits: [] });
+      record.endedAt = Date.now();
+      broadcast({ type: "turn_end", turnId, status: "error", error: record.error, output: "", buttons: [], emits: [], awaiting: null, ts: record.endedAt });
     }
+  }
+
+  /** Memory writes, grouped by the app that made them (path -> value). */
+  const memValues = new Map<string, Map<string, unknown>>();
+  const memPaths = new Map<string, Map<string, Set<string>>>();
+  function trackMemory(
+    app: string,
+    ev: { kind?: string; content?: { child?: unknown; value?: unknown; op?: unknown }; scope_id?: number | null; branch_path?: string },
+  ): void {
+    const c = ev.content;
+    const memWrite = ev.kind === "memory" || (ev.kind === "record" && (c?.op === "memory" || c?.op === "memoryUpdate"));
+    if (!memWrite || ev.scope_id == null) return;
+    const child = typeof c?.child === "string" ? c.child : "";
+    const slotKey = `${ev.scope_id}/${child}`;
+    if (c && "value" in c) {
+      let m = memValues.get(app);
+      if (!m) { m = new Map(); memValues.set(app, m); }
+      m.set(slotKey, c.value);
+    }
+    const nodePath = (ev.branch_path ?? "") + (child ? "/" + child : "");
+    if (nodePath) {
+      let pm = memPaths.get(app);
+      if (!pm) { pm = new Map(); memPaths.set(app, pm); }
+      let ps = pm.get(slotKey);
+      if (!ps) { ps = new Set(); pm.set(slotKey, ps); }
+      ps.add(nodePath);
+    }
+  }
+  function memoryPayload(): { values: Record<string, unknown>; apps: Record<string, Record<string, unknown>> } {
+    const values: Record<string, unknown> = {};
+    const apps: Record<string, Record<string, unknown>> = {};
+    for (const [app, slots] of memValues) {
+      const pathMap = memPaths.get(app);
+      if (!pathMap) continue;
+      for (const [slotKey, v] of slots) {
+        if (v === undefined) continue;
+        for (const p of pathMap.get(slotKey) ?? []) {
+          values[p] = v;
+          (apps[app] ??= {})[p] = v;
+        }
+      }
+    }
+    return { values, apps };
+  }
+  function activeAwaiting(): string | null {
+    return turns.length ? turns[turns.length - 1].awaiting : null;
   }
 
   async function patternCatalog(): Promise<BackendResponse> {
@@ -186,14 +268,34 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     if (pathname === "/api/session" && method === "GET") {
       return {
         status: 200,
-        body: { sessions: [{ key: sessionKey, updatedAt, active: true }], active: sessionKey, follow: false },
+        body: {
+          active: sessionKey,
+          label: "",
+          follow: false,
+          models: {},
+          awaiting: activeAwaiting(),
+          sessions: [{ key: sessionKey, label: "local", pattern: activePattern, updatedAt, turns: turns.length, remote: false, awaiting: activeAwaiting() }],
+          turns,
+        },
       };
     }
     if (pathname === "/api/session" && method === "POST") {
-      return { status: 200, body: { ok: true, active: sessionKey } };
+      return { status: 200, body: { ok: true, active: sessionKey, turns } };
     }
     if (pathname === "/api/turns" && method === "GET") {
-      return { status: 200, body: { turns } };
+      return { status: 200, body: { turns, session: sessionKey, awaiting: activeAwaiting() } };
+    }
+    if (pathname === "/api/apps" && method === "GET") {
+      const appTrees = await listAppTrees(platform.workspaceRoot).catch(() => []);
+      return {
+        status: 200,
+        body: {
+          apps: [
+            { name: "trunk", description: "The main conversation tree.", group: "trunk" },
+            ...appTrees.map((a) => ({ name: a.name, description: a.description, guide: a.guide, group: "app" })),
+          ],
+        },
+      };
     }
     if (pathname === "/api/chat" && method === "POST") {
       const text = (parseBody(body) as { text?: string }).text ?? "";
@@ -245,7 +347,21 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       if (want) activePattern = want;
       return { status: 200, body: { pattern: activePattern } };
     }
-    if (pathname === "/api/tree/memory") return { status: 200, body: { values: {} } };
+    if (pathname === "/api/tree/memory") return { status: 200, body: memoryPayload() };
+    if (pathname === "/api/models/slots" && method === "GET") {
+      let slots: { name: string; model: string; baseURL: string }[] = [];
+      try {
+        const reg = JSON.parse(modelsJson || "{}") as Record<string, { model?: string; baseURL?: string }>;
+        slots = Object.entries(reg).map(([name, v]) => ({ name, model: v?.model ?? "", baseURL: v?.baseURL ?? "" }));
+      } catch {
+        /* malformed registry — no slots */
+      }
+      return { status: 200, body: { slots, active: sessionKey, models: {} } };
+    }
+    if (pathname === "/api/chat/model" && method === "POST") {
+      // Per-session model overrides are a Node-target feature; accept and no-op.
+      return { status: 200, body: { ok: true, models: {} } };
+    }
     if (pathname === "/api/tree/versions" && method === "GET") {
       const name = search.get("name") ?? "";
       const catalog = (await scanTreeVersions(platform.workspaceRoot).catch(() => [])).find((c) => c.logical === name);
