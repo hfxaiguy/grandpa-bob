@@ -163,8 +163,10 @@ function Tile(props: { app: AppInfo }) {
     if (el) el.scrollTop = el.scrollHeight;
   });
 
-  const showInput = () =>
-    state.awaiting === name() || (name() === "trunk" && !!state.active && state.turns.length === 0);
+  // The trunk tile always has a composer (start a conversation, reply, or
+  // queue while a turn runs); an app tile shows one only when its tree is the
+  // one paused at .human().
+  const showInput = () => name() === "trunk" || state.awaiting === name();
 
   const statusText = () => (paused() ? "paused" : running() ? "running" : "idle");
 
