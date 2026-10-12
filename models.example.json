@@ -12,5 +12,10 @@
     "model": "gemma4:31b",
     "transform": "gemma4Thinking",
     "protocol": "ollama"
+  },
+  "neuralwatt": {
+    "baseURL": "https://api.neuralwatt.com/v1",
+    "apiKey": "${NEURALWATT_API_KEY}",
+    "model": "glm-5.3"
   }
 }

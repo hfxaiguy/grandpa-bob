@@ -112,6 +112,14 @@ export class Agent {
   // keeps the version it started on; switching the active version only
   // affects sessions created afterwards.
   private sessionRefs = new Map<string, string>();
+  // key → { role: targetSlot } model-slot overrides. Normally the tree picks
+  // its own slots (`Model("strong")`, `Model("cheap")`); a conversation can
+  // retarget any of them independently to another named entry in the registry
+  // (e.g. a big model for "strong", a small one for the "cheap" router). The
+  // role is the slot NAME the tree references; the target is the registry
+  // entry it resolves to. Persisted in sessions.json so choices survive a
+  // restart.
+  private sessionModels = new Map<string, Record<string, string>>();
   // One run at a time per conversation key. Web and Telegram may both
   // drive the SAME key (the web "follow" feature), and two concurrent
   // resumes of one checkpoint would race on its load/save — the queue
@@ -155,10 +163,31 @@ export class Agent {
     try {
       const raw = JSON.parse(fs.readFileSync(this.sessionsPath, "utf8")) as Record<
         string,
-        { continuation?: unknown; pattern?: unknown; updatedAt?: unknown; ref?: unknown } | null
+        {
+          continuation?: unknown;
+          pattern?: unknown;
+          updatedAt?: unknown;
+          ref?: unknown;
+          /** Per-role overrides: { strong: "slot", cheap: "slot" }. */
+          models?: unknown;
+          /** Legacy single-override format (pre-per-role): the "strong" target. */
+          model?: unknown;
+        } | null
       >;
       if (!raw || typeof raw !== "object") return;
       for (const [key, val] of Object.entries(raw)) {
+        // A model override can outlive a continuation (set before the first
+        // message, or after a one-shot tree completed), so read it first.
+        if (val?.models && typeof val.models === "object") {
+          const rec: Record<string, string> = {};
+          for (const [role, target] of Object.entries(val.models as Record<string, unknown>)) {
+            if (typeof target === "string") rec[role] = target;
+          }
+          if (Object.keys(rec).length) this.sessionModels.set(key, rec);
+        } else if (typeof val?.model === "string") {
+          // Migrate the old single-"strong" format.
+          this.sessionModels.set(key, { strong: val.model });
+        }
         if (typeof val?.continuation === "string") {
           this.continuations.set(key, val.continuation);
           if (typeof val.pattern === "string") this.sessionPatterns.set(key, val.pattern);
@@ -175,14 +204,25 @@ export class Agent {
   private saveSessions(): void {
     const out: Record<
       string,
-      { continuation: string; pattern: string | null; updatedAt?: number; ref: string | null }
+      {
+        continuation: string | null;
+        pattern: string | null;
+        updatedAt?: number;
+        ref: string | null;
+        models: Record<string, string> | null;
+      }
     > = {};
-    for (const [key, continuation] of this.continuations) {
+    // Persist a key when it has a continuation OR a model override (an override
+    // can be set before the conversation's first message).
+    const keys = new Set([...this.continuations.keys(), ...this.sessionModels.keys()]);
+    for (const key of keys) {
+      const models = this.sessionModels.get(key);
       out[key] = {
-        continuation,
+        continuation: this.continuations.get(key) ?? null,
         pattern: this.sessionPatterns.get(key) ?? null,
         updatedAt: this.sessionTimes.get(key),
         ref: this.sessionRefs.get(key) ?? null,
+        models: models && Object.keys(models).length ? models : null,
       };
     }
     try {
@@ -332,7 +372,7 @@ export class Agent {
     const allTools = { ...treeTools, ...katTools };
 
     const runtime: Record<string, unknown> = {
-      models: this.deps.models,
+      models: this.modelsFor(key),
       tools: allTools,
       // Dynamic tree loader: resolves a tree by name from patterns/ or
       // app/ when the engine needs one that was never built into this
@@ -634,6 +674,7 @@ export class Agent {
     this.sessionPatterns.delete(key);
     this.sessionTimes.delete(key);
     this.sessionRefs.delete(key);
+    this.sessionModels.delete(key);
     this.saveSessions();
   }
 
@@ -644,6 +685,93 @@ export class Agent {
    */
   sessionRef(key: string): string | undefined {
     return this.sessionRefs.get(key);
+  }
+
+  /**
+   * The registry as a tree should see it this turn: the shared registry, with
+   * each overridden role (slot name the tree references) resolving to the
+   * conversation's chosen target slot. Unknown/stale targets are ignored (the
+   * base registry wins), so deleting a slot in the settings editor can never
+   * break a live chat. Returns the shared object unchanged when there is no
+   * applicable override, so the common case allocates nothing.
+   */
+  modelsFor(key: string): ModelRegistry {
+    const base = this.deps.models;
+    const overrides = this.sessionModels.get(key);
+    if (!overrides) return base;
+    let out: ModelRegistry | null = null;
+    for (const [role, target] of Object.entries(overrides)) {
+      if (target === role || !base[target]) continue;
+      if (!out) out = { ...base };
+      out[role] = base[target];
+    }
+    return out ?? base;
+  }
+
+  /** Registry slot names and safe display fields (never the api key). */
+  modelSlots(): { name: string; model: string; baseURL: string; protocol?: string }[] {
+    return Object.entries(this.deps.models).map(([name, m]) => ({
+      name,
+      model: m.model,
+      baseURL: m.baseURL,
+      ...(m.protocol ? { protocol: m.protocol } : {}),
+    }));
+  }
+
+  /**
+   * Retarget this conversation's `role` slot (e.g. "strong", "cheap") to
+   * `target`. Returns false when the target is unknown (nothing changes).
+   * Persists to sessions.json.
+   */
+  setSessionModel(key: string, role: string, target: string): boolean {
+    if (!this.deps.models[target]) return false;
+    const rec = this.sessionModels.get(key) ?? {};
+    rec[role] = target;
+    this.sessionModels.set(key, rec);
+    this.saveSessions();
+    return true;
+  }
+
+  /**
+   * Drop one role override, or every override for this conversation when
+   * `role` is omitted.
+   */
+  clearSessionModel(key: string, role?: string): void {
+    const rec = this.sessionModels.get(key);
+    if (!rec) return;
+    if (role) {
+      if (!(role in rec)) return;
+      delete rec[role];
+      if (!Object.keys(rec).length) this.sessionModels.delete(key);
+    } else {
+      this.sessionModels.delete(key);
+    }
+    this.saveSessions();
+  }
+
+  /**
+   * The target slot a role overrides to. Without `role`, returns the "strong"
+   * override (the primary conversation model) for backward compatibility.
+   */
+  sessionModel(key: string, role = "strong"): string | undefined {
+    return this.sessionModels.get(key)?.[role];
+  }
+
+  /** Every role override for a conversation, as a plain object. */
+  sessionModelMap(key: string): Record<string, string> {
+    const rec = this.sessionModels.get(key);
+    return rec ? { ...rec } : {};
+  }
+
+  /**
+   * Replace the live registry in place after models.json is edited. The object
+   * is mutated (not swapped) so every holder — turns, the bot's /status, the
+   * admin probes — sees the new entries without a restart.
+   */
+  updateModels(registry: ModelRegistry): void {
+    const base = this.deps.models;
+    for (const name of Object.keys(base)) delete base[name];
+    Object.assign(base, registry);
   }
 
   /**

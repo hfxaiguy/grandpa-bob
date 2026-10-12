@@ -104,6 +104,7 @@ export function createBot(deps: BotDeps): Bot {
       .setMyCommands(
         [
           { command: "tree", description: "Switch the active tree" },
+          { command: "model", description: "Show or switch the model for this topic" },
           { command: "clear", description: "Clear conversation context for this topic" },
           { command: "status", description: "Show workspace, git, model and STT status" },
         ],
@@ -221,6 +222,77 @@ export function createBot(deps: BotDeps): Bot {
         `stt: ${deps.sttBackend}${deps.sttBackend === "sherpa" ? ` @ ${deps.sherpaUrl}` : ` @ ${deps.whisperUrl}`}`,
       ].join("\n"),
     );
+  });
+
+  // /model — retarget this conversation's per-role model slots (models.json).
+  //   /model                          list each role's current choice + slots
+  //   /model <strong|cheap> <slot>    use that slot for the role
+  //   /model <slot>                   shorthand for the strong role
+  //   /model reset [strong|cheap]     back to the tree's own slot(s)
+  bot.command("model", async (ctx) => {
+    const key = followKey(ctx);
+    const slots = deps.agent.modelSlots();
+    const current = deps.agent.sessionModelMap(key);
+    const words = (ctx.match ?? "").trim().split(/\s+/).filter(Boolean);
+
+    const roleLine = (role: string): string => {
+      const target = current[role];
+      const hit = target ? slots.find((s) => s.name === target) : undefined;
+      return `  ${role}: ${target ? `${target}${hit ? ` (${hit.model} @ ${hit.baseURL})` : ""}` : "(default)"}`;
+    };
+
+    if (!words.length) {
+      await reply(
+        ctx,
+        [
+          "This conversation's models:",
+          roleLine("cheap"),
+          roleLine("strong"),
+          "",
+          slots.length ? "Available slots:" : "No model slots configured (edit models.json in /settings).",
+          ...slots.map((s) => `  ${s.name} \u2014 ${s.model} @ ${s.baseURL}`),
+          "",
+          "Usage: /model <strong|cheap> <slot>  \u00b7  /model <slot> (strong)  \u00b7  /model reset",
+        ].join("\n"),
+      );
+      return;
+    }
+
+    if (words[0] === "reset" || words[0] === "default") {
+      if (words[1] === "strong" || words[1] === "cheap") {
+        deps.agent.clearSessionModel(key, words[1]);
+        await reply(ctx, `Cleared the ${words[1]} model override.`);
+      } else {
+        deps.agent.clearSessionModel(key);
+        await reply(ctx, "Cleared model overrides \u2014 the tree's own slots are in use again.");
+      }
+      return;
+    }
+
+    let role = "strong";
+    let slotArg = words[0];
+    if (words[0] === "strong" || words[0] === "cheap") {
+      role = words[0];
+      slotArg = words[1];
+    }
+    if (!slotArg) {
+      await reply(ctx, `Usage: /model ${role} <slot>`);
+      return;
+    }
+
+    const hit = slots.find((s) => s.name === slotArg);
+    if (!hit) {
+      await reply(
+        ctx,
+        `No model slot named "${slotArg}".\nAvailable: ${slots.map((s) => s.name).join(", ") || "(none)"}`,
+      );
+      return;
+    }
+    if (!deps.agent.setSessionModel(key, role, slotArg)) {
+      await reply(ctx, `Couldn't switch the ${role} slot to "${slotArg}".`);
+      return;
+    }
+    await reply(ctx, `${role} model for this conversation: ${slotArg} \u2014 ${hit.model} @ ${hit.baseURL}`);
   });
 
   /**

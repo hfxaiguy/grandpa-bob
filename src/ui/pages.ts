@@ -134,11 +134,18 @@ export function buildSettingsHtml(config: UiConfig): string {
 
 <div class="card">
   <h2 style="margin-top:0">Models</h2>
-  <p style="margin:4px 0"><small>The model registry (JSON). In the browser target this is stored in <b>browser settings</b>, never in the workspace, so API keys don't land in git. Keys may use <code>\${ENV}</code> to reference the credentials above.</small></p>
-  <textarea id="models-json" rows="9" style="width:100%;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace" placeholder='{"default":{"baseURL":"https://ollama.com","apiKey":"\${OLLAMA_API_KEY}","model":"gemma4:31b-cloud","protocol":"ollama"}}'></textarea>
+  <p style="margin:4px 0"><small>Named model slots the trees reference (<code>Model("strong")</code>, <code>Model("cheap")</code>). Each slot points at any OpenAI-compatible endpoint (Ollama local/cloud, OpenAI, Neuralwatt, OpenRouter, llama.cpp&hellip;) or native Ollama. Pick a provider preset, choose a model, then <b>Test</b>. Saving applies immediately &mdash; no restart. Keys may use <code>\${ENV}</code> to reference the credentials above, or be pasted literally.</small></p>
+  <div id="model-slots">(loading...)</div>
+  <datalist id="models-datalist"></datalist>
   <div class="actions">
+    <button class="secondary" onclick="addModelSlot()">+ Add model</button>
     <button onclick="saveModels()">Save models</button>
+    <button class="secondary" onclick="toggleRawModels()">Raw JSON</button>
     <span id="models-status"></span>
+  </div>
+  <div id="models-raw-wrap" style="display:none; margin-top:10px">
+    <textarea id="models-json" rows="9" style="width:100%;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace" placeholder='{"strong":{"baseURL":"https://api.neuralwatt.com/v1","apiKey":"\${NEURALWATT_API_KEY}","model":"glm-5.3"}}'></textarea>
+    <p style="margin:4px 0"><small>Raw registry JSON &mdash; the exact file that is saved. Edits here are honored on save; otherwise the form above builds it.</small></p>
   </div>
 </div>
 
@@ -533,19 +540,191 @@ if (secretsImportBtn && secretsImportFile) {
   };
 }
 
+// ---- structured model registry editor --------------------------------
+// The form is the primary editor; it builds the exact JSON that gets saved,
+// and the Raw JSON toggle reveals the same text for hand-editing. Provider
+// presets only autofill base URL + protocol — every field stays editable.
+const MODEL_PRESETS = {
+  "ollama-local":  { label: "Ollama (local)",        baseURL: "http://127.0.0.1:11434", protocol: "ollama" },
+  "ollama-cloud":  { label: "Ollama cloud",          baseURL: "https://ollama.com",     protocol: "ollama" },
+  "neuralwatt":    { label: "Neuralwatt",            baseURL: "https://api.neuralwatt.com/v1" },
+  "openai":        { label: "OpenAI",                baseURL: "https://api.openai.com/v1" },
+  "openrouter":    { label: "OpenRouter",            baseURL: "https://openrouter.ai/api/v1" },
+  "llamacpp":      { label: "llama.cpp / LM Studio", baseURL: "http://127.0.0.1:1234/v1" },
+  "custom":        { label: "Custom",                baseURL: "" },
+};
+let modelRegistry = {};
+
+function escAttr(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function presetId(baseURL, protocol) {
+  const b = baseURL || "", p = protocol || "";
+  for (const id in MODEL_PRESETS) {
+    const pr = MODEL_PRESETS[id];
+    if ((pr.baseURL || "") === b && (pr.protocol || "") === p) return id;
+  }
+  return "custom";
+}
+function rawModelsOpen() {
+  const w = $("models-raw-wrap");
+  return !!w && w.style.display !== "none";
+}
+function slotCard(name, entry) {
+  entry = entry || {};
+  const preset = presetId(entry.baseURL, entry.protocol);
+  let opts = "";
+  for (const id in MODEL_PRESETS) {
+    opts += '<option value="' + id + '"' + (id === preset ? " selected" : "") + ">" + escAttr(MODEL_PRESETS[id].label) + "</option>";
+  }
+  const card = document.createElement("div");
+  card.dataset.slot = name;
+  card.style.cssText = "border:1px solid var(--border,#334155);border-radius:8px;padding:10px 12px;margin-bottom:10px";
+  card.innerHTML =
+    '<div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">' +
+      '<label style="flex:1;min-width:110px">slot<input class="ms-name" type="text" value="' + escAttr(name) + '"></label>' +
+      '<label style="flex:2;min-width:150px">provider<select class="ms-preset">' + opts + "</select></label>" +
+      '<button class="secondary ms-del" type="button">remove</button>' +
+    "</div>" +
+    '<label>base URL<input class="ms-base" type="text" value="' + escAttr(entry.baseURL || "") + '" placeholder="https://api.neuralwatt.com/v1"></label>' +
+    '<div class="row" style="gap:8px;flex-wrap:wrap">' +
+      '<label style="flex:2;min-width:160px">model<input class="ms-model" type="text" list="models-datalist" value="' + escAttr(entry.model || "") + '" placeholder="model id"></label>' +
+      '<label style="flex:1;min-width:130px">protocol<select class="ms-protocol"><option value=""' + (!entry.protocol ? " selected" : "") + '>OpenAI-compatible</option><option value="ollama"' + (entry.protocol === "ollama" ? " selected" : "") + '>Ollama native</option></select></label>' +
+    "</div>" +
+    '<label>API key<input class="ms-key" type="text" value="' + escAttr(entry.apiKey || "") + '" placeholder="\${ENV_VAR} or literal key"></label>' +
+    '<div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">' +
+      '<label style="flex:1;min-width:130px">transform<select class="ms-transform"><option value=""' + (!entry.transform ? " selected" : "") + '>none</option><option value="gemma4Thinking"' + (entry.transform === "gemma4Thinking" ? " selected" : "") + '>gemma4Thinking</option></select></label>' +
+      '<button class="secondary ms-test" type="button">Test</button>' +
+      '<span class="ms-test-status" style="font-size:12px;color:var(--muted,#94a3b8)"></span>' +
+    "</div>";
+  card.querySelector(".ms-preset").addEventListener("change", (e) => {
+    const pr = MODEL_PRESETS[e.target.value];
+    if (!pr || e.target.value === "custom") { syncModelsJson(); return; }
+    card.querySelector(".ms-base").value = pr.baseURL || "";
+    card.querySelector(".ms-protocol").value = pr.protocol || "";
+    syncModelsJson();
+  });
+  card.querySelector(".ms-del").addEventListener("click", () => { card.remove(); syncModelsJson(); });
+  card.querySelector(".ms-test").addEventListener("click", () => testModelSlot(card));
+  card.querySelectorAll("input,select").forEach((el) => {
+    el.addEventListener("input", syncModelsJson);
+    el.addEventListener("change", syncModelsJson);
+  });
+  return card;
+}
+function renderModelSlots() {
+  const host = $("model-slots");
+  if (!host) return;
+  host.innerHTML = "";
+  const names = Object.keys(modelRegistry);
+  if (!names.length) { host.innerHTML = '<p><small>(no model slots yet - add one)</small></p>'; return; }
+  for (const name of names) host.appendChild(slotCard(name, modelRegistry[name]));
+}
+function readSlot(card) {
+  const entry = {};
+  const v = (sel) => { const el = card.querySelector(sel); return el ? el.value.trim() : ""; };
+  entry.baseURL = v(".ms-base");
+  entry.model = v(".ms-model");
+  const key = v(".ms-key"); if (key) entry.apiKey = key;
+  const proto = v(".ms-protocol"); if (proto) entry.protocol = proto;
+  const tf = v(".ms-transform"); if (tf) entry.transform = tf;
+  return entry;
+}
+function readModelForm() {
+  const out = {};
+  const host = $("model-slots");
+  if (!host) return out;
+  host.querySelectorAll("[data-slot]").forEach((card) => {
+    const name = card.querySelector(".ms-name").value.trim();
+    if (name) out[name] = readSlot(card);
+  });
+  return out;
+}
+function syncModelsJson() {
+  if (rawModelsOpen()) return;
+  modelRegistry = readModelForm();
+  const t = $("models-json");
+  if (t) t.value = JSON.stringify(modelRegistry, null, 2);
+}
+function addModelSlot() {
+  if (rawModelsOpen()) { $("models-raw-wrap").style.display = "none"; }
+  modelRegistry = readModelForm();
+  let n = 1;
+  while (modelRegistry["model" + n]) n++;
+  modelRegistry["model" + n] = {};
+  renderModelSlots();
+  syncModelsJson();
+  const host = $("model-slots");
+  const last = host && host.lastElementChild;
+  const nameInput = last && last.querySelector(".ms-name");
+  if (nameInput) { nameInput.focus(); nameInput.select(); }
+}
+function toggleRawModels() {
+  const wrap = $("models-raw-wrap");
+  if (!wrap) return;
+  if (rawModelsOpen()) {
+    wrap.style.display = "none";
+    try {
+      modelRegistry = JSON.parse($("models-json").value || "{}");
+      renderModelSlots();
+    } catch (e) { toast("invalid JSON: " + e.message, true); }
+  } else {
+    syncModelsJson();
+    wrap.style.display = "block";
+  }
+}
+async function testModelSlot(card) {
+  const status = card.querySelector(".ms-test-status");
+  status.textContent = "testing...";
+  status.style.color = "var(--muted,#94a3b8)";
+  try {
+    const d = await api("/api/models/test", { method: "POST", body: JSON.stringify(readSlot(card)) });
+    const dl = $("models-datalist");
+    if (dl && Array.isArray(d.models)) {
+      dl.innerHTML = "";
+      for (const m of d.models) dl.appendChild(new Option(m, m));
+    }
+    const n = Array.isArray(d.models) ? d.models.length : 0;
+    status.textContent = (d.ok ? "reachable" : "unreachable") + (n ? " - " + n + " model(s)" : "");
+    status.style.color = d.ok ? "var(--green,#10b981)" : "var(--red,#ef4444)";
+  } catch (e) {
+    status.textContent = e.message || "test failed";
+    status.style.color = "var(--red,#ef4444)";
+  }
+}
 async function loadModels() {
   try {
     const d = await api("/api/models");
     const t = $("models-json");
     if (t) t.value = d.json || "";
+    try {
+      modelRegistry = d.json ? JSON.parse(d.json) : {};
+    } catch {
+      modelRegistry = {};
+      if (d.json) {
+        if ($("models-raw-wrap")) $("models-raw-wrap").style.display = "block";
+        toast("models.json is not valid JSON - fix it in Raw JSON", true);
+      }
+    }
+    renderModelSlots();
   } catch { /* optional */ }
 }
 async function saveModels() {
   const t = $("models-json");
   if (!t) return;
   try {
-    await api("/api/models", { method: "POST", body: JSON.stringify({ json: t.value }) });
-    toast("models saved");
+    if (!rawModelsOpen()) syncModelsJson();
+    const d = await api("/api/models", { method: "POST", body: JSON.stringify({ json: t.value }) });
+    modelRegistry = JSON.parse(t.value || "{}");
+    renderModelSlots();
+    const reach = d.reachable || {};
+    const names = Object.keys(reach);
+    const bad = names.filter((n) => !reach[n]);
+    toast(
+      bad.length ? "saved - unreachable: " + bad.join(", ") : "models saved and applied" + (names.length ? " (" + names.length + " slot(s))" : ""),
+      bad.length > 0,
+    );
   } catch (e) { toast("models save failed: " + e.message, true); }
 }
 
@@ -820,7 +999,7 @@ export function buildChatHtml(config: UiConfig, sttLabel: string): string {
   header .sub { color: var(--muted); font-size: 12px; }
   header nav { margin-left: auto; }
   header nav a { color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 600; }
-  #pattern-sel { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; padding: 3px 6px; }
+  #pattern-sel, #cheap-sel, #strong-sel { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; padding: 3px 6px; }
   #health-dots { display: inline-flex; align-items: center; gap: 9px; margin-left: 4px; }
   #health-dots .hdot { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); }
   #health-dots .hdot i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--muted); }
@@ -847,6 +1026,12 @@ export function buildChatHtml(config: UiConfig, sttLabel: string): string {
   .steps .count { margin-left: auto; font-family: ui-monospace, monospace; }
   .steps .copy-log { flex: none; font: inherit; font-size: 11px; color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: 5px; padding: 1px 8px; cursor: pointer; }
   .steps .copy-log:hover { color: var(--fg); border-color: var(--accent); }
+  .steps .steps-mode { flex: none; font: inherit; font-size: 11px; color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: 5px; padding: 1px 8px; cursor: pointer; }
+  .steps .steps-mode:hover { color: var(--fg); border-color: var(--accent); }
+  /* tree-steps modes. The <details> is kept open so the list is always in the
+     DOM; visibility is driven by the mode class. short = the last 5 steps. */
+  .steps.mode-short > .step-list > li:nth-last-child(n+6) { display: none; }
+  .steps.mode-collapsed > .step-list { display: none; }
   .spinner { width: 12px; height: 12px; flex: none; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .step-list { margin: 0; padding: 4px 12px 10px; list-style: none; border-top: 1px solid var(--border); }
@@ -980,6 +1165,8 @@ export function buildChatHtml(config: UiConfig, sttLabel: string): string {
   </span>
   <select id="pattern-sel" title="tree to run (patterns/*.mjs or app/*/tree.mjs)"></select>
   <select id="ref-sel" title="version used by NEW sessions (running sessions keep their pinned version)"></select>
+  <select id="cheap-sel" title="model for the cheap (routing/direct-answer) slot; default uses the tree's slot"></select>
+  <select id="strong-sel" title="model for the strong (main tool loop) slot; default uses the tree's slot"></select>
   <button id="tree-btn" title="show the structure of the active tree">tree</button>
   <button id="tg-btn" title="send this session's transcript to your telegram chat">✈ telegram</button>
   <button id="internals-btn" title="show runtime bookkeeping steps (record, scope)">internals</button>
@@ -1211,6 +1398,37 @@ async function copyTurnLog(turn, btn) {
   setTimeout(() => (btn.textContent = old), 1200);
 }
 
+// ---- tree-steps display modes -------------------------------------------
+// The steps list is always in the DOM (the <details> stays open); a mode class
+// controls how much shows: short = the last few steps (default), all, collapsed.
+const STEPS_MODES = ["short", "all", "collapsed"];
+const STEPS_MODE_LABEL = { short: "short", all: "all", collapsed: "hidden" };
+const STEPS_MODE_KEY = "gb_steps_mode";
+/** The preferred mode: the last choice, defaulting to a short list. */
+function storedStepsMode() {
+  try {
+    const m = localStorage.getItem(STEPS_MODE_KEY);
+    return STEPS_MODES.includes(m) ? m : "short";
+  } catch { return "short"; }
+}
+function stepsModeOf(steps) {
+  return STEPS_MODES.find((m) => steps.classList.contains("mode-" + m)) || "short";
+}
+function applyStepsMode(steps, btn, mode) {
+  steps.open = true; // keep the list rendered; the mode class drives visibility
+  steps.classList.remove("mode-short", "mode-all", "mode-collapsed");
+  steps.classList.add("mode-" + mode);
+  if (btn) {
+    btn.textContent = STEPS_MODE_LABEL[mode];
+    btn.title = "tree steps: " + STEPS_MODE_LABEL[mode] + " \u2014 click to cycle short / all / hidden";
+  }
+}
+function cycleStepsMode(steps, btn) {
+  const next = STEPS_MODES[(STEPS_MODES.indexOf(stepsModeOf(steps)) + 1) % STEPS_MODES.length];
+  applyStepsMode(steps, btn, next);
+  try { localStorage.setItem(STEPS_MODE_KEY, next); } catch { /* private mode */ }
+}
+
 function startTurn(turnId, input) {
   // A re-sync may render a turn the SSE turn_start then repeats — and a turn
   // that already ENDED must never be appended a second time by a later
@@ -1256,7 +1474,10 @@ function startTurn(turnId, input) {
     e.stopPropagation();
     copyTurnLog(turn, copy);
   });
-  sum.append(spin, lab, cnt, copy);
+  const modeBtn = document.createElement("button");
+  modeBtn.className = "steps-mode";
+  modeBtn.type = "button";
+  sum.append(spin, lab, cnt, modeBtn, copy);
   const list = document.createElement("ol");
   list.className = "step-list";
   steps.append(sum, list);
@@ -1266,6 +1487,13 @@ function startTurn(turnId, input) {
   else conv.appendChild(turn);
 
   const block = { turn, list, spin, lab, cnt, answerBubs: [] };
+  applyStepsMode(steps, modeBtn, storedStepsMode());
+  // Clicking the summary cycles short -> all -> collapsed (the copy button
+  // stops propagation, so it never cycles).
+  sum.addEventListener("click", (e) => {
+    e.preventDefault();
+    cycleStepsMode(steps, modeBtn);
+  });
   blocks.set(turnId, block);
   rendered.add(turnId);
   maybeScroll(true);
@@ -2316,6 +2544,8 @@ function setSessionUi(active, key) {
   $("tg-btn").disabled = !active;
   $("mic-btn").disabled = !active;
   $("file-btn").disabled = !active;
+  $("cheap-sel").disabled = !active;
+  $("strong-sel").disabled = !active;
   $("input").placeholder = active ? "type a message\\u2026" : "select or start a session above";
 }
 
@@ -2349,6 +2579,7 @@ async function loadHistory() {
     trackedActive = d.active || null;
     trackedUpdatedAt = activeUpdatedAt(d);
     setSessionUi(!!d.active, d.active);
+    syncModelUi(d.models);
   } catch {
     setSessionUi(false); // server unreachable — input stays locked
   }
@@ -2377,6 +2608,7 @@ async function checkFollow() {
       for (const p of pending) conv.appendChild(p);
       if (pending.length) maybeScroll(true);
       setSessionUi(!!active, active);
+      syncModelUi(d.models);
       if (active) toast("now following: " + (d.label || active));
       return;
     }
@@ -2387,6 +2619,7 @@ async function checkFollow() {
     const missing = (d.turns || []).filter((t) => !rendered.has(t.turnId));
     if (missing.length) { renderTurns(missing); hideEmpty(); }
     setSessionUi(!!active, active);
+    syncModelUi(d.models);
   } catch { /* transient */ }
 }
 setInterval(() => { if (!document.hidden) checkFollow(); }, 7000);
@@ -2407,6 +2640,7 @@ async function chooseSession(body) {
     renderTurns(d.turns);
     trackedActive = d.active || null;
     setSessionUi(true, d.active);
+    loadModelOptions();
     treeLoadedFor = null;
     treeVisited.clear();
     treeActive = null;
@@ -2614,6 +2848,52 @@ async function loadHealth() {
 }
 loadHealth();
 setInterval(() => { if (!document.hidden) loadHealth(); }, 10000);
+
+// ---- model selectors (per-conversation role overrides) ----------------
+// One picker per role the trees reference: "cheap" (routing/direct answers)
+// and "strong" (the main tool loop). Populated from the live registry so a
+// slot added in /settings shows up without editing .env. "default" clears
+// that role's override (the tree's own slot is used again).
+const MODEL_ROLES = ["cheap", "strong"];
+async function loadModelOptions() {
+  try {
+    const r = await fetch("/api/models/slots", { cache: "no-store" });
+    if (!r.ok) return;
+    const d = await r.json();
+    for (const role of MODEL_ROLES) {
+      const sel = $(role + "-sel");
+      if (!sel) continue;
+      sel.innerHTML = "";
+      sel.appendChild(new Option(role + ": default", ""));
+      for (const s of d.slots || []) {
+        sel.appendChild(new Option(role + ": " + s.name + " \\u00b7 " + s.model, s.name));
+      }
+      sel.value = (d.models && d.models[role]) || "";
+    }
+  } catch { /* registry unreachable — leave the pickers empty */ }
+}
+function syncModelUi(models) {
+  models = models || {};
+  for (const role of MODEL_ROLES) {
+    const sel = $(role + "-sel");
+    if (sel) sel.value = models[role] || "";
+  }
+}
+async function setModel(role, value) {
+  try {
+    const r = await fetch("/api/chat/model", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ role, slot: value || null }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(d.error || "model switch failed", true); await loadModelOptions(); return; }
+    toast(value ? (role + ": " + value) : (role + ": default"));
+  } catch (e) { toast("model switch failed: " + e.message, true); }
+}
+$("cheap-sel").addEventListener("change", (e) => setModel("cheap", e.target.value));
+$("strong-sel").addEventListener("change", (e) => setModel("strong", e.target.value));
+loadModelOptions();
 </script>
 </body>
 </html>

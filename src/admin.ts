@@ -31,7 +31,7 @@ import os from "node:os";
 import fs from "node:fs";
 import type { Agent } from "./agent.js";
 import { checkLlmEntry } from "./agent.js";
-import { loadModels } from "./models.js";
+import { loadModels, parseModels, type ModelRegistry } from "./models.js";
 import { listSecretRequests, validSecretName, validSecretKey, type SecretsStore } from "./secrets.js";
 import {
   transcribeAudioBytes,
@@ -231,6 +231,38 @@ async function probeLlm(projectDir: string): Promise<ServiceState> {
 }
 
 let servicesCache: { at: number; services: ServiceState[] } | null = null;
+
+/** Drop the cached service status so the next probe re-reads models.json. */
+function invalidateServiceStatus(): void {
+  servicesCache = null;
+}
+
+/**
+ * List the model ids an endpoint advertises. OpenAI-compatible servers answer
+ * `/models` with `{ data: [{ id }] }`; native Ollama answers `/api/tags` with
+ * `{ models: [{ name }] }`. Best-effort: returns [] on any failure.
+ */
+async function listEndpointModels(baseURL: string, apiKey: string, protocol?: string): Promise<string[]> {
+  const base = baseURL.replace(/\/$/, "");
+  const p = protocol === "ollama" ? "/api/tags" : "/models";
+  try {
+    const res = await fetch(`${base}${p}`, {
+      signal: AbortSignal.timeout(5000),
+      headers: apiKey && apiKey !== "no-key" ? { Authorization: `Bearer ${apiKey}` } : {},
+    });
+    if (!res.ok) return [];
+    const data = (await res.json().catch(() => null)) as
+      | { data?: { id?: unknown }[]; models?: { name?: unknown; id?: unknown }[] }
+      | null;
+    const rows = (data?.data ?? data?.models ?? []) as { id?: unknown; name?: unknown }[];
+    return rows
+      .map((m) => (typeof m.id === "string" ? m.id : typeof m.name === "string" ? m.name : ""))
+      .filter((id): id is string => !!id)
+      .sort();
+  } catch {
+    return [];
+  }
+}
 
 async function serviceStatus(
   config: AdminConfig,
@@ -541,11 +573,16 @@ function saveTurns(): void {
     fs.mkdirSync(path.dirname(webTurnsPath), { recursive: true });
     const out: Record<string, { label: string; pattern: string; updatedAt: number; turns: unknown[] }> = {};
     for (const [key, s] of sessionTurns) {
+      const turns = s.turns.filter((t) => t.status !== "running");
+      // An empty, unlabeled session is a fresh chat the user never used — do
+      // not persist it (this mirrors loadTurns; plan D). It used to linger in
+      // the picker and on disk until the next restart.
+      if (!turns.length && !s.label) continue;
       out[key] = {
         label: s.label,
         pattern: s.pattern,
         updatedAt: s.updatedAt,
-        turns: s.turns.filter((t) => t.status !== "running").map(slimTurn),
+        turns: turns.map(slimTurn),
       };
     }
     const tmp = webTurnsPath + ".tmp";
@@ -645,6 +682,20 @@ export function telegramFollowKey(tgKey: string): string | undefined {
 export function webFollowTarget(webKey: string): string | undefined {
   for (const [tg, web] of telegramFollow) if (web === webKey) return tg;
   return undefined;
+}
+
+/**
+ * A Telegram chat linked by an earlier "send to telegram", if any — the
+ * freshest binding in `telegramFollow` (Map preserves insertion order, and
+ * loadFollowSetting replays the stored file order). Used as a fallback when no
+ * Telegram session is live in memory, e.g. right after a bot restart dropped
+ * `sessions.json`'s continuations: the binding survives, so ✈ telegram still
+ * has somewhere to send.
+ */
+function lastLinkedTelegramChat(): string | null {
+  let last: string | null = null;
+  for (const tg of telegramFollow.keys()) last = tg;
+  return last;
 }
 
 /**
@@ -800,6 +851,7 @@ export function remoteTurnEnd(key: string, output: string, ok = true): void {
   t.error = ok ? null : output || "agent error";
   s.updatedAt = now;
   saveTurns();
+  pruneSessions(adminAgent);
   if (activeSession === key) {
     broadcast({ type: "turn_end", turnId: t.turnId, status: t.status, error: t.error, output: t.output, ts: now });
   }
@@ -829,13 +881,22 @@ function describeForeignKey(key: string): string {
   return `telegram · chat ${chat}${thread === "0" ? " (general)" : ` · topic ${thread}`}`;
 }
 
-/** Drop the least recently active sessions past the cap (and their trees). */
+/** Drop the least recently active LOCAL sessions past the cap (and their trees).
+ *  The cap counts local sessions (the active one included); a session that is
+ *  mid-turn and the active session are never pruned. */
 function pruneSessions(agent: Agent | undefined): void {
-  if (sessionTurns.size <= MAX_SESSIONS_KEPT) return;
-  const keys = sessionList().filter((s) => !s.remote).map((s) => s.key).filter((k) => k !== activeSession);
-  for (const key of keys.slice(MAX_SESSIONS_KEPT)) {
-    sessionTurns.delete(key);
-    agent?.clear(key);
+  const local = sessionList().filter((s) => !s.remote); // sorted updatedAt desc
+  if (local.length <= MAX_SESSIONS_KEPT) return;
+  const removable = local
+    .filter((s) => s.key !== activeSession)
+    .filter((s) => !sessionTurns.get(s.key)?.turns.some((t) => t.status === "running"))
+    .sort((a, b) => a.updatedAt - b.updatedAt); // oldest first
+  let count = local.length;
+  for (const s of removable) {
+    if (count <= MAX_SESSIONS_KEPT) break;
+    sessionTurns.delete(s.key);
+    agent?.clear(s.key);
+    count--;
   }
 }
 
@@ -1030,6 +1091,9 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       ts: record.endedAt,
     });
     saveTurns();
+    // Enforce the session cap after every completed web turn (it used to run
+    // only when a new session was minted, so the store drifted past the cap).
+    pruneSessions(adminAgent);
     // The mirror was live (see `mirror` above): everything streamed already
     // reached the phone. Send only what did not stream — the final result of a
     // non-looping tree, or the error line — then flush the chain.
@@ -1198,6 +1262,8 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           active: activeSession,
           label: active?.label || "",
           follow: autoFollowTelegram,
+          model: activeSession ? agent?.sessionModel?.(activeSession) ?? null : null,
+          models: activeSession ? agent?.sessionModelMap?.(activeSession) ?? {} : {},
           sessions: sessionList(agent),
           turns: active ? active.turns.map(slimTurn) : null,
         }));
@@ -1222,15 +1288,23 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           // Taking the deliberate step of a private web chat ends the
           // telegram-follow until it's switched back on in settings.
           if (autoFollowTelegram) { autoFollowTelegram = false; saveFollowSetting(); }
-          const key = newSessionKey();
-          sessionTurns.set(key, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
-          pruneSessions(agent);
-          activeSession = key;
+          // Reuse the active session when it is still an unused private chat:
+          // clicking "new chat" repeatedly must not mint empty shells (plan D).
+          const currentKey = activeSession;
+          const current = currentKey ? sessionTurns.get(currentKey) : undefined;
+          const reusable = !!current && !!currentKey && currentKey.startsWith("web:")
+            && !current.label && current.turns.length === 0;
+          if (!reusable) {
+            const key = newSessionKey();
+            sessionTurns.set(key, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
+            pruneSessions(agent);
+            activeSession = key;
+          }
           webMemoryValues.clear();
           webMemoryPaths.clear();
           saveTurns();
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, active: key, follow: autoFollowTelegram, turns: [] }));
+          res.end(JSON.stringify({ ok: true, active: activeSession, follow: autoFollowTelegram, turns: [] }));
           return;
         }
         if (typeof sel.delete === "string") {
@@ -1310,6 +1384,53 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         const { turnId, queued } = enqueueChat(agent, activeSession, message, message);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, turnId, queued }));
+        return;
+      }
+
+      // Set/clear a model-slot override for this conversation (the web chat
+      // dropdowns). The turn key is exactly `activeSession` (agent.run uses
+      // it), so the override lands where the next turn will look for it.
+      // Body: { role, slot }  — role = the slot the tree references ("strong"
+      // / "cheap"), slot = the target registry entry (empty/absent = clear).
+      if (req.method === "POST" && url.pathname === "/api/chat/model") {
+        if (!agent) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end('{"error":"agent not available"}');
+          return;
+        }
+        if (!activeSession) {
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end('{"error":"no session selected"}');
+          return;
+        }
+        if (typeof agent.setSessionModel !== "function") {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end('{"error":"agent does not support model switching"}');
+          return;
+        }
+        const body = await readBody(req);
+        let parsed: { role?: unknown; slot?: unknown };
+        try {
+          parsed = JSON.parse(body || "{}");
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"invalid JSON body"}');
+          return;
+        }
+        const role = typeof parsed.role === "string" ? parsed.role.trim() : "";
+        const slot = typeof parsed.slot === "string" ? parsed.slot.trim() : "";
+        if (!role) {
+          // No role: clear every override for this conversation.
+          agent.clearSessionModel(activeSession);
+        } else if (!slot || slot === role || slot === "default") {
+          agent.clearSessionModel(activeSession, role);
+        } else if (!agent.setSessionModel(activeSession, role, slot)) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: `unknown model slot "${slot}"` }));
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, models: agent.sessionModelMap(activeSession) }));
         return;
       }
 
@@ -1501,12 +1622,16 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           return;
         }
         // "My linked chat": the Telegram key tied to the active session.
-        // A web:-owned session has no Telegram key, so fall back to the
-        // freshest live Telegram conversation; with no Telegram key at
-        // all (phone never messaged the bot) there is nowhere to send.
+        // A web:-owned session has no Telegram key of its own, so prefer the
+        // chat already bound to it, then the freshest live Telegram
+        // conversation, and finally a binding remembered from a previous run.
+        // That last fallback matters after a restart: the in-memory Telegram
+        // sessions are gone, but the linked chat survives in web-settings.json,
+        // and without it "send to telegram" would refuse even though a chat is
+        // linked. Only a chat that was never linked leaves nowhere to send.
         let target = activeSession.startsWith("web:") ? null : activeSession;
         if (!target) {
-          target = followTarget(agent) ?? null;
+          target = webFollowTarget(activeSession) ?? followTarget(agent) ?? lastLinkedTelegramChat();
           if (!target) {
             res.writeHead(409, { "content-type": "application/json" });
             res.end('{"error":"no telegram chat linked yet — message the bot on Telegram first"}');
@@ -1599,12 +1724,79 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         return;
       }
 
+      // Safe summary of the LIVE registry for pickers (chat model dropdown,
+      // /status): slot names and display fields, never api keys.
+      if (req.method === "GET" && url.pathname === "/api/models/slots") {
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        res.end(JSON.stringify({
+          slots: agent?.modelSlots?.() ?? [],
+          active: activeSession,
+          models: activeSession ? agent?.sessionModelMap?.(activeSession) ?? {} : {},
+        }));
+        return;
+      }
+
+      // Probe a single (unsaved) entry: reachability + the provider's model
+      // list, so the editor can offer real model ids and a live test.
+      if (req.method === "POST" && url.pathname === "/api/models/test") {
+        const body = await readBody(req);
+        let raw: unknown;
+        try {
+          raw = JSON.parse(body || "{}");
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid JSON body" }));
+          return;
+        }
+        let entry: { baseURL: string; apiKey: string; model: string; protocol?: "ollama" };
+        try {
+          entry = parseModels(JSON.stringify({ test: raw }), process.env).test;
+        } catch (e) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+          return;
+        }
+        const [reachable, models] = await Promise.all([
+          checkLlmEntry(entry.baseURL, entry.apiKey, entry.protocol, 5000),
+          listEndpointModels(entry.baseURL, entry.apiKey, entry.protocol),
+        ]);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: reachable, models }));
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/api/models") {
         const body = await readBody(req);
-        const json = (JSON.parse(body || "{}") as { json?: string }).json ?? "";
-        await writeFile(path.resolve(config.projectDir, "models.json"), String(json), "utf8");
+        let json: string;
+        try {
+          json = (JSON.parse(body || "{}") as { json?: string }).json ?? "";
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid JSON body" }));
+          return;
+        }
+        // Validate BEFORE writing: a bad edit must never be persisted (it would
+        // otherwise break the next restart) — and hot-apply it to the running
+        // agent so no restart is needed.
+        let registry: ModelRegistry;
+        try {
+          registry = parseModels(json, process.env);
+        } catch (e) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+          return;
+        }
+        await writeFile(path.resolve(config.projectDir, "models.json"), json, "utf8");
+        agent?.updateModels?.(registry);
+        invalidateServiceStatus();
+        const reachable = await Promise.all(
+          Object.entries(registry).map(async ([name, m]) => [
+            name,
+            await checkLlmEntry(m.baseURL, m.apiKey, m.protocol),
+          ] as const),
+        );
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true }));
+        res.end(JSON.stringify({ ok: true, reachable: Object.fromEntries(reachable) }));
         return;
       }
 

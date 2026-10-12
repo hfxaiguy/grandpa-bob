@@ -280,17 +280,38 @@ follows the tree guides.
    ```
    To use a different model, download it and set `WHISPER_MODEL` in `.env`
    (used by `npm run whisper:up`).
-5. **LLM backend** — copy `models.example.json` to `models.json` and edit.
-   The file defines two named slots the agent pattern uses: `cheap` (routing
-   + direct answers) and `strong` (the tool-using loop). Each entry has
-   `baseURL`, `apiKey`, `model`, and optional `transform` / `protocol`
-   fields. Secrets use `${ENV_VAR}` interpolation from `.env`.
-   Bot startup pings each registered model and prints
-   `reachable` / `NOT reachable` per entry.
-   `models.example.json` ships with native Ollama cloud entries
-   (`protocol: "ollama"`, `baseURL: https://ollama.com`) — just set
-   `OLLAMA_API_KEY` in `.env` and you're done. For other providers
-   (HF router, local llama.cpp, OpenAI, etc.) edit the entries directly.
+5. **LLM backend** — copy `models.example.json` to `models.json` and edit, or
+   use the **Models** card on the settings page (`/settings`), which edits the
+   same file with a form — pick a provider preset, choose a model, hit
+   **Test**, and **Save** (applied live, no restart).
+
+   The file defines named **slots**. The agent patterns reference them by name:
+   `cheap` (routing + direct answers) and `strong` (the tool-using loop). Each
+   entry has `baseURL`, `apiKey`, `model`, and optional `transform` /
+   `protocol` fields. Secrets use `${ENV_VAR}` interpolation from `.env`.
+
+   Any **OpenAI-compatible** endpoint works out of the box (OpenAI, OpenRouter,
+   Neuralwatt `https://api.neuralwatt.com/v1`, llama.cpp, LM Studio, HF router,
+   …); set `protocol: "ollama"` only for Ollama's native `/api/chat` API
+   (local `http://127.0.0.1:11434` or cloud `https://ollama.com`).
+   `models.example.json` ships Ollama-cloud `cheap`/`strong` slots plus a
+   `neuralwatt` example — set the matching key (`OLLAMA_API_KEY`,
+   `NEURALWATT_API_KEY`) in `.env`. Bot startup, and every **Save**, pings each
+   registered slot and reports `reachable` / `NOT reachable`.
+
+   **Switch models for one conversation** without editing config: send
+   `/model strong <slot>` or `/model cheap <slot>` on Telegram, or pick from
+   the two dropdowns (cheap / strong) in the web chat. Each role is
+   independent — e.g. a big model for `strong` and a small/local one for the
+   `cheap` router — and the rest of the registry is untouched. `/model reset`
+   (or the "default" entry) clears them. Choices are saved per conversation
+   and survive a restart.
+
+   `transform` is an optional response post-processor: the only built-in is
+   `gemma4Thinking`, which moves Gemma 4's inline `<|channel|>thought…` block
+   out of the answer and into the reasoning field. Leave it **none** for
+   OpenAI/Neuralwatt/Ollama-cloud and other providers that already separate
+   reasoning.
 
    Note: small local models vary a lot in tool-calling quality — if the agent
    misuses tools, switch models before debugging anything else.
@@ -330,7 +351,8 @@ Useful checks: `npm run typecheck`, `npm run smoke` (offline tool/git tests),
   `<br>`, since their HTML would otherwise collapse it), and phone numbers
   become tap-to-dial `tel:` links.
 - Commands:
-  - `/clear` — drops the conversation continuation for this topic. The next message starts a fresh tree (new system prompt, empty history). Per-topic: each forum topic has its own continuation. The checkpoint in SQLite is orphaned but not deleted.
+  - `/clear` — drops the conversation continuation for this topic. The next message starts a fresh tree (new system prompt, empty history). Per-topic: each forum topic has its own continuation. The checkpoint in SQLite is orphaned but not deleted. Also resets this topic's `/model` override.
+  - `/model` — show each role's current model (`strong`, `cheap`) and the available slots; `/model <strong|cheap> <slot>` sets one, `/model <slot>` is shorthand for `strong`, `/model reset [strong|cheap]` clears. Per conversation, and independent per role.
   - `/status` — shows workspace path, git status, LLM models, STT backend.
 
 ## Web UI

@@ -60,6 +60,10 @@ assert.ok(checked >= 2, "expected scripts on both pages");
 // the syntax bug was an empty <select>. Assert the markup + loader exist.
 const chatHtml = await (await fetch(`http://127.0.0.1:${port}/`)).text();
 assert.match(chatHtml, /<select id="pattern-sel"/, "pattern select present");
+assert.match(chatHtml, /<select id="cheap-sel"/, "cheap model select present");
+assert.match(chatHtml, /<select id="strong-sel"/, "strong model select present");
+assert.match(chatHtml, /loadModelOptions\(\);/, "model dropdowns are populated on load");
+assert.match(chatHtml, /function setModel\(role, value\)/, "model selector posts the role");
 assert.match(chatHtml, /loadPatternSelect\(\);/, "dropdown is populated on load");
 assert.match(chatHtml, /<div id="session-bar"/, "session picker present");
 assert.match(chatHtml, /id="session-resume"/, "resume button present");
@@ -114,6 +118,11 @@ assert.match(settingsHtml, /id="service-dots"/, "settings page renders the servi
 assert.match(settingsHtml, /id="follow-chk"/, "settings follow toggle present");
 assert.match(settingsHtml, /id="secrets-list"/, "app secrets card present");
 assert.match(settingsHtml, /loadSecrets\(\);/, "app secrets load on page open");
+assert.match(settingsHtml, /id="model-slots"/, "model editor host present");
+assert.match(settingsHtml, /function addModelSlot\(\)/, "add-model button wired");
+assert.match(settingsHtml, /function saveModels\(\)/, "model save wired");
+assert.match(settingsHtml, /\$\{ENV_VAR\}/, "literal env interpolation hint survives into the page");
+assert.match(settingsHtml, /"neuralwatt"/, "Neuralwatt provider preset present");
 assert.match(settingsHtml, /function checkUiVersion\(v\)/, "settings reloads itself when the page fingerprint changes");
 
 server.close();
