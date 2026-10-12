@@ -129,7 +129,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 
 .composer { border-top: 1px solid var(--border); padding: 8px; background: var(--card); }
 .composer-row { display: flex; gap: 6px; align-items: flex-end; }
-.composer-row textarea { flex: 1; resize: vertical; min-height: 34px; max-height: 120px; }
+.composer-row textarea { flex: 1; resize: none; overflow-y: auto; min-height: 34px; max-height: 200px; }
 .buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .btn-choice { background: #1d2f52; border-color: #2c4370; }
 

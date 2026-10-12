@@ -122,6 +122,17 @@ function EventLog(props: { app: string }) {
 
 function Composer(props: { app: string }) {
   const [text, setText] = createSignal("");
+  let ta: HTMLTextAreaElement | undefined;
+  // Grow the textarea with its content (up to a cap); reset when emptied.
+  const autosize = () => {
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+  };
+  createEffect(() => {
+    text();
+    autosize();
+  });
   const lastButtons = createMemo(() => {
     for (let i = state.turns.length - 1; i >= 0; i--) {
       const t = state.turns[i];
@@ -151,6 +162,7 @@ function Composer(props: { app: string }) {
       </Show>
       <div class="composer-row">
         <textarea
+          ref={(el) => (ta = el)}
           rows="1"
           placeholder="reply…"
           value={text()}
