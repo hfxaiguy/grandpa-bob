@@ -31,6 +31,8 @@ export interface UiState {
   connected: boolean;
   toast: string;
   toastErr: boolean;
+  /** The most recent turn failure, shown as a dismissible banner. */
+  lastError: string | null;
   layout: Layout;
 }
 
@@ -72,6 +74,7 @@ export const [state, setState] = createStore<UiState>({
   connected: false,
   toast: "",
   toastErr: false,
+  lastError: null,
   layout: loadLayout(),
 });
 
@@ -275,6 +278,11 @@ export async function clearConversation(): Promise<void> {
 
 // ── layout tweaks ───────────────────────────────────────────────────────
 
+/** Dismiss the global turn-failure banner. */
+export function dismissError(): void {
+  setState("lastError", null);
+}
+
 export function toggleHidden(name: string): void {
   setState("layout", "hidden", (h) => (h.includes(name) ? h.filter((x) => x !== name) : [...h, name]));
   saveLayout();
@@ -390,6 +398,12 @@ function handleSSE(msg: any): void {
           s.awaiting = msg.awaiting ?? null;
         }),
       );
+      // A failed turn is easy to miss in a single tile — surface it globally.
+      if (msg.status === "error") {
+        const text = msg.error || "the turn failed";
+        setState("lastError", text);
+        toast(`turn failed: ${text}`, true);
+      }
       void refreshMemory();
       break;
     }

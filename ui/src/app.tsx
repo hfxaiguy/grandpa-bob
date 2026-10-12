@@ -1,7 +1,7 @@
 /** App shell: toolbar + tiled grid + global stream + session drawer. */
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import { GlobalStream, SessionPanel, Tiles } from "./components";
-import { init, orderedApps, state, toggleHidden } from "./store";
+import { init, orderedApps, state, toggleHidden, dismissError } from "./store";
 
 function TilesMenu() {
   const [open, setOpen] = createSignal(false);
@@ -56,6 +56,15 @@ export function App() {
           settings
         </a>
       </header>
+
+      <Show when={state.lastError}>
+        <div class="error-banner">
+          <span class="err-tag">⚠ turn failed</span>
+          <span class="err-text">{state.lastError}</span>
+          <span class="spacer" />
+          <button onClick={() => dismissError()}>dismiss</button>
+        </div>
+      </Show>
 
       <Show
         when={state.active}

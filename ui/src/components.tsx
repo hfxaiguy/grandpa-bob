@@ -35,7 +35,7 @@ function bubblesFor(app: string): { turn: Turn; text: string; kind: "user" | "bo
     if (app === "trunk" && t.status === "done" && !emits.length && t.output) {
       out.push({ turn: t, text: t.output, kind: "bot" });
     }
-    if (app === "trunk" && t.status === "error" && t.error) {
+    if ((t.inputApp ?? "trunk") === app && t.status === "error" && t.error) {
       out.push({ turn: t, text: t.error, kind: "err" });
     }
   }
@@ -200,12 +200,16 @@ function Tile(props: { app: AppInfo }) {
   // one paused at .human().
   const showInput = () => name() === "trunk" || state.awaiting === name();
 
-  const statusText = () => (paused() ? "paused" : running() ? "running" : "idle");
+  const errored = createMemo(() => {
+    const last = state.turns[state.turns.length - 1];
+    return !!last && last.status === "error" && (last.inputApp ?? "trunk") === name();
+  });
+  const statusText = () => (paused() ? "paused" : running() ? "running" : errored() ? "error" : "idle");
 
   return (
     <section
       class="tile"
-      classList={{ expanded: expanded(), wide: wide(), paused: paused() }}
+      classList={{ expanded: expanded(), wide: wide(), paused: paused(), errored: errored() }}
       draggable
       onDragStart={(e) => e.dataTransfer?.setData("text/plain", name())}
       onDragOver={(e) => e.preventDefault()}
@@ -216,7 +220,7 @@ function Tile(props: { app: AppInfo }) {
       }}
     >
       <header class="tile-head">
-        <span class="dot" classList={{ on: paused(), run: running() }} />
+        <span class="dot" classList={{ on: paused(), run: running(), err: errored() }} />
         <span class="tile-name">{name()}</span>
         <span class="tile-status">{statusText()}</span>
         <span class="spacer" />
