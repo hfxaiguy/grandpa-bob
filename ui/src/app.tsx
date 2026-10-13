@@ -1,7 +1,7 @@
 /** App shell: toolbar + tiled grid + global stream + session drawer. */
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import { GlobalStream, SessionPanel, Tiles } from "./components";
-import { init, orderedApps, state, toggleHidden, dismissError } from "./store";
+import { init, orderedApps, state, toggleHidden, dismissError, retryLast } from "./store";
 
 function TilesMenu() {
   const [open, setOpen] = createSignal(false);
@@ -33,6 +33,11 @@ function TilesMenu() {
 export function App() {
   const [showSession, setShowSession] = createSignal(false);
   const apps = createMemo(() => orderedApps());
+  // A hard-failed last turn can be resent with one click.
+  const canRetry = () => {
+    const t = state.turns[state.turns.length - 1];
+    return !!t && t.status === "error" && !!t.input;
+  };
 
   onMount(() => {
     void init();
@@ -65,6 +70,11 @@ export function App() {
               <div class="err-title">{err().title}</div>
               <div class="err-text">{err().text}</div>
             </div>
+            <Show when={canRetry()}>
+              <button class="err-retry" onClick={() => void retryLast()}>
+                ↻ retry
+              </button>
+            </Show>
             <button class="err-dismiss" onClick={() => dismissError()}>
               dismiss
             </button>

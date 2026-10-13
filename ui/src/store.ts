@@ -221,6 +221,13 @@ export async function send(text: string): Promise<void> {
   }
 }
 
+/** Resend the last turn's input — the manual escape when a turn failed. */
+export async function retryLast(): Promise<void> {
+  const last = state.turns[state.turns.length - 1];
+  if (!last || !last.input) return;
+  await send(last.input);
+}
+
 export async function selectSession(key: string): Promise<void> {
   try {
     await postJSON("/api/session", { key });

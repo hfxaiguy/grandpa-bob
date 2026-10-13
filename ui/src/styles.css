@@ -178,10 +178,11 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 
 .error-banner { display: flex; align-items: center; gap: 14px; padding: 12px 16px; background: #4a1620; border-bottom: 3px solid var(--err); color: #ffd7d7; box-shadow: 0 6px 24px rgba(248, 113, 113, 0.35); animation: err-pulse 1.6s ease-in-out 3; }
 .err-icon { font-size: 30px; line-height: 1; color: var(--err); flex: 0 0 auto; }
-.err-body { min-width: 0; }
+.err-body { flex: 1; min-width: 0; }
 .err-title { font-weight: 800; letter-spacing: 1.5px; font-size: 13px; color: var(--err); }
 .err-text { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.err-dismiss { margin-left: auto; background: transparent; border-color: var(--err); color: #ffd7d7; }
+.err-retry { background: var(--err); border-color: var(--err); color: #1a0d0f; font-weight: 700; }
+.err-dismiss { background: transparent; border-color: var(--err); color: #ffd7d7; }
 @keyframes err-pulse {
   0%, 100% { box-shadow: 0 6px 24px rgba(248, 113, 113, 0.25); }
   50% { box-shadow: 0 6px 34px rgba(248, 113, 113, 0.65); }
