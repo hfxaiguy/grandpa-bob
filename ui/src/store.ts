@@ -31,8 +31,9 @@ export interface UiState {
   connected: boolean;
   toast: string;
   toastErr: boolean;
-  /** The most recent turn failure, shown as a dismissible banner. */
-  lastError: string | null;
+  /** The most recent failure (a failed turn or a failed model call), shown
+   *  as a dismissible banner. */
+  lastError: { title: string; text: string } | null;
   layout: Layout;
 }
 
@@ -185,10 +186,26 @@ export async function refreshTurns(): Promise<void> {
   }
 }
 
-/** Reflect the latest turn's failure in the banner (so a reload still warns). */
+/** Reflect the latest failure in the banner (so a reload still warns). Covers
+ *  a failed turn AND a turn that completed with a swallowed model-call
+ *  failure (e.g. the context condenser timing out). */
 function syncLastError(turns: Turn[]): void {
   const last = turns[turns.length - 1];
-  setState("lastError", last && last.status === "error" ? last.error || "the turn failed" : null);
+  if (!last) {
+    setState("lastError", null);
+    return;
+  }
+  if (last.status === "error") {
+    setState("lastError", { title: "TURN FAILED", text: last.error || "the turn failed" });
+    return;
+  }
+  const llmErr = last.events.find((e) => e.kind === "llm_error");
+  if (llmErr) {
+    const text = String((llmErr.content as Record<string, unknown> | null)?.error ?? "a model call failed");
+    setState("lastError", { title: "MODEL CALL FAILED", text });
+    return;
+  }
+  setState("lastError", null);
 }
 
 // ── actions ─────────────────────────────────────────────────────────────
@@ -383,6 +400,13 @@ function handleSSE(msg: any): void {
           if (t) t.events.push(ev);
         }),
       );
+      // A swallowed model-call failure (the context condenser, a fold, …) has
+      // no turn error of its own — surface it the moment it happens.
+      if (ev?.kind === "llm_error") {
+        const text = String(ev.content?.error ?? "a model call failed");
+        setState("lastError", { title: "MODEL CALL FAILED", text });
+        toast(`model call failed: ${text}`, true);
+      }
       break;
     }
     case "emit": {
@@ -419,14 +443,12 @@ function handleSSE(msg: any): void {
           s.awaiting = msg.awaiting ?? null;
         }),
       );
-      // A failed turn is easy to miss in a single tile — surface it globally.
       if (msg.status === "error") {
-        const text = msg.error || "the turn failed";
-        setState("lastError", text);
-        toast(`turn failed: ${text}`, true);
-      } else {
-        setState("lastError", null);
+        toast(`turn failed: ${msg.error || "the turn failed"}`, true);
       }
+      // Re-derive from the turn: a completed turn with a swallowed model
+      // failure still warns; a clean turn clears the banner.
+      syncLastError(state.turns);
       void refreshMemory();
       break;
     }
