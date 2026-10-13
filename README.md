@@ -781,6 +781,17 @@ database.
 So a backlog of messages sent while it was offline doesn't trigger a burst of
 agent runs (and LLM spend) on startup.
 
+**Why is a tool result truncated in the agent's context?**
+To keep a prompt's context from ballooning (a single `read_runs` or CSV dump can
+be tens of KB, which once pushed a turn past the model's request timeout). Only
+the characters shown to the model are capped — `MAX_TOOL_RESULT_CHARS`, default
+4000, `0` disables — and `{ rows: [...] }` results are trimmed by whole rows so
+they stay valid JSON. The **full** result is always kept for the tree's own
+logic (`record.toolResults`) and in the run log (`tool_result` events), so
+nothing is lost. A tree can override the cap per prompt with
+`Prompt(name, fn, runAfterTool(shaper))`, where the shaper is a pure function or
+a registered tree (e.g. a cheap-model condenser).
+
 ## Safety notes
 
 - Only Telegram user IDs in `ALLOWED_USER_IDS` can talk to the bot; others are ignored.

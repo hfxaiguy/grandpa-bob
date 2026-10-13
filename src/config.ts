@@ -70,6 +70,22 @@ export const config = {
     .map((s) => s.trim())
     .filter(Boolean),
   maxToolIterations: 12,
+  /**
+   * Max characters of a tool result shown to the model (grandma-kat
+   * `runtime.maxToolResultChars`). Full results are always kept for tree logic
+   * and the run log; only the model's view is capped. 0 disables the cap.
+   * Absent/invalid → grandma-kat's default (4000).
+   */
+  maxToolResultChars: (() => {
+    const raw = process.env.MAX_TOOL_RESULT_CHARS;
+    if (raw === undefined || !raw.trim()) return undefined;
+    const n = Number(raw.trim());
+    if (!Number.isFinite(n) || n < 0) {
+      console.warn(`[config] MAX_TOOL_RESULT_CHARS='${raw}' is not a non-negative number — using the default`);
+      return undefined;
+    }
+    return Math.floor(n);
+  })(),
 };
 
 export type Config = typeof config;

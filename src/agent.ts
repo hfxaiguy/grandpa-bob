@@ -46,6 +46,12 @@ export interface AgentDeps {
    * host owns — the app-secrets store — without exposing an app tool.
    */
   context?: unknown;
+  /**
+   * Cap on the characters of a tool result shown to the model (grandma-kat
+   * `runtime.maxToolResultChars`). Full results are always kept for tree logic
+   * and the run log. 0 disables. Defaults to grandma-kat's own default (4000).
+   */
+  maxToolResultChars?: number;
 }
 
 export type AgentRunResult =
@@ -246,15 +252,32 @@ export class Agent {
   }
 
   /**
-   * Structural hash of a tree definition — mirrors grandma-kat's internal
-   * `definitionId` (not exported from the package). Functions become stable
-   * name placeholders so the hash tracks structure, not closures.
+   * Structural skeleton hash, used ONLY to decide whether a saved
+   * continuation still maps to the freshly built tree. grandma-kat resumes by
+   * child INDEX along the paused path (and resolves trees by name), so only
+   * the child structure matters — a prompt's text, tools, model, gates and
+   * options can change freely without moving the pause point.
+   *
+   * Hashing the FULL definition made volatile, resume-irrelevant churn drop a
+   * live conversation's whole saved position: the trunk's Tools() list is
+   * built from a filesystem scan of app/ (trunk_step's appTreeNames()), so
+   * creating or editing an app dir while a session was paused changed the
+   * hash and nuked its context. The skeleton ignores all of that.
    */
-  static definitionHash(tree: unknown): string {
+  static resumeHash(tree: unknown): string {
     const def = (tree as { def?: unknown } | null)?.def ?? tree;
-    const json = JSON.stringify(def, (_k, v) =>
-      typeof v === "function" ? "[fn:" + ((v as Function).name || "anon") + "]" : v,
-    );
+    const skeleton = (node: unknown): unknown => {
+      if (!node || typeof node !== "object") return null;
+      const n = node as { kind?: unknown; name?: unknown; children?: unknown; tree?: unknown };
+      const out: Record<string, unknown> = { kind: n.kind ?? null, name: n.name ?? null };
+      if (Array.isArray(n.children)) out.children = n.children.map(skeleton);
+      // An inline sub-tree (a Branch body) is a separate resume level: its own
+      // child indices matter. A named ref is just a string here (its shape is
+      // resolved at run time, as before).
+      if (n.tree && typeof n.tree === "object") out.tree = skeleton(n.tree);
+      return out;
+    };
+    const json = JSON.stringify(skeleton(def));
     return crypto.createHash("sha256").update(json).digest("hex").slice(0, 8);
   }
 
@@ -352,18 +375,19 @@ export class Agent {
         droppedContinuation = true;
       }
 
-      let defId = Agent.definitionHash(pattern);
+      let defId = Agent.resumeHash(pattern);
 
-      // A checkpoint was grown under a specific tree shape; if the pinned tree
-      // changed (a draft edit, or the tree was replaced), the stored pause
-      // point no longer maps to any `.human()` slot — start fresh on the
-      // active ref. Immutable snapshots keep a stable hash, so only draft
-      // edits (or in-place snapshot edits) can trigger this.
+      // A checkpoint was grown under a specific tree SHAPE; if the child
+      // structure along the paused path changed (a draft edit that moves or
+      // renumbers children), the stored pause point may no longer map to the
+      // same `.human()` slot — start fresh on the active ref. Resume-irrelevant
+      // churn (prompt text, tools, models, options — e.g. the trunk's app-tree
+      // scan) does NOT change this hash, so it never drops a live session.
       if (!droppedContinuation && cont && this.sessionPatterns.get(key) !== defId) {
         dropReason = "the tree changed since it paused (it was edited or the pattern was switched)";
         pinnedRef = activeRef;
         pattern = await loadPattern(this.deps.workspace, pinnedRef);
-        defId = Agent.definitionHash(pattern);
+        defId = Agent.resumeHash(pattern);
         cont = undefined;
         droppedContinuation = true;
       }
@@ -409,6 +433,10 @@ export class Agent {
       sessionId: key,
       logger: this.wrapLogger(opts?.onEvent),
       onEmit,
+      // Bound what the model sees for a tool result (grandma-kat caps and
+      // rows-trims before the prompt's thread). Full results stay for tree
+      // logic and the run log. Absent → grandma-kat's default (4000).
+      ...(this.deps.maxToolResultChars !== undefined ? { maxToolResultChars: this.deps.maxToolResultChars } : {}),
       // Only set logLevel when using the default (string path) logger.
       // When a custom logger is provided, it already handles console output.
       ...(this.deps.logger ? {} : { logLevel: this.deps.logLevel ?? "info" }),

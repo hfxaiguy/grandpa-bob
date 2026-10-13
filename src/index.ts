@@ -75,7 +75,7 @@ async function main(): Promise<void> {
       secrets.list(app).map((s) => ({ name: s.name, updatedAt: s.updatedAt, size: s.size })),
     trees: makeTreeContext(config.workspaceDir),
   };
-  const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger, patternName: getSelectedPattern, patternRef: getSelectedRef, context: treeContext });
+  const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger, patternName: getSelectedPattern, patternRef: getSelectedRef, context: treeContext, maxToolResultChars: config.maxToolResultChars });
 
   // Periodic two-way git sync (pull then push). On by default when the
   // workspace has a remote; set AUTO_SYNC=0 to disable, AUTO_SYNC_INTERVAL_MS

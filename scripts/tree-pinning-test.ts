@@ -124,5 +124,40 @@ let relay = mkAgent("relay");
   console.log("5. logical switch cleared only that logical's sessions");
 }
 
+// ── 6. resume-irrelevant churn does NOT drop a session ──
+//
+// The trunk's Tools() list is built from a filesystem scan of app/ (the
+// trunk_step appTreeNames() scan), so creating or editing an app dir while a
+// session is paused used to change the tree's definition hash and nuke its
+// whole saved context. Only the CHILD STRUCTURE matters for resume, so a
+// Tools-only change must keep the session.
+{
+  const toolsSrc = (name: string, toolList: string[]) => `export default function ({ Tree, name, Model, Tools, Human, Emit }) {
+  return Tree(
+    name(${JSON.stringify(name)}),
+    Model("cheap"),
+    Tools(${toolList.map((t) => JSON.stringify(t)).join(", ")}),
+    Human("a"),
+    Emit((m) => ({ text: "A:" + String(m.branch.a ?? "") })),
+    Human("b"),
+    Emit((m) => ({ text: "B:" + String(m.branch.b ?? "") })),
+  );
+}
+`;
+  await fs.writeFile(path.join(patterns, "toolsy.mjs"), toolsSrc("toolsy", ["list_files"]));
+  await promoteDraft(ws, "toolsy");
+  let toolsy = mkAgent("toolsy");
+  const r1 = await toolsy.run("T", "one");
+  assert.equal(r1.status, "waiting");
+
+  await fs.writeFile(path.join(patterns, "toolsy.prod.mjs"), toolsSrc("toolsy", ["list_files", "git_status"]));
+  toolsy = mkAgent("toolsy"); // restart, reloads toolsy.prod from disk
+  const emitted: unknown[] = [];
+  const r2 = await toolsy.run("T", "two", (v) => emitted.push(v));
+  assert.equal(r2.status, "waiting");
+  assert.deepEqual(texts(emitted), ["A:two"], "resumed with no drop notice for a Tools-only change");
+  console.log("6. a Tools-only change kept the session (no context loss)");
+}
+
 await fs.rm(ws, { recursive: true, force: true });
 console.log("tree-pinning-test: all assertions passed");

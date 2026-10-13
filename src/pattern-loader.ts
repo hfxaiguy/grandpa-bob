@@ -10,7 +10,7 @@
 import { pathToFileURL } from "node:url";
 import { resolveTreeEntry } from "./tree-versions.js";
 // @ts-ignore — grandma-kat ships no .d.ts files.
-import { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, onEmit, onHuman, toolBefore, toolAfter, name as elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, Hook, From, memory, version, description, optional } from "grandma-kat";
+import { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, runAfterTool, onEmit, onHuman, toolBefore, toolAfter, name as elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, Hook, From, memory, version, description, optional } from "grandma-kat";
 
 export const DEFAULT_PATTERN = "trunk";
 
@@ -40,6 +40,8 @@ export interface PatternContext {
   parameters: typeof parameters;
   /** Prompt markers for the auto tool loop (see grandma-kat docs). */
   disableAuto: typeof disableAuto;
+  /** Per-prompt tool-result shaper: runAfterTool(fn | "tree"). */
+  runAfterTool: typeof runAfterTool;
   /** Positional hook triggers + the Hook element. */
   onEmit: typeof onEmit;
   onHuman: typeof onHuman;
@@ -117,7 +119,7 @@ export async function loadPattern(
     throw new Error(`pattern '${name}' must export a default tree or a factory function: ${filePath}`);
   }
 
-  const ctx: PatternContext = { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, onEmit, onHuman, toolBefore, toolAfter, name: elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Hook, Branch, Each, Call, Check, Emit, Return, Until, From, memory, version, description, optional };
+  const ctx: PatternContext = { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, runAfterTool, onEmit, onHuman, toolBefore, toolAfter, name: elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Hook, Branch, Each, Call, Check, Emit, Return, Until, From, memory, version, description, optional };
   const tree = typeof mod.default === "function" ? mod.default(ctx) : mod.default;
 
   if (!tree || typeof tree !== "object") {
