@@ -1425,7 +1425,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
 
       if (req.method === "POST" && url.pathname === "/api/session") {
         const body = await readBody(req);
-        let sel: { key?: unknown; new?: unknown; delete?: unknown; follow?: unknown };
+        let sel: { key?: unknown; new?: unknown; delete?: unknown; follow?: unknown; label?: unknown };
         try { sel = JSON.parse(body); } catch { res.writeHead(400); res.end('{"error":"invalid JSON body"}'); return; }
 
         if (typeof sel.follow === "boolean") {
@@ -1434,6 +1434,26 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           if (autoFollowTelegram) resolveFollow(agent);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true, active: activeSession, follow: autoFollowTelegram, sessions: sessionList(agent) }));
+          return;
+        }
+
+        // Rename a session (the drawer's inline label edit). `key` defaults to
+        // the active session; an empty label clears it (the next message
+        // re-derives one from its text).
+        if (typeof sel.label === "string") {
+          const target = typeof sel.key === "string" && sel.key ? sel.key : activeSession;
+          if (!target || !sessionTurns.has(target)) {
+            res.writeHead(404, { "content-type": "application/json" });
+            res.end('{"error":"no such session"}');
+            return;
+          }
+          const s = sessionTurns.get(target)!;
+          s.label = sel.label.trim().slice(0, 80);
+          s.updatedAt = Date.now();
+          saveTurns();
+          broadcast({ type: "sessions", sessions: sessionList(agent) });
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, key: target, label: s.label, sessions: sessionList(agent) }));
           return;
         }
 

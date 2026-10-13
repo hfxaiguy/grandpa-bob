@@ -74,6 +74,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   const turns: TurnRecord[] = [];
   const subscribers = new Set<(msg: EventMessage) => void>();
   let activePattern = opts.initialPattern || "trunk";
+  let sessionLabel = "";
   let updatedAt = Date.now();
   let modelsJson = opts.modelsJson ?? "";
   const activeRefs = new Map<string, string>();
@@ -272,17 +273,19 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         status: 200,
         body: {
           active: sessionKey,
-          label: "",
+          label: sessionLabel,
           follow: false,
           models: {},
           awaiting: activeAwaiting(),
-          sessions: [{ key: sessionKey, label: "local", pattern: activePattern, updatedAt, turns: turns.length, remote: false, awaiting: activeAwaiting() }],
+          sessions: [{ key: sessionKey, label: sessionLabel || "local", pattern: activePattern, updatedAt, turns: turns.length, remote: false, awaiting: activeAwaiting() }],
           turns,
         },
       };
     }
     if (pathname === "/api/session" && method === "POST") {
-      return { status: 200, body: { ok: true, active: sessionKey, turns } };
+      const parsed = parseBody(body) as { label?: string };
+      if (typeof parsed.label === "string") sessionLabel = parsed.label.trim().slice(0, 80);
+      return { status: 200, body: { ok: true, active: sessionKey, label: sessionLabel, turns } };
     }
     if (pathname === "/api/turns" && method === "GET") {
       return { status: 200, body: { turns, session: sessionKey, awaiting: activeAwaiting() } };

@@ -7,6 +7,7 @@ import {
   selectSession,
   newSession,
   deleteSession,
+  renameSession,
   setFollow,
   setPattern,
   setRef,
@@ -331,6 +332,14 @@ export function GlobalStream() {
 
 export function SessionPanel(props: { onClose: () => void }) {
   const activeSession = createMemo(() => state.sessions.find((s) => s.key === state.active));
+  // A local draft while editing the active session's name; null = show the
+  // stored label.
+  const [labelDraft, setLabelDraft] = createSignal<string | null>(null);
+  const nameValue = () => labelDraft() ?? activeSession()?.label ?? "";
+  const commitName = () => {
+    void renameSession(nameValue());
+    setLabelDraft(null);
+  };
   return (
     <div class="drawer" onClick={(e) => e.target === e.currentTarget && props.onClose()}>
       <div class="drawer-card">
@@ -364,6 +373,20 @@ export function SessionPanel(props: { onClose: () => void }) {
           </button>
         </div>
         <Show when={state.active}>
+          <div class="row">
+            <input
+              type="text"
+              placeholder="session name"
+              value={nameValue()}
+              onInput={(e) => setLabelDraft(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitName();
+              }}
+            />
+            <button class="secondary" onClick={commitName}>
+              rename
+            </button>
+          </div>
           <div class="row muted small">
             active: {activeSession()?.label || state.active}
             <span class="spacer" />

@@ -255,6 +255,17 @@ export async function deleteSession(key: string): Promise<void> {
   }
 }
 
+/** Rename a session (defaults to the active one). */
+export async function renameSession(label: string, key?: string): Promise<void> {
+  try {
+    await postJSON("/api/session", key ? { key, label } : { label });
+    await refreshSession();
+    toast(label.trim() ? `renamed: ${label.trim()}` : "session name cleared");
+  } catch (e) {
+    toast(e instanceof Error ? e.message : "rename failed", true);
+  }
+}
+
 export async function setFollow(on: boolean): Promise<void> {
   try {
     await postJSON("/api/session", { follow: on });
@@ -465,6 +476,9 @@ function handleSSE(msg: any): void {
       void refreshSession();
       break;
     case "follow":
+      void refreshSession();
+      break;
+    case "sessions":
       void refreshSession();
       break;
     case "trees":
