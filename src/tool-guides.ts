@@ -51,6 +51,14 @@ export const HOST_GUIDES: HostGuide[] = [
       "{ name, remove: true } removes one. A branch name is not a remote — push the branch " +
       "you are on unless told otherwise. Never guess a URL; ask the user.",
   },
+  {
+    tools: ["sql_query", "sql_write"],
+    guide:
+      "APP-OWNED DATABASES: some stores belong to an app tree — contacts.db / comms.db " +
+      "to the contacts tree, email.db to the email tree. Reach them by calling that tree; " +
+      "a direct sql_query / sql_write against an app's store is refused with a pointer to " +
+      "the app. Databases no app owns (duckdb files, ad-hoc .db) are yours to query directly.",
+  },
 ];
 
 /**

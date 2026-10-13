@@ -12,6 +12,43 @@ import { assembleGuides, HOST_GUIDES } from "../tool-guides.js";
 
 type Json = Record<string, unknown>;
 
+/**
+ * Context the engine (grandma-kat's runCall) passes to a registry tool's
+ * `execute`. `boundary` is true when the call is inside an app tree entered as
+ * a tool — the engine's `insideToolBoundary`.
+ */
+export interface ToolCallContext {
+  view?: unknown;
+  context?: unknown;
+  boundary?: boolean;
+}
+
+/**
+ * Databases owned by an app tree. The top-level agent may not reach these
+ * directly with sql_query / sql_write — it must go through the owning tree,
+ * which carries the schema and the write rules. A call from inside an app tree
+ * (`ctx.boundary`) is exempt: the app owns the store. Databases no app owns
+ * (duckdb files, ad-hoc .db) stay freely reachable.
+ */
+const APP_OWNED_DBS: Record<string, string> = {
+  "contacts.db": "contacts",
+  "comms.db": "contacts",
+  "email.db": "email",
+};
+
+/** The app that owns a database path (basename match), or null. */
+function ownedDbApp(pathArg: unknown): { db: string; app: string } | null {
+  if (typeof pathArg !== "string") return null;
+  const db = pathArg.trim().replace(/^.*[/\\]/, "");
+  const app = APP_OWNED_DBS[db];
+  return app ? { db, app } : null;
+}
+
+/** The refusal an app-owned store returns to the top-level agent. */
+function ownedDbError(owned: { db: string; app: string }): string {
+  return `error: "${owned.db}" is owned by the ${owned.app} tree — call the ${owned.app} tree instead of querying it directly.`;
+}
+
 function toOpenAiDefinition(tool: AppTool): OpenAI.Chat.Completions.ChatCompletionTool {
   return {
     type: "function",
@@ -269,7 +306,7 @@ export class ToolRegistry {
   /** Execute a tool call; returns a string (errors included) or a plain
    *  JSON object (structured output) so the agent can recover and patterns
    *  can read structured data directly. */
-  async dispatch(name: string, argsJson: string): Promise<string | Json> {
+  async dispatch(name: string, argsJson: string, ctx?: ToolCallContext): Promise<string | Json> {
     let args: Json;
     try {
       args = JSON.parse(argsJson || "{}") as Json;
@@ -308,16 +345,22 @@ export class ToolRegistry {
             String(args.command ?? ""),
             Array.isArray(args.args) ? (args.args as unknown[]).map(String) : [],
           );
-        case "sql_query":
+        case "sql_query": {
+          const owned = ctx?.boundary ? null : ownedDbApp(args.path);
+          if (owned) return ownedDbError(owned);
           return await this.sqlite.query(
             String(args.query ?? ""),
             args.path !== undefined ? String(args.path) : undefined,
           );
-        case "sql_write":
+        }
+        case "sql_write": {
+          const owned = ctx?.boundary ? null : ownedDbApp(args.path);
+          if (owned) return ownedDbError(owned);
           return await this.sqlite.write(
             String(args.query ?? ""),
             args.path !== undefined ? String(args.path) : undefined,
           );
+        }
         case "duckdb_query":
           return await this.duckdb.query(String(args.query ?? ""), String(args.path ?? ""));
         case "exa_search":
@@ -436,7 +479,7 @@ export class ToolRegistry {
           properties?: Record<string, unknown>;
           required?: string[];
         },
-        execute: async (args: Json) => this.dispatch(name, JSON.stringify(args ?? {})),
+        execute: async (args: Json, ctx?: ToolCallContext) => this.dispatch(name, JSON.stringify(args ?? {}), ctx),
       };
     }
     return out;
