@@ -33,6 +33,19 @@ try {
 
   const email = await call("sql_write", { path: "email.db", query: "INSERT INTO t VALUES (1)" });
   assert.match(String(email), /owned by the email tree/);
+  // The refusal routes by CONTENT, not just ownership: email.db is sender
+  // profiles with no message log, so "who was emailed" is a contacts question.
+  assert.match(String(email), /sender profiles/, "the refusal says what email.db holds");
+  assert.match(
+    String(email),
+    /sent\/received history is a contact `message` attribute/,
+    "the refusal points history at the contact message attribute",
+  );
+  assert.match(String(email), /ask the contacts tree/, "the refusal names the right tree for history");
+
+  // Other owned stores keep the plain refusal (no email hint leaks into them).
+  assert.doesNotMatch(String(contacts), /sender profiles/);
+  assert.doesNotMatch(String(comms), /sender profiles/);
 
   // A path with directories still matches by basename.
   const nested = await call("sql_query", { path: "some/dir/contacts.db", query: "SELECT 1" });
