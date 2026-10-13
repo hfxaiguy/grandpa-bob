@@ -30,10 +30,15 @@ export function describeEvent(ev: SanitizedEvent): EventLine {
   // The raw prompt history is huge; summarize it in the detail rather than
   // dumping the whole message array.
   const { messages, ...rest } = c as Record<string, unknown>;
+  // The server sends a summary ({ count, chars }), not the array — render it.
+  const msgLabel =
+    Array.isArray(messages)
+      ? `[${messages.length} messages]`
+      : messages && typeof messages === "object" && "count" in (messages as Record<string, unknown>)
+        ? `[${(messages as { count: unknown }).count} messages, ${(messages as { chars?: unknown }).chars ?? "?"} chars]`
+        : "[messages]";
   const detail = JSON.stringify(
-    messages !== undefined
-      ? { ...rest, messages: `[${Array.isArray(messages) ? messages.length : "?"} messages]` }
-      : rest,
+    messages !== undefined ? { ...rest, messages: msgLabel } : rest,
     null,
     2,
   );
@@ -45,6 +50,19 @@ export function describeEvent(ev: SanitizedEvent): EventLine {
       return { ...base, badge: "◀", text: `${s(c.tool ?? c.tree)} — exit${c.error ? " (error)" : ""}`, cls: "exit" };
     case "tree_suspend":
       return { ...base, badge: "⏸", text: `${s(c.tool ?? c.tree)} — suspended`, cls: "suspend" };
+    case "llm_start": {
+      const names = Array.isArray(c.tools) ? (c.tools as unknown[]).map(s) : [];
+      const tools = names.length
+        ? ` (${names.slice(0, 4).join(", ")}${names.length > 4 ? `, +${names.length - 4}` : ""})`
+        : "";
+      const round = Number(c.round) > 1 ? ` round ${s(c.round)}` : "";
+      return {
+        ...base,
+        badge: "llm…",
+        text: `${s(c.child) || "prompt"} — calling ${s(c.model) || "model"}${round}${tools}`,
+        cls: "llm",
+      };
+    }
     case "llm_call":
       return { ...base, badge: "llm", text: s(c.child) || "prompt", cls: "llm" };
     case "llm_error":

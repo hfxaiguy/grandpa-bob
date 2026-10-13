@@ -520,6 +520,16 @@ const webMemoryValues = new Map<string, Map<string, unknown>>(); // app -> slotK
 const webMemoryPaths = new Map<string, Map<string, Set<string>>>(); // app -> slotKey -> node paths
 const MAX_TURNS_KEPT = 20;
 const MAX_EVENT_STR = 400;
+// Events kept per turn. The full trace is in grandma-kat.db (`read_runs`); the
+// UI shows a tail, and an unbounded turn is what made web-turns.json 26 MB and
+// every save O(total history). This bounds the in-memory turn, the SSE replay,
+// /api/turns, and the file at once.
+const MAX_TURN_EVENTS = 500;
+
+/** Keep only the last MAX_TURN_EVENTS of a turn's events (in place). */
+function capTurnEvents(t: { events: SanitizedEvent[] }): void {
+  if (t.events.length > MAX_TURN_EVENTS) t.events.splice(0, t.events.length - MAX_TURN_EVENTS);
+}
 
 /** Drop every app's tracked memory (session switch / restart / clear). */
 function clearWebMemory(): void {
@@ -618,6 +628,7 @@ const MAX_SESSIONS_KEPT = 10;
 let webTurnsPath = "";
 
 function slimTurn(t: TurnRecord): TurnRecord {
+  capTurnEvents(t);
   return {
     ...t,
     // Live raw `messages` attached to events (full prompt + system text)
@@ -675,7 +686,7 @@ function loadTurns(): void {
         ? v.turns.filter((t: TurnRecord) => t && t.status !== "running").slice(-MAX_TURNS_KEPT)
         : [];
       if (!turns.length && !v?.label) continue;
-      for (const t of turns) retagTurnEvents(t);
+      for (const t of turns) { capTurnEvents(t); retagTurnEvents(t); }
       const last = turns.at(-1);
       sessionTurns.set(String(key), {
         label: typeof v?.label === "string" ? v.label : "",
@@ -912,6 +923,7 @@ export function remoteTurnEvent(key: string, event: unknown): void {
   const mem = trackMemoryWrite(event, app);
   const clean = sanitizeEvent(event as Parameters<typeof sanitizeEvent>[0], app);
   t.events.push(clean);
+  capTurnEvents(t);
   if (activeSession === key) {
     broadcast({ type: "event", turnId: t.turnId, event: clean });
     if (mem) broadcast({ type: "memory", app: mem.app, values: mem.values });
@@ -1006,11 +1018,42 @@ export function isAdminBusy(): boolean {
   return activeTurns > 0;
 }
 
-function broadcast(msg: unknown): void {
+// High-frequency message types are coalesced into one SSE write every
+// COALESCE_MS, so a big run (thousands of events) cannot flood the browser: the
+// client processes a bounded message rate no matter how fast the engine emits.
+const COALESCE_TYPES = new Set(["event", "memory"]);
+const COALESCE_MS = 150;
+let pendingBroadcasts: unknown[] = [];
+let broadcastTimer: ReturnType<typeof setTimeout> | null = null;
+
+function writeBroadcast(msg: unknown): void {
   const data = `data: ${JSON.stringify(msg)}\n\n`;
   for (const res of sseClients) {
     try { res.write(data); } catch { /* client went away */ }
   }
+}
+
+function flushBroadcasts(): void {
+  if (broadcastTimer) { clearTimeout(broadcastTimer); broadcastTimer = null; }
+  if (!pendingBroadcasts.length) return;
+  const batch = pendingBroadcasts;
+  pendingBroadcasts = [];
+  const data = batch.map((m) => `data: ${JSON.stringify(m)}\n\n`).join("");
+  for (const res of sseClients) {
+    try { res.write(data); } catch { /* client went away */ }
+  }
+}
+
+function broadcast(msg: unknown): void {
+  const type = (msg as { type?: unknown } | null)?.type;
+  if (typeof type === "string" && COALESCE_TYPES.has(type)) {
+    pendingBroadcasts.push(msg);
+    if (!broadcastTimer) broadcastTimer = setTimeout(flushBroadcasts, COALESCE_MS);
+    return;
+  }
+  // A control message must not overtake queued events (turn_end after events…).
+  flushBroadcasts();
+  writeBroadcast(msg);
 }
 
 /**
@@ -1053,7 +1096,18 @@ function sanitizeEvent(e: { kind?: string; branch_path?: string; iteration?: num
   const messages = Array.isArray(content.messages) ? content.messages : null;
   delete content.messages;
   const clean = sanitizeValue(content) as Record<string, unknown>;
-  if (messages) clean.messages = messages;
+  // The prompt history is huge (the trunk's system prompt alone is ~10 KB) and
+  // the UI only ever summarizes it — send the count and size, never the array.
+  // This is what kept single llm_call events at ~130 KB.
+  if (messages) {
+    clean.messages = {
+      count: messages.length,
+      chars: messages.reduce(
+        (n, m) => n + String(typeof m?.content === "string" ? m.content : JSON.stringify(m?.content ?? "")).length,
+        0,
+      ),
+    };
+  }
   return {
     kind: e.kind ?? "unknown",
     branch_path: e.branch_path ?? "",
@@ -1130,6 +1184,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     const mem = trackMemoryWrite(e, app);
     const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0], app);
     record.events.push(s);
+    capTurnEvents(record);
     broadcast({ type: "event", turnId, event: s });
     if (mem) broadcast({ type: "memory", app: mem.app, values: mem.values });
   };

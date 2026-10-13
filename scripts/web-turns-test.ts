@@ -113,8 +113,12 @@ let firstKey = "";
   const onDiskStr = JSON.stringify(onDisk);
   const turns = (await api(port, "GET", "/api/turns")).json.turns;
   assert.ok(
-    JSON.stringify(turns[0].events).includes("SECRET-PROMPT"),
-    "live /api/turns keeps raw prompt messages",
+    !JSON.stringify(turns[0].events).includes("SECRET-PROMPT"),
+    "live /api/turns no longer ships raw prompt messages (summary only)",
+  );
+  assert.ok(
+    typeof (turns[0].events[0]?.content as { messages?: unknown })?.messages === "object",
+    "a messages summary ({ count, chars }) is kept",
   );
   assert.ok(!onDiskStr.includes("SECRET-PROMPT"), "persisted copy strips prompt messages");
   assert.equal(liveEvents[0].kind, "llm_call", "event metadata kept");
@@ -261,8 +265,10 @@ let firstKey = "";
   assert.equal(tgTurn.events[1].content.op, "memoryUpdate", "memory steps kept");
   const rawTurns = (await api(port, "GET", "/api/turns")).json.turns;
   const rawTurn = rawTurns.find((t: any) => t.input === "on the phone");
-  assert.ok(JSON.stringify(rawTurn.events[0].content).includes("TG-PROMPT"),
-    "live copy keeps the raw prompt for the step view");
+  assert.ok(!JSON.stringify(rawTurn.events[0].content).includes("TG-PROMPT"),
+    "live copy no longer ships the raw prompt (summary only)");
+  assert.ok(typeof rawTurn.events[0].content.messages === "object",
+    "a messages summary is kept");
   const tgDisk = JSON.parse(await fs.readFile(path.join(ws6, "logs", "web-turns.json"), "utf8"));
   assert.ok(!JSON.stringify(tgDisk).includes("TG-PROMPT"), "persisted copy strips prompt messages");
   mod.remoteTurnStart("555:0", "other chat");

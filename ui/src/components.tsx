@@ -111,11 +111,24 @@ function LogRow(props: { line: EventLine; showApp?: boolean }) {
   );
 }
 
+/** Lines the log builds per recompute. The display shows the last 200; we build
+ *  a little more for a stable window, and never walk the whole history. */
+const LOG_WINDOW = 400;
+
 function EventLog(props: { app: string }) {
   const [open, setOpen] = createSignal(false);
   const lines = createMemo<EventLine[]>(() => {
     const out: EventLine[] = [];
-    for (const t of state.turns) for (const ev of t.events) if (trunkOf(ev.app) === props.app) out.push(describeEvent(ev));
+    // Newest-first walk, stopped at the window — O(window), not O(all events).
+    // This is what kept the memo from going quadratic during a big run.
+    for (let ti = state.turns.length - 1; ti >= 0 && out.length < LOG_WINDOW; ti--) {
+      const evs = state.turns[ti].events;
+      for (let ei = evs.length - 1; ei >= 0 && out.length < LOG_WINDOW; ei--) {
+        const ev = evs[ei];
+        if (trunkOf(ev.app) === props.app) out.push(describeEvent(ev));
+      }
+    }
+    out.reverse();
     return out;
   });
   return (

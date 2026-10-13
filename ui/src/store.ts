@@ -5,6 +5,18 @@ import { createStore, produce, reconcile } from "solid-js/store";
 import { getJSON, postJSON, openEventStream } from "./api";
 import type { AppInfo, PatternInfo, SessionInfo, Slot, Turn } from "./types";
 
+/** Events kept per turn in the live store. The full trace lives in the run log
+ *  (`read_runs`); the UI only ever shows a tail, and an unbounded array is what
+ *  froze the tab during a big run. */
+const MAX_TURN_EVENTS = 500;
+
+/** Trim every turn's event list to the live window (used on refresh + stream). */
+function capEvents(turns: Turn[]): Turn[] {
+  return turns.map((t) =>
+    t.events && t.events.length > MAX_TURN_EVENTS ? { ...t, events: t.events.slice(-MAX_TURN_EVENTS) } : t,
+  );
+}
+
 export interface Layout {
   order: string[];
   hidden: string[];
@@ -179,8 +191,9 @@ export async function refreshTurns(): Promise<void> {
   try {
     const d = await getJSON<{ turns: Turn[]; session: string | null; awaiting: string | null }>("/api/turns");
     if (d.session !== state.active) return;
-    setState({ turns: d.turns || [], awaiting: d.awaiting ?? null });
-    syncLastError(d.turns || []);
+    const turns = capEvents(d.turns || []);
+    setState({ turns, awaiting: d.awaiting ?? null });
+    syncLastError(turns);
   } catch (e) {
     console.warn("turns:", e);
   }
@@ -415,7 +428,9 @@ function handleSSE(msg: any): void {
       setState(
         produce((s) => {
           const t = s.turns.find((x) => x.turnId === msg.turnId);
-          if (t) t.events.push(ev);
+          if (!t) return;
+          t.events.push(ev);
+          if (t.events.length > MAX_TURN_EVENTS) t.events.splice(0, t.events.length - MAX_TURN_EVENTS);
         }),
       );
       // A swallowed model-call failure (the context condenser, a fold, …) has
