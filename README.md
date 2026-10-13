@@ -603,6 +603,18 @@ continuation for that topic is preserved — the next message starts a fresh tre
 (the error doesn't corrupt the checkpoint). Use `/clear` if a conversation goes
 sideways.
 
+**What happens when a model's plan runs out of credit (HTTP 402)?**
+A quota wall is not a bug — it needs a decision, so the bot does not just print
+a stack trace. When a model call fails with a 402 (or a 403/429 whose text names
+quota/billing), Bob remembers the turn that failed and asks which model to fall
+back to: in Telegram as an inline keyboard of the configured model slots, in the
+web UI as fallback buttons on the failed tile. Choosing one retargets the role
+that failed (`strong`/`cheap`) to the chosen slot — persisted for the
+conversation, exactly like `/model` — and re-runs the killed turn on it. A plain
+5xx or timeout is *not* treated as a quota wall; grandma-kat retries those with
+backoff. Only the model call itself is retried — the turn is re-delivered from
+its last `.human()` checkpoint, so no work before the failure is repeated.
+
 **Why does tool support depend on the *provider*, not just the model?**
 On the HF router, each provider serves the same weights with its own chat template
 and generation config. Tools only work if the provider's template renders them.

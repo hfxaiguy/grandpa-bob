@@ -8,6 +8,7 @@ import { git } from "./tools/git.js";
 import { createNodePlatform } from "./platform/node.js";
 import { attachmentPrompt, saveAttachment } from "./attachments.js";
 import { emitValue, type EmitButton } from "./util/emit-text.js";
+import { isQuotaError, quotaRole } from "./util/quota-error.js";
 import { ButtonStore } from "./buttons.js";
 import { telegramHtml, telegramRichHtml } from "./util/telegram-text.js";
 import {
@@ -175,6 +176,21 @@ export function createBot(deps: BotDeps): Bot {
     list.forEach((b, i) => {
       kb.text(b.label, "btn:" + buttonStore.register(key, b.value));
       if (i % 8 === 7 && i !== list.length - 1) kb.row();
+    });
+    return kb;
+  };
+
+  /**
+   * Inline keyboard of model slots for a quota fallback. Unlike emitted
+   * buttons (whose tap feeds a value into the paused tree), a tap here
+   * retargets the conversation's failed model role and re-runs the killed
+   * turn — so it carries the slot name directly, under an "fb:" prefix.
+   */
+  const fallbackKeyboard = (): InlineKeyboard => {
+    const kb = new InlineKeyboard();
+    deps.agent.modelSlots().forEach((s, i) => {
+      kb.text(s.name, "fb:" + s.name);
+      if (i % 3 === 2) kb.row();
     });
     return kb;
   };
@@ -507,6 +523,27 @@ export function createBot(deps: BotDeps): Bot {
     enqueue(key, () => handleUserContent(ctx, value));
   });
 
+  // Quota fallback: a model-slot tap retargets the failed role for this
+  // conversation and re-runs the killed turn, exactly as if the user had
+  // typed it again on the new model. Keyed by followKey — the key the turn
+  // actually ran under (see handleUserContent).
+  bot.callbackQuery(/^fb:(.+)$/, async (ctx) => {
+    const key = followKey(ctx);
+    const slot = ctx.match[1];
+    const pending =
+      typeof deps.agent.confirmFallback === "function" ? deps.agent.confirmFallback(key, slot) : null;
+    if (!pending) {
+      await ctx.answerCallbackQuery({
+        show_alert: true,
+        text: "That fallback is no longer available — use /model to pick one.",
+      });
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: `Falling back to ${slot}` });
+    await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }).catch(() => {});
+    enqueue(key, () => handleUserContent(ctx, pending.input));
+  });
+
   /**
    * Run the agent tree for one turn. The tree emits responses via
    * `onEmit` (which sends them to Telegram) and pauses at `.human()`
@@ -516,6 +553,9 @@ export function createBot(deps: BotDeps): Bot {
     // Reverse-followed chats run the adopted web session's key; replies still
     // go to this Telegram chat.
     const key = followKey(ctx);
+    // A normal turn supersedes any pending quota-fallback prompt: once the user
+    // types something else, a stale fallback tap must not re-run the old turn.
+    if (typeof deps.agent.clearPendingFallback === "function") deps.agent.clearPendingFallback(key);
     const display = typeof content === "string" ? content : "[attachment]";
     const turnOutput: string[] = [];
     const rec = deps.turnRecorder;
@@ -556,10 +596,29 @@ export function createBot(deps: BotDeps): Bot {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[agent]", err);
       rec?.end(key, msg, false);
-      const backendList = Object.entries(deps.models)
-        .map(([n, m]) => `${n}=${m.baseURL}`)
-        .join(", ");
-      await reply(ctx, `Something went wrong: ${msg}\n(llm backends: ${backendList})`);
+      if (isQuotaError(err) && typeof deps.agent.setPendingFallback === "function") {
+        // A quota wall is not a bug — it needs a decision. Remember the turn,
+        // then offer the registry's model slots; a tap retargets the failed
+        // role and re-runs it (see the fb: callback).
+        const role = quotaRole(err);
+        deps.agent.setPendingFallback(key, role, content);
+        const slots = deps.agent.modelSlots();
+        const text =
+          `The ${role} model hit its plan limit (402 — out of credit or quota).\n` +
+          (slots.length
+            ? "Pick a model to fall back to for this conversation:"
+            : "No model slots are configured — edit models.json in /settings.");
+        if (slots.length) {
+          await ctx.reply(text, { ...threadOpts(ctx), reply_markup: fallbackKeyboard() });
+        } else {
+          await reply(ctx, text);
+        }
+      } else {
+        const backendList = Object.entries(deps.models)
+          .map(([n, m]) => `${n}=${m.baseURL}`)
+          .join(", ");
+        await reply(ctx, `Something went wrong: ${msg}\n(llm backends: ${backendList})`);
+      }
     } finally {
       clearInterval(typing);
     }

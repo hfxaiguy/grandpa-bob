@@ -38,6 +38,9 @@ export interface Turn {
   emitApps?: (string | null)[] | null;
   awaiting?: string | null;
   buttons?: EmitButton[] | null;
+  /** Model slots offered after a quota wall (402); a tap retargets the failed
+   *  role and re-runs the turn (POST /api/fallback). */
+  fallback?: EmitButton[] | null;
   events: SanitizedEvent[];
 }
 

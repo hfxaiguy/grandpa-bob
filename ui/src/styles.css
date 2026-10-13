@@ -132,6 +132,9 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .composer-row textarea { flex: 1; resize: none; overflow-y: auto; min-height: 34px; max-height: 200px; }
 .buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .btn-choice { background: #1d2f52; border-color: #2c4370; }
+.fallback-btns { align-items: center; }
+.fallback-note { color: var(--warn, #e0a030); font-size: 12px; margin-right: 2px; }
+.btn-choice.fallback { background: #4a2d12; border-color: #7a4a1e; }
 
 .tile-panels { border-top: 1px solid var(--border); background: var(--panel); }
 .panel-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); padding: 6px 10px 3px; }

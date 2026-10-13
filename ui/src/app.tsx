@@ -33,10 +33,12 @@ function TilesMenu() {
 export function App() {
   const [showSession, setShowSession] = createSignal(false);
   const apps = createMemo(() => orderedApps());
-  // A hard-failed last turn can be resent with one click.
+  // A hard-failed last turn can be resent with one click — unless it hit a
+  // quota wall, where the fallback buttons are the right action (a plain retry
+  // would just hit the same 402).
   const canRetry = () => {
     const t = state.turns[state.turns.length - 1];
-    return !!t && t.status === "error" && !!t.input;
+    return !!t && t.status === "error" && !!t.input && !t.fallback?.length;
   };
 
   onMount(() => {

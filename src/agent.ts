@@ -126,6 +126,11 @@ export class Agent {
   // entry it resolves to. Persisted in sessions.json so choices survive a
   // restart.
   private sessionModels = new Map<string, Record<string, string>>();
+  // key → the turn a quota wall killed, awaiting the user's fallback choice.
+  // The failed model role and the original turn input are kept so the choice
+  // can retarget the role and re-run exactly what failed. In-memory only: a
+  // restart drops the prompt (the user just sends the message again).
+  private pendingFallbacks = new Map<string, { role: string; input: unknown }>();
   // Pin-on-open cache: key → the root pattern + tree-tool registry loaded on
   // the session's first turn and frozen for its lifetime, so a later edit or
   // promote of a `.prod` file never changes a live session's shape (a pause
@@ -728,6 +733,7 @@ export class Agent {
     this.sessionTimes.delete(key);
     this.sessionRefs.delete(key);
     this.sessionModels.delete(key);
+    this.pendingFallbacks.delete(key);
     this.sessionCache.delete(key);
     this.saveSessions();
   }
@@ -815,6 +821,39 @@ export class Agent {
   sessionModelMap(key: string): Record<string, string> {
     const rec = this.sessionModels.get(key);
     return rec ? { ...rec } : {};
+  }
+
+  /**
+   * Remember the turn a quota wall killed, so the user's fallback choice can
+   * re-run it. `role` is the model slot that failed (grandma-kat tags it on the
+   * error); `input` is the original turn content, re-delivered verbatim.
+   */
+  setPendingFallback(key: string, role: string, input: unknown): void {
+    this.pendingFallbacks.set(key, { role: role || "strong", input });
+  }
+
+  /** The pending fallback for a conversation, if any. */
+  pendingFallback(key: string): { role: string; input: unknown } | undefined {
+    return this.pendingFallbacks.get(key);
+  }
+
+  /** Drop a pending fallback (a normal turn supersedes the prompt). */
+  clearPendingFallback(key: string): void {
+    this.pendingFallbacks.delete(key);
+  }
+
+  /**
+   * Apply the user's fallback choice: retarget the failed role to `slot`
+   * (persisted, exactly like /model), then return the killed turn's input so
+   * the caller can re-run it. Returns null when nothing is pending or the slot
+   * is unknown — the pending record survives a bad slot so the user can retry.
+   */
+  confirmFallback(key: string, slot: string): { role: string; input: unknown } | null {
+    const pending = this.pendingFallbacks.get(key);
+    if (!pending) return null;
+    if (!this.setSessionModel(key, pending.role, slot)) return null;
+    this.pendingFallbacks.delete(key);
+    return pending;
   }
 
   /**

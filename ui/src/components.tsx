@@ -12,6 +12,7 @@ import {
   setPattern,
   setRef,
   setModel,
+  chooseFallback,
   clearConversation,
   sendToTelegram,
   toggleExpanded,
@@ -162,10 +163,21 @@ function Composer(props: { app: string }) {
     for (let i = state.turns.length - 1; i >= 0; i--) {
       const t = state.turns[i];
       if (t.status === "running") continue;
+      // A quota wall's model choices replace any emitted buttons on that turn.
+      if (t.fallback?.length) return [];
       if (t.buttons?.length) return t.buttons;
       break;
     }
     return [];
+  });
+  // Model fallbacks offered by the LAST turn (a quota wall). Shown only while
+  // that turn is still the latest — a new turn clears the prompt, so the user
+  // cannot fall back twice.
+  const fallback = createMemo(() => {
+    const last = state.turns[state.turns.length - 1];
+    if (!last || last.status === "running") return [];
+    if ((last.inputApp ?? "trunk") !== props.app) return [];
+    return last.fallback ?? [];
   });
   const submit = () => {
     const v = text();
@@ -174,6 +186,18 @@ function Composer(props: { app: string }) {
   };
   return (
     <div class="composer">
+      <Show when={fallback().length}>
+        <div class="buttons fallback-btns">
+          <span class="fallback-note">model out of credit — fall back to:</span>
+          <For each={fallback()}>
+            {(b) => (
+              <button class="btn-choice fallback" onClick={() => void chooseFallback(b.value)}>
+                {b.label}
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
       <Show when={lastButtons().length}>
         <div class="buttons">
           <For each={lastButtons()}>

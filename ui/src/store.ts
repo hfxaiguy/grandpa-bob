@@ -209,7 +209,10 @@ function syncLastError(turns: Turn[]): void {
     return;
   }
   if (last.status === "error") {
-    setState("lastError", { title: "TURN FAILED", text: last.error || "the turn failed" });
+    setState("lastError", {
+      title: last.fallback?.length ? "MODEL OUT OF CREDIT" : "TURN FAILED",
+      text: last.error || "the turn failed",
+    });
     return;
   }
   const llmErr = last.events.find((e) => e.kind === "llm_error");
@@ -308,6 +311,22 @@ export async function setRef(ref: string): Promise<void> {
     toast(`new sessions use: ${state.pattern}${ref !== "prod" ? "@" + ref : " (prod)"}`);
   } catch (e) {
     toast(e instanceof Error ? e.message : "version switch failed", true);
+  }
+}
+
+/** Confirm a quota fallback: retarget the failed model role and re-run the
+ *  turn the 402 killed. The server holds the pending turn, so this only names
+ *  the slot. */
+export async function chooseFallback(slot: string): Promise<void> {
+  if (!slot) return;
+  try {
+    await postJSON("/api/fallback", { slot });
+    setState("awaiting", null); // a turn is now running
+    toast(`falling back to ${slot}`);
+    await refreshModels();
+  } catch (e) {
+    toast(e instanceof Error ? e.message : "fallback failed", true);
+    await refreshTurns();
   }
 }
 
@@ -472,6 +491,7 @@ function handleSSE(msg: any): void {
             if (msg.levels) t.levels = msg.levels;
             if (msg.emitApps) t.emitApps = msg.emitApps;
             if (msg.buttons) t.buttons = msg.buttons;
+            t.fallback = msg.fallback ?? null;
           }
           s.awaiting = msg.awaiting ?? null;
         }),

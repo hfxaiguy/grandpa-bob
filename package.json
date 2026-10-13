@@ -36,6 +36,8 @@
     "test:telegram-follow-restart": "tsx scripts/telegram-follow-restart-test.ts",
     "test:emit-value": "tsx scripts/emit-value-test.ts",
     "test:button-store": "tsx scripts/button-store-test.ts",
+    "test:quota-error": "tsx scripts/quota-error-test.ts",
+    "test:fallback": "tsx scripts/fallback-test.ts",
     "test:duckdb": "tsx scripts/duckdb-bom-test.ts",
     "test:secrets": "tsx scripts/secrets-test.ts",
     "test:shell": "tsx scripts/shell-sandbox-test.ts",

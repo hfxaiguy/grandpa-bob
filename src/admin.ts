@@ -57,6 +57,7 @@ import { newTurnApps, tagEventApp as sharedTagEventApp, retagEvents, type TurnAp
 /** Secret config files are small (credentials, JSON, keys). */
 const MAX_SECRET_BYTES = 1024 * 1024;
 import { emitValue, type EmitButton } from "./util/emit-text.js";
+import { isQuotaError, quotaRole } from "./util/quota-error.js";
 import { buildChatHtml, buildSettingsHtml } from "./ui/pages.js";
 
 const execFileAsync = promisify(execFile);
@@ -601,6 +602,9 @@ interface TurnRecord {
   awaiting?: string | null;
   /** Buttons of the last emit that carried any; null when none ever did. */
   buttons?: EmitButton[] | null;
+  /** Model slots offered after a quota wall (402); null/absent otherwise.
+   *  A tap retargets the failed role and re-runs this turn (see /api/fallback). */
+  fallback?: EmitButton[] | null;
   events: SanitizedEvent[];
 }
 
@@ -1187,6 +1191,9 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     return;
   }
   if (!session.label && displayText) session.label = displayText.slice(0, 60);
+  // A new turn supersedes any pending quota-fallback prompt for this session
+  // (the fallback re-run goes through here too, but confirm already consumed it).
+  if (typeof agent.clearPendingFallback === "function") agent.clearPendingFallback(key);
   // Stamp the tree this session is actually running under (the pattern is
   // global, but a session may have been created before a switch).
   session.pattern = getSelectedPattern();
@@ -1291,6 +1298,15 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     // input was headed — the app's tile keeps its input for a retry.
     awaiting = record.inputApp ?? null;
     console.error("[web-chat]", err);
+    if (isQuotaError(err) && typeof agent.setPendingFallback === "function") {
+      // A quota wall needs a decision, not a stack trace: remember the turn
+      // and offer the model slots. The tile renders them as fallback buttons;
+      // a tap POSTs /api/fallback, which retargets the role and re-runs.
+      const role = quotaRole(err);
+      agent.setPendingFallback(key, role, content);
+      record.fallback = agent.modelSlots().map((s) => ({ label: s.name, value: s.name }));
+      record.error = `The ${role} model hit its plan limit (402 — out of credit or quota). Pick a fallback model.`;
+    }
   } finally {
     activeTurns--;
     record.endedAt = Date.now();
@@ -1309,6 +1325,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       emitApps: record.emitApps ?? null,
       awaiting,
       buttons: record.buttons,
+      fallback: record.fallback ?? null,
       ts: record.endedAt,
     });
     saveTurns();
@@ -1716,6 +1733,48 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         }
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, models: agent.sessionModelMap(activeSession) }));
+        return;
+      }
+
+      // Confirm a quota fallback: retarget the failed model role for this
+      // conversation and re-run the turn the quota wall killed. Body: { slot }.
+      // The pending turn is remembered by runTurn (see its catch); confirming
+      // consumes it, so a stale tap cannot re-run twice.
+      if (req.method === "POST" && url.pathname === "/api/fallback") {
+        if (!agent) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end('{"error":"agent not available"}');
+          return;
+        }
+        if (!activeSession) {
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end('{"error":"no session selected"}');
+          return;
+        }
+        if (typeof agent.confirmFallback !== "function") {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end('{"error":"agent does not support model fallback"}');
+          return;
+        }
+        const body = await readBody(req);
+        let slot = "";
+        try {
+          slot = String((JSON.parse(body || "{}") as { slot?: unknown }).slot ?? "").trim();
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"invalid JSON body"}');
+          return;
+        }
+        const pending = slot ? agent.confirmFallback(activeSession, slot) : null;
+        if (!pending) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "no fallback pending, or unknown model slot" }));
+          return;
+        }
+        const display = typeof pending.input === "string" ? pending.input : "[attachment]";
+        const { turnId, queued } = enqueueChat(agent, activeSession, pending.input, display);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, turnId, queued, role: pending.role, slot }));
         return;
       }
 
