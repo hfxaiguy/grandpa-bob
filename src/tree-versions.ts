@@ -20,15 +20,12 @@
 // Version ids are monotonic per logical tree (`v1`, `v2`, …). Because a
 // logical always keeps its newest snapshot, the highest id never gets reused.
 
-import { readdir, readFile, writeFile, rename, unlink, mkdir } from "node:fs/promises";
+import { readdir, readFile, writeFile, rename, mkdir, access } from "node:fs/promises";
 import path from "node:path";
-import crypto from "node:crypto";
 
 export const PATTERNS_DIR = "patterns";
 export const APP_DIR = "app";
 export const TREE_FILE = "tree";
-/** Keep the prod snapshot plus this many newest snapshots per tree. */
-export const KEEP_VERSIONS = 10;
 
 export type TreeKind = "pattern" | "app";
 
@@ -95,6 +92,18 @@ export interface ResolvedTree {
  */
 export function specPathForTree(treeFile: string): string {
   return treeFile.replace(/\.mjs$/, ".spec.md");
+}
+
+/**
+ * The single spec path for a logical tree. The two-file model keeps ONE
+ * `.spec.md` per tree (`patterns/<logical>.spec.md` or
+ * `app/<logical>/tree.spec.md`), shared by the draft and the prod. Versioned
+ * spec files are legacy and no longer resolved.
+ */
+function bareSpecPath(logical: string, kind: TreeKind): string {
+  return kind === "app"
+    ? path.join(APP_DIR, logical, `${TREE_FILE}.spec.md`)
+    : path.join(PATTERNS_DIR, `${logical}.spec.md`);
 }
 
 // ── filename parsing ──────────────────────────────────────────────────
@@ -321,6 +330,19 @@ export async function resolveTreeEntry(
   else entry = prod ?? draft;
 
   if (!entry) return null;
+  // The spec is per-logical (one `.spec.md` shared by the draft and the prod),
+  // so it is resolved from the logical name, not the versioned file.
+  const specRel = bareSpecPath(logical, entry.kind);
+  const specAbsCandidate = path.join(workspaceDir, specRel);
+  let specFile: string | null = null;
+  let specAbs: string | null = null;
+  try {
+    await access(specAbsCandidate);
+    specFile = specRel;
+    specAbs = specAbsCandidate;
+  } catch {
+    // no spec for this tree
+  }
   return {
     logical,
     version: entry.version,
@@ -330,8 +352,8 @@ export async function resolveTreeEntry(
     file: entry.file,
     abs: entry.abs,
     internalName: internalNameFor(logical, entry.version),
-    specFile: entry.specFile,
-    specAbs: entry.specAbs,
+    specFile,
+    specAbs,
   };
 }
 
@@ -360,141 +382,18 @@ async function writeAtomic(abs: string, content: string): Promise<void> {
   await rename(tmp, abs);
 }
 
-function snapshotPath(logical: string, kind: TreeKind, version: string, prod: boolean): string {
-  const suffix = prod ? ".prod" : "";
-  if (kind === "app") return path.join(APP_DIR, logical, `${TREE_FILE}.${version}${suffix}.mjs`);
-  return path.join(PATTERNS_DIR, `${logical}.${version}${suffix}.mjs`);
-}
-
-function nextVersion(entries: VersionEntry[]): string {
-  const max = entries
-    .map((e) => e.version)
-    .filter((v): v is string => v !== null)
-    .reduce((acc, v) => Math.max(acc, parseInt(v.replace(/^v/, ""), 10)), 0);
-  return `v${max + 1}`;
-}
-
-export interface SnapshotResult {
-  logical: string;
-  version: string;
-  file: string;
-  /** Paired spec file captured with the snapshot, or null when none existed. */
-  spec: string | null;
-  /** False when an identical snapshot already existed (dedupe). */
-  created: boolean;
-}
-
-/** Identity of a snapshot: its tree bytes plus its spec bytes. */
-function snapshotHash(content: string, spec: string): string {
-  return crypto.createHash("sha256").update(content).update("\0").update(spec).digest("hex");
-}
-
-/**
- * Snapshot the draft of `logical` into the next immutable version, capturing
- * its paired `.spec.md` (the behavior source of truth) alongside the `.mjs`.
- * Unchanged tree+spec returns the existing version id instead of a duplicate.
- */
-export async function snapshotTree(
-  workspaceDir: string,
-  logical: string,
-): Promise<SnapshotResult> {
-  return withLock(logical, async () => {
-    const entries = (await listTreeEntries(workspaceDir)).filter((e) => e.logical === logical);
-    const draft = entries.find((e) => e.draft);
-    if (!draft) throw new Error(`no draft to snapshot for '${logical}'`);
-
-    const content = await readFile(draft.abs, "utf8");
-    const spec = draft.specAbs ? await readFile(draft.specAbs, "utf8") : null;
-    const hash = snapshotHash(content, spec ?? "");
-    for (const entry of entries) {
-      if (entry.draft) continue;
-      try {
-        const existing = await readFile(entry.abs, "utf8");
-        const existingSpec = entry.specAbs ? await readFile(entry.specAbs, "utf8") : "";
-        if (snapshotHash(existing, existingSpec) === hash) {
-          return { logical, version: entry.version!, file: entry.file, spec: entry.specFile, created: false };
-        }
-      } catch {
-        // unreadable snapshot: treat as absent
-      }
-    }
-
-    const version = nextVersion(entries);
-    const rel = snapshotPath(logical, draft.kind, version, false);
-    await writeAtomic(path.join(workspaceDir, rel), content);
-    let specRel: string | null = null;
-    if (spec !== null) {
-      specRel = specPathForTree(rel);
-      await writeAtomic(path.join(workspaceDir, specRel), spec);
-    }
-    return { logical, version, file: rel, spec: specRel, created: true };
-  });
-}
-
-/**
- * Promote a candidate version to production: rename it to `.prod` and demote
- * the previous prod back to a plain candidate. Internal names already match
- * their refs, so no session checkpoint is invalidated.
- */
-export async function promoteTree(
-  workspaceDir: string,
-  logical: string,
-  version: string,
-): Promise<{ promoted: string; demoted: string | null }> {
-  const want = normalizeRef(version);
-  if (!/^v[0-9]+$/.test(want)) throw new Error(`not a version id: '${version}'`);
-
-  return withLock(logical, async () => {
-    const entries = (await listTreeEntries(workspaceDir)).filter((e) => e.logical === logical);
-    const candidate = entries.find((e) => e.version === want && !e.prod);
-    const current = entries.find((e) => e.prod);
-
-    if (!candidate) {
-      if (current?.version === want) return { promoted: want, demoted: null };
-      throw new Error(`version '${want}' not found for '${logical}'`);
-    }
-
-    const kind = candidate.kind;
-    const prodRel = snapshotPath(logical, kind, want, true);
-    const candidateRel = snapshotPath(logical, kind, want, false);
-    const abs = (rel: string) => path.join(workspaceDir, rel);
-
-    // Demote first: the old prod moves to its own candidate filename, then
-    // the candidate takes the prod name. Both targets are free. Each move
-    // carries the version's paired `.spec.md` with it.
-    let demoted: string | null = null;
-    if (current && current.version && current.version !== want) {
-      const demoteRel = snapshotPath(logical, kind, current.version, false);
-      await rename(abs(current.file), abs(demoteRel));
-      if (current.specAbs) await rename(current.specAbs, abs(specPathForTree(demoteRel)));
-      demoted = current.version;
-    } else if (current && current.version === null) {
-      // A bare `.prod` with no version: drop it out of the way.
-      await unlink(abs(current.file));
-      if (current.specAbs) await unlink(current.specAbs);
-    }
-
-    await rename(abs(candidateRel), abs(prodRel));
-    if (candidate.specAbs) await rename(candidate.specAbs, abs(specPathForTree(prodRel)));
-    return { promoted: want, demoted };
-  });
-}
-
 export interface PromoteDraftResult {
   logical: string;
   /** Relative path of the written `.prod` tree file. */
   file: string;
-  /** Relative path of the written `.prod` spec, or null when the draft had none. */
-  spec: string | null;
 }
 
 /**
- * Promote the draft to production: copy the editable draft (and its paired
- * spec) over the `.prod` files, atomically. The draft is left in place, so
- * editing continues immediately. A live session is untouched — sessions freeze
- * their tree on open (see agent.ts), so a promote never disturbs one. This is
- * the whole promotion step in the two-file model: no version id, no candidate
- * snapshot.
+ * Promote the draft to production: copy the editable draft over the `.prod`
+ * file, atomically. The draft is left in place, so editing continues
+ * immediately. The spec is per-logical — one `.spec.md` shared by the draft
+ * and the prod — so a promote never writes one. A live session is untouched:
+ * sessions freeze their tree on open (see agent.ts).
  */
 export async function promoteDraft(
   workspaceDir: string,
@@ -506,53 +405,12 @@ export async function promoteDraft(
     if (!draft) throw new Error(`no draft to promote for '${logical}'`);
 
     const content = await readFile(draft.abs, "utf8");
-    const spec = draft.specAbs ? await readFile(draft.specAbs, "utf8") : null;
 
     const prodRel =
       draft.kind === "app"
         ? path.join(APP_DIR, logical, `${TREE_FILE}.prod.mjs`)
         : path.join(PATTERNS_DIR, `${logical}.prod.mjs`);
     await writeAtomic(path.join(workspaceDir, prodRel), content);
-
-    let specRel: string | null = null;
-    if (spec !== null) {
-      specRel = specPathForTree(prodRel);
-      await writeAtomic(path.join(workspaceDir, specRel), spec);
-    }
-    return { logical, file: prodRel, spec: specRel };
-  });
-}
-
-/**
- * Prune old snapshots: keep prod, the newest `keep` versions, and anything
- * pinned by a live session. Returns the version ids removed.
- */
-export async function pruneVersions(
-  workspaceDir: string,
-  logical: string,
-  keep: number = KEEP_VERSIONS,
-  protectedVersions: string[] = [],
-): Promise<string[]> {
-  return withLock(logical, async () => {
-    const entries = (await listTreeEntries(workspaceDir)).filter((e) => e.logical === logical);
-    const protectedSet = new Set(protectedVersions.map((v) => normalizeRef(v)));
-    const versions = [...new Set(entries.map((e) => e.version).filter((v): v is string => v !== null))].sort(
-      compareVersions,
-    );
-    // `slice(-0)` is the whole array, so keep=0 must be special-cased.
-    const keepCount = Math.max(0, keep);
-    const keepSet = new Set(keepCount === 0 ? [] : versions.slice(-keepCount));
-    const removed: string[] = [];
-    for (const entry of entries) {
-      if (entry.draft || entry.version === null) continue;
-      if (entry.prod) continue;
-      if (keepSet.has(entry.version)) continue;
-      if (protectedSet.has(entry.version)) continue;
-      await unlink(entry.abs);
-      if (entry.specAbs) await unlink(entry.specAbs);
-      // Only report a version once, even though each has one file.
-      if (!removed.includes(entry.version)) removed.push(entry.version);
-    }
-    return removed;
+    return { logical, file: prodRel };
   });
 }

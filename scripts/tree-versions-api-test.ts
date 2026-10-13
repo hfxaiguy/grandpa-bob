@@ -65,23 +65,26 @@ try {
   assert.equal(r.json.prod, null);
   assert.equal(r.json.active, "");
 
-  // Promote the draft → the bare `.prod` files (tree + paired spec).
+  // Promote the draft → the bare `.prod` tree (the spec stays single).
   r = await api("POST", "/api/tree/version/promote", { name: "trunk" });
   assert.equal(r.status, 200);
   assert.equal(r.json.file, "patterns/trunk.prod.mjs");
-  assert.equal(r.json.spec, "patterns/trunk.prod.spec.md");
   assert.ok(await fs.stat(path.join(ws, "patterns", "trunk.prod.mjs")));
-  assert.ok(await fs.stat(path.join(ws, "patterns", "trunk.prod.spec.md")));
+  assert.equal(
+    await fs.stat(path.join(ws, "patterns", "trunk.prod.spec.md")).catch(() => null),
+    null,
+    "no .prod.spec.md — one spec per tree",
+  );
 
   r = await api("GET", "/api/tree/versions?name=trunk");
   assert.equal(r.json.prod, "prod", "a bare .prod reports as 'prod'");
   assert.equal(r.json.draft, true);
 
-  // The promoted spec is readable through the default (prod) resolution.
+  // The single spec is readable through the default (prod) resolution.
   r = await api("GET", "/api/tree/spec?pattern=trunk");
   assert.equal(r.status, 200);
   assert.equal(r.json.spec, "# trunk spec\n");
-  assert.equal(r.json.specFile, "patterns/trunk.prod.spec.md");
+  assert.equal(r.json.specFile, "patterns/trunk.spec.md");
 
   // Set the active ref for new sessions; /api/pattern reflects it.
   r = await api("POST", "/api/tree/version/active", { name: "trunk", ref: "draft" });

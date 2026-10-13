@@ -14,7 +14,6 @@ import os from "node:os";
 import path from "node:path";
 import { Agent } from "../src/agent.js";
 import { ToolRegistry } from "../src/tools/index.js";
-import { snapshotTree } from "../src/tree-versions.js";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-nested-version-"));
 const patterns = path.join(ws, "patterns");
@@ -43,9 +42,10 @@ const OUTER = `export default function ({ Tree, name, From, version, Needs, Retu
 `;
 await fs.writeFile(path.join(patterns, "outer.mjs"), OUTER);
 
-// Snapshot the inner draft as v1 (a candidate; no prod needed).
-const snap = await snapshotTree(ws, "inner");
-assert.equal(snap.version, "v1");
+// Create the inner v1 snapshot directly — the legacy versioned file the
+// `version("v1")` port resolves. BOB no longer produces versioned files, but
+// a pinned ref still resolves from disk.
+await fs.writeFile(path.join(patterns, "inner.v1.mjs"), INNER("draft"));
 assert.ok(await fs.stat(path.join(patterns, "inner.v1.mjs")));
 
 const handler = async () => ({ content: "mock", reasoning: null, tool_calls: [] });

@@ -171,18 +171,28 @@ The **workspace** (agent sandbox + git repo) lives OUTSIDE the project by defaul
 independent of the harness.
 
 **Trees are also tools.** Every workspace tree — `patterns/<name>.mjs` or
-`app/<name>/tree.mjs` — is registered as a callable *tree tool* on each turn.
-A pattern offers one to the model with `.tools("<name>")`; the model then
-calls it like any other tool and gets the tree's result back, while the tree
-runs in place. Its `.human()` pauses suspend the whole conversation and the
-next message resumes inside the tree (the calling prompt round is replayed
-from the log, not re-sent to the model). Because tree tools are built fresh
-each turn, edits to an app tree take effect immediately — no restart.
+`app/<name>/tree.mjs` — is registered as a callable *tree tool*. A pattern
+offers one to the model with `.tools("<name>")`; the model then calls it like
+any other tool and gets the tree's result back, while the tree runs in place.
+Its `.human()` pauses suspend the whole conversation and the next message
+resumes inside the tree (the calling prompt round is replayed from the log,
+not re-sent to the model).
 
-Because tree tools resolve through the version loader, a tree that attaches
-another tree must do so **by name** (`From`/`Hook`/tree tool), never by a
-relative JS import: the loader resolves the pinned `prod`, so a snapshot stays
-isolated, whereas a relative import binds the draft and leaks edits through it.
+Each tree is a **two-file pair**: the editable draft (`patterns/<name>.mjs`,
+`app/<name>/tree.mjs`) and the live `*.prod.mjs`, with a single `.spec.md`
+shared by both. A session **freezes its tree on open** — the root pattern
+and the tree-tool registry are loaded once, on the first turn, and reused for
+the conversation's lifetime. So editing a draft or promoting a new `.prod`
+never disturbs a live conversation (a caller-list walk paused between dials
+keeps running the bytes it started on). A restart re-loads from disk; if the
+tree changed, the saved position is dropped and the turn starts fresh. New
+sessions adopt the current `prod` (or the `draft`/a legacy `vN` ref when
+selected).
+
+Because tree tools resolve through the loader, a tree that attaches another
+tree must do so **by name** (`From`/`Hook`/tree tool), never by a relative JS
+import: the loader resolves the live `prod`, whereas a relative import binds
+the draft and leaks edits through it.
 And a tree invoked as a tool gets **only its own `Tools()`** — host tools are
 not inherited into a called tree (only a `From()`-attached subtree inherits).
 Together these are the host's isolation + least-privilege contract.

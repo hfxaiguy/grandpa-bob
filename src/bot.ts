@@ -367,8 +367,7 @@ export function createBot(deps: BotDeps): Bot {
         notifyTreesChanged(name);
         await reply(
           ctx,
-          `Promoted ${name} → ${promoted.file}${promoted.spec ? " (with spec)" : ""}. ` +
-            "Live sessions keep the tree they opened on.",
+          `Promoted ${name} → ${promoted.file}. Live sessions keep the tree they opened on.`,
         );
       } catch (err) {
         await reply(ctx, `Can't promote "${name}": ${err instanceof Error ? err.message : err}`);
