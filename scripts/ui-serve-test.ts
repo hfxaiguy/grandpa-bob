@@ -4,7 +4,7 @@
  *   1. GET / serves ui/dist/index.html when the app is built.
  *   2. GET /assets/* serves the content-hashed bundle with a JS content type.
  *   3. Path traversal out of ui/dist is refused.
- *   4. Without a build, / falls back to the classic chat page (still 200).
+ *   4. Without a build, / shows a "UI not built" notice.
  *   5. /settings is unaffected.
  *
  * Mock agent + real admin HTTP API. Run: npm run test:ui-serve
@@ -78,15 +78,11 @@ async function get(port: number, p: string) {
   assert.equal(settings.status, 200);
   assert.match(settings.type, /text\/html/);
 
-  const classic = await get(port, "/classic");
-  assert.equal(classic.status, 200, "the classic chat page stays reachable");
-  assert.match(classic.type, /text\/html/);
-
   server.close();
-  console.log("1-3. built app served at / with assets; traversal refused; /settings + /classic intact");
+  console.log("1-3. built app served at / with assets; traversal refused; /settings intact");
 }
 
-// ── without a build: classic chat page fallback ──
+// ── without a build: a clear "UI not built" notice at / ──
 {
   const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-ui-nobuild-"));
   await fs.mkdir(path.join(ws, "logs"), { recursive: true });
@@ -94,10 +90,11 @@ async function get(port: number, p: string) {
   const server = startAdmin({ port, workspaceDir: ws, projectDir: ws, envPath: path.join(ws, "absent.env"), agent: mockAgent() });
   await events.once(server, "listening");
   const root = await get(port, "/");
-  assert.equal(root.status, 200, "fallback still serves a page");
+  assert.equal(root.status, 200, "still serves a page");
   assert.match(root.type, /text\/html/);
+  assert.match(root.text, /UI not built/, "the notice tells the user to build the UI");
   server.close();
-  console.log("4. no build → classic chat page fallback");
+  console.log("4. no build → UI-not-built notice at /");
 }
 
 console.log("ui-serve-test: all assertions passed");

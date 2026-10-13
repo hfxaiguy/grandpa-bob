@@ -1,13 +1,14 @@
 /**
- * Page script regression guard.
+ * Settings page script regression guard.
  *
- * The chat and settings pages are served as raw HTML — their inline
- * <script> blocks are shipped to the browser verbatim (no transpile).
- * A single TypeScript token (`as`, annotations, `!`) anywhere in them
- * throws SyntaxError at load and kills the *whole* page script — e.g.
- * the pattern dropdown silently stayed empty when a cast leaked into
- * the chat client. Compiles every inline script from both pages with
- * vm.Script to make sure they're valid JavaScript.
+ * The settings page is served as raw HTML — its inline <script> blocks ship to
+ * the browser verbatim (no transpile). A single TypeScript token (`as`,
+ * annotations, `!`) anywhere in them throws SyntaxError at load and kills the
+ * whole page script. Compiles every inline script with vm.Script to make sure
+ * they're valid JavaScript.
+ *
+ * (The chat surface is the built SolidJS app in `ui/`, served as a bundled
+ * asset from ui/dist — not raw inline script, so not covered here.)
  *
  * Run: npm run test:pages
  */
@@ -41,51 +42,24 @@ const server = startAdmin({
 });
 await events.once(server, "listening");
 
-let checked = 0;
-for (const page of ["/", "/settings"]) {
-  const res = await fetch(`http://127.0.0.1:${port}${page}`);
-  assert.equal(res.status, 200, `${page} served`);
+// With no ui/dist in this workspace, "/" serves the build notice (not a page).
+{
+  const root = await (await fetch(`http://127.0.0.1:${port}/`)).text();
+  assert.match(root, /UI not built/, "an unbuilt ui/dist shows the build notice at /");
+}
+
+// Every inline script on /settings must be valid JavaScript.
+{
+  const res = await fetch(`http://127.0.0.1:${port}/settings`);
+  assert.equal(res.status, 200, "/settings served");
   const html = await res.text();
   const blocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
-  assert.ok(blocks.length >= 1, `${page} has inline script(s)`);
+  assert.ok(blocks.length >= 1, "/settings has inline script(s)");
   for (const [i, b] of blocks.entries()) {
-    new vm.Script(b[1], { filename: `${page}#script-${i}` }); // throws on SyntaxError
-    checked++;
+    new vm.Script(b[1], { filename: `/settings#script-${i}` }); // throws on SyntaxError
   }
-  console.log(`${page}: ${blocks.length} inline script block(s) compile`);
+  console.log(`/settings: ${blocks.length} inline script block(s) compile`);
 }
-assert.ok(checked >= 2, "expected scripts on both pages");
-
-// The chat page must wire up the pattern dropdown — the exact symptom of
-// the syntax bug was an empty <select>. Assert the markup + loader exist.
-const chatHtml = await (await fetch(`http://127.0.0.1:${port}/`)).text();
-assert.match(chatHtml, /<select id="pattern-sel"/, "pattern select present");
-assert.match(chatHtml, /<select id="cheap-sel"/, "cheap model select present");
-assert.match(chatHtml, /<select id="strong-sel"/, "strong model select present");
-assert.match(chatHtml, /loadModelOptions\(\);/, "model dropdowns are populated on load");
-assert.match(chatHtml, /function setModel\(role, value\)/, "model selector posts the role");
-assert.match(chatHtml, /loadPatternSelect\(\);/, "dropdown is populated on load");
-assert.match(chatHtml, /<div id="session-bar"/, "session picker present");
-assert.match(chatHtml, /id="session-resume"/, "resume button present");
-assert.match(chatHtml, /id="session-new"/, "new-session button present");
-assert.match(chatHtml, /id="health-dots"/, "chat header carries service health dots");
-assert.match(chatHtml, /loadHealth\(\);/, "health dots are populated on load");
-assert.match(chatHtml, /window\.__UI_VERSION__=/, "chat carries the server's page fingerprint");
-assert.match(chatHtml, /function checkUiVersion\(v\)/, "chat reloads itself when the page fingerprint changes");
-assert.match(chatHtml, /function checkFollow\(\)/, "follow watcher present");
-// A sent message is echoed BEFORE the round-trip (a placeholder keyed by a
-// client id, re-keyed to the server turn id), so a slow /api/chat or a proxy
-// cannot swallow it; a failed send restores the text to the box.
-assert.match(chatHtml, /function addPending\(pendingId, text, queued\)/, "pending bubble takes a queued flag");
-assert.match(chatHtml, /addPending\(pendingId, text, null\);/, "send echoes the message before the round-trip");
-assert.match(chatHtml, /settlePending\(pendingId, d\.turnId, d\.queued\);/, "placeholder re-keys to the server turn id");
-assert.match(chatHtml, /failPending\(pendingId, text, restore\);/, "a failed send restores the text");
-// A turn_start missed while the SSE stream is still opening is reconciled on
-// the next open (including the first) and right after a send — not left until
-// the turn ends (updatedAt only moves at turn end).
-assert.match(chatHtml, /es\.onopen = \(\) => checkFollow\(\)/, "every SSE open reconciles");
-assert.match(chatHtml, /t\.status !== "running"/, "a running turn reconciled from history stays live");
-assert.match(chatHtml, /Reconcile now: if the SSE turn_start was missed/, "a send reconciles the started turn at once");
 
 // /api/status must report real service health (telegram / voice / llm),
 // each a tri-state (up/down/n-a) with a detail line — the old dots were a

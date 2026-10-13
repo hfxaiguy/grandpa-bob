@@ -1,13 +1,11 @@
 // src/admin.ts
 //
 // Web UI for grandpa-bob. Starts an HTTP server on ADMIN_PORT (default
-// 8080) with two pages:
+// 8080) with two surfaces:
 //
-//   /          — chat front page: talk to the agent by text or voice
-//                (audio is recorded in the browser and transcribed
-//                locally via the configured STT backend). Every grandma-
-//                kat tree event streams live over SSE and is rendered as
-//                steps under the message.
+//   /          — the tiled chat app (SolidJS, built from `ui/` into
+//                `ui/dist` and served from there). One tile per app; every
+//                grandma-kat tree event streams live over SSE.
 //   /settings  — admin page: .env credentials, bot/sherpa tmux status,
 //                log tails, bot restart, workspace git sync, tree
 //                patterns, workspace file browser.
@@ -16,9 +14,6 @@
 //   http://127.0.0.1:8080
 // Or from the laptop (same Wi-Fi):
 //   http://<phone-ip>:8080
-//
-// Note: browser microphone access (voice input) requires a secure
-// context — it works on http://localhost but not on plain-http LAN IPs.
 
 import http from "node:http";
 import { readFile, writeFile, readdir, stat, mkdir, unlink } from "node:fs/promises";
@@ -58,7 +53,7 @@ import { newTurnApps, tagEventApp as sharedTagEventApp, retagEvents, type TurnAp
 const MAX_SECRET_BYTES = 1024 * 1024;
 import { emitValue, type EmitButton } from "./util/emit-text.js";
 import { isQuotaError, quotaRole } from "./util/quota-error.js";
-import { buildChatHtml, buildSettingsHtml } from "./ui/pages.js";
+import { buildSettingsHtml } from "./ui/pages.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1359,7 +1354,8 @@ export interface AdminOptions extends Partial<AdminConfig> {
    * too. index.ts wires it to bot.api.sendMessage.
    */
   telegramNotify?: (key: string, text: string) => void | Promise<void>;
-  /** STT backend options — required for voice input on the chat page. */
+  /** STT backend options — used by the voice/audio upload endpoints and the
+   *  service-health probe. */
   stt?: SttBackendOptions;
 }
 
@@ -1372,36 +1368,37 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
   adminAgent = agent;
   const stt = cfg?.stt;
   const SETTINGS_HTML = buildSettingsHtml(config);
-  const sttLabel = stt
-    ? `voice: ${stt.backend} @ ${new URL(stt.backend === "sherpa" || stt.backend === "parakeet" ? stt.sherpaUrl : stt.whisperUrl).host}`
-    : "voice: not configured";
-  const CHAT_HTML = buildChatHtml(config, sttLabel);
 
   // The tiled app UI (SolidJS, built by `npm run build` in ui/). Served at "/"
-  // when present; the old chat page is the fallback so a checkout that has not
-  // built the app still works. Assets live under ui/dist/assets/.
+  // from ui/dist; assets live under ui/dist/assets/. A checkout that has not
+  // built the app gets a clear "run npm run build:ui" notice instead of a page.
   const UI_DIST = path.resolve(config.projectDir, "ui", "dist");
   let appIndexHtml: string | null = null;
   try {
     appIndexHtml = fs.readFileSync(path.join(UI_DIST, "index.html"), "utf8");
   } catch {
     appIndexHtml = null;
-    console.log("[admin] ui/dist not built — serving the classic chat page at /");
+    console.log("[admin] ui/dist not built — run `npm run build:ui` (the tiled UI is served at /)");
   }
+  const NOT_BUILT_HTML =
+    '<!doctype html><meta charset="utf-8"><title>grandpa-bob</title>' +
+    '<body style="font:15px system-ui;background:#0f172a;color:#e2e8f0;padding:2rem">' +
+    "<h1>UI not built</h1>" +
+    "<p>The tiled chat app is served from <code>ui/dist</code>, which is missing.</p>" +
+    "<p>Run <code>npm run build:ui</code> (or <code>npm run build</code>) and reload.</p>" +
+    "</body>";
 
   // A fingerprint of the served pages. A browser tab keeps running the JS it
   // loaded; after a restart with changed page code it would keep the old client
   // (and miss fixes) until a manual reload. Embed the fingerprint and expose it
   // on /api/status so the client can reload itself when it goes stale.
   const UI_VERSION = createHash("sha256")
-    .update(CHAT_HTML)
     .update(SETTINGS_HTML)
     .update(appIndexHtml ?? "")
     .digest("hex")
     .slice(0, 12);
   const injectUiVersion = (html: string): string =>
     html.replace("</head>", `<script>window.__UI_VERSION__=${JSON.stringify(UI_VERSION)}</script></head>`);
-  const CHAT_PAGE = injectUiVersion(CHAT_HTML);
   const SETTINGS_PAGE = injectUiVersion(SETTINGS_HTML);
 
   // Restore the web chat history from the previous run (before any browser
@@ -1411,9 +1408,9 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
   loadFollowSetting();
   loadTurns();
   // By default the webui follows the live Telegram conversation; only when
-  // there is nothing to follow does the classic rule apply — never re-arm
-  // a stored session automatically after a restart (picker), except on a
-  // true first boot, which opens a fresh chat.
+  // there is nothing to follow is a session opened — never re-arm a stored
+  // session automatically after a restart (picker), except on a true first
+  // boot, which opens a fresh chat.
   if (autoFollowTelegram) resolveFollow(agent);
   if (!activeSession) {
     if (sessionTurns.size === 0) {
@@ -1469,8 +1466,8 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
 
       if (req.method === "GET" && url.pathname === "/") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        // The tiled app UI when built; the classic chat page otherwise.
-        res.end(appIndexHtml ?? CHAT_PAGE);
+        // The tiled app UI; a build notice when ui/dist is missing.
+        res.end(appIndexHtml ?? NOT_BUILT_HTML);
         return;
       }
 
@@ -1498,14 +1495,6 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       if (req.method === "GET" && url.pathname === "/settings") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
         res.end(SETTINGS_PAGE);
-        return;
-      }
-
-      // The classic single-thread chat page (voice input, file upload, tree
-      // panel). Kept reachable while the tiled app fills in those controls.
-      if (req.method === "GET" && url.pathname === "/classic") {
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        res.end(CHAT_PAGE);
         return;
       }
 
