@@ -44,12 +44,9 @@ import { TreeLogReader, logDbPath } from "./treeLog.js";
 import { DEFAULT_PATTERN, loadPattern, splitTreeRef } from "./pattern-loader.js";
 import { PATTERNS_DIR_NAME, listAppTrees, listPatterns, listTreeSources } from "./tree-sources.js";
 import {
-  KEEP_VERSIONS,
-  scanTreeVersions,
-  snapshotTree,
-  promoteTree,
-  pruneVersions,
+  promoteDraft,
   resolveTreeEntry,
+  scanTreeVersions,
 } from "./tree-versions.js";
 import { serializeTree } from "./tree-serialize.js";
 import { attachmentPrompt, saveAttachment, MAX_ATTACHMENT_BYTES } from "./attachments.js";
@@ -2163,29 +2160,6 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         return;
       }
 
-      // Snapshot the draft into the next immutable version.
-      if (req.method === "POST" && url.pathname === "/api/tree/versions") {
-        const body = await readBody(req);
-        let name: unknown;
-        try { name = JSON.parse(body).name; } catch { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid JSON body"}'); return; }
-        if (typeof name !== "string" || !name) {
-          res.writeHead(400, { "content-type": "application/json" });
-          res.end('{"error":"name is required"}');
-          return;
-        }
-        try {
-          const snap = await snapshotTree(config.workspaceDir, name);
-          await pruneVersions(config.workspaceDir, name, KEEP_VERSIONS, agent?.pinnedVersions?.(name) ?? []);
-          notifyTreesChanged(name);
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, version: snap.version, created: snap.created }));
-        } catch (err) {
-          res.writeHead(400, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
-        }
-        return;
-      }
-
       // Set the active ref for NEW sessions. Unlike /api/pattern this never
       // clears a session: already-running chats keep their pinned version.
       if (req.method === "POST" && url.pathname === "/api/tree/version/active") {
@@ -2207,21 +2181,20 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         return;
       }
 
-      // Promote a snapshot to production (rename) and prune old snapshots.
+      // Promote the draft to production (copy over the `.prod` files). Live
+      // sessions are untouched — they freeze their tree on open.
       if (req.method === "POST" && url.pathname === "/api/tree/version/promote") {
         const body = await readBody(req);
-        let parsed: { name?: unknown; version?: unknown };
+        let parsed: { name?: unknown };
         try { parsed = JSON.parse(body); } catch { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid JSON body"}'); return; }
         const name = typeof parsed.name === "string" ? parsed.name : "";
-        const version = typeof parsed.version === "string" ? parsed.version : "";
-        if (!name || !version) {
+        if (!name) {
           res.writeHead(400, { "content-type": "application/json" });
-          res.end('{"error":"name and version are required"}');
+          res.end('{"error":"name is required"}');
           return;
         }
         try {
-          const promoted = await promoteTree(config.workspaceDir, name, version);
-          await pruneVersions(config.workspaceDir, name, KEEP_VERSIONS, agent?.pinnedVersions?.(name) ?? []);
+          const promoted = await promoteDraft(config.workspaceDir, name);
           notifyTreesChanged(name);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true, ...promoted }));

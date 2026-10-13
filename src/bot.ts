@@ -20,13 +20,7 @@ import {
   writeEnv,
 } from "./admin.js";
 import { loadPattern } from "./pattern-loader.js";
-import {
-  KEEP_VERSIONS,
-  promoteTree,
-  pruneVersions,
-  scanTreeVersions,
-  snapshotTree,
-} from "./tree-versions.js";
+import { promoteDraft, scanTreeVersions } from "./tree-versions.js";
 
 export interface BotDeps {
   token: string;
@@ -326,9 +320,8 @@ export function createBot(deps: BotDeps): Bot {
   //   /tree                      one inline button per logical tree
   //   /tree <name>               switch tree (new sessions use its prod)
   //   /tree <name>@<vN|prod|draft>  switch tree + active version
-  //   /tree versions <name>      list snapshots, prod and draft
-  //   /tree snapshot <name>      snapshot the draft into the next version
-  //   /tree promote <name>@vN    promote that version to production
+  //   /tree versions <name>      list prod, draft and any legacy snapshots
+  //   /tree promote <name>       promote the draft to production
   bot.command("tree", async (ctx) => {
     const sources = await listTreeSources(deps.workspace);
     const arg = (ctx.match ?? "").trim();
@@ -363,48 +356,22 @@ export function createBot(deps: BotDeps): Bot {
       return;
     }
 
-    if (words[0] === "snapshot") {
+    if (words[0] === "promote") {
       const name = words[1];
       if (!name) {
-        await reply(ctx, "Usage: /tree snapshot <name>");
+        await reply(ctx, "Usage: /tree promote <name>");
         return;
       }
       try {
-        const snap = await snapshotTree(deps.workspace, name);
-        await pruneVersions(deps.workspace, name, KEEP_VERSIONS, deps.agent.pinnedVersions(name));
+        const promoted = await promoteDraft(deps.workspace, name);
         notifyTreesChanged(name);
         await reply(
           ctx,
-          snap.created
-            ? `Snapshot ${name}@${snap.version} created${snap.spec ? " (with spec)" : ""}.`
-            : `${name}@${snap.version} already matches the draft (nothing to snapshot).`,
+          `Promoted ${name} → ${promoted.file}${promoted.spec ? " (with spec)" : ""}. ` +
+            "Live sessions keep the tree they opened on.",
         );
       } catch (err) {
-        await reply(ctx, `Can't snapshot "${name}": ${err instanceof Error ? err.message : err}`);
-      }
-      return;
-    }
-
-    if (words[0] === "promote") {
-      const spec = words[1] ?? "";
-      const at = spec.indexOf("@");
-      const name = at >= 0 ? spec.slice(0, at) : spec;
-      const version = at >= 0 ? spec.slice(at + 1) : "";
-      if (!name || !version) {
-        await reply(ctx, "Usage: /tree promote <name>@<vN>");
-        return;
-      }
-      try {
-        const promoted = await promoteTree(deps.workspace, name, version);
-        await pruneVersions(deps.workspace, name, KEEP_VERSIONS, deps.agent.pinnedVersions(name));
-        notifyTreesChanged(name);
-        await reply(
-          ctx,
-          `Promoted ${name}@${promoted.promoted}.` +
-            (promoted.demoted ? ` Demoted ${promoted.demoted} to a candidate.` : ""),
-        );
-      } catch (err) {
-        await reply(ctx, `Can't promote "${spec}": ${err instanceof Error ? err.message : err}`);
+        await reply(ctx, `Can't promote "${name}": ${err instanceof Error ? err.message : err}`);
       }
       return;
     }

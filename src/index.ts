@@ -16,7 +16,6 @@ import type { Bot } from "grammy";
 import { loadAppTools } from "./app-tools.js";
 import { SecretsStore } from "./secrets.js";
 import { makeTreeContext } from "./tree-context.js";
-import { KEEP_VERSIONS, scanTreeVersions, pruneVersions } from "./tree-versions.js";
 
 async function main(): Promise<void> {
   await fs.mkdir(config.workspaceDir, { recursive: true });
@@ -77,21 +76,6 @@ async function main(): Promise<void> {
     trees: makeTreeContext(config.workspaceDir),
   };
   const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger, patternName: getSelectedPattern, patternRef: getSelectedRef, context: treeContext });
-
-  // Prune old snapshots once at startup. Prod and any version a live session
-  // still pins are never removed, so a restart cannot strand a conversation.
-  try {
-    for (const tree of await scanTreeVersions(config.workspaceDir)) {
-      await pruneVersions(
-        config.workspaceDir,
-        tree.logical,
-        KEEP_VERSIONS,
-        agent.pinnedVersions(tree.logical),
-      );
-    }
-  } catch (err) {
-    console.warn(`[tree-versions] startup prune skipped: ${err instanceof Error ? err.message : err}`);
-  }
 
   // Periodic two-way git sync (pull then push). On by default when the
   // workspace has a remote; set AUTO_SYNC=0 to disable, AUTO_SYNC_INTERVAL_MS

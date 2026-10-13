@@ -1199,8 +1199,7 @@ export function buildChatHtml(config: UiConfig, sttLabel: string): string {
   <div class="tp-head-row">
     <h2>tree</h2>
     <span class="tp-cur" id="tp-pattern"></span>
-    <button id="tp-snapshot" class="secondary" title="snapshot the draft into the next version">snapshot</button>
-    <button id="tp-promote" class="secondary" title="promote the selected version to production">promote</button>
+    <button id="tp-promote" class="secondary" title="promote the draft to production (live sessions keep their tree)">promote</button>
     <button id="tp-spec" class="secondary" title="show this version's paired .spec.md">spec</button>
     <button id="tree-close">close</button>
   </div>
@@ -2119,35 +2118,25 @@ function setTreePanelOpen(open) {
 }
 $("tree-btn").onclick = () => setTreePanelOpen(!treePanel.classList.contains("open"));
 
-// Snapshot / promote from the tree panel. Uses the selector's current tree
-// and version; a promote needs a concrete version selected.
-async function versionAction(kind) {
+// Promote the selected tree's draft to production. Uses the selector's
+// current tree; the version selector no longer picks a snapshot.
+async function promoteDraft() {
   const name = $("pattern-sel").value;
-  const ref = $("ref-sel").value;
   if (!name) return;
   const post = (url, body) =>
     fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
       .then(async (r) => ({ ok: r.ok, d: await r.json().catch(() => ({})) }));
   try {
-    if (kind === "snapshot") {
-      const { ok, d } = await post("/api/tree/versions", { name });
-      if (!ok) { toast(d.error || "snapshot failed", true); return; }
-      toast(d.created ? "snapshot " + name + "@" + d.version : name + "@" + d.version + " already matches");
-      await loadRefSelect(name, d.version);
-    } else {
-      if (!ref || ref === "prod" || ref === "draft") { toast("select a version to promote", true); return; }
-      const { ok, d } = await post("/api/tree/version/promote", { name, version: ref });
-      if (!ok) { toast(d.error || "promote failed", true); return; }
-      toast("promoted " + name + "@" + d.promoted + (d.demoted ? " (demoted " + d.demoted + ")" : ""));
-      await loadRefSelect(name, d.promoted);
-    }
+    const { ok, d } = await post("/api/tree/version/promote", { name });
+    if (!ok) { toast(d.error || "promote failed", true); return; }
+    toast("promoted " + name + " → " + d.file + " (live sessions keep their tree)");
+    await loadRefSelect(name, "prod");
     if (treePanel.classList.contains("open")) loadTreePanel(true);
   } catch (e) {
-    toast(kind + " failed: " + e.message, true);
+    toast("promote failed: " + e.message, true);
   }
 }
-$("tp-snapshot").onclick = () => versionAction("snapshot");
-$("tp-promote").onclick = () => versionAction("promote");
+$("tp-promote").onclick = () => promoteDraft();
 
 // Show the selected version's paired spec in the tree drawer.
 async function showSpec() {

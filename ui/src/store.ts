@@ -169,6 +169,7 @@ export async function refreshSession(): Promise<void> {
     turns: d.turns || [],
   });
   setState("models", reconcile(d.models || {}));
+  syncLastError(d.turns || []);
   await Promise.all([refreshMemory(), refreshModels()]);
 }
 
@@ -178,9 +179,16 @@ export async function refreshTurns(): Promise<void> {
     const d = await getJSON<{ turns: Turn[]; session: string | null; awaiting: string | null }>("/api/turns");
     if (d.session !== state.active) return;
     setState({ turns: d.turns || [], awaiting: d.awaiting ?? null });
+    syncLastError(d.turns || []);
   } catch (e) {
     console.warn("turns:", e);
   }
+}
+
+/** Reflect the latest turn's failure in the banner (so a reload still warns). */
+function syncLastError(turns: Turn[]): void {
+  const last = turns[turns.length - 1];
+  setState("lastError", last && last.status === "error" ? last.error || "the turn failed" : null);
 }
 
 // ── actions ─────────────────────────────────────────────────────────────
@@ -416,6 +424,8 @@ function handleSSE(msg: any): void {
         const text = msg.error || "the turn failed";
         setState("lastError", text);
         toast(`turn failed: ${text}`, true);
+      } else {
+        setState("lastError", null);
       }
       void refreshMemory();
       break;

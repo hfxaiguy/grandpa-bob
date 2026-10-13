@@ -58,11 +58,15 @@ export function App() {
       </header>
 
       <Show when={state.lastError}>
-        <div class="error-banner">
-          <span class="err-tag">⚠ turn failed</span>
-          <span class="err-text">{state.lastError}</span>
-          <span class="spacer" />
-          <button onClick={() => dismissError()}>dismiss</button>
+        <div class="error-banner" role="alert">
+          <span class="err-icon" aria-hidden="true">⚠</span>
+          <div class="err-body">
+            <div class="err-title">TURN FAILED</div>
+            <div class="err-text">{state.lastError}</div>
+          </div>
+          <button class="err-dismiss" onClick={() => dismissError()}>
+            dismiss
+          </button>
         </div>
       </Show>
 

@@ -1,16 +1,15 @@
 /**
- * Tree version pinning — a session keeps the version it started on.
+ * Pin-on-open — a live session freezes its tree when it opens.
  *
- *   1. A fresh session pins the concrete active version (prod → "vN";
- *      draft → "draft") and persists it in sessions.json.
- *   2. Editing the draft and switching the active ref do NOT disturb a
- *      session pinned to an immutable snapshot.
- *   3. A draft-pinned session drops when the draft shape changes.
- *   4. Removing the pinned version drops the session with a specific
- *      "its version was removed" notice and restarts on the active ref.
- *   5. Promotion (rename) does not invalidate a session pinned to the
- *      promoted version — the internal name is stable.
- *   6. clearSessionsForLogical only drops that logical's sessions.
+ *   1. A fresh session pins the active ref ("relay@prod") and persists it.
+ *   2. Overwriting the `.prod` file mid-session does NOT disturb a live
+ *      session: it keeps running the tree it opened on (the in-memory freeze).
+ *   3. A restart (a fresh Agent, reading sessions.json) re-loads the tree from
+ *      disk; if it changed, the session drops with the "tree changed" notice
+ *      and restarts on the active ref.
+ *   4. A draft-pinned session behaves the same: frozen within the instance,
+ *      dropped after a restart if the draft changed.
+ *   5. clearSessionsForLogical only drops that logical's sessions.
  *
  * Mock model handler, no network. Run: npm run test:tree-pinning
  */
@@ -20,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { Agent } from "../src/agent.js";
 import { ToolRegistry } from "../src/tools/index.js";
-import { snapshotTree, promoteTree } from "../src/tree-versions.js";
+import { promoteDraft } from "../src/tree-versions.js";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-pinning-"));
 const patterns = path.join(ws, "patterns");
@@ -56,95 +55,73 @@ const mkAgent = (patternName: string, patternRef?: () => string | undefined) =>
 const readSessions = async () => JSON.parse(await fs.readFile(sessionsFile, "utf8"));
 const texts = (emitted: unknown[]) => emitted.map((e) => (e as { text: string }).text);
 
-// ── 1. fresh session pins the concrete prod version ──
+// ── 1. a fresh session pins the active ref ──
 await fs.writeFile(path.join(patterns, "relay.mjs"), treeSrc("relay"));
-assert.equal((await snapshotTree(ws, "relay")).version, "v1");
-await promoteTree(ws, "relay", "v1");
+const promoted = await promoteDraft(ws, "relay");
+assert.equal(promoted.file, "patterns/relay.prod.mjs");
+assert.ok(await fs.stat(path.join(patterns, "relay.prod.mjs")));
+let relay = mkAgent("relay");
 {
-  const agent = mkAgent("relay");
-  const r1 = await agent.run("A", "hello");
+  const r1 = await relay.run("A", "hello");
   assert.equal(r1.status, "waiting");
-  assert.equal((await readSessions()).A.ref, "relay@v1", "prod pinned as a concrete version");
-  console.log("1. fresh session pinned the concrete prod version");
+  assert.equal((await readSessions()).A.ref, "relay@prod", "the bare prod is the pinned ref");
+  console.log("1. fresh session pinned relay@prod");
 }
 
-// ── 2. draft edit + active switch leave a snapshot-pinned session alone ──
+// ── 2. pin-on-open: overwriting .prod mid-session does not disturb ──
 {
-  await fs.writeFile(path.join(patterns, "relay.mjs"), treeSrc("relay", SHAPE_EXTRA));
-  const agent = mkAgent("relay", () => "draft"); // active now points at the edited draft
+  await fs.writeFile(path.join(patterns, "relay.prod.mjs"), treeSrc("relay", SHAPE_EXTRA));
   const emitted: unknown[] = [];
-  const r2 = await agent.run("A", "world", (v) => emitted.push(v));
+  const r2 = await relay.run("A", "world", (v) => emitted.push(v));
   assert.equal(r2.status, "waiting");
-  assert.deepEqual(texts(emitted), ["A:world"], "resumed on v1 with no drop notice");
-  assert.equal((await readSessions()).A.ref, "relay@v1", "still pinned to v1");
-  console.log("2. snapshot-pinned session survived a draft edit and an active switch");
+  assert.deepEqual(texts(emitted), ["A:world"], "resumed on the frozen tree, no drop notice");
+  assert.equal((await readSessions()).A.ref, "relay@prod");
+  console.log("2. live session kept the tree it opened on despite a .prod overwrite");
 }
 
-// ── 3. a draft-pinned session drops when the draft changes ──
+// ── 3. a restart after a .prod change drops with the 'tree changed' notice ──
+{
+  relay = mkAgent("relay"); // fresh instance = restart; reloads relay.prod from disk
+  const emitted: unknown[] = [];
+  const r3 = await relay.run("A", "three", (v) => emitted.push(v));
+  assert.equal(r3.status, "waiting");
+  assert.match(texts(emitted)[0], /tree changed since it paused/);
+  assert.deepEqual(texts(emitted)[1], "A:three");
+  console.log("3. restart after a .prod change dropped and restarted the session");
+}
+
+// ── 4. a draft-pinned session: frozen in-instance, dropped after restart ──
 {
   await fs.writeFile(path.join(patterns, "drafty.mjs"), treeSrc("drafty"));
-  let agent = mkAgent("drafty", () => "draft");
-  const r1 = await agent.run("D", "one");
+  let drafty = mkAgent("drafty", () => "draft");
+  const r1 = await drafty.run("D", "one");
   assert.equal(r1.status, "waiting");
   assert.equal((await readSessions()).D.ref, "drafty@draft");
 
   await fs.writeFile(path.join(patterns, "drafty.mjs"), treeSrc("drafty", SHAPE_EXTRA));
-  agent = mkAgent("drafty", () => "draft");
   const emitted: unknown[] = [];
-  const r2 = await agent.run("D", "two", (v) => emitted.push(v));
+  const r2 = await drafty.run("D", "two", (v) => emitted.push(v));
   assert.equal(r2.status, "waiting");
-  assert.match(texts(emitted)[0], /dropped the saved position/);
-  assert.deepEqual(texts(emitted)[1], "A:two");
-  console.log("3. edited draft dropped its draft-pinned session");
+  assert.deepEqual(texts(emitted), ["A:two"], "the frozen draft is unchanged in-instance");
+
+  drafty = mkAgent("drafty", () => "draft"); // restart
+  const emitted2: unknown[] = [];
+  await drafty.run("D", "three", (v) => emitted2.push(v));
+  assert.match(texts(emitted2)[0], /tree changed since it paused/);
+  assert.deepEqual(texts(emitted2)[1], "A:three");
+  console.log("4. draft-pinned session froze in-instance and dropped after a restart");
 }
 
-// ── 4. promotion does not invalidate a session pinned to that version ──
+// ── 5. clearSessionsForLogical only touches that logical ──
 {
-  await fs.writeFile(path.join(patterns, "cand.mjs"), treeSrc("cand"));
-  await snapshotTree(ws, "cand"); // v1
-  await fs.writeFile(path.join(patterns, "cand.mjs"), treeSrc("cand", SHAPE_EXTRA));
-  assert.equal((await snapshotTree(ws, "cand")).version, "v2");
-
-  let agent = mkAgent("cand", () => "v2");
-  const r1 = await agent.run("E", "x");
-  assert.equal(r1.status, "waiting");
-  assert.equal((await readSessions()).E.ref, "cand@v2");
-
-  await promoteTree(ws, "cand", "v2"); // rename candidate → prod
-  agent = mkAgent("cand", () => "prod");
-  const emitted: unknown[] = [];
-  const r2 = await agent.run("E", "y", (v) => emitted.push(v));
-  assert.equal(r2.status, "waiting");
-  assert.deepEqual(texts(emitted), ["A:y"], "resumed on the promoted version, unchanged");
-  assert.equal((await readSessions()).E.ref, "cand@v2");
-  console.log("4. promote (rename) kept the pinned session valid");
-}
-
-// ── 5. removing the pinned version drops with a specific notice ──
-{
-  await fs.unlink(path.join(patterns, "relay.v1.prod.mjs"));
-  const agent = mkAgent("relay", () => "draft");
-  const emitted: unknown[] = [];
-  const r = await agent.run("A", "three", (v) => emitted.push(v));
-  assert.equal(r.status, "waiting");
-  assert.match(texts(emitted)[0], /version was removed/);
-  assert.deepEqual(texts(emitted)[1], "A:three");
-  assert.equal((await readSessions()).A.ref, "relay@draft", "re-pinned to the active ref");
-  console.log("5. removed pinned version dropped gracefully and restarted");
-}
-
-// ── 6. clearSessionsForLogical only touches that logical ──
-{
-  const agent = mkAgent("relay", () => "draft");
+  const agent = mkAgent("relay");
   assert.equal(agent.hasContinuation("A"), true);
   assert.equal(agent.hasContinuation("D"), true);
-  assert.equal(agent.hasContinuation("E"), true);
   const cleared = agent.clearSessionsForLogical("relay");
   assert.deepEqual(cleared, ["A"]);
   assert.equal(agent.hasContinuation("A"), false);
   assert.equal(agent.hasContinuation("D"), true, "another tree's session is untouched");
-  assert.equal(agent.hasContinuation("E"), true);
-  console.log("6. logical switch cleared only that logical's sessions");
+  console.log("5. logical switch cleared only that logical's sessions");
 }
 
 await fs.rm(ws, { recursive: true, force: true });

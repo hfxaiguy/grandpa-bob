@@ -165,6 +165,21 @@ export function compareVersions(a: string, b: string): number {
   return na - nb;
 }
 
+/**
+ * The production entry for a logical tree. In the two-file model the live prod
+ * is a bare `.prod` (no version id); a versioned `.prod` is a legacy pin.
+ * Prefer the bare file, then the newest versioned prod — so a leftover
+ * duplicate can never shadow the live one.
+ */
+function pickProd(entries: VersionEntry[]): VersionEntry | undefined {
+  const bare = entries.find((e) => e.prod && e.version === null);
+  if (bare) return bare;
+  return entries
+    .filter((e) => e.prod && e.version !== null)
+    .sort((a, b) => compareVersions(a.version!, b.version!))
+    .at(-1);
+}
+
 /** Internal tree name for a file: draft keeps the bare logical name. */
 export function internalNameFor(logical: string, version: string | null): string {
   return version ? `${logical}.${version}` : logical;
@@ -248,7 +263,7 @@ export async function scanTreeVersions(workspaceDir: string): Promise<TreeCatalo
   }
   const out: TreeCatalogEntry[] = [];
   for (const [logical, files] of byLogical) {
-    const prod = files.find((f) => f.prod);
+    const prod = pickProd(files);
     const versions = files
       .map((f) => f.version)
       .filter((v): v is string => v !== null)
@@ -298,7 +313,7 @@ export async function resolveTreeEntry(
 
   const want = normalizeRef(ref);
   const draft = entries.find((e) => e.draft);
-  const prod = entries.find((e) => e.prod);
+  const prod = pickProd(entries);
 
   let entry: VersionEntry | undefined;
   if (want === "draft") entry = draft;
@@ -462,6 +477,49 @@ export async function promoteTree(
     await rename(abs(candidateRel), abs(prodRel));
     if (candidate.specAbs) await rename(candidate.specAbs, abs(specPathForTree(prodRel)));
     return { promoted: want, demoted };
+  });
+}
+
+export interface PromoteDraftResult {
+  logical: string;
+  /** Relative path of the written `.prod` tree file. */
+  file: string;
+  /** Relative path of the written `.prod` spec, or null when the draft had none. */
+  spec: string | null;
+}
+
+/**
+ * Promote the draft to production: copy the editable draft (and its paired
+ * spec) over the `.prod` files, atomically. The draft is left in place, so
+ * editing continues immediately. A live session is untouched — sessions freeze
+ * their tree on open (see agent.ts), so a promote never disturbs one. This is
+ * the whole promotion step in the two-file model: no version id, no candidate
+ * snapshot.
+ */
+export async function promoteDraft(
+  workspaceDir: string,
+  logical: string,
+): Promise<PromoteDraftResult> {
+  return withLock(logical, async () => {
+    const entries = (await listTreeEntries(workspaceDir)).filter((e) => e.logical === logical);
+    const draft = entries.find((e) => e.draft);
+    if (!draft) throw new Error(`no draft to promote for '${logical}'`);
+
+    const content = await readFile(draft.abs, "utf8");
+    const spec = draft.specAbs ? await readFile(draft.specAbs, "utf8") : null;
+
+    const prodRel =
+      draft.kind === "app"
+        ? path.join(APP_DIR, logical, `${TREE_FILE}.prod.mjs`)
+        : path.join(PATTERNS_DIR, `${logical}.prod.mjs`);
+    await writeAtomic(path.join(workspaceDir, prodRel), content);
+
+    let specRel: string | null = null;
+    if (spec !== null) {
+      specRel = specPathForTree(prodRel);
+      await writeAtomic(path.join(workspaceDir, specRel), spec);
+    }
+    return { logical, file: prodRel, spec: specRel };
   });
 }
 

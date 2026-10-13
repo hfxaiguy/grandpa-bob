@@ -1,10 +1,9 @@
 /**
  * Admin tree-version API — routes in src/admin.ts.
  *
- *   GET  /api/tree/versions?name=   list versions, prod, draft, active ref
- *   POST /api/tree/versions         snapshot the draft
+ *   GET  /api/tree/versions?name=   list legacy versions, prod, draft, active ref
  *   POST /api/tree/version/active   set the ref for NEW sessions (no clear)
- *   POST /api/tree/version/promote  promote a snapshot to production
+ *   POST /api/tree/version/promote  promote the draft to production (copy → .prod)
  *
  * Mock agent, no network. Run: npm run test:tree-api
  */
@@ -66,45 +65,32 @@ try {
   assert.equal(r.json.prod, null);
   assert.equal(r.json.active, "");
 
-  // Snapshot creates v1 and reports `created`.
-  r = await api("POST", "/api/tree/versions", { name: "trunk" });
+  // Promote the draft → the bare `.prod` files (tree + paired spec).
+  r = await api("POST", "/api/tree/version/promote", { name: "trunk" });
   assert.equal(r.status, 200);
-  assert.equal(r.json.version, "v1");
-  assert.equal(r.json.created, true);
+  assert.equal(r.json.file, "patterns/trunk.prod.mjs");
+  assert.equal(r.json.spec, "patterns/trunk.prod.spec.md");
+  assert.ok(await fs.stat(path.join(ws, "patterns", "trunk.prod.mjs")));
+  assert.ok(await fs.stat(path.join(ws, "patterns", "trunk.prod.spec.md")));
 
   r = await api("GET", "/api/tree/versions?name=trunk");
-  assert.deepEqual(r.json.versions, ["v1"]);
-  assert.deepEqual(r.json.specs, ["v1"], "the snapshot captured the paired spec");
-  assert.equal(r.json.draftSpec, true);
+  assert.equal(r.json.prod, "prod", "a bare .prod reports as 'prod'");
+  assert.equal(r.json.draft, true);
 
-  // The spec of a specific resolved version is readable.
-  r = await api("GET", "/api/tree/spec?pattern=trunk@v1");
-  assert.equal(r.status, 200);
-  assert.equal(r.json.spec, "# trunk spec\n");
-  assert.equal(r.json.specFile, "patterns/trunk.v1.spec.md");
-
-  // Set the active ref for new sessions; /api/pattern reflects it.
-  r = await api("POST", "/api/tree/version/active", { name: "trunk", ref: "v1" });
-  assert.equal(r.status, 200);
-  assert.equal(r.json.ref, "v1");
-  r = await api("GET", "/api/pattern");
-  assert.equal(r.json.ref, "v1");
-
-  // Promote v1 → prod; the version list still shows v1, now as prod.
-  r = await api("POST", "/api/tree/version/promote", { name: "trunk", version: "v1" });
-  assert.equal(r.status, 200);
-  assert.equal(r.json.promoted, "v1");
-  r = await api("GET", "/api/tree/versions?name=trunk");
-  assert.equal(r.json.prod, "v1");
-  assert.deepEqual(r.json.versions, ["v1"]);
-  assert.deepEqual(r.json.specs, ["v1"], "promote carried the spec to prod");
-
-  // Default (prod) resolution finds the promoted version's spec.
+  // The promoted spec is readable through the default (prod) resolution.
   r = await api("GET", "/api/tree/spec?pattern=trunk");
   assert.equal(r.status, 200);
   assert.equal(r.json.spec, "# trunk spec\n");
+  assert.equal(r.json.specFile, "patterns/trunk.prod.spec.md");
 
-  // A version change broadcasts a "trees" SSE event so open pages refresh.
+  // Set the active ref for new sessions; /api/pattern reflects it.
+  r = await api("POST", "/api/tree/version/active", { name: "trunk", ref: "draft" });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.ref, "draft");
+  r = await api("GET", "/api/pattern");
+  assert.equal(r.json.ref, "draft");
+
+  // A promote broadcasts a "trees" SSE event so open pages refresh.
   {
     const ac = new AbortController();
     const sse = await fetch(`http://127.0.0.1:${port}/api/events`, { signal: ac.signal });
@@ -122,23 +108,23 @@ try {
       } catch { /* aborted */ }
       return false;
     })();
-    await api("POST", "/api/tree/versions", { name: "trunk" });
+    await api("POST", "/api/tree/version/promote", { name: "trunk" });
     const got = await Promise.race([
       seen,
       new Promise((r) => setTimeout(() => r(false), 2000)),
     ]);
-    assert.equal(got, true, "snapshot broadcasts trees");
+    assert.equal(got, true, "promote broadcasts trees");
     ac.abort();
   }
 
-  // Unknown tree → 404-ish empty list, not a crash.
+  // Unknown tree → empty list, not a crash.
   r = await api("GET", "/api/tree/versions?name=nope");
   assert.equal(r.status, 200);
   assert.deepEqual(r.json.versions, []);
   assert.equal(r.json.draft, false);
 
-  // Snapshot with no draft is a 400 with a message.
-  r = await api("POST", "/api/tree/versions", { name: "nope" });
+  // Promote with no draft is a 400 with a message.
+  r = await api("POST", "/api/tree/version/promote", { name: "nope" });
   assert.equal(r.status, 400);
   assert.match(String(r.json.error), /no draft/);
 

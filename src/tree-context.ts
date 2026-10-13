@@ -1,9 +1,10 @@
 // src/tree-context.ts
 //
-// The host context app trees use to read and publish versioned trees. Knit
-// calls this from registers: list the workspace trees, load a draft/snapshot's
-// spec, and publish an edited draft as the next immutable snapshot. All the
-// versioning rules live in tree-versions.ts; this is the thin, guarded surface.
+// The host context app trees use to read and publish trees. Knit calls this
+// from registers: list the workspace trees, load a draft/snapshot's spec, and
+// write an edited draft. All the tree-file rules live in tree-versions.ts;
+// this is the thin, guarded surface. Publishing writes the draft only —
+// promotion to `.prod` is a separate, explicit step.
 
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -11,7 +12,6 @@ import path from "node:path";
 import {
   resolveTreeEntry,
   scanTreeVersions,
-  snapshotTree,
   specPathForTree,
   type TreeKind,
 } from "./tree-versions.js";
@@ -132,12 +132,13 @@ export function makeTreeContext(workspaceDir: string): TreeContext {
       await writeAtomic(path.join(workspaceDir, draftRel), String(module ?? ""));
       await writeAtomic(specAbs, String(spec ?? ""));
 
-      const snap = await snapshotTree(workspaceDir, name);
+      // The two-file model has no snapshot to cut: publishing writes the
+      // draft. Promotion to `.prod` is a separate, explicit step.
       return {
         name,
-        version: snap.version,
-        created: snap.created,
-        files: [draftRel, specRel, snap.file, snap.spec].filter((f): f is string => Boolean(f)),
+        version: "draft",
+        created: true,
+        files: [draftRel, specRel],
       };
     },
   };
