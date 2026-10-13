@@ -832,7 +832,10 @@ let secretsStore: SecretsStore | undefined;
  * turns and mirrored Telegram turns so the tree panel stays truthful
  * whichever transport ran the step.
  */
-function trackMemoryWrite(e: unknown, app = "trunk"): void {
+function trackMemoryWrite(
+  e: unknown,
+  app = "trunk",
+): { app: string; values: Record<string, unknown> } | null {
   const raw = e as {
     scope_id?: number | null; branch_path?: string; kind?: string;
     content?: { child?: unknown; value?: unknown; op?: unknown };
@@ -842,22 +845,27 @@ function trackMemoryWrite(e: unknown, app = "trunk"): void {
   const memWrite =
     raw?.kind === "memory" ||
     (raw?.kind === "record" && (raw.content?.op === "memory" || raw.content?.op === "memoryUpdate"));
-  if (!memWrite || raw.scope_id == null) return;
+  if (!memWrite || raw.scope_id == null) return null;
   const child = typeof raw.content?.child === "string" ? raw.content.child : "";
   const slotKey = `${raw.scope_id}/${child}`;
-  if (raw.content && "value" in raw.content) {
-    let slots = webMemoryValues.get(app);
-    if (!slots) { slots = new Map(); webMemoryValues.set(app, slots); }
-    slots.set(slotKey, raw.content.value);
-  }
   const nodePath = (raw.branch_path ?? "") + (child ? "/" + child : "");
+  let paths: Set<string> | undefined;
   if (nodePath) {
     let slots = webMemoryPaths.get(app);
     if (!slots) { slots = new Map(); webMemoryPaths.set(app, slots); }
-    let paths = slots.get(slotKey);
+    paths = slots.get(slotKey);
     if (!paths) { paths = new Set(); slots.set(slotKey, paths); }
     paths.add(nodePath);
   }
+  if (!(raw.content && "value" in raw.content)) return null;
+  let slots = webMemoryValues.get(app);
+  if (!slots) { slots = new Map(); webMemoryValues.set(app, slots); }
+  slots.set(slotKey, raw.content.value);
+  // The concrete node paths this write lands on, so the browser can merge it
+  // in immediately instead of waiting for the next full re-fetch at turn end.
+  const values: Record<string, unknown> = {};
+  for (const p of paths ?? []) values[p] = raw.content.value;
+  return Object.keys(values).length ? { app, values } : null;
 }
 
 /** Find or create the web-store entry for a (foreign) conversation key. */
@@ -901,10 +909,13 @@ export function remoteTurnEvent(key: string, event: unknown): void {
   const t = s?.turns.at(-1);
   if (!t || t.status !== "running") return;
   const app = tagEventApp(key, event);
-  trackMemoryWrite(event, app);
+  const mem = trackMemoryWrite(event, app);
   const clean = sanitizeEvent(event as Parameters<typeof sanitizeEvent>[0], app);
   t.events.push(clean);
-  if (activeSession === key) broadcast({ type: "event", turnId: t.turnId, event: clean });
+  if (activeSession === key) {
+    broadcast({ type: "event", turnId: t.turnId, event: clean });
+    if (mem) broadcast({ type: "memory", app: mem.app, values: mem.values });
+  }
 }
 
 export function remoteTurnEnd(key: string, output: string, ok = true, paused = false): void {
@@ -1116,10 +1127,11 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
 
   const onEvent = (e: unknown) => {
     const app = tagEventApp(key, e);
-    trackMemoryWrite(e, app);
+    const mem = trackMemoryWrite(e, app);
     const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0], app);
     record.events.push(s);
     broadcast({ type: "event", turnId, event: s });
+    if (mem) broadcast({ type: "memory", app: mem.app, values: mem.values });
   };
 
   // The app the tree paused on awaiting human input; set when the run returns

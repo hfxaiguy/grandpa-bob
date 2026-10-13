@@ -470,6 +470,17 @@ function handleSSE(msg: any): void {
       void refreshMemory();
       break;
     }
+    case "memory": {
+      // Live memory push: the server sends the node paths a write landed on,
+      // so the panel updates as the turn runs rather than only at turn end.
+      if (!msg.app || !msg.values) break;
+      setState(
+        produce((s) => {
+          s.memory[msg.app] = { ...(s.memory[msg.app] || {}), ...msg.values };
+        }),
+      );
+      break;
+    }
     case "cleared":
       void refreshTurns();
       void refreshMemory();
