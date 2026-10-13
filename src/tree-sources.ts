@@ -1,10 +1,11 @@
 // Workspace tree discovery, shared by the admin UI (tree selector) and the
-// agent (tree tools). A runnable tree is either `patterns/<name>.mjs` or
-// `app/<name>/tree.mjs`.
+// agent (tree tools). A runnable tree is `patterns/<name>.draft.mjs` or
+// `app/<name>/tree.draft.mjs` (the bare `<name>.mjs` / `tree.mjs` still counts
+// as a draft for back-compat).
 
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { isVersionFileName, scanTreeVersions } from "./tree-versions.js";
+import { isVersionFileName, parsePatternFileName, scanTreeVersions } from "./tree-versions.js";
 
 export const PATTERNS_DIR_NAME = "patterns";
 
@@ -20,20 +21,19 @@ export async function listPatterns(workspaceDir: string) {
       try {
         const content = await readFile(path.join(patternsDir, f), "utf8");
         const m = content.match(/^\/\/\s*(\S+\.mjs)\s*[—–-]\s*(.+)/m);
-        const name = m ? m[1].replace(/\.mjs$/, "") : f.replace(/\.mjs$/, "");
+        // The logical name comes from the filename — `.draft`/`.prod`/`.vN`
+        // are reserved suffixes — never from the first-line comment.
+        const name = parsePatternFileName(f)?.logical ?? f.replace(/\.mjs$/, "");
         const desc = m ? m[2] : "(no description)";
-        // The spec paired with a pattern is patterns/<filebase>.spec.md; the
-        // `## Guide` there is the agent-facing "how to use me" text, same as an
-        // app tree carries. Read it here too, or a pattern's guide never reaches
-        // the prompt.
-        const base = f.replace(/\.mjs$/, "");
+        // One spec per tree: patterns/<name>.spec.md carries the `## Guide`
+        // (the agent-facing "how to use me" text), same as an app tree.
         out.push({
           file: f,
           name,
           description: desc,
           guide: await guideFrom([
-            path.join(patternsDir, `${base}.spec.md`),
-            path.join(patternsDir, `${base}.md`),
+            path.join(patternsDir, `${name}.spec.md`),
+            path.join(patternsDir, `${name}.md`),
           ]),
         });
       } catch {
@@ -47,9 +47,9 @@ export async function listPatterns(workspaceDir: string) {
 }
 
 /**
- * App trees: every `app/<dir>/tree.mjs` is runnable as a top-level tree, the
- * same way a `patterns/<name>.mjs` is. The directory name is the selector
- * value (loadPattern resolves it).
+ * App trees: every `app/<dir>/tree.draft.mjs` is runnable as a top-level tree,
+ * the same way a `patterns/<name>.draft.mjs` is. The directory name is the
+ * selector value (loadPattern resolves it).
  */
 export async function listAppTrees(workspaceDir: string) {
   const appDir = path.join(workspaceDir, "app");
@@ -59,13 +59,20 @@ export async function listAppTrees(workspaceDir: string) {
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const dir = path.join(appDir, entry.name);
-      try {
-        await readFile(path.join(dir, "tree.mjs"), "utf8");
-      } catch {
-        continue; // apps without a tree are tools-only
+      // The draft is tree.draft.mjs; tree.mjs is the back-compat spelling.
+      let draftFile: string | null = null;
+      for (const cand of ["tree.draft.mjs", "tree.mjs"]) {
+        try {
+          await readFile(path.join(dir, cand), "utf8");
+          draftFile = cand;
+          break;
+        } catch {
+          // try the next spelling
+        }
       }
+      if (!draftFile) continue; // apps without a tree are tools-only
       out.push({
-        file: `app/${entry.name}/tree.mjs`,
+        file: `app/${entry.name}/${draftFile}`,
         name: entry.name,
         description: await appTreeDescription(dir),
         guide: await guideFrom([path.join(dir, "tree.spec.md"), path.join(dir, "tree.md")]),
@@ -149,7 +156,7 @@ export interface TreeSource {
   specVersions: string[];
   /** Version id of the prod snapshot, `"prod"` for a bare `.prod`, or null. */
   prod: string | null;
-  /** True when an editable `patterns/<name>.mjs` / `app/<name>/tree.mjs` exists. */
+  /** True when an editable `patterns/<name>.draft.mjs` / `app/<name>/tree.draft.mjs` exists. */
   draft: boolean;
   /** True when the draft has a paired `.spec.md`. */
   draftSpec: boolean;

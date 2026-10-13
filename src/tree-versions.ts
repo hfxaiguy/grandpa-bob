@@ -7,7 +7,7 @@
 //   patterns/<logical>.mjs              draft (the file you edit)
 //   patterns/<logical>.vN.mjs           candidate snapshot
 //   patterns/<logical>.vN.prod.mjs      production snapshot (exactly one)
-//   app/<logical>/tree.mjs              draft
+//   app/<logical>/tree.draft.mjs              draft
 //   app/<logical>/tree.vN.mjs           candidate snapshot
 //   app/<logical>/tree.vN.prod.mjs      production snapshot
 //
@@ -86,15 +86,6 @@ export interface ResolvedTree {
 }
 
 /**
- * The paired spec path for a tree file: replace the `.mjs` suffix with
- * `.spec.md`, keeping any version/prod suffix. `tree.v1.mjs` →
- * `tree.v1.spec.md`, `trunk.v1.prod.mjs` → `trunk.v1.prod.spec.md`.
- */
-export function specPathForTree(treeFile: string): string {
-  return treeFile.replace(/\.mjs$/, ".spec.md");
-}
-
-/**
  * The single spec path for a logical tree. The two-file model keeps ONE
  * `.spec.md` per tree (`patterns/<logical>.spec.md` or
  * `app/<logical>/tree.spec.md`), shared by the draft and the prod. Versioned
@@ -123,6 +114,10 @@ export function parseTreeBase(base: string): {
   let version: string | null = null;
   if (parts.length > 1 && parts[parts.length - 1] === "prod") {
     prod = true;
+    parts.pop();
+  } else if (parts.length > 1 && parts[parts.length - 1] === "draft") {
+    // `.draft` is a reserved suffix for the editable draft: it parses exactly
+    // like the bare logical name (a draft is `version === null && !prod`).
     parts.pop();
   }
   if (parts.length > 1 && /^v[0-9]+$/.test(parts[parts.length - 1])) {

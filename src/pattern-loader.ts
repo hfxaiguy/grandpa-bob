@@ -79,8 +79,8 @@ export interface PatternContext {
 
 /**
  * Load a named tree from the workspace. A name resolves to
- * `patterns/<name>.mjs` first, then to an app tree at
- * `app/<name>/tree.mjs`. The file may export a built tree
+ * `patterns/<name>.draft.mjs` first, then to an app tree at
+ * `app/<name>/tree.draft.mjs`. The file may export a built tree
  * (`export default Tree(...)`) or a default function that receives
  * `PatternContext` and returns a Tree.
  *
@@ -100,7 +100,7 @@ export async function loadPattern(
     throw new Error(
       `failed to load pattern '${name}': not found for '${logical}'` +
         (ref ? ` at version '${ref}'` : "") +
-        ` in patterns/ or app/*/tree.mjs`,
+        ` in patterns/ or app/*/tree.draft.mjs`,
     );
   }
   const filePath = resolved.abs;

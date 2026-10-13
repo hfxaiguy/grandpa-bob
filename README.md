@@ -170,16 +170,16 @@ The **workspace** (agent sandbox + git repo) lives OUTSIDE the project by defaul
 (`~/grandma-workspace`, see `WORKSPACE_DIR`) so its git history is fully
 independent of the harness.
 
-**Trees are also tools.** Every workspace tree — `patterns/<name>.mjs` or
-`app/<name>/tree.mjs` — is registered as a callable *tree tool*. A pattern
+**Trees are also tools.** Every workspace tree — `patterns/<name>.draft.mjs` or
+`app/<name>/tree.draft.mjs` — is registered as a callable *tree tool*. A pattern
 offers one to the model with `.tools("<name>")`; the model then calls it like
 any other tool and gets the tree's result back, while the tree runs in place.
 Its `.human()` pauses suspend the whole conversation and the next message
 resumes inside the tree (the calling prompt round is replayed from the log,
 not re-sent to the model).
 
-Each tree is a **two-file pair**: the editable draft (`patterns/<name>.mjs`,
-`app/<name>/tree.mjs`) and the live `*.prod.mjs`, with a single `.spec.md`
+Each tree is a **two-file pair**: the editable draft (`patterns/<name>.draft.mjs`,
+`app/<name>/tree.draft.mjs`) and the live `*.prod.mjs`, with a single `.spec.md`
 shared by both. A session **freezes its tree on open** — the root pattern
 and the tree-tool registry are loaded once, on the first turn, and reused for
 the conversation's lifetime. So editing a draft or promoting a new `.prod`
@@ -229,7 +229,7 @@ description either. Keep the section short — it rides in the caller's prompt o
 every turn. `app/email/tree.spec.md` and `app/contacts/tree.spec.md` are the
 shape to copy.
 
-A `tree.spec.md` is a **line-notation** sketch of its `tree.mjs` (canonical
+A `tree.spec.md` is a **line-notation** sketch of its `tree.draft.mjs` (canonical
 symbol reference: `grandma-kat/examples/notation/README.md`). One symbol worth
 naming for sketch authors: `**` opens a branch, and a condition is **not**
 required — `** if COND → …` is a *gated* branch, while a bare `**` is an
@@ -370,7 +370,7 @@ Useful checks: `npm run typecheck`, `npm run smoke` (offline tool/git tests),
 The admin server (port `ADMIN_PORT`, default 8080) serves:
 
 - **`/` — tiled app UI.** A tiling "mission control": one tile per app (the
-  trunk plus every `app/<name>/tree.mjs` in the workspace). Each tile shows
+  trunk plus every `app/<name>/tree.draft.mjs` in the workspace). Each tile shows
   that app's **own chat bubbles**, a read-only **memory panel** (values
   written inside that app, nested paths indented; **click a value to inspect
   its full content**), and a **mini event log**;
@@ -619,7 +619,7 @@ token usage gets high.
 ### Workspace apps & secrets
 
 `workspace/app/<name>/` packages optional features: `tools.mjs` exports an
-array of tools the agent can call, `tree.mjs` can be selected as the active
+array of tools the agent can call, `tree.draft.mjs` can be selected as the active
 tree. When an app needs a credential file it declares it in
 `app/<name>/secrets.json`:
 

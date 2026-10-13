@@ -2498,7 +2498,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         return;
       }
 
-      // The app tiles: the trunk plus every `app/<name>/tree.mjs` in the
+      // The app tiles: the trunk plus every `app/<name>/tree.draft.mjs` in the
       // workspace. The tiled UI lays one tile out per entry.
       if (req.method === "GET" && url.pathname === "/api/apps") {
         let appTrees: { name: string; description: string; guide?: string }[] = [];

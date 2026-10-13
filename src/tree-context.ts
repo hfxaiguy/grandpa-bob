@@ -12,7 +12,6 @@ import path from "node:path";
 import {
   resolveTreeEntry,
   scanTreeVersions,
-  specPathForTree,
   type TreeKind,
 } from "./tree-versions.js";
 
@@ -74,7 +73,9 @@ export interface TreeContext {
 
 export function makeTreeContext(workspaceDir: string): TreeContext {
   const draftRelFor = (name: string, kind: TreeKind) =>
-    kind === "app" ? path.join("app", name, "tree.mjs") : path.join("patterns", `${name}.mjs`);
+    kind === "app" ? path.join("app", name, "tree.draft.mjs") : path.join("patterns", `${name}.draft.mjs`);
+  const specRelFor = (name: string, kind: TreeKind) =>
+    kind === "app" ? path.join("app", name, "tree.spec.md") : path.join("patterns", `${name}.spec.md`);
 
   return {
     async list() {
@@ -114,7 +115,7 @@ export function makeTreeContext(workspaceDir: string): TreeContext {
 
     async publish({ name, kind = "app", baseHash, base_hash, spec, module }) {
       const draftRel = draftRelFor(name, kind);
-      const specRel = specPathForTree(draftRel);
+      const specRel = specRelFor(name, kind);
       const specAbs = path.join(workspaceDir, specRel);
 
       // Guard: refuse when the spec on disk is not the one that was loaded.

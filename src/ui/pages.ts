@@ -1163,7 +1163,7 @@ export function buildChatHtml(config: UiConfig, sttLabel: string): string {
     <span id="session-id"></span>
     <button id="session-id-copy" title="copy session id">copy</button>
   </span>
-  <select id="pattern-sel" title="tree to run (patterns/*.mjs or app/*/tree.mjs)"></select>
+  <select id="pattern-sel" title="tree to run (patterns/*.draft.mjs or app/*/tree.draft.mjs)"></select>
   <select id="ref-sel" title="version used by NEW sessions (running sessions keep their pinned version)"></select>
   <select id="cheap-sel" title="model for the cheap (routing/direct-answer) slot; default uses the tree's slot"></select>
   <select id="strong-sel" title="model for the strong (main tool loop) slot; default uses the tree's slot"></select>

@@ -564,7 +564,7 @@ export class Agent {
   }
 
   /**
-   * Every runnable workspace tree (patterns/<name>.mjs, app/<name>/tree.mjs)
+   * Every runnable workspace tree (patterns/<name>.draft.mjs, app/<name>/tree.draft.mjs)
    * as a callable tool entry. Prompts opt in with `.tools("<name>")` and the
    * model calls them like any other tool; the engine runs the tree in place
    * (pauses inside resume in position). Broken trees are skipped so one bad

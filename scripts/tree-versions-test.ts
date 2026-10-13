@@ -31,6 +31,7 @@ assert.deepEqual(parseTreeBase("trunk"), { logical: "trunk", version: null, prod
 assert.deepEqual(parseTreeBase("trunk.v1"), { logical: "trunk", version: "v1", prod: false });
 assert.deepEqual(parseTreeBase("trunk.v1.prod"), { logical: "trunk", version: "v1", prod: true });
 assert.deepEqual(parseTreeBase("trunk.prod"), { logical: "trunk", version: null, prod: true });
+assert.deepEqual(parseTreeBase("trunk.draft"), { logical: "trunk", version: null, prod: false });
 assert.deepEqual(parseTreeBase("random_enrich.v2"), {
   logical: "random_enrich",
   version: "v2",
@@ -43,10 +44,13 @@ assert.equal(parsePatternFileName("notes.txt"), null);
 assert.equal(parsePatternFileName("trunk.v1.prod.mjs")?.version, "v1");
 assert.deepEqual(parseAppTreeFileName("tree.v2.prod.mjs"), { version: "v2", prod: true });
 assert.deepEqual(parseAppTreeFileName("tree.prod.mjs"), { version: null, prod: true });
+assert.deepEqual(parseAppTreeFileName("tree.draft.mjs"), { version: null, prod: false });
+assert.deepEqual(parseAppTreeFileName("tree.draft.mjs"), { version: null, prod: false });
 assert.equal(parseAppTreeFileName("tools.mjs"), null);
 assert.equal(parseAppTreeFileName("tree.test.mjs"), null);
 
 assert.equal(isVersionFileName("trunk.mjs"), false);
+assert.equal(isVersionFileName("trunk.draft.mjs"), false);
 assert.equal(isVersionFileName("trunk.prod.mjs"), true);
 assert.equal(isVersionFileName("trunk.v1.mjs"), true);
 assert.equal(isVersionFileName("trunk.v1.prod.mjs"), true);
@@ -154,6 +158,20 @@ try {
   const appResolved = await resolveTreeEntry(ws, "contacts");
   assert.equal(appResolved?.file, "app/contacts/tree.prod.mjs");
   assert.equal(appResolved?.specFile, "app/contacts/tree.spec.md");
+
+  // `.draft.mjs` is the draft spelling: discovery and resolution treat it as
+  // the draft, paired with `.prod.mjs` and the single `.spec.md`.
+  await fs.writeFile(
+    path.join(patternsDir, "mod.draft.mjs"),
+    `// mod.draft.mjs — mod\nexport default { kind: "tree", name: "mod", children: [] };\n`,
+  );
+  await fs.writeFile(path.join(patternsDir, "mod.spec.md"), "# mod spec\n");
+  assert.equal((await promoteDraft(ws, "mod")).file, "patterns/mod.prod.mjs");
+  assert.equal((await resolveTreeEntry(ws, "mod", "draft"))?.file, "patterns/mod.draft.mjs");
+  assert.equal((await resolveTreeEntry(ws, "mod"))?.file, "patterns/mod.prod.mjs");
+  assert.equal((await resolveTreeEntry(ws, "mod"))?.specFile, "patterns/mod.spec.md");
+  const modListed = (await listPatterns(ws)).find((p) => p.name === "mod");
+  assert.equal(modListed?.file, "mod.draft.mjs", "the .draft.mjs tree is discovered under its logical name");
 
   // Loader: the default resolves the prod; refs pick the right file.
   assert.equal((await loadPattern(ws, "trunk")).name, "trunk"); // default = prod
