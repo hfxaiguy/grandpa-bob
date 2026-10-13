@@ -1267,6 +1267,16 @@ function describeEvent(ev) {
   switch (ev.kind) {
     case "human":
       return { badge: "human", cls: "k-human", text: (c.child ?? "?") + " \\u2014 paused, waiting for input" };
+    case "llm_start": {
+      const names = Array.isArray(c.tools) ? (c.tools as unknown[]).map(String) : [];
+      const tools = names.length
+        ? " (" + names.slice(0, 4).join(", ") + (names.length > 4 ? ", +" + (names.length - 4) : "") + ")"
+        : "";
+      return {
+        badge: "llm…", cls: "k-llm",
+        text: (c.model ?? "?") + (c.round > 1 ? " round " + c.round : "") + iter + tools + " \\u2014 calling",
+      };
+    }
     case "llm_call": {
       let t = (c.model ?? "?") + (c.round > 1 ? " round " + c.round : "") + iter;
       if (c.messages?.count) t += " (input: " + c.messages.count + " msgs)";

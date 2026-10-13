@@ -14,6 +14,7 @@ const C = {
 };
 
 const KIND_COLORS: Record<string, string> = {
+  llm_start: C.cyan,
   llm_call: C.cyan,
   tool_call: C.yellow,
   tool_result: C.green,
@@ -29,6 +30,7 @@ const KIND_COLORS: Record<string, string> = {
 };
 
 const KIND_LABELS: Record<string, string> = {
+  llm_start: "llm…",
   llm_call: "llm",
   tool_call: "tool",
   tool_result: "result",
@@ -53,6 +55,13 @@ function formatContent(kind: string, c: Record<string, unknown>, path: string, i
   const lines: string[] = [];
 
   switch (kind) {
+    case "llm_start": {
+      const model = (c.model as string) ?? "?";
+      const round = (c.round as number) > 1 ? ` round ${c.round}` : "";
+      const tools = Array.isArray(c.tools) && c.tools.length ? ` (${(c.tools as unknown[]).join(", ")})` : "";
+      lines.push(`${C.cyan}  llm${C.reset}${path}${iter}: ${model}${round}${tools} — calling`);
+      break;
+    }
     case "llm_call": {
       const model = (c.model as string) ?? "?";
       const round = (c.round as number) > 1 ? ` round ${c.round}` : "";
