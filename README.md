@@ -377,6 +377,7 @@ Useful checks: `npm run typecheck`, `npm run smoke` (offline tool/git tests),
   `<br>`, since their HTML would otherwise collapse it), and phone numbers
   become tap-to-dial `tel:` links.
 - Commands:
+  - `/new` — starts a **fresh session** for this chat and routes future messages to it (the previous session keeps its history). The new session is shared: it appears in the web UI's session list (as `telegram · chat …`) and you can type into it there — a web turn runs the same tree and mirrors back to the phone. Also drops any reverse-follow ("send to telegram") binding, so the chat is no longer pinned to a web session.
   - `/clear` — drops the conversation continuation for this topic. The next message starts a fresh tree (new system prompt, empty history). Per-topic: each forum topic has its own continuation. The checkpoint in SQLite is orphaned but not deleted. Also resets this topic's `/model` override.
   - `/model` — show each role's current model (`strong`, `cheap`) and the available slots; `/model <strong|cheap> <slot>` sets one, `/model <slot>` is shorthand for `strong`, `/model reset [strong|cheap]` clears. Per conversation, and independent per role.
   - `/status` — shows workspace path, git status, LLM models, STT backend.

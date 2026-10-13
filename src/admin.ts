@@ -724,6 +724,13 @@ let webSettingsPath = "";
 // Deliberately the mirror image of autoFollowTelegram.
 const telegramFollow = new Map<string, string>();
 
+// A chat's OWN active session key when it is not reverse-followed. The default
+// is the chat key itself ("chatId:threadId"); "/new" mints a fresh
+// "chatId:threadId:<id>" key and points the chat here, so one chat can hold
+// several sessions. The previous key keeps its continuation and stays in the
+// history (and shows up in the web UI's session list as a Telegram session).
+const telegramChat = new Map<string, string>();
+
 function loadFollowSetting(): void {
   try {
     const raw = JSON.parse(fs.readFileSync(webSettingsPath, "utf8"));
@@ -731,6 +738,11 @@ function loadFollowSetting(): void {
     if (raw?.telegramFollow && typeof raw.telegramFollow === "object") {
       for (const [tg, web] of Object.entries(raw.telegramFollow as Record<string, unknown>)) {
         if (typeof tg === "string" && typeof web === "string") telegramFollow.set(tg, web);
+      }
+    }
+    if (raw?.telegramChat && typeof raw.telegramChat === "object") {
+      for (const [tg, key] of Object.entries(raw.telegramChat as Record<string, unknown>)) {
+        if (typeof tg === "string" && typeof key === "string") telegramChat.set(tg, key);
       }
     }
   } catch { /* first boot — default on */ }
@@ -745,6 +757,7 @@ function saveFollowSetting(): void {
       JSON.stringify({
         followTelegram: autoFollowTelegram,
         telegramFollow: Object.fromEntries(telegramFollow),
+        telegramChat: Object.fromEntries(telegramChat),
       }),
     );
   } catch (e) {
@@ -755,6 +768,35 @@ function saveFollowSetting(): void {
 /** The web session a Telegram key has adopted, if any (reverse follow). */
 export function telegramFollowKey(tgKey: string): string | undefined {
   return telegramFollow.get(tgKey);
+}
+
+/** A chat's own rotated session key ("/new"), if any. */
+export function telegramChatKey(tgKey: string): string | undefined {
+  return telegramChat.get(tgKey);
+}
+
+/**
+ * Start a fresh session for a Telegram chat ("/new"). Drops any web
+ * reverse-follow (the chat is no longer pinned to a web session), mints a new
+ * chat-scoped session key, and routes the chat's future turns to it. The
+ * previous session keeps its continuation and stays in the history. Returns
+ * the new key.
+ */
+export function newTelegramSession(tgKey: string): string {
+  if (telegramFollow.delete(tgKey)) saveFollowSetting();
+  const key = `${tgKey}:${randomUUID().slice(0, 6)}`;
+  telegramChat.set(tgKey, key);
+  saveFollowSetting();
+  // List it right away (empty until the first message), so it is visible in
+  // the web UI's session picker instead of appearing only after a run.
+  sessionTurns.set(key, {
+    label: describeForeignKey(key),
+    pattern: getSelectedPattern(),
+    updatedAt: Date.now(),
+    turns: [],
+  });
+  broadcast({ type: "sessions", sessions: sessionList(adminAgent) });
+  return key;
 }
 
 /** The Telegram key following a web session, if any. */
@@ -980,13 +1022,17 @@ function sessionList(agent?: Agent) {
   return [...local, ...foreign].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-/** "chatId:threadId" (Telegram) → a readable label. */
+/**
+ * "chatId:threadId" (Telegram) → a readable label. A "/new" rotation appends a
+ * short id ("chatId:threadId:<id>"), rendered as a distinct Telegram session.
+ */
 function describeForeignKey(key: string): string {
   if (key.startsWith("web:")) return `web ${key.slice(4)} (no history)`;
-  const m = key.match(/^(-?\d+):(\d+)$/);
+  const m = key.match(/^(-?\d+):(\d+)(?::([0-9a-f]{1,12}))?$/);
   if (!m) return key;
-  const [, chat, thread] = m;
-  return `telegram · chat ${chat}${thread === "0" ? " (general)" : ` · topic ${thread}`}`;
+  const [, chat, thread, id] = m;
+  const where = thread === "0" ? " (general)" : ` · topic ${thread}`;
+  return `telegram · chat ${chat}${where}${id ? ` · session ${id}` : ""}`;
 }
 
 /** Drop the least recently active LOCAL sessions past the cap (and their trees).

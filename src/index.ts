@@ -9,7 +9,7 @@ import { Agent, checkLlmEntry } from "./agent.js";
 import { loadModels } from "./models.js";
 import { createBot } from "./bot.js";
 import { checkStt } from "./stt.js";
-import { startAdmin, getSelectedPattern, getSelectedRef, telegramFollowKey, remoteTurnStart, remoteTurnEvent, remoteTurnEnd, isAdminBusy } from "./admin.js";
+import { startAdmin, getSelectedPattern, getSelectedRef, telegramFollowKey, telegramChatKey, newTelegramSession, remoteTurnStart, remoteTurnEvent, remoteTurnEnd, isAdminBusy } from "./admin.js";
 import { createNodePlatform } from "./platform/node.js";
 import { createAutoSync, DEFAULT_INTERVAL_MS, MIN_INTERVAL_MS } from "./auto-sync.js";
 import type { Bot } from "grammy";
@@ -165,6 +165,8 @@ async function main(): Promise<void> {
     models,
     agent,
     telegramFollowKey,
+    telegramChatKey,
+    newTelegramSession,
   });
 
   telegramBot = bot;

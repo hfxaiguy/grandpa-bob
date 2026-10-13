@@ -52,6 +52,10 @@ export interface BotDeps {
    * the turn runs the same tree. Absent / no binding -> the chat's own key.
    */
   telegramFollowKey?: (tgKey: string) => string | undefined;
+  /** The chat's own rotated session key (from "/new"), if any. */
+  telegramChatKey?: (tgKey: string) => string | undefined;
+  /** Start a fresh session for this chat ("/new"); returns the new key. */
+  newTelegramSession?: (tgKey: string) => string;
 }
 
 const MAX_TG_MESSAGE = 4000;
@@ -126,6 +130,7 @@ export function createBot(deps: BotDeps): Bot {
           { command: "tree", description: "Switch the active tree" },
           { command: "model", description: "Show or switch the model for this topic" },
           { command: "clear", description: "Clear conversation context for this topic" },
+          { command: "new", description: "Start a new session for this chat" },
           { command: "status", description: "Show workspace, git, model and STT status" },
         ],
         { scope: { type: "default" } },
@@ -147,9 +152,12 @@ export function createBot(deps: BotDeps): Bot {
   // The key a turn actually runs under: the chat's own, or the web session it
   // reverse-follows (send to telegram). Replies and buttons stay keyed by
   // convKey, so the keyboard round-trips through this chat.
+  // The agent-session key for a chat: a web reverse-follow wins, else the
+  // chat's own "/new" rotation, else the chat key itself. The chat key (the
+  // transport) is unchanged — only the session the turn runs under moves.
   const followKey = (ctx: Context): string => {
     const conv = convKey(ctx);
-    return deps.telegramFollowKey?.(conv) ?? conv;
+    return deps.telegramFollowKey?.(conv) ?? deps.telegramChatKey?.(conv) ?? conv;
   };
 
   const threadOpts = (ctx: Context): { message_thread_id?: number } => {
@@ -221,6 +229,24 @@ export function createBot(deps: BotDeps): Bot {
   bot.command("clear", async (ctx) => {
     deps.agent.clear(followKey(ctx));
     await reply(ctx, "Conversation context cleared for this topic.");
+  });
+
+  // /new — start a fresh session for this chat. Drops any web reverse-follow
+  // (the chat is no longer pinned to a web session), mints a chat-scoped
+  // session key, and routes future turns to it. The session is shared: it
+  // appears in the web UI's session list and can be typed into there too — a
+  // web turn runs the same tree and mirrors back to this chat. The previous
+  // session keeps its history.
+  bot.command("new", async (ctx) => {
+    const key = deps.newTelegramSession?.(convKey(ctx));
+    if (!key) {
+      await reply(ctx, "Couldn't start a new session.");
+      return;
+    }
+    await reply(
+      ctx,
+      "Started a new session for this chat. Pick it in the web UI to keep going there — it's the same conversation.",
+    );
   });
 
   bot.command("status", async (ctx) => {

@@ -141,6 +141,36 @@ try {
   assert.equal(webTurns.at(-1).input, "from phone");
   assert.equal(webTurns.at(-1).output, "phone reply");
 
+  // "/new" — a fresh Telegram-keyed session the web UI can also type into.
+  assert.equal(mod.telegramFollowKey("12345:0"), webKey, "bound before /new");
+  const tgKey = mod.newTelegramSession("12345:0");
+  assert.match(tgKey, /^12345:0:[0-9a-f]+$/, "/new mints a chat-scoped session key");
+  assert.equal(mod.telegramChatKey("12345:0"), tgKey, "the chat now routes to the new key");
+  assert.equal(mod.telegramFollowKey("12345:0"), undefined, "/new drops the web reverse-follow");
+
+  const s3 = await api("GET", "/api/session");
+  const listed = (s3.json.sessions || []).find((x: any) => x.key === tgKey);
+  assert.ok(listed, "the new session is listed in the picker");
+  assert.match(listed.label, /telegram · chat 12345 \(general\) · session/, "listed as a Telegram session");
+
+  // The web UI adopts the Telegram session and types into it: the web turn runs
+  // the SAME key, and mirrors back to the phone chat.
+  const sel = await api("POST", "/api/session", { key: tgKey });
+  assert.equal(sel.status, 200);
+  assert.equal(sel.json.active, tgKey, "web UI selects the Telegram session");
+  const beforeWeb = sent.length;
+  const webChat = await api("POST", "/api/chat", { text: "typed on web" });
+  await waitDone(webChat.json.turnId);
+  assert.equal(usedKeys.at(-1), tgKey, "the web turn ran under the Telegram session key");
+  assert.ok(
+    sent.slice(beforeWeb).some((s) => s.key === tgKey && s.text.includes("typed on web")),
+    "the web turn mirrored to the phone chat",
+  );
+
+  // The rotation is persisted (a restart keeps routing the chat to it).
+  const settings = JSON.parse(await fs.readFile(path.join(ws, "logs", "web-settings.json"), "utf8"));
+  assert.equal(settings.telegramChat["12345:0"], tgKey, "the chat→session rotation is persisted");
+
   // Deleting the web session drops the binding.
   await api("POST", "/api/session", { delete: webKey });
   assert.equal(mod.telegramFollowKey("12345:0"), undefined, "binding cleared with the session");
