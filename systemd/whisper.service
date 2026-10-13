@@ -1,0 +1,27 @@
+# whisper.cpp STT server for grandpa-bob — local speech-to-text for Telegram
+# voice notes / audio / round videos and the web UI's mic input.
+#
+# Install (user unit, same pattern as git-daemon.service):
+#   mkdir -p ~/.config/systemd/user
+#   cp systemd/whisper.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now whisper.service
+#
+# It sources the project .env so WHISPER_MODEL (and any override) stays a
+# single source of truth, then runs the Vulkan whisper-server on :8178 that
+# bob's WHISPER_URL points at. Restart=on-failure brings it back after a crash
+# or reboot, so voice never dies silently again.
+
+[Unit]
+Description=whisper.cpp STT server for grandpa-bob (voice -> text)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Code/grandpa-bob-bot
+ExecStart=/bin/sh -c 'set -a; . ./.env 2>/dev/null; set +a; exec vendor/whisper.cpp/build/bin/whisper-server --host 127.0.0.1 --port 8178 -m vendor/whisper.cpp/models/${WHISPER_MODEL:-ggml-small.bin}'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

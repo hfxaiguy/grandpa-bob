@@ -289,7 +289,7 @@ follows the tree guides.
    vendor/whisper.cpp/models/download-ggml-model.sh base   # or small / base.en / ...
    ```
    To use a different model, download it and set `WHISPER_MODEL` in `.env`
-   (used by `npm run whisper:up`).
+   (used by `npm run whisper:up` and the systemd unit below).
 5. **LLM backend** — copy `models.example.json` to `models.json` and edit, or
    use the **Models** card on the settings page (`/settings`), which edits the
    same file with a form — pick a provider preset, choose a model, hit
@@ -333,6 +333,19 @@ npm run whisper:up   # terminal 1: whisper-server on 127.0.0.1:8178
 npm run dev          # terminal 2: the bot
 ```
 
+Or run whisper-server as a **user systemd service** so it survives crashes and
+reboots (recommended — otherwise voice dies silently when the terminal closes):
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp systemd/whisper.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now whisper.service
+systemctl --user status whisper.service   # Active: active (running)
+```
+
+The unit sources `.env` for `WHISPER_MODEL` and restarts on failure.
+
 If you're using **Ollama** for the LLM instead of the HF router:
 
 ```sh
@@ -355,8 +368,11 @@ Useful checks: `npm run typecheck`, `npm run smoke` (offline tool/git tests),
 - DM the bot, or add it to a **group with Topics enabled**
   (Group settings → Topics). The bot replies inside the same topic; every topic
   keeps a separate conversation history.
-- Send text, send a **photo** (caption optional) for image analysis, or hold the
-  mic and send a **voice message** — you'll get `heard: "…"` plus the agent's reply.
+- Send text, send a **photo** (caption optional) for image analysis, or send
+  **speech** — a voice note, a forwarded voice note / audio file, or a round
+  video — and it is transcribed locally. You'll get `heard: "…"` plus the
+  agent's reply, so the whole conversation is talkable-to; a spoken reply also
+  answers a tree that is paused for input.
 - Replies keep their line structure (rich messages spell every newline as
   `<br>`, since their HTML would otherwise collapse it), and phone numbers
   become tap-to-dial `tel:` links.

@@ -3,7 +3,7 @@ import type { Context } from "grammy";
 import path from "node:path";
 import type { Agent } from "./agent.js";
 import type { ModelRegistry } from "./models.js";
-import { transcribeVoice, type SttBackend } from "./stt.js";
+import { transcribeAudioBytes, type SttBackend } from "./stt.js";
 import { git } from "./tools/git.js";
 import { createNodePlatform } from "./platform/node.js";
 import { attachmentPrompt, saveAttachment } from "./attachments.js";
@@ -61,6 +61,32 @@ const MAX_TG_MESSAGE = 4000;
 const MAX_TG_HTML = 3600;
 /** Ignore messages older than this (e.g. delivered while the bot was down). */
 const MAX_MESSAGE_AGE_S = 120;
+
+/** The spoken content a Telegram message carries, if any. */
+export interface TelegramAudio {
+  /** Which kind of update: a voice note, an audio file, or a round video. */
+  kind: "voice" | "audio" | "video_note";
+  /** The Bot API file_id to download and transcribe. */
+  fileId: string;
+}
+
+/**
+ * The audio a Telegram message carries, or null. Voice notes arrive as `voice`;
+ * a forwarded voice note or an uploaded recording arrives as `audio`; a round
+ * video message as `video_note`. All three are speech and all three are
+ * transcribed, so the bot is fully talkable-to — not only via fresh voice
+ * notes. Exported for the telegram-audio test.
+ */
+export function telegramAudioOf(message: {
+  voice?: { file_id?: string };
+  audio?: { file_id?: string };
+  video_note?: { file_id?: string };
+}): TelegramAudio | null {
+  if (message.voice?.file_id) return { kind: "voice", fileId: message.voice.file_id };
+  if (message.audio?.file_id) return { kind: "audio", fileId: message.audio.file_id };
+  if (message.video_note?.file_id) return { kind: "video_note", fileId: message.video_note.file_id };
+  return null;
+}
 
 function chunk(text: string, size = MAX_TG_MESSAGE): string[] {
   if (text.length <= size) return [text];
@@ -554,33 +580,72 @@ export function createBot(deps: BotDeps): Bot {
     });
   });
 
-  bot.on("message:voice", async (ctx) => {
-    if (Math.floor(Date.now() / 1000) - ctx.message.date > MAX_MESSAGE_AGE_S) return;
+  /**
+   * Download one Telegram audio file and transcribe it. The container
+   * extension comes from the Bot API file_path (voice notes are `.oga`, audio
+   * files `.mp3`/`.m4a`, round videos `.mp4`); ffmpeg decodes whatever it is.
+   * Throws on a download or STT failure so the caller can report it.
+   */
+  const transcribeTelegramAudio = async (fileId: string): Promise<string> => {
+    const file = await bot.api.getFile(fileId);
+    if (!file.file_path) throw new Error("Telegram returned no file_path");
+    const url = `https://api.telegram.org/file/bot${deps.token}/${file.file_path}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`voice download failed: HTTP ${res.status}`);
+    const ext = path.extname(file.file_path) || ".ogg";
+    return transcribeAudioBytes(Buffer.from(await res.arrayBuffer()), {
+      ext,
+      backend: deps.sttBackend,
+      whisperUrl: deps.whisperUrl,
+      sherpaUrl: deps.sherpaUrl,
+      tmpDir: deps.tmpDir,
+      language: deps.sttLanguage || undefined,
+    });
+  };
+
+  /**
+   * One audio message (voice note / audio file / round video): transcribe it,
+   * echo the transcript, then run the agent turn on the text — identical to
+   * typing, so a paused tree resumes from a spoken reply. Serialized per
+   * conversation so parallel notes don't interleave agent runs.
+   */
+  const handleAudio = (ctx: Context, what: string): void => {
+    const message = ctx.message;
+    if (!message) return;
+    // A message delivered long after it was sent (the bot was down, or a long
+    // queue) is dropped — but say so instead of going silent on a voice user.
+    if (Math.floor(Date.now() / 1000) - message.date > MAX_MESSAGE_AGE_S) {
+      void reply(ctx, "That message arrived while I was busy — please send it again.").catch(() => {});
+      return;
+    }
+    const audio = telegramAudioOf(message);
+    if (!audio) return;
     const key = convKey(ctx);
     enqueue(key, async () => {
       let text: string;
       try {
-        const file = await ctx.api.getFile(ctx.message.voice.file_id);
-        if (!file.file_path) throw new Error("Telegram returned no file_path");
-        const url = `https://api.telegram.org/file/bot${deps.token}/${file.file_path}`;
-        text = await transcribeVoice({
-          fileUrl: url,
-          backend: deps.sttBackend,
-          whisperUrl: deps.whisperUrl,
-          sherpaUrl: deps.sherpaUrl,
-          tmpDir: deps.tmpDir,
-          language: deps.sttLanguage || undefined,
-        });
+        text = await transcribeTelegramAudio(audio.fileId);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error("[stt]", err);
-        await reply(ctx, `Could not transcribe that voice message: ${msg}`);
+        await reply(ctx, `Could not transcribe that ${what}: ${msg}`);
         return;
       }
-      await reply(ctx, `heard: "${text}"`);
-      await handleUserContent(ctx, text);
+      const transcript = text.trim();
+      if (!transcript) {
+        await reply(ctx, `I couldn't make out any words in that ${what} — please try again.`);
+        return;
+      }
+      await reply(ctx, `heard: "${transcript}"`);
+      await handleUserContent(ctx, transcript);
     });
-  });
+  };
+
+  bot.on("message:voice", (ctx) => handleAudio(ctx, "voice message"));
+  // Forwarded voice notes and uploaded recordings arrive as `audio`; round
+  // video messages as `video_note`. Both are speech — transcribe them too.
+  bot.on("message:audio", (ctx) => handleAudio(ctx, "audio file"));
+  bot.on("message:video_note", (ctx) => handleAudio(ctx, "video message"));
 
   bot.on("message:document", async (ctx) => {
     if (Math.floor(Date.now() / 1000) - ctx.message.date > MAX_MESSAGE_AGE_S) return;

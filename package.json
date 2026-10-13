@@ -31,6 +31,7 @@
     "test:admin-sessions": "tsx scripts/admin-sessions-test.ts",
     "test:pages": "tsx scripts/page-scripts-test.ts",
     "test:telegram-text": "tsx scripts/telegram-text-test.ts",
+    "test:telegram-audio": "tsx scripts/telegram-audio-test.ts",
     "test:telegram-follow": "tsx scripts/telegram-follow-test.ts",
     "test:telegram-follow-restart": "tsx scripts/telegram-follow-restart-test.ts",
     "test:emit-value": "tsx scripts/emit-value-test.ts",
