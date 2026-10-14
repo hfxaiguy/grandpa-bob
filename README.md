@@ -323,6 +323,14 @@ follows the tree guides.
    OpenAI/Neuralwatt/Ollama-cloud and other providers that already separate
    reasoning.
 
+   `thinking` is an optional object that sets the model's reasoning level for a
+   slot. On an OpenAI-compatible endpoint, `{"reasoning_effort": "high"}`
+   (low / medium / high, or a provider-specific number) is sent as the request's
+   `reasoning_effort`. On `protocol: "ollama"`, `{"think": true}` sets the native
+   `think` flag and `{"options": {…}}` is merged into the request's `options`
+   (e.g. `num_ctx`). The settings-page Models card exposes all three. A tree
+   reaches it simply by naming the slot — `Model('strong')`.
+
    Note: small local models vary a lot in tool-calling quality — if the agent
    misuses tools, switch models before debugging anything else.
 
@@ -394,7 +402,15 @@ The admin server (port `ADMIN_PORT`, default 8080) serves:
   a global **event-stream side panel** shows every step tagged by app. The
   **human-input box appears only on the tile whose tree is paused at
   `.human()`**, and the **trunk tile always has one** (start a conversation,
-  reply, or queue while a turn runs). A tile's header **status dot** is
+  reply, or queue while a turn runs). The composer also takes **🎙 voice** and
+  **📎 files**: a voice note is recorded in the browser (MediaRecorder),
+  transcribed locally, and sent; an **audio file** streams a live transcript
+  (a progress card shows `12s / 47s` plus the growing text) that lands in the
+  box for review; any other file is attached with the composer text as its
+  caption. Voice/file handling uses the same local ffmpeg → whisper/sherpa
+  pipeline as Telegram — no audio leaves the machine. (Browser mic access needs
+  a **secure context** — `http://localhost`, not a plain-HTTP LAN IP.)
+  A tile's header **status dot** is
   **blue** while that app is running, **yellow** while it waits on you, **red**
   if its last turn failed, and blank otherwise — only the active app lights
   up. A **failed turn raises a dismissible banner** at the top, marks its tile

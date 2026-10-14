@@ -1,5 +1,5 @@
 /** Tile, memory, per-tile event log, global stream, session panel. */
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { describeEvent, streamLines, type EventLine } from "./describe";
 import {
   state,
@@ -19,6 +19,10 @@ import {
   toggleWide,
   toggleHidden,
   moveTile,
+  toast,
+  sendFile,
+  transcribeAudio,
+  transcribeFileStream,
 } from "./store";
 import type { AppInfo, Turn } from "./types";
 
@@ -149,6 +153,7 @@ function EventLog(props: { app: string }) {
 function Composer(props: { app: string }) {
   const [text, setText] = createSignal("");
   let ta: HTMLTextAreaElement | undefined;
+  let fileInput: HTMLInputElement | undefined;
   // Grow the textarea with its content (up to a cap); reset when emptied.
   const autosize = () => {
     if (!ta) return;
@@ -179,13 +184,165 @@ function Composer(props: { app: string }) {
     if ((last.inputApp ?? "trunk") !== props.app) return [];
     return last.fallback ?? [];
   });
+  // ── voice input (MediaRecorder → /api/transcribe → send) ──
+  const canMic =
+    typeof navigator.mediaDevices?.getUserMedia === "function" &&
+    typeof window.MediaRecorder !== "undefined";
+  const [recording, setRecording] = createSignal(false);
+  const [recSecs, setRecSecs] = createSignal(0);
+  let rec: MediaRecorder | null = null;
+  let recStream: MediaStream | null = null;
+  let recChunks: Blob[] = [];
+  let recTimer: ReturnType<typeof setInterval> | undefined;
+
+  const finishRecording = async () => {
+    clearInterval(recTimer);
+    setRecording(false);
+    recStream?.getTracks().forEach((t) => t.stop());
+    recStream = null;
+    const mimeType = rec?.mimeType || "audio/webm";
+    const blob = new Blob(recChunks, { type: mimeType });
+    const secs = recSecs();
+    rec = null;
+    recChunks = [];
+    if (!blob.size) return;
+    if (secs < 1) {
+      toast("recording too short", true);
+      return;
+    }
+    toast("transcribing…");
+    try {
+      const heard = (
+        await transcribeAudio(blob, `voice${mimeType.includes("mp4") ? ".mp4" : ".webm"}`)
+      ).trim();
+      if (!heard) {
+        toast("heard nothing", true);
+        return;
+      }
+      toast(`heard: "${heard}"`);
+      await send(heard);
+    } catch (e) {
+      toast(`transcription failed: ${e instanceof Error ? e.message : e}`, true);
+    }
+  };
+
+  const toggleMic = async () => {
+    if (recording()) {
+      rec?.stop();
+      return;
+    }
+    try {
+      recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      toast(`microphone unavailable: ${e instanceof Error ? e.message : e}`, true);
+      return;
+    }
+    const mime =
+      ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((t) =>
+        MediaRecorder.isTypeSupported(t),
+      ) || "";
+    rec = new MediaRecorder(recStream, mime ? { mimeType: mime } : undefined);
+    recChunks = [];
+    rec.ondataavailable = (e) => {
+      if (e.data?.size) recChunks.push(e.data);
+    };
+    rec.onstop = () => void finishRecording();
+    rec.start();
+    setRecSecs(0);
+    setRecording(true);
+    recTimer = setInterval(() => setRecSecs((s) => s + 1), 1000);
+  };
+
+  // If the composer unmounts (the tile hides) mid-recording, release the mic
+  // without trying to transcribe a partial clip.
+  onCleanup(() => {
+    clearInterval(recTimer);
+    if (rec) {
+      rec.onstop = null;
+      if (rec.state === "recording") rec.stop();
+    }
+    recStream?.getTracks().forEach((t) => t.stop());
+  });
+
+  // ── file upload: audio streams a transcript; anything else attaches ──
+  const AUDIO_RE = /\.(ogg|oga|opus|webm|mp3|m4a|mp4|wav|flac)$/i;
+  const [card, setCard] = createSignal<{
+    name: string;
+    status: string;
+    text: string;
+    state: "run" | "done" | "err";
+  } | null>(null);
+
+  const onPick = async (file: File) => {
+    if (!(file.type.startsWith("audio/") || AUDIO_RE.test(file.name))) {
+      const caption = text();
+      setText("");
+      try {
+        await sendFile(file, caption);
+      } catch {
+        /* toasted in the store */
+      }
+      return;
+    }
+    let duration = 0;
+    setCard({ name: file.name, status: "uploading…", text: "", state: "run" });
+    try {
+      const finalText = await transcribeFileStream(file, {
+        onInfo: (d) => {
+          duration = d;
+          setCard((c) => c && { ...c, status: d ? `0s / ${d}s` : "transcribing…" });
+        },
+        onPartial: (t, at) => {
+          setCard((c) =>
+            c && {
+              ...c,
+              text: t,
+              status: duration && at != null ? `${Math.min(at, duration)}s / ${duration}s` : c.status,
+            },
+          );
+        },
+      });
+      setCard((c) =>
+        c && {
+          ...c,
+          state: "done",
+          status: `transcribed${duration ? ` (${duration}s)` : ""}`,
+          text: finalText,
+        },
+      );
+      setText(finalText);
+      ta?.focus();
+    } catch (e) {
+      setCard((c) =>
+        c && { ...c, state: "err", status: "failed", text: e instanceof Error ? e.message : String(e) },
+      );
+    }
+  };
+
   const submit = () => {
     const v = text();
+    if (!v.trim()) return;
     setText("");
     void send(v);
   };
   return (
     <div class="composer">
+      <Show when={card()}>
+        {(c) => (
+          <div class="file-card" classList={{ done: c().state === "done", err: c().state === "err" }}>
+            <div class="fc-head">
+              <Show when={c().state === "run"}>
+                <span class="spinner" />
+              </Show>
+              <span class="fc-name">{c().name}</span>
+              <span class="fc-status">{c().status}</span>
+            </div>
+            <Show when={c().text}>
+              <div class="fc-text">{c().text}</div>
+            </Show>
+          </div>
+        )}
+      </Show>
       <Show when={fallback().length}>
         <div class="buttons fallback-btns">
           <span class="fallback-note">model out of credit — fall back to:</span>
@@ -210,6 +367,28 @@ function Composer(props: { app: string }) {
         </div>
       </Show>
       <div class="composer-row">
+        <button
+          class="icon-btn"
+          classList={{ recording: recording() }}
+          disabled={!canMic}
+          title={canMic ? "record a voice message" : "voice input needs a secure context (localhost or https)"}
+          onClick={() => void toggleMic()}
+        >
+          {recording() ? `${recSecs()}s` : "🎙"}
+        </button>
+        <button class="icon-btn" title="attach a file" onClick={() => fileInput?.click()}>
+          📎
+        </button>
+        <input
+          ref={(el) => (fileInput = el)}
+          class="hidden-input"
+          type="file"
+          onChange={(e) => {
+            const f = e.currentTarget.files?.[0];
+            e.currentTarget.value = "";
+            if (f) void onPick(f);
+          }}
+        />
         <textarea
           ref={(el) => (ta = el)}
           rows="1"

@@ -2,7 +2,7 @@
  *  keeps the tree simple: one screen follows one session, exactly like the old
  *  chat page, but the stream is split per app. */
 import { createStore, produce, reconcile } from "solid-js/store";
-import { getJSON, postJSON, openEventStream } from "./api";
+import { getJSON, postJSON, postForm, openEventStream } from "./api";
 import type { AppInfo, PatternInfo, SessionInfo, Slot, Turn } from "./types";
 
 /** Events kept per turn in the live store. The full trace lives in the run log
@@ -242,6 +242,87 @@ export async function retryLast(): Promise<void> {
   const last = state.turns[state.turns.length - 1];
   if (!last || !last.input) return;
   await send(last.input);
+}
+
+// ── attachments & voice ─────────────────────────────────────────────────
+
+export interface TranscribeHandlers {
+  /** The clip's duration in seconds, once known. */
+  onInfo?: (duration: number) => void;
+  /** A growing transcript; `at` is the position (seconds) it has reached. */
+  onPartial?: (text: string, at?: number) => void;
+}
+
+/** Upload a non-audio file as an attachment turn (optional caption). */
+export async function sendFile(file: File, caption: string): Promise<void> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const cap = caption.trim();
+  if (cap) fd.append("caption", cap);
+  try {
+    await postForm("/api/chat/upload", fd);
+    setState("awaiting", null);
+    await refreshTurns();
+  } catch (e) {
+    toast(e instanceof Error ? e.message : "upload failed", true);
+    throw e;
+  }
+}
+
+/** Transcribe a recorded voice blob via /api/transcribe; returns the text. */
+export async function transcribeAudio(blob: Blob, filename: string): Promise<string> {
+  const fd = new FormData();
+  fd.append("file", blob, filename);
+  const d = await postForm<{ text: string }>("/api/transcribe", fd);
+  return d.text;
+}
+
+/**
+ * Stream-transcribe an audio file via /api/transcribe-stream. The server sends
+ * SSE frames (info → partial* → done | error); `handlers` receives the
+ * progress, and the promise resolves with the final transcript.
+ */
+export async function transcribeFileStream(
+  file: File,
+  handlers: TranscribeHandlers = {},
+): Promise<string> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch("/api/transcribe-stream", { method: "POST", body: fd });
+  if (!res.ok) {
+    const d = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(d.error || `HTTP ${res.status}`);
+  }
+  if (!res.body) throw new Error("no response stream");
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let finalText = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      for (const line of chunk.split("\n")) {
+        if (!line.startsWith("data: ")) continue;
+        let msg: { type?: string; duration?: number; text?: string; at?: number; error?: string };
+        try {
+          msg = JSON.parse(line.slice(6));
+        } catch {
+          continue;
+        }
+        if (msg.type === "info") handlers.onInfo?.(msg.duration ?? 0);
+        else if (msg.type === "partial") handlers.onPartial?.(msg.text ?? "", msg.at);
+        else if (msg.type === "done") finalText = msg.text ?? "";
+        else if (msg.type === "error") throw new Error(msg.error || "transcription failed");
+      }
+    }
+  }
+  if (!finalText) throw new Error("transcription came back empty");
+  return finalText;
 }
 
 export async function selectSession(key: string): Promise<void> {

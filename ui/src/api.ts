@@ -28,6 +28,19 @@ export async function postJSON<T = unknown>(path: string, body?: unknown): Promi
   return d;
 }
 
+/** POST a FormData body (file uploads / audio transcription). */
+export async function postForm<T = unknown>(path: string, form: FormData): Promise<T> {
+  const r = await fetch(path, { method: "POST", body: form });
+  const d = (await r.json().catch(() => ({}))) as { error?: string } & T;
+  if (!r.ok) {
+    const err = new Error(d?.error || `${path}: ${r.status}`) as ApiError;
+    err.status = r.status;
+    err.data = d;
+    throw err;
+  }
+  return d;
+}
+
 export function openEventStream(onMsg: (msg: any) => void, onState?: (connected: boolean) => void): EventSource {
   const es = new EventSource("/api/events");
   es.onopen = () => onState?.(true);

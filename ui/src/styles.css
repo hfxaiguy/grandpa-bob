@@ -129,12 +129,26 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 
 .composer { border-top: 1px solid var(--border); padding: 8px; background: var(--card); }
 .composer-row { display: flex; gap: 6px; align-items: flex-end; }
-.composer-row textarea { flex: 1; resize: none; overflow-y: auto; min-height: 34px; max-height: 200px; }
+.composer-row textarea { flex: 1 1 0; min-width: 0; resize: none; overflow-y: auto; min-height: 34px; max-height: 200px; }
 .buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .btn-choice { background: #1d2f52; border-color: #2c4370; }
 .fallback-btns { align-items: center; }
 .fallback-note { color: var(--warn, #e0a030); font-size: 12px; margin-right: 2px; }
 .btn-choice.fallback { background: #4a2d12; border-color: #7a4a1e; }
+.icon-btn { background: #334155; border-color: #475569; padding: 6px 10px; font-size: 15px; line-height: 1.2; }
+.icon-btn.recording { background: var(--err); border-color: var(--err); color: #fff; animation: pulse 1.2s ease-in-out infinite; }
+.hidden-input { display: none; }
+.file-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; }
+.file-card .fc-head { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.file-card .fc-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-card .fc-status { margin-left: auto; color: var(--muted); font-size: 11px; flex: none; }
+.file-card .fc-text { margin-top: 6px; font-size: 12.5px; color: #cbd5e1; white-space: pre-wrap; word-break: break-word; }
+.file-card.done .fc-text { color: var(--fg); }
+.file-card.err { border-color: #7f1d1d; }
+.file-card.err .fc-text { color: #fca5a5; }
+.spinner { width: 12px; height: 12px; flex: none; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 50% { opacity: 0.55; } }
 
 .tile-panels { border-top: 1px solid var(--border); background: var(--panel); }
 .panel-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); padding: 6px 10px 3px; }
