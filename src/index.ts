@@ -9,6 +9,7 @@ import { Agent, checkLlmEntry } from "./agent.js";
 import { loadModels } from "./models.js";
 import { createBot } from "./bot.js";
 import { checkStt } from "./stt.js";
+import { telegramHtml, telegramRichHtml } from "./util/telegram-text.js";
 import { startAdmin, getSelectedPattern, getSelectedRef, telegramFollowKey, telegramChatKey, newTelegramSession, remoteTurnStart, remoteTurnEvent, remoteTurnEnd, isAdminBusy } from "./admin.js";
 import { createNodePlatform } from "./platform/node.js";
 import { createAutoSync, DEFAULT_INTERVAL_MS, MIN_INTERVAL_MS } from "./auto-sync.js";
@@ -128,14 +129,29 @@ async function main(): Promise<void> {
     agent,
     telegramNotify: async (key, text) => {
       const [chatId, threadId] = key.split(":");
+      const opts = threadId && threadId !== "0" ? { message_thread_id: Number(threadId) } : {};
+      // Same two-step the bot's reply path uses: a rich message first, so
+      // phone numbers and emails render as real links, with a classic HTML
+      // send as the fallback if the API rejects the payload.
       try {
-        await telegramBot?.api.sendMessage(
+        await telegramBot?.api.sendRichMessage(
           Number(chatId),
-          text,
-          threadId && threadId !== "0" ? { message_thread_id: Number(threadId) } : {},
+          { html: telegramRichHtml(text) },
+          opts,
         );
       } catch (err) {
-        console.warn("[admin] telegram notify failed:", err);
+        console.warn(
+          "[admin] rich notify failed, sending classic:",
+          err instanceof Error ? err.message : err,
+        );
+        try {
+          await telegramBot?.api.sendMessage(Number(chatId), telegramHtml(text), {
+            ...opts,
+            parse_mode: "HTML",
+          });
+        } catch (err2) {
+          console.warn("[admin] telegram notify failed:", err2);
+        }
       }
     },
     projectDir: process.cwd(),
