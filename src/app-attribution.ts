@@ -5,6 +5,14 @@
  * (web/src/server/local-backend.ts) so both hosts tag the stream identically:
  * events between `tree_enter`/`tree_exit` belong to that app, `tree_suspend`
  * marks the app that owns the human-input pause.
+ *
+ * The app is the OUTERMOST tree tool on the stack — the one the trunk called.
+ * An app's own capability tools (email's `answer`, contacts' `contacts_query`)
+ * are tree tools too, but they run *inside* the app and belong to it: a host
+ * shows one tile per app, so an event, emit, or pause in a capability must land
+ * on the app's tile, never on a tile named after the capability. Apps compose
+ * with `From()` (a plain branch, no enter event), and only the trunk calls apps
+ * as tools, so stack[0] is always the app.
  */
 
 export interface TurnApps {
@@ -27,8 +35,11 @@ export function appNameOf(e: unknown): string {
 
 /**
  * Update a turn's app stack for one event and return the app it belongs to.
- * `tree_enter` pushes, `tree_exit` pops back to the parent, `tree_suspend`
- * records the app the turn paused in (the one that owns the human input).
+ *
+ * The app is the OUTERMOST tree tool (`stack[0]`); a nested tree tool is a
+ * capability of the app and stays attributed to it. `tree_enter` pushes,
+ * `tree_exit` pops back to the app, `tree_suspend` records the app that owns
+ * the human-input pause.
  */
 export function tagEventApp(st: TurnApps, e: unknown): string {
   const kind = (e as { kind?: string } | null)?.kind;
@@ -36,17 +47,21 @@ export function tagEventApp(st: TurnApps, e: unknown): string {
   let app = st.current;
   if (kind === "tree_enter" && name) {
     st.stack.push(name);
-    st.current = name;
-    app = name;
+    st.current = st.stack[0] ?? "trunk";
+    app = st.current;
   } else if (kind === "tree_exit" && name) {
-    app = name;
+    // The leaver's event belongs to the app (the app itself, or a capability
+    // that ran inside it); tag it with the app, then pop.
+    app = st.stack[0] ?? name;
     const i = st.stack.lastIndexOf(name);
     if (i >= 0) st.stack.splice(i, 1);
-    st.current = st.stack.at(-1) ?? "trunk";
+    st.current = st.stack[0] ?? "trunk";
   } else if (kind === "tree_suspend" && name) {
-    app = name;
-    st.suspended = name;
-    st.current = name;
+    // A pause inside a capability is the app's pause: the app owns the human
+    // input, so its tile shows the input box.
+    app = st.stack[0] ?? name;
+    st.suspended = app;
+    st.current = app;
   }
   return app;
 }

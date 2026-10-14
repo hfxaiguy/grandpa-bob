@@ -414,26 +414,27 @@ function Tile(props: { app: AppInfo }) {
   const wide = () => state.layout.wide.includes(name());
   const paused = () => state.awaiting === name();
   // The app currently executing: walk the running turn's events through the
-  // same enter/exit/suspend stack the server uses, so only that one tile
-  // lights up (not every tile while any turn runs).
+  // same enter/exit stack the server uses. The OUTERMOST tree tool is the app;
+  // tree tools nested inside it are its capabilities (email's `answer`,
+  // contacts' `contacts_query`), which still belong to the app's tile — so the
+  // email tile lights while its `answer` branch runs, not only while the
+  // orchestrator itself is the innermost tree.
   const currentApp = createMemo(() => {
     const t = state.turns.find((x) => x.status === "running");
     if (!t) return null;
     const stack: string[] = [];
-    let current = "trunk";
     for (const e of t.events) {
       const nm =
         typeof e.content?.tool === "string" ? e.content?.tool
         : typeof e.content?.tree === "string" ? e.content?.tree
         : "";
-      if (e.kind === "tree_enter" && nm) { stack.push(nm); current = nm; }
+      if (e.kind === "tree_enter" && nm) stack.push(nm);
       else if (e.kind === "tree_exit" && nm) {
         const i = stack.lastIndexOf(nm);
         if (i >= 0) stack.splice(i, 1);
-        current = stack[stack.length - 1] ?? "trunk";
-      } else if (e.kind === "tree_suspend" && nm) { current = nm; }
+      }
     }
-    return current;
+    return stack[0] ?? "trunk";
   });
   const running = () => currentApp() === name();
   const bubbles = createMemo(() => bubblesFor(name()));

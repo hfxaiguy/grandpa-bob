@@ -7,10 +7,12 @@
  * UI route chat bubbles, memory values, and the input box to the right tile.
  *
  *   1. GET /api/apps lists the trunk plus every app/ tree in the workspace.
- *   2. A turn's events carry an `app` tag ("trunk" at top level; the entered
- *      tree inside a boundary), and nested apps attribute to the inner one.
+ *   2. A turn's events carry an `app` tag ("trunk" at top level; the app the
+ *      trunk entered). A nested tree tool is one of that app's capabilities
+ *      (email's `answer`, contacts' `contacts_query`) and stays with its app.
  *   3. Emits carry the app that produced them (parallel to the text).
- *   4. A turn that ends paused reports `awaiting` = the app it paused in.
+ *   4. A turn that ends paused reports `awaiting` = the app it paused in — the
+ *      app, even when the pause is inside one of its capabilities.
  *   5. Memory values are grouped per app; node paths give the indentation.
  *   6. SSE broadcasts the same tags live (turn_start/turn_end carry awaiting;
  *      event carries app).
@@ -32,17 +34,30 @@ import { newTurnApps, tagEventApp, retagEvents } from "../src/app-attribution.js
   const st = newTurnApps();
   assert.equal(tagEventApp(st, { kind: "llm_call" }), "trunk", "top level is trunk");
   assert.equal(tagEventApp(st, { kind: "tree_enter", content: { tool: "contacts" } }), "contacts");
-  assert.equal(tagEventApp(st, { kind: "tree_enter", content: { tool: "enrich" } }), "enrich", "nested app");
-  assert.equal(tagEventApp(st, { kind: "record", content: { op: "memoryUpdate" } }), "enrich", "inside nested");
-  assert.equal(tagEventApp(st, { kind: "tree_exit", content: { tool: "enrich" } }), "enrich", "exit tags the leaver");
-  assert.equal(tagEventApp(st, { kind: "llm_call" }), "contacts", "back to the parent after exit");
+  assert.equal(
+    tagEventApp(st, { kind: "tree_enter", content: { tool: "contacts_query" } }),
+    "contacts",
+    "a capability stays with its app",
+  );
+  assert.equal(tagEventApp(st, { kind: "record", content: { op: "memoryUpdate" } }), "contacts", "inside the capability");
+  assert.equal(
+    tagEventApp(st, { kind: "tree_exit", content: { tool: "contacts_query" } }),
+    "contacts",
+    "the capability's exit is the app's event",
+  );
+  assert.equal(tagEventApp(st, { kind: "llm_call" }), "contacts", "back to the app after the capability exits");
   assert.equal(tagEventApp(st, { kind: "tree_exit", content: { tool: "contacts" } }), "contacts");
   assert.equal(tagEventApp(st, { kind: "llm_call" }), "trunk", "back to trunk");
 
   const st2 = newTurnApps();
   tagEventApp(st2, { kind: "tree_enter", content: { tool: "email" } });
-  assert.equal(tagEventApp(st2, { kind: "tree_suspend", content: { tool: "email" } }), "email");
-  assert.equal(st2.suspended, "email", "suspend records the awaiting app");
+  tagEventApp(st2, { kind: "tree_enter", content: { tool: "draft_email" } });
+  assert.equal(
+    tagEventApp(st2, { kind: "tree_suspend", content: { tool: "draft_email" } }),
+    "email",
+    "a pause inside a capability is the app's pause",
+  );
+  assert.equal(st2.suspended, "email", "suspend records the app, not the capability");
 
   const evs: { kind?: string; content?: unknown; app?: string }[] = [
     { kind: "llm_call" },
@@ -77,18 +92,19 @@ function freePort(): Promise<number> {
   });
 }
 
-// Scripted turn: trunk emit → enter contacts (emit + memory) → enter enrich
-// (memory + suspend). The turn ends paused, owning the pause in `enrich`.
+// Scripted turn: trunk emit → enter contacts (emit + memory) → enter a contacts
+// capability `lookup` (memory + suspend). The turn ends paused; the pause is
+// inside the capability but belongs to contacts.
 const script = [
   { kind: "llm_call", branch_path: "0", scope_id: 1, content: { child: "trunk-prompt" } },
   { emit: "trunk says hi" },
   { kind: "tree_enter", branch_path: "0/1", scope_id: 5, content: { tool: "contacts", tree: "contacts" } },
   { kind: "record", branch_path: "0/1", scope_id: 5, content: { op: "memoryUpdate", child: "name", value: "Ada" } },
   { emit: "contacts says hi" },
-  { kind: "tree_enter", branch_path: "0/1/0", scope_id: 9, content: { tool: "enrich", tree: "enrich" } },
+  { kind: "tree_enter", branch_path: "0/1/0", scope_id: 9, content: { tool: "lookup", tree: "lookup" } },
   { kind: "record", branch_path: "0/1/0", scope_id: 9, content: { op: "memoryUpdate", child: "company", value: "Acme" } },
-  { emit: "enrich needs input" },
-  { kind: "tree_suspend", branch_path: "0/1/0", scope_id: 9, content: { tool: "enrich", tree: "enrich" } },
+  { emit: "lookup needs input" },
+  { kind: "tree_suspend", branch_path: "0/1/0", scope_id: 9, content: { tool: "lookup", tree: "lookup" } },
 ];
 
 // A flag the mock flips to simulate a failed turn (e.g. an LLM timeout).
@@ -178,32 +194,35 @@ await new Promise((r) => setTimeout(r, 150));
   assert.equal(turns.length, 1, "one turn recorded");
   const turn = turns[0];
 
-  // 2. event app tags
+  // 2. event app tags — the app is the outermost tree tool; `lookup` is a
+  //    contacts capability and stays with contacts.
   const appOfKind = (kind: string) => turn.events.filter((e: any) => e.kind === kind).map((e: any) => e.app);
   assert.deepEqual(appOfKind("llm_call"), ["trunk"], "trunk prompt belongs to trunk");
-  assert.deepEqual(appOfKind("tree_enter"), ["contacts", "enrich"], "each enter tags the entered app");
-  assert.deepEqual(appOfKind("tree_suspend"), ["enrich"], "suspend tags the paused app");
+  assert.deepEqual(appOfKind("tree_enter"), ["contacts", "contacts"], "a capability stays with its app");
+  assert.deepEqual(appOfKind("tree_suspend"), ["contacts"], "suspend tags the app, not the capability");
   const memEvent = turn.events.find((e: any) => e.kind === "record" && e.content?.child === "name");
   assert.equal(memEvent.app, "contacts", "a memory write inside contacts tags contacts");
+  const capEvent = turn.events.find((e: any) => e.kind === "record" && e.content?.child === "company");
+  assert.equal(capEvent.app, "contacts", "a memory write inside a capability tags the app");
 
   // 3. emit apps (parallel to emits)
-  assert.deepEqual(turn.emits, ["trunk says hi", "contacts says hi", "enrich needs input"]);
-  assert.deepEqual(turn.emitApps, ["trunk", "contacts", "enrich"], "each emit tags its app");
+  assert.deepEqual(turn.emits, ["trunk says hi", "contacts says hi", "lookup needs input"]);
+  assert.deepEqual(turn.emitApps, ["trunk", "contacts", "contacts"], "an emit from a capability tags the app");
 
-  // 4. awaiting = the app that paused
-  assert.equal(turn.awaiting, "enrich", "turn paused in enrich");
+  // 4. awaiting = the app that owns the pause
+  assert.equal(turn.awaiting, "contacts", "the pause is inside a capability but belongs to contacts");
 
   // 5. memory grouped per app
   const mem = await api("GET", "/api/tree/memory");
-  assert.deepEqual(mem.json.apps.contacts, { "0/1/name": "Ada" }, "contacts memory grouped, path kept");
-  assert.deepEqual(mem.json.apps.enrich, { "0/1/0/company": "Acme" }, "enrich memory grouped");
+  assert.deepEqual(mem.json.apps.contacts, { "0/1/name": "Ada", "0/1/0/company": "Acme" }, "contacts memory (incl. its capability) grouped, path kept");
+  assert.equal(mem.json.apps.lookup, undefined, "a capability has no tile of its own");
   assert.equal(mem.json.values["0/1/name"], "Ada", "flat values preserved for the old panel");
 
   // /api/session reports the pause too
   const sess = await api("GET", "/api/session");
-  assert.equal(sess.json.awaiting, "enrich", "session exposes the awaiting app");
+  assert.equal(sess.json.awaiting, "contacts", "session exposes the awaiting app");
 
-  // 7. A reply is attributed to the app that was paused (enrich), not trunk,
+  // 7. A reply is attributed to the app that was paused (contacts), not trunk,
   //    so the user's bubble lands on the right tile.
   assert.equal(turn.inputApp, "trunk", "the opening message belongs to trunk");
   await api("POST", "/api/chat", { text: "here is the input" });
@@ -215,7 +234,7 @@ await new Promise((r) => setTimeout(r, 150));
     await new Promise((r) => setTimeout(r, 50));
   }
   assert.equal(turns2.length, 2, "second turn recorded");
-  assert.equal(turns2[1].inputApp, "enrich", "the reply is attributed to the paused app, not trunk");
+  assert.equal(turns2[1].inputApp, "contacts", "the reply is attributed to the paused app, not trunk");
 
   // 7b. A failed turn keeps the input on the app it was headed to (retryable),
   //     instead of clearing to nowhere.
@@ -229,10 +248,10 @@ await new Promise((r) => setTimeout(r, 150));
     await new Promise((r) => setTimeout(r, 50));
   }
   assert.equal(turns3[2].status, "error", "third turn failed");
-  assert.equal(turns3[2].inputApp, "enrich", "errored reply still targets the paused app");
-  assert.equal(turns3[2].awaiting, "enrich", "awaiting restored after the error");
+  assert.equal(turns3[2].inputApp, "contacts", "errored reply still targets the paused app");
+  assert.equal(turns3[2].awaiting, "contacts", "awaiting restored after the error");
   const sess3 = await api("GET", "/api/session");
-  assert.equal(sess3.json.awaiting, "enrich", "session awaiting restored for a retry");
+  assert.equal(sess3.json.awaiting, "contacts", "session awaiting restored for a retry");
 
   console.log("2-5. events, emits, memory, and awaiting all attribute per app");
 }
@@ -242,14 +261,14 @@ await new Promise((r) => setTimeout(r, 150));
   const start = sse.find((m) => m.type === "turn_start");
   const end = sse.find((m) => m.type === "turn_end");
   assert.ok(start, "turn_start broadcast");
-  assert.equal(end?.awaiting, "enrich", "turn_end carries awaiting");
+  assert.equal(end?.awaiting, "contacts", "turn_end carries awaiting");
   const starts = sse.filter((m) => m.type === "turn_start");
   assert.equal(starts[0]?.inputApp, "trunk", "first turn_start inputApp = trunk");
-  assert.equal(starts[1]?.inputApp, "enrich", "second turn_start inputApp = the paused app");
+  assert.equal(starts[1]?.inputApp, "contacts", "second turn_start inputApp = the paused app");
   const evContacts = sse.find((m) => m.type === "event" && m.event?.kind === "tree_enter" && m.event.app === "contacts");
   assert.ok(evContacts, "event broadcast carries the app tag");
-  const emitEnrich = sse.find((m) => m.type === "emit" && m.app === "enrich");
-  assert.ok(emitEnrich, "emit broadcast carries the app tag");
+  const emitCap = sse.find((m) => m.type === "emit" && m.app === "contacts" && /lookup needs input/.test(m.text ?? ""));
+  assert.ok(emitCap, "a capability's emit broadcast carries the app tag");
   console.log("6. SSE broadcasts turn_start/turn_end/event/emit with app tags");
 }
 

@@ -533,8 +533,9 @@ function clearWebMemory(): void {
   webMemoryPaths.clear();
 }
 
-// Which app a turn's events belong to. A turn enters tree tools (apps) and
-// leaves them; events between enter and exit belong to that app. Kept per
+// Which app a turn's events belong to. The trunk enters tree tools (apps);
+// events between an app's enter and exit belong to that app, and a nested tree
+// tool (one of the app's capabilities) stays with it. Kept per
 // conversation key because a web turn and a mirrored Telegram turn can be in
 // flight for different keys at once. The per-event walk lives in
 // src/app-attribution.ts, shared with the browser backend.
@@ -570,7 +571,7 @@ interface SanitizedEvent {
   scope_id: number | null;
   content: Record<string, unknown> | null;
   ts: number;
-  /** The app (tree tool) this event belongs to; "trunk" at top level. */
+  /** The app (outermost tree tool) this event belongs to; "trunk" at top level. */
   app?: string;
 }
 
