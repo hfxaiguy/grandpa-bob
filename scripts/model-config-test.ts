@@ -36,4 +36,36 @@ assert.throws(
 );
 assert.throws(() => parseModels("{}"), /no model entries/);
 
-console.log("model-config: parse, interpolation, transform wiring and errors OK");
+// `thinking` passes protocol-specific reasoning controls through, and empty
+// or absent objects leave the field off entirely.
+const withThinking = parseModels(
+  JSON.stringify({
+    a: { baseURL: "x", model: "y", thinking: { reasoning_effort: "high" } },
+    b: { baseURL: "x", model: "y", thinking: { think: true, options: { num_ctx: 8192 } } },
+    c: { baseURL: "x", model: "y", thinking: {} },
+    d: { baseURL: "x", model: "y" },
+  }),
+);
+assert.deepEqual(withThinking.a.thinking, { reasoning_effort: "high" });
+assert.deepEqual(withThinking.b.thinking, { think: true, options: { num_ctx: 8192 } });
+assert.equal(withThinking.c.thinking, undefined, "empty thinking is dropped");
+assert.equal(withThinking.d.thinking, undefined);
+
+assert.throws(
+  () => parseModels(JSON.stringify({ m: { baseURL: "x", model: "y", thinking: "high" } })),
+  /"thinking" must be an object/,
+);
+assert.throws(
+  () => parseModels(JSON.stringify({ m: { baseURL: "x", model: "y", thinking: { think: "yes" } } })),
+  /thinking\.think must be a boolean/,
+);
+assert.throws(
+  () => parseModels(JSON.stringify({ m: { baseURL: "x", model: "y", thinking: { reasoning_effort: {} } } })),
+  /thinking\.reasoning_effort must be a string or number/,
+);
+assert.throws(
+  () => parseModels(JSON.stringify({ m: { baseURL: "x", model: "y", thinking: { options: [] } } })),
+  /thinking\.options must be an object/,
+);
+
+console.log("model-config: parse, interpolation, transform wiring, thinking and errors OK");

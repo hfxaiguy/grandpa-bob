@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { parseModels, type ModelRegistry } from "./model-config.js";
 
-export type { ModelTransform, ModelEntry, ModelRegistry, EnvMap } from "./model-config.js";
+export type { ModelTransform, ModelEntry, ModelThinking, ModelRegistry, EnvMap } from "./model-config.js";
 export { parseModels, BUILTIN_TRANSFORMS } from "./model-config.js";
 
 export async function loadModels(cwd = process.cwd()): Promise<ModelRegistry> {

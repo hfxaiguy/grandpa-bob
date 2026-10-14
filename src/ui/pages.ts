@@ -598,6 +598,11 @@ function slotCard(name, entry) {
       '<label style="flex:1;min-width:130px">transform<select class="ms-transform"><option value=""' + (!entry.transform ? " selected" : "") + '>none</option><option value="gemma4Thinking"' + (entry.transform === "gemma4Thinking" ? " selected" : "") + '>gemma4Thinking</option></select></label>' +
       '<button class="secondary ms-test" type="button">Test</button>' +
       '<span class="ms-test-status" style="font-size:12px;color:var(--muted,#94a3b8)"></span>' +
+    "</div>" +
+    '<div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">' +
+      '<label style="flex:1;min-width:140px">thinking: reasoning_effort<input class="ms-reasoning" type="text" value="' + escAttr(entry.thinking && entry.thinking.reasoning_effort != null ? entry.thinking.reasoning_effort : "") + '" placeholder="low / medium / high"></label>' +
+      '<label style="flex:1;min-width:120px">Ollama think<select class="ms-think"><option value=""' + (!entry.thinking || entry.thinking.think === undefined ? " selected" : "") + '>default</option><option value="true"' + (entry.thinking && entry.thinking.think === true ? " selected" : "") + '>true</option><option value="false"' + (entry.thinking && entry.thinking.think === false ? " selected" : "") + '>false</option></select></label>' +
+      '<label style="flex:2;min-width:160px">thinking: options JSON<input class="ms-think-options" type="text" value="' + escAttr(entry.thinking && entry.thinking.options ? JSON.stringify(entry.thinking.options) : "") + '" placeholder="optional JSON, e.g. num_ctx"></label>' +
     "</div>";
   card.querySelector(".ms-preset").addEventListener("change", (e) => {
     const pr = MODEL_PRESETS[e.target.value];
@@ -630,6 +635,20 @@ function readSlot(card) {
   const key = v(".ms-key"); if (key) entry.apiKey = key;
   const proto = v(".ms-protocol"); if (proto) entry.protocol = proto;
   const tf = v(".ms-transform"); if (tf) entry.transform = tf;
+  const thinking = {};
+  const thReasoning = v(".ms-reasoning");
+  if (thReasoning) thinking.reasoning_effort = thReasoning;
+  const thThink = v(".ms-think");
+  if (thThink === "true") thinking.think = true;
+  else if (thThink === "false") thinking.think = false;
+  const thOptions = v(".ms-think-options");
+  if (thOptions) {
+    try {
+      const parsed = JSON.parse(thOptions);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) thinking.options = parsed;
+    } catch (e) { /* ignore invalid JSON while typing */ }
+  }
+  if (Object.keys(thinking).length) entry.thinking = thinking;
   return entry;
 }
 function readModelForm() {

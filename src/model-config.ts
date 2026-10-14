@@ -22,6 +22,21 @@ export type ModelTransform = (
   tool_calls?: unknown[] | null;
 } | null | undefined;
 
+/**
+ * Protocol-specific reasoning controls, forwarded to the endpoint at call time
+ * (see grandma-kat's src/llm.mjs). On an OpenAI-compatible endpoint
+ * `reasoning_effort` is sent verbatim; on native Ollama `think` is sent
+ * top-level and `options` is merged into the request's `options`.
+ */
+export type ModelThinking = {
+  /** OpenAI-compatible: sent as the request's `reasoning_effort`. */
+  reasoning_effort?: string | number;
+  /** Ollama native: sent as the request's top-level `think` flag. */
+  think?: boolean;
+  /** Ollama native: merged into the request's `options` object. */
+  options?: Record<string, unknown>;
+};
+
 export type ModelEntry = {
   baseURL: string;
   apiKey: string;
@@ -32,6 +47,8 @@ export type ModelEntry = {
    * the OpenAI-compatible /chat/completions endpoint.
    */
   protocol?: "ollama";
+  /** Optional reasoning level / thinking controls for this model slot. */
+  thinking?: ModelThinking;
 };
 
 export type ModelRegistry = Record<string, ModelEntry>;
@@ -85,6 +102,34 @@ function normalizeEntry(raw: unknown, name: string, env: EnvMap): ModelEntry {
   }
   if (r.protocol === "ollama") {
     entry.protocol = "ollama";
+  }
+  if (r.thinking !== undefined) {
+    if (r.thinking === null || typeof r.thinking !== "object" || Array.isArray(r.thinking)) {
+      throw new Error(`models.json: entry "${name}" field "thinking" must be an object`);
+    }
+    const t = r.thinking as Record<string, unknown>;
+    const thinking: ModelThinking = {};
+    if (t.reasoning_effort !== undefined) {
+      if (typeof t.reasoning_effort !== "string" && typeof t.reasoning_effort !== "number") {
+        throw new Error(
+          `models.json: entry "${name}" thinking.reasoning_effort must be a string or number`,
+        );
+      }
+      thinking.reasoning_effort = t.reasoning_effort;
+    }
+    if (t.think !== undefined) {
+      if (typeof t.think !== "boolean") {
+        throw new Error(`models.json: entry "${name}" thinking.think must be a boolean`);
+      }
+      thinking.think = t.think;
+    }
+    if (t.options !== undefined) {
+      if (t.options === null || typeof t.options !== "object" || Array.isArray(t.options)) {
+        throw new Error(`models.json: entry "${name}" thinking.options must be an object`);
+      }
+      thinking.options = t.options as Record<string, unknown>;
+    }
+    if (Object.keys(thinking).length > 0) entry.thinking = thinking;
   }
   return entry;
 }

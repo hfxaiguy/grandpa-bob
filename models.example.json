@@ -11,11 +11,13 @@
     "apiKey": "${OLLAMA_API_KEY}",
     "model": "gemma4:31b",
     "transform": "gemma4Thinking",
-    "protocol": "ollama"
+    "protocol": "ollama",
+    "thinking": { "think": true }
   },
   "neuralwatt": {
     "baseURL": "https://api.neuralwatt.com/v1",
     "apiKey": "${NEURALWATT_API_KEY}",
-    "model": "glm-5.3"
+    "model": "glm-5.3",
+    "thinking": { "reasoning_effort": "high" }
   }
 }
