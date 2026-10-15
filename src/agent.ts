@@ -9,6 +9,24 @@ import { loadPattern } from "./pattern-loader.js";
 import { listTreeSources } from "./tree-sources.js";
 import { parseTreeBase, resolveTreeEntry } from "./tree-versions.js";
 
+/**
+ * Whether a resume error means the saved position is dead and the turn should
+ * start a fresh tree, rather than being surfaced to the user.
+ *
+ * Two shapes are recoverable:
+ *   - the checkpoint itself is gone (`checkpoint '…' not found`) — the log DB
+ *     was cleared or the row pruned under us; and
+ *   - the checkpoint exists but its paused tree stack cannot be rebuilt
+ *     (`cannot resume: tree '…' is not registered`) — a stale sub-tree
+ *     auto-name, or an app/pattern tree edited or re-versioned while the
+ *     session was paused. The tree changed, not the request.
+ *
+ * Anything else is a genuine failure and must propagate.
+ */
+export function isDroppableContinuationError(message: string): boolean {
+  return /checkpoint/i.test(message) || /cannot resume/i.test(message);
+}
+
 export interface AgentDeps {
   /** Named LLM registry (e.g. { cheap, strong }) from models.json or env. */
   models: ModelRegistry;
@@ -500,16 +518,24 @@ export class Agent {
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        // Missing checkpoint (e.g. the log DB was cleared under us): drop
-        // the dead continuation and grow a fresh tree instead of failing.
-        if (!/checkpoint/i.test(msg)) throw err;
+        // A dead checkpoint (missing from the log DB) OR a resume that cannot
+        // rebuild the paused tree stack (a stale sub-tree name, an app tree
+        // edited/re-versioned under a live pause): drop the continuation and
+        // grow a fresh tree instead of failing the turn. The tree changed,
+        // not the request — the user's message still deserves an answer.
+        if (!isDroppableContinuationError(msg)) throw err;
         console.warn(`[agent] stale checkpoint for '${key}' (${msg}) — starting fresh tree`);
         this.continuations.delete(key);
         this.sessionPatterns.delete(key);
         this.sessionTimes.delete(key);
         this.saveSessions();
         droppedContinuation = true;
-        await this.noticeDrop(onEmit, "its saved checkpoint is no longer in the log database");
+        await this.noticeDrop(
+          onEmit,
+          /cannot resume/i.test(msg)
+            ? "its saved position could not be restored (the tree changed or a sub-tree is gone)"
+            : "its saved checkpoint is no longer in the log database",
+        );
         outcome = await freshRun();
       }
     } else {

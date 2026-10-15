@@ -175,4 +175,25 @@ const readSessions = async () =>
   console.log("6. input-driven tree ran the message directly");
 }
 
+// ── 7. only dead-checkpoint / cannot-resume errors drop the session ──
+{
+  const { isDroppableContinuationError } = await import("../src/agent.js");
+  assert.equal(isDroppableContinuationError("checkpoint 'x:1' not found"), true);
+  assert.equal(
+    isDroppableContinuationError("cannot resume: tree '' is not registered (call .name() to register)"),
+    true,
+    "a resume that cannot rebuild the tree stack is recoverable",
+  );
+  assert.equal(
+    isDroppableContinuationError("cannot resume: tree 'draft_profile#3' is not registered (call .name() to register)"),
+    true,
+  );
+  assert.equal(
+    isDroppableContinuationError("tree 'app' needs 'input', but it does not resolve in scope"),
+    false,
+    "a real failure must still propagate",
+  );
+  console.log("7. only dead-checkpoint / cannot-resume errors drop the session");
+}
+
 console.log("sessions-resume-test: all assertions passed");

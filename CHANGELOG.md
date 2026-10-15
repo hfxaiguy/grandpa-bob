@@ -2,6 +2,26 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-15 — a resume that cannot rebuild its tree starts fresh instead of erroring
+
+A paused session resumes by rebuilding the tree stack named in its checkpoint.
+When that stack can no longer be rebuilt — a stale sub-tree auto-name, or an
+app/pattern tree edited or re-versioned while the session was paused —
+grandma-kat throws `cannot resume: tree '…' is not registered`. The resume
+guard only recognised `/checkpoint/i` (a missing checkpoint row), so this error
+escaped as-is and reached the user: the live log shows a caller-list walk dying
+with `status:"error"` on the input "number not in service".
+
+The guard now also treats `cannot resume` as a dead checkpoint via
+`isDroppableContinuationError()`: the continuation is dropped, the drop is
+announced with a position-specific reason, and the turn grows a fresh tree and
+delivers the message. `test:sessions` pins the predicate (droppable vs a real
+failure such as a missing `Needs` slot).
+
+The engine-side cause of the empty-name variant is fixed in grandma-kat
+(`loadNamedTree` auto-names a registry fallback); this guard is the safety net
+for the general resume-resolution failure.
+
 ## 2026-10-15 — the served index is read per request: `build:ui` while running no longer 404s the page
 
 `startAdmin` read `ui/dist/index.html` once at startup. A `build:ui` while the
