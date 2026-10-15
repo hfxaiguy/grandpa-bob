@@ -554,10 +554,12 @@ export class Agent {
 
   /**
    * Wrap the configured logger so each logged event also reaches
-   * `onEvent` (per-run telemetry for the web UI). Checkpoint operations
-   * are delegated to the base logger untouched; the shared logger is
-   * never closed by the wrapper. Without `onEvent` (or with a plain
-   * db-path string logger) the original logger is returned as-is.
+   * `onEvent` (per-run telemetry for the web UI). Read methods —
+   * checkpoints, events, and `readRow` (the engine's run-log reader behind
+   * `ref://` handles) — and `startRun` (the conversation key on the run
+   * row) are delegated to the base logger untouched; the shared logger is
+   * never closed by the wrapper. Without `onEvent` (or with a plain db-path
+   * string logger) the original logger is returned as-is.
    */
   private wrapLogger(onEvent?: (event: unknown) => void): unknown {
     const base = this.deps.logger as
@@ -576,6 +578,11 @@ export class Agent {
         return base.log!(event);
       },
       close() {},
+      // startRun records the conversation key on the run row. It MUST be
+      // delegated: the engine calls it through this wrapper, and without it
+      // the whole `runs` registry went unwritten for onEvent turns (web /
+      // telegram) — the reason production's runs table was empty.
+      startRun: (...a: unknown[]) => (base.startRun as Function | undefined)?.(...a),
       saveCheckpoint: (...a: unknown[]) => (base.saveCheckpoint as Function | undefined)?.(...a),
       getCheckpoint: (...a: unknown[]) => (base.getCheckpoint as Function | undefined)?.(...a),
       deleteCheckpoint: (...a: unknown[]) => (base.deleteCheckpoint as Function | undefined)?.(...a),
