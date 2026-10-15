@@ -235,6 +235,14 @@ naming for sketch authors: `**` opens a branch, and a condition is **not**
 required — `** if COND → …` is a *gated* branch, while a bare `**` is an
 *unconditional* grouping subtree.
 
+The app's `README.md` is **not** a second copy of the spec. It documents the app
+around the tree — its tools, data model, config, run commands, and wiring — and
+points at `tree.spec.md` for the tree itself. (The spec is what BOB reads; the
+README is only the fallback source for the one-line description, above.)
+Restating the tree in the README drifts silently — nothing checks prose the way
+a spec is checked — so reference it instead of repeating its modes, prompts,
+steps or guard values.
+
 #### How a function tool describes itself: `description` and `guide`
 
 An app's `tools.mjs` (or `tools.js`) exports an array of **function tools** —
