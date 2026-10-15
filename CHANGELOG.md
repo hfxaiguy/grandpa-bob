@@ -2,6 +2,28 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-15 — promoting an app tree now drops a paused session that depended on it
+
+The session staleness hash (`resumeHash`) covers only the root pattern's
+skeleton. A tree attached **by name** — `From("contacts")`, or an app tree the
+trunk calls as a tool — is resolved from disk at run time and never appears in
+that skeleton, so promoting or editing it while a session was paused resumed
+the session against changed code (or died on a stale sub-tree name). The live
+log shows a caller-list walk failing with `cannot resume: tree '' is not
+registered`.
+
+A waiting result now carries `treePath` — the paused stack's `branch_path`
+(grandma-kat). The agent persists it and a **content signature** of its named
+segments: each non-auto segment (`#` marks a positional auto-name, covered by
+its parent) is loaded and hashed with `resumeHash`. On the next turn the
+signature is recomputed from the current files; a change drops the session with
+"a tree it depends on changed since it paused" and grows a fresh tree, instead
+of resuming into it. `test:sessions` pins it (edit a ported leaf, the pause
+drops; without the check the session resumes into the stale tree).
+
+The engine-side recovery for a genuinely stale name is the companion change in
+grandma-kat (resume re-derives a level from its parent's child index).
+
 ## 2026-10-15 — a resume that cannot rebuild its tree starts fresh instead of erroring
 
 A paused session resumes by rebuilding the tree stack named in its checkpoint.

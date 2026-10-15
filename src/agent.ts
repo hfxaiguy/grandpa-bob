@@ -78,6 +78,12 @@ export type AgentRunResult =
       status: "waiting";
       /** Continuation token (checkpoint ID). Store for next run. */
       continuation: string;
+      /**
+       * The paused tree stack's branch_path (tree names joined by "/"). The
+       * agent uses it to pin which runtime-loaded subtrees this session
+       * depends on, so promoting/editing one drops the pause before resume.
+       */
+      treePath?: string;
     }
   | {
       /** "done" = tree completed (not every pattern loops at .human()). */
@@ -144,6 +150,14 @@ export class Agent {
   // entry it resolves to. Persisted in sessions.json so choices survive a
   // restart.
   private sessionModels = new Map<string, Record<string, string>>();
+  // key → the paused stack's branch_path, and a content hash of the subtrees
+  // it names. The root pattern's skeleton hash (sessionPatterns) cannot see
+  // edits to a tree attached by name (From("contacts"), an app tree tool), so
+  // promoting or editing one would otherwise resume into changed code. The
+  // signature is recomputed from the CURRENT files on every resume; a change
+  // drops the session before it resumes. Persisted in sessions.json.
+  private sessionTreePaths = new Map<string, string>();
+  private sessionSubtreeHashes = new Map<string, string>();
   // key → the turn a quota wall killed, awaiting the user's fallback choice.
   // The failed model role and the original turn input are kept so the choice
   // can retarget the role and re-run exactly what failed. In-memory only: a
@@ -217,6 +231,9 @@ export class Agent {
           pattern?: unknown;
           updatedAt?: unknown;
           ref?: unknown;
+          /** The paused stack's branch_path + subtree content signature. */
+          treePath?: unknown;
+          subtreeHash?: unknown;
           /** Per-role overrides: { strong: "slot", cheap: "slot" }. */
           models?: unknown;
           /** Legacy single-override format (pre-per-role): the "strong" target. */
@@ -242,6 +259,8 @@ export class Agent {
           if (typeof val.pattern === "string") this.sessionPatterns.set(key, val.pattern);
           if (typeof val.updatedAt === "number") this.sessionTimes.set(key, val.updatedAt);
           if (typeof val.ref === "string") this.sessionRefs.set(key, val.ref);
+          if (typeof val.treePath === "string") this.sessionTreePaths.set(key, val.treePath);
+          if (typeof val.subtreeHash === "string") this.sessionSubtreeHashes.set(key, val.subtreeHash);
         }
       }
     } catch {
@@ -258,6 +277,8 @@ export class Agent {
         pattern: string | null;
         updatedAt?: number;
         ref: string | null;
+        treePath?: string | null;
+        subtreeHash?: string | null;
         models: Record<string, string> | null;
       }
     > = {};
@@ -271,6 +292,8 @@ export class Agent {
         pattern: this.sessionPatterns.get(key) ?? null,
         updatedAt: this.sessionTimes.get(key),
         ref: this.sessionRefs.get(key) ?? null,
+        treePath: this.sessionTreePaths.get(key) ?? null,
+        subtreeHash: this.sessionSubtreeHashes.get(key) ?? null,
         models: models && Object.keys(models).length ? models : null,
       };
     }
@@ -312,6 +335,35 @@ export class Agent {
     };
     const json = JSON.stringify(skeleton(def));
     return crypto.createHash("sha256").update(json).digest("hex").slice(0, 8);
+  }
+
+  /**
+   * Content signature of the runtime-loaded subtrees a paused stack names.
+   * `treePath` is the paused `branch_path`; its non-auto segments are the trees
+   * attached by name (`From("contacts")`, an app tree tool) and are hashed from
+   * their CURRENT definition on disk. A segment carrying "#" is a positional
+   * auto-name inside its parent — covered by that parent's own hash — and is
+   * skipped. Returns null when nothing named resolves (a pause with no attached
+   * sub-tree), so the comparison simply doesn't fire.
+   *
+   * The root pattern is included too (its segment resolves); that is harmless
+   * and keeps the signature self-contained.
+   */
+  private async subtreeSignature(treePath: string): Promise<string | null> {
+    const names = [...new Set(treePath.split("/").filter((n) => n && !n.includes("#")))];
+    const parts: string[] = [];
+    for (const name of names) {
+      try {
+        const def = await this.loadTreeByName(name);
+        if (def) parts.push(`${name}:${Agent.resumeHash(def)}`);
+      } catch {
+        // An internal helper with no file of its own (e.g. "trunk_turn") does
+        // not resolve here; leave it out. A genuine resume failure is still
+        // caught by the drop guard below.
+      }
+    }
+    if (!parts.length) return null;
+    return crypto.createHash("sha256").update(parts.join("|")).digest("hex").slice(0, 12);
   }
 
   /**
@@ -425,6 +477,27 @@ export class Agent {
         droppedContinuation = true;
       }
 
+      // A session also depends on trees attached BY NAME — From("contacts"),
+      // an app tree tool — that the root skeleton never sees. Hash those from
+      // the paused stack's branch_path and compare against what it paused with:
+      // promoting or editing one drops the pause here, cleanly, instead of
+      // resuming into changed code (or dying on a stale sub-tree name).
+      if (!droppedContinuation && cont) {
+        const storedPath = this.sessionTreePaths.get(key);
+        const storedSig = this.sessionSubtreeHashes.get(key);
+        if (storedPath && storedSig) {
+          const now = await this.subtreeSignature(storedPath);
+          if (now && now !== storedSig) {
+            dropReason = "a tree it depends on changed since it paused (it was edited or promoted)";
+            pinnedRef = activeRef;
+            pattern = await loadPattern(this.deps.workspace, pinnedRef);
+            defId = Agent.resumeHash(pattern);
+            cont = undefined;
+            droppedContinuation = true;
+          }
+        }
+      }
+
       session = { pattern, defId, pinnedRef, treeTools: await this.discoverTreeTools() };
       this.sessionCache.set(key, session);
     }
@@ -444,6 +517,8 @@ export class Agent {
       this.sessionPatterns.delete(key);
       this.sessionTimes.delete(key);
       this.sessionRefs.delete(key);
+      this.sessionTreePaths.delete(key);
+      this.sessionSubtreeHashes.delete(key);
       this.saveSessions();
       await this.noticeDrop(onEmit, dropReason ?? "the saved position no longer matches");
     }
@@ -501,7 +576,7 @@ export class Agent {
         },
       });
 
-    let outcome: { status?: string; continuation?: string; result?: unknown };
+    let outcome: { status?: string; continuation?: string; result?: unknown; treePath?: string };
 
     if (cont) {
       // Resume from checkpoint. The reply is passed raw — grandma-kat's
@@ -528,6 +603,8 @@ export class Agent {
         this.continuations.delete(key);
         this.sessionPatterns.delete(key);
         this.sessionTimes.delete(key);
+        this.sessionTreePaths.delete(key);
+        this.sessionSubtreeHashes.delete(key);
         this.saveSessions();
         droppedContinuation = true;
         await this.noticeDrop(
@@ -562,6 +639,15 @@ export class Agent {
       this.sessionPatterns.set(key, defId);
       this.sessionTimes.set(key, Date.now());
       this.sessionRefs.set(key, pinnedRef);
+      // Remember which runtime-loaded subtrees this pause sits in, so a later
+      // promote/edit of one is detected before the next resume.
+      const treePath = outcome.treePath;
+      if (typeof treePath === "string") {
+        this.sessionTreePaths.set(key, treePath);
+        const sig = await this.subtreeSignature(treePath);
+        if (sig) this.sessionSubtreeHashes.set(key, sig);
+        else this.sessionSubtreeHashes.delete(key);
+      }
       this.saveSessions();
       return { status: "waiting", continuation: outcome.continuation };
     }
@@ -573,6 +659,8 @@ export class Agent {
     this.sessionPatterns.delete(key);
     this.sessionTimes.delete(key);
     this.sessionRefs.delete(key);
+    this.sessionTreePaths.delete(key);
+    this.sessionSubtreeHashes.delete(key);
     this.sessionCache.delete(key);
     this.saveSessions();
     return { status: "done", result: outcome.result };
@@ -776,6 +864,8 @@ export class Agent {
     this.sessionPatterns.delete(key);
     this.sessionTimes.delete(key);
     this.sessionRefs.delete(key);
+    this.sessionTreePaths.delete(key);
+    this.sessionSubtreeHashes.delete(key);
     this.sessionModels.delete(key);
     this.pendingFallbacks.delete(key);
     this.sessionCache.delete(key);

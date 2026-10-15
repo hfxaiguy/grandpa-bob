@@ -11,6 +11,9 @@
  *   5. clear() empties sessions.json.
  *   6. An input-driven tree (declares `input`) consumes the message on its
  *      fresh run — callers skip the grow pass via consumesInputDirectly().
+ *   7. Only dead-checkpoint / cannot-resume errors drop the session.
+ *   8. Editing a sub-tree attached BY NAME (a runtime-loaded port the root
+ *      skeleton cannot see) drops the pause before resume.
  *
  * Mock model handler, no network. Run: npm run test:sessions
  */
@@ -194,6 +197,53 @@ const readSessions = async () =>
     "a real failure must still propagate",
   );
   console.log("7. only dead-checkpoint / cannot-resume errors drop the session");
+}
+
+// ── 8. a changed sub-tree attached by name drops the pause ──
+{
+  // deep.mjs attaches leaf.mjs as a runtime-loaded port (a versioned From), so
+  // the root skeleton hash never sees leaf's shape.
+  await fs.writeFile(
+    path.join(ws, "patterns", "deep.mjs"),
+    `export default function ({ Tree, name, From, version, Return }) {
+  return Tree(name("deep"), From("leaf", version("draft")), Return((m) => m.branch.leaf ?? ""));
+}\n`,
+  );
+  await fs.writeFile(
+    path.join(ws, "patterns", "leaf.mjs"),
+    `export default function ({ Tree, name, Human }) {
+  return Tree(name("leaf"), Human("x"));
+}\n`,
+  );
+  const a1 = mkAgent("deep");
+  const r1 = await a1.run("deep", "hi");
+  assert.equal(r1.status, "waiting", "paused inside the attached leaf");
+  const s1 = await readSessions();
+  assert.equal(typeof s1.deep?.treePath, "string", "the pause records its treePath");
+  assert.equal(typeof s1.deep?.subtreeHash, "string", "and the subtree signature");
+
+  // Change leaf's shape without touching deep.mjs.
+  await fs.writeFile(
+    path.join(ws, "patterns", "leaf.mjs"),
+    `export default function ({ Tree, name, Memory, Human }) {
+  return Tree(name("leaf"), Memory("s", () => 0), Human("x"));
+}\n`,
+  );
+  await new Promise((r) => setTimeout(r, 5)); // bust the import cache-buster
+
+  const a2 = mkAgent("deep"); // simulated restart: fresh cache, reloads from disk
+  const emitted: unknown[] = [];
+  const r2 = await a2.run("deep", "again", (v) => emitted.push(v));
+  // The drop announces itself, then the message is delivered into the fresh
+  // tree — leaf's single Human consumes it, so the turn completes.
+  assert.equal(r2.status, "done", "the fresh tree consumed the delivered message");
+  assert.equal(emitted.length, 1, "a drop notice precedes the delivery");
+  assert.match(
+    (emitted[0] as { text: string }).text,
+    /a tree it depends on changed/,
+    "the drop names the changed sub-tree, not a generic mismatch",
+  );
+  console.log("8. a changed attached sub-tree dropped the pause before resume");
 }
 
 console.log("sessions-resume-test: all assertions passed");
