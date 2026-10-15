@@ -509,13 +509,21 @@ function readBody(req: http.IncomingMessage) {
 // for the live turn, and broadcast to connected browsers over SSE. Completed
 // turns are persisted in the log DB (src/web-log.ts).
 
-// Current memory values, grouped by the app (tree tool) that wrote them —
-// "trunk" for the top-level tree. A slot is identified by (scope_id, name):
-// .memoryUpdate() deep in a branch writes to the slot's *declaring* scope, so
-// keying by scope_id collapses updates onto the .memory() node instead of
-// leaving it stuck at its seed value.
-const webMemoryValues = new Map<string, Map<string, unknown>>(); // app -> slotKey -> value
-const webMemoryPaths = new Map<string, Map<string, Set<string>>>(); // app -> slotKey -> node paths
+// Current memory values, per conversation key and grouped by the app (tree
+// tool) that wrote them — "trunk" for the top-level tree. A slot is identified
+// by (scope_id, name): .memoryUpdate() deep in a branch writes to the slot's
+// *declaring* scope, so keying by scope_id collapses updates onto the
+// .memory() node instead of leaving it stuck at its seed value.
+//
+// Scoping by conversation key is what keeps two live sessions apart: every run
+// re-seeds its trunk slots at scope_id 0, so a concurrent Telegram turn
+// (mirrored into the panel) would otherwise write the very same slot keys and
+// leave the browser showing a chimera of both conversations.
+const webMemoryValues = new Map<string, Map<string, Map<string, unknown>>>(); // session -> app -> slotKey -> value
+const webMemoryPaths = new Map<string, Map<string, Map<string, Set<string>>>>(); // session -> app -> slotKey -> node paths
+// Bound the per-session maps: conversations come and go (clear mints a fresh
+// key), and only the drawer's handful are ever on screen.
+const MAX_MEMORY_SESSIONS = 32;
 // Events kept per turn in memory / SSE / responses. The full trace is in
 // grandma-kat.db (`read_runs`) and the log window is read back on demand; this
 // bounds the live turn, the SSE replay, and what a page receives at once.
@@ -526,10 +534,43 @@ function capTurnEvents(t: { events: SanitizedEvent[] }): void {
   if (t.events.length > MAX_TURN_EVENTS) t.events.splice(0, t.events.length - MAX_TURN_EVENTS);
 }
 
-/** Drop every app's tracked memory (session switch / restart / clear). */
-function clearWebMemory(): void {
+/** Drop a conversation's tracked memory; every session when no key is given. */
+function clearWebMemory(key?: string): void {
+  if (key) {
+    webMemoryValues.delete(key);
+    webMemoryPaths.delete(key);
+    return;
+  }
   webMemoryValues.clear();
   webMemoryPaths.clear();
+}
+
+/**
+ * The tracked memory for one conversation, created on first write. The oldest
+ * conversations are dropped once MAX_MEMORY_SESSIONS are held (Map preserves
+ * insertion order, so `.keys().next()` is the least recently *created*).
+ */
+function sessionMemory(key: string): {
+  values: Map<string, Map<string, unknown>>;
+  paths: Map<string, Map<string, Set<string>>>;
+} {
+  let values = webMemoryValues.get(key);
+  if (!values) {
+    values = new Map();
+    webMemoryValues.set(key, values);
+    while (webMemoryValues.size > MAX_MEMORY_SESSIONS) {
+      const oldest = webMemoryValues.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      webMemoryValues.delete(oldest);
+      webMemoryPaths.delete(oldest);
+    }
+  }
+  let paths = webMemoryPaths.get(key);
+  if (!paths) {
+    paths = new Map();
+    webMemoryPaths.set(key, paths);
+  }
+  return { values, paths };
 }
 
 // Which app a turn's events belong to. The trunk enters tree tools (apps);
@@ -782,7 +823,8 @@ function resolveFollow(agent?: Agent): void {
   webLog?.ensureOpen(target, describeForeignKey(target));
   if (activeSession !== target) {
     activeSession = target;
-    clearWebMemory();
+    // Memory is scoped per conversation, so the panel simply re-reads the
+    // newly followed session's own values — no wipe needed.
     broadcast({ type: "follow", key: target, label: webLog?.labelOf(target) || target });
   }
 }
@@ -795,15 +837,17 @@ let telegramNotify: ((key: string, text: string) => void) | undefined;
 let secretsStore: SecretsStore | undefined;
 
 /**
- * Track memory-slot writes from a raw agent event. Slots are identified
- * by (scope_id, name) — see webMemoryValues above. Shared by web-run
- * turns and mirrored Telegram turns so the tree panel stays truthful
- * whichever transport ran the step.
+ * Track memory-slot writes from a raw agent event, into the writing
+ * conversation's own map. Slots are identified by (scope_id, name) — see
+ * webMemoryValues above. Shared by web-run turns and mirrored Telegram turns,
+ * keyed by conversation so one session's turn can never fill the panel of the
+ * session the browser is showing.
  */
 function trackMemoryWrite(
+  key: string,
   e: unknown,
   app = "trunk",
-): { app: string; values: Record<string, unknown> } | null {
+): { session: string; app: string; values: Record<string, unknown> } | null {
   const raw = e as {
     scope_id?: number | null; branch_path?: string; kind?: string;
     content?: { child?: unknown; value?: unknown; op?: unknown };
@@ -817,23 +861,24 @@ function trackMemoryWrite(
   const child = typeof raw.content?.child === "string" ? raw.content.child : "";
   const slotKey = `${raw.scope_id}/${child}`;
   const nodePath = (raw.branch_path ?? "") + (child ? "/" + child : "");
+  const { values: sessionValues, paths: sessionPaths } = sessionMemory(key);
   let paths: Set<string> | undefined;
   if (nodePath) {
-    let slots = webMemoryPaths.get(app);
-    if (!slots) { slots = new Map(); webMemoryPaths.set(app, slots); }
+    let slots = sessionPaths.get(app);
+    if (!slots) { slots = new Map(); sessionPaths.set(app, slots); }
     paths = slots.get(slotKey);
     if (!paths) { paths = new Set(); slots.set(slotKey, paths); }
     paths.add(nodePath);
   }
   if (!(raw.content && "value" in raw.content)) return null;
-  let slots = webMemoryValues.get(app);
-  if (!slots) { slots = new Map(); webMemoryValues.set(app, slots); }
+  let slots = sessionValues.get(app);
+  if (!slots) { slots = new Map(); sessionValues.set(app, slots); }
   slots.set(slotKey, raw.content.value);
   // The concrete node paths this write lands on, so the browser can merge it
   // in immediately instead of waiting for the next full re-fetch at turn end.
   const values: Record<string, unknown> = {};
   for (const p of paths ?? []) values[p] = raw.content.value;
-  return Object.keys(values).length ? { app, values } : null;
+  return Object.keys(values).length ? { session: key, app, values } : null;
 }
 
 // Live mirror of a turn that runs on another transport (Telegram). bot.ts
@@ -866,13 +911,13 @@ export function remoteTurnEvent(key: string, event: unknown): void {
     if (typeof rid === "string" && rid) t.runId = rid;
   }
   const app = tagEventApp(key, event);
-  const mem = trackMemoryWrite(event, app);
+  const mem = trackMemoryWrite(key, event, app);
   const clean = sanitizeEvent(event as Parameters<typeof sanitizeEvent>[0], app);
   t.events.push(clean);
   capTurnEvents(t);
   if (activeSession === key) {
     broadcast({ type: "event", turnId: t.turnId, event: clean });
-    if (mem) broadcast({ type: "memory", app: mem.app, values: mem.values });
+    if (mem) broadcast({ type: "memory", session: mem.session, app: mem.app, values: mem.values });
   }
 }
 
@@ -1107,12 +1152,12 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       if (typeof rid === "string" && rid) record.runId = rid;
     }
     const app = tagEventApp(key, e);
-    const mem = trackMemoryWrite(e, app);
+    const mem = trackMemoryWrite(key, e, app);
     const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0], app);
     record.events.push(s);
     capTurnEvents(record);
     broadcast({ type: "event", turnId, event: s });
-    if (mem) broadcast({ type: "memory", app: mem.app, values: mem.values });
+    if (mem) broadcast({ type: "memory", session: mem.session, app: mem.app, values: mem.values });
   };
 
   // The app the tree paused on awaiting human input; set when the run returns
@@ -1465,7 +1510,6 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           // telegram-follow until it's switched back on in settings.
           if (autoFollowTelegram) { autoFollowTelegram = false; saveFollowSetting(); }
           if (!reuseOrMintActive()) activeSession = newSessionKey();
-          clearWebMemory();
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true, active: activeSession, follow: autoFollowTelegram, turns: [] }));
           return;
@@ -1478,6 +1522,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           webLog.writeDelete(sel.delete);
           agent?.clear(sel.delete);
           unbindWebSession(sel.delete);
+          clearWebMemory(sel.delete);
           if (activeSession === sel.delete) {
             activeSession = null;
             broadcast({ type: "cleared" });
@@ -1500,9 +1545,8 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           // selecting a telegram key by hand is compatible with staying on.
           if (autoFollowTelegram && sel.key.startsWith("web:")) { autoFollowTelegram = false; saveFollowSetting(); }
           activeSession = sel.key;
-          // Memory slots belong to the selected tree; the panel must not
-          // show the previous session's values until this one logs again.
-          clearWebMemory();
+          // Memory is scoped per conversation: the panel shows this session's
+          // own slots (empty until it logs), never the previous session's.
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true, active: sel.key, follow: autoFollowTelegram, turns: turnsFor(sel.key) }));
           return;
@@ -1796,7 +1840,6 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         if (activeSession) {
           if (!reuseOrMintActive()) activeSession = newSessionKey();
         }
-        clearWebMemory();
         broadcast({ type: "cleared" });
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, active: activeSession }));
@@ -2514,25 +2557,32 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       }
 
       // --- current memory values for the tree side panel ---
-      // Returns the last-written value for every memory/memoryUpdate node,
-      // keyed by node path. Because values are resolved by scope (see
-      // webMemoryPaths), a .memoryUpdate() deep in a branch updates the
-      // declaring .memory() node's value too. `?path=` returns one full value
-      // (used by the popup); without it, the full map (used for inline values).
+      // Returns the last-written value for every memory/memoryUpdate node of
+      // the session in view, keyed by node path. Memory is scoped per
+      // conversation (see webMemoryValues), so a concurrent turn on another
+      // transport can never fill this panel; `?session=` overrides the active
+      // one. Because values are resolved by scope (see webMemoryPaths), a
+      // .memoryUpdate() deep in a branch updates the declaring .memory() node's
+      // value too. `?path=` returns one full value (used by the popup).
       if (req.method === "GET" && url.pathname === "/api/tree/memory") {
         // Flat `values` (path -> value) keeps the old side panel working;
         // `apps` groups the same values by the app that wrote them, which the
         // tiled UI renders per tile (node-path depth gives the indentation).
         const values: Record<string, unknown> = {};
         const apps: Record<string, Record<string, unknown>> = {};
-        for (const [app, slots] of webMemoryValues) {
-          const pathMap = webMemoryPaths.get(app);
-          if (!pathMap) continue;
-          for (const [slotKey, v] of slots) {
-            if (v === undefined) continue;
-            for (const p of pathMap.get(slotKey) ?? []) {
-              values[p] = v;
-              (apps[app] ??= {})[p] = v;
+        const key = url.searchParams.get("session") || activeSession || "";
+        const sessionValues = webMemoryValues.get(key);
+        const sessionPaths = webMemoryPaths.get(key);
+        if (sessionValues && sessionPaths) {
+          for (const [app, slots] of sessionValues) {
+            const pathMap = sessionPaths.get(app);
+            if (!pathMap) continue;
+            for (const [slotKey, v] of slots) {
+              if (v === undefined) continue;
+              for (const p of pathMap.get(slotKey) ?? []) {
+                values[p] = v;
+                (apps[app] ??= {})[p] = v;
+              }
             }
           }
         }

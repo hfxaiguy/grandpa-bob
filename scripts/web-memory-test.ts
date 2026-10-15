@@ -1,12 +1,17 @@
 /**
- * Live memory push over SSE.
+ * Live memory push over SSE, scoped per conversation.
  *
  * A turn's memory-slot writes must reach the browser *as they happen*, not
- * only when the turn ends (the panel used to stay stale until turn_end).
+ * only when the turn ends (the panel used to stay stale until turn_end), and
+ * they must belong to the session on screen — every run re-seeds its slots at
+ * scope_id 0, so an unscoped map let a concurrent turn fill another session's
+ * panel.
  *
  *   1. A memory record event emitted mid-turn is broadcast as a
- *      `{ type: "memory", app, values }` SSE message immediately.
+ *      `{ type: "memory", session, app, values }` SSE message immediately.
  *   2. /api/tree/memory reflects the same value (the full-map fallback).
+ *   3. A write from a different conversation is invisible to the active
+ *      session's panel, and visible to its own (`?session=`).
  *
  * Mock model handler, no network. Run: npm run test:web-memory
  */
@@ -103,6 +108,7 @@ for (let i = 0; i < 100 && memoryMsgs.length === 0; i++) {
 }
 assert.ok(memoryMsgs.length > 0, "a memory SSE message arrives during the turn");
 const m = memoryMsgs[0];
+assert.equal(m.session, s0.json.active, "the push names the session it belongs to");
 assert.equal(m.app, "trunk");
 assert.equal(m.values["relay/count"], 42, "the written value is pushed");
 
@@ -110,6 +116,23 @@ assert.equal(m.values["relay/count"], 42, "the written value is pushed");
 const mem = await api(port, "GET", "/api/tree/memory");
 assert.equal(mem.json.apps.trunk["relay/count"], 42, "the memory endpoint agrees");
 
+// A concurrent conversation writes the SAME slot key (scope_id 1/child count —
+// exactly the collision two live runs produce). It must not touch the panel.
+const foreign = "web:someone-else";
+mod.remoteTurnStart(foreign, "elsewhere");
+mod.remoteTurnEvent(foreign, {
+  kind: "record",
+  branch_path: "relay",
+  scope_id: 1,
+  content: { op: "memory", child: "count", value: 7 },
+});
+mod.remoteTurnEnd(foreign, "done");
+
+const active = await api(port, "GET", "/api/tree/memory");
+assert.equal(active.json.apps.trunk["relay/count"], 42, "another session's write never lands in the active panel");
+const other = await api(port, "GET", `/api/tree/memory?session=${encodeURIComponent(foreign)}`);
+assert.equal(other.json.apps.trunk["relay/count"], 7, "the writing session sees its own value");
+
 reader.cancel().catch(() => {});
 server.close();
-console.log("web-memory: live memory push works");
+console.log("web-memory: live memory push works, scoped per session");

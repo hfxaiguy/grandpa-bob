@@ -156,7 +156,8 @@ export async function refreshModels(): Promise<void> {
 
 export async function refreshMemory(): Promise<void> {
   try {
-    const d = await getJSON<{ apps: Record<string, Record<string, unknown>> }>("/api/tree/memory");
+    const q = state.active ? `?session=${encodeURIComponent(state.active)}` : "";
+    const d = await getJSON<{ apps: Record<string, Record<string, unknown>> }>(`/api/tree/memory${q}`);
     setState("memory", d.apps || {});
   } catch {
     setState("memory", {});
@@ -589,7 +590,10 @@ function handleSSE(msg: any): void {
     case "memory": {
       // Live memory push: the server sends the node paths a write landed on,
       // so the panel updates as the turn runs rather than only at turn end.
+      // Memory is scoped per conversation: ignore a push for a session that is
+      // not the one on screen (a followed/mirrored turn can arrive mid-switch).
       if (!msg.app || !msg.values) break;
+      if (msg.session && state.active && msg.session !== state.active) break;
       setState(
         produce((s) => {
           s.memory[msg.app] = { ...(s.memory[msg.app] || {}), ...msg.values };
