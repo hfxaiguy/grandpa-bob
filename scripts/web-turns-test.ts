@@ -1,16 +1,24 @@
 /**
- * Web chat session persistence + explicit selection — logs/web-turns.json.
+ * Web chat sessions — state lives in the log DB as host markers
+ * (src/web-log.ts). There is no web-turns.json anymore.
  *
- *   1. First boot (no disk state) auto-opens a fresh session; a completed
- *      turn persists under its `web:<id>` key with label, and prompt
- *      messages are stripped from the on-disk copy.
- *   2. Restart: NOTHING is active. /api/chat is refused (409) until the
- *      user explicitly resumes a session; resume restores its history
- *      (interrupted "running" turns dropped) and enables chat.
- *   3. "New chat" opens a second, empty session; the old history survives.
- *   4. clear wipes the active session's history but keeps it active.
- *   5. delete removes a session from disk.
+ *   1. First boot (no state) auto-opens a fresh session; a completed turn is
+ *      persisted as a `web_turn_end` marker with label derived from the first
+ *      message; /api/turns strips prompt messages.
+ *   2. Restart: NOTHING is active. /api/chat is refused (409) until the user
+ *      explicitly resumes a session; resume restores its history. A turn
+ *      whose run wrote events but no marker (a crash) leaves no phantom.
+ *   3. "New chat" opens a second session; the old history survives.
+ *   4. clear starts a NEW session; the left conversation stays in the picker.
+ *   5. delete tombstones the session (gone from the picker) but keeps its
+ *      trace in the log.
+ *   6. auto-follow: the webui pins itself to the live telegram chat; mirrored
+ *      turns land as markers with their event windows.
+ *   7. migration: a legacy web-turns.json is imported once (turns matched to
+ *      their run get real event bounds), then renamed away and never written.
  *
+ * The mock agent writes engine-like rows into logs/grandma-kat.db, because
+ * that is what the real engine does — derivation reads them back.
  * Mock model handler, no network. Run: npm run test:webturns
  */
 import assert from "node:assert/strict";
@@ -19,10 +27,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import events from "node:events";
+import { DatabaseSync } from "node:sqlite";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-webturns-"));
 await fs.mkdir(path.join(ws, "logs"), { recursive: true });
-const turnsFile = path.join(ws, "logs", "web-turns.json");
 
 function freePort(): Promise<number> {
   return new Promise((resolve) => {
@@ -34,25 +42,56 @@ function freePort(): Promise<number> {
   });
 }
 
+/** Engine-like writes into the workspace's log DB. */
+function engine(wsDir: string) {
+  const db = new DatabaseSync(path.join(wsDir, "logs", "grandma-kat.db"));
+  db.exec("PRAGMA busy_timeout = 5000");
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec(`CREATE TABLE IF NOT EXISTS calls (
+    run_id TEXT NOT NULL, definition_id TEXT NOT NULL,
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, branch_path TEXT, iteration INTEGER,
+    scope_id INTEGER, kind TEXT NOT NULL, content TEXT)`);
+  const stmt = db.prepare(
+    "INSERT INTO calls (run_id, definition_id, branch_path, iteration, scope_id, kind, content) VALUES (?, 'test', ?, ?, ?, ?, ?)");
+  return {
+    log(runId: string, e: Record<string, unknown>) {
+      stmt.run(runId, (e.branch_path as string) ?? null, (e.iteration as number) ?? 1, (e.scope_id as number) ?? null, String(e.kind), JSON.stringify(e.content ?? null));
+    },
+    close() { db.close(); },
+  };
+}
+
 const usedKeys: string[] = [];
-const mockAgent = () =>
-  ({
-    // Two live Telegram-style continuations the web may FOLLOW.
+let runSeq = 0;
+const mockAgent = (wsDir: string, continuations: Map<string, string> = new Map()) => {
+  const eng = engine(wsDir);
+  return {
+    cache: eng,
     sessionKeys: () => ["12345:0", "999:42"],
+    sessionMeta: () => [],
+    sessionContinuationIds: () => continuations,
     hasContinuation: () => true,
+    consumesInputDirectly: async () => true,
+    sessionRef: () => undefined,
+    pinnedVersions: () => [],
+    modelSlots: () => [],
+    clear() {},
     async run(key: string, content: unknown, onEmit: (v: unknown) => void, opts?: any) {
       usedKeys.push(key);
-      opts?.onEvent?.({
-        kind: "llm_call",
-        branch_path: "relay",
-        iteration: 1,
-        content: { model: "cheap", messages: [{ role: "system", content: "SECRET-PROMPT" }] },
-      });
+      const runId = `run-${++runSeq}`;
+      const raw = [
+        { run_id: runId, kind: "llm_call", branch_path: "relay", iteration: 1, content: { model: "cheap", messages: [{ role: "system", content: "SECRET-PROMPT" }] } },
+        { run_id: runId, kind: "emit", branch_path: "relay", iteration: 1, content: { child: "reply", value: { text: "echo:" + String(content) } } },
+      ];
+      for (const e of raw) {
+        eng.log(runId, e);
+        opts?.onEvent?.(e);
+      }
       onEmit({ text: "echo:" + String(content) });
-      return { status: "waiting", continuation: "mock:1" };
+      return { status: "waiting", continuation: `${runId}:1`, runId };
     },
-    clear() {},
-  }) as any;
+  } as any;
+};
 
 async function api(port: number, method: string, p: string, body?: unknown) {
   const res = await fetch(`http://127.0.0.1:${port}${p}`, {
@@ -74,20 +113,30 @@ async function waitDone(port: number, turnId: string) {
   throw new Error("turn never finished");
 }
 
+function markerRows(wsDir: string, key: string) {
+  const db = new DatabaseSync(path.join(wsDir, "logs", "grandma-kat.db"), { readOnly: true });
+  const rows = db.prepare("SELECT kind, content FROM calls WHERE run_id = ? ORDER BY seq").all(key) as { kind: string; content: string }[];
+  db.close();
+  return rows;
+}
+
 let restarts = 0;
 async function boot(opts?: { wsDir?: string; agent?: any }) {
   const mod = await import(`../src/admin.ts${restarts++ ? `?restart=${restarts}` : ""}`);
   const port = await freePort();
+  const agent = opts?.agent ?? mockAgent(opts?.wsDir ?? ws);
   const server = mod.startAdmin({
     port,
     workspaceDir: opts?.wsDir ?? ws,
-    agent: opts?.agent ?? mockAgent(),
+    agent,
   });
   await events.once(server, "listening");
-  return { port, server, mod };
+  return { port, server, mod, agent };
 }
 
-// ── 1. first boot: auto new session, chat works, v2 store persisted ──
+const turnsFile = path.join(ws, "logs", "web-turns.json");
+
+// ── 1. first boot: auto new session, chat works, turn persisted as marker ──
 let firstKey = "";
 {
   const { port, server } = await boot();
@@ -102,39 +151,30 @@ let firstKey = "";
   assert.equal(done.status, "done");
   assert.equal(done.output, "echo:hi");
 
-  const onDisk = JSON.parse(await fs.readFile(turnsFile, "utf8"));
-  assert.equal(typeof onDisk, "object");
-  assert.ok(!Array.isArray(onDisk), "v2 store is a per-session map");
-  const sess = onDisk[firstKey];
-  assert.equal(sess.turns.length, 1);
-  assert.equal(sess.label, "hi", "label derived from first message");
+  const markers = markerRows(ws, firstKey);
+  const turnEnds = markers.filter((m) => m.kind === "web_turn_end");
+  assert.equal(turnEnds.length, 1, "the turn is one marker row");
+  assert.ok(!JSON.stringify(turnEnds).includes("SECRET-PROMPT"), "markers carry UI state, never prompt text");
 
-  const liveEvents = sess.turns[0].events;
-  const onDiskStr = JSON.stringify(onDisk);
+  const label = (await api(port, "GET", "/api/session")).json.label;
+  assert.equal(label, "hi", "label derived from first message");
+
   const turns = (await api(port, "GET", "/api/turns")).json.turns;
-  assert.ok(
-    !JSON.stringify(turns[0].events).includes("SECRET-PROMPT"),
-    "live /api/turns no longer ships raw prompt messages (summary only)",
-  );
-  assert.ok(
-    typeof (turns[0].events[0]?.content as { messages?: unknown })?.messages === "object",
-    "a messages summary ({ count, chars }) is kept",
-  );
-  assert.ok(!onDiskStr.includes("SECRET-PROMPT"), "persisted copy strips prompt messages");
-  assert.equal(liveEvents[0].kind, "llm_call", "event metadata kept");
+  assert.ok(!JSON.stringify(turns[0].events).includes("SECRET-PROMPT"),
+    "live /api/turns no longer ships raw prompt messages");
+  assert.ok(typeof (turns[0].events.find((e: any) => e.kind === "llm_call")?.content as { messages?: unknown })?.messages === "object",
+    "a messages summary ({ count, chars }) is kept");
+  await assert.rejects(fs.stat(turnsFile), "no web-turns.json is written");
   server.close();
-  console.log("1. first boot: auto-session, turn persisted (prompts stripped)");
+  console.log("1. first boot: auto-session, turn marker persisted, prompts stripped");
 }
 
-// ── 2. restart: nothing active; explicit resume required and restores ──
+// ── 2. restart: nothing active; explicit resume restores history ──────
 {
-  // inject a "running" ghost turn (simulates a crash mid-turn)
-  const onDisk = JSON.parse(await fs.readFile(turnsFile, "utf8"));
-  onDisk[firstKey].turns.push({
-    turnId: "ghost", input: "interrupted", startedAt: Date.now(),
-    endedAt: null, status: "running", error: null, output: null, events: [],
-  });
-  await fs.writeFile(turnsFile, JSON.stringify(onDisk));
+  // A crashed turn: events in the log, no turn marker. It must not appear.
+  const eng = engine(ws);
+  eng.log("run-crashed", { kind: "llm_call", branch_path: "relay", iteration: 1, content: { model: "cheap", messages: [{ role: "user", content: "ghost" }] } });
+  eng.close();
 
   const { port, server } = await boot(); // fresh module state = restart
   const s1 = await api(port, "GET", "/api/session");
@@ -142,7 +182,7 @@ let firstKey = "";
   const local1 = s1.json.sessions.filter((x: any) => !x.remote);
   assert.equal(local1.length, 1);
   assert.equal(local1[0].key, firstKey);
-  assert.equal(local1[0].pattern, "trunk", "session records its tree name");
+  assert.equal(local1[0].label, "hi", "label survives via the marker");
   // The agent's live Telegram conversations surface as followable entries.
   const remote1 = s1.json.sessions.filter((x: any) => x.remote);
   assert.equal(remote1.length, 2, "telegram sessions offered for follow");
@@ -168,7 +208,7 @@ let firstKey = "";
   const sel = await api(port, "POST", "/api/session", { key: firstKey });
   assert.equal(sel.status, 200);
   assert.equal(sel.json.active, firstKey);
-  assert.equal(sel.json.turns.length, 1, "interrupted turn dropped, history restored");
+  assert.equal(sel.json.turns.length, 1, "history restored; the crashed run left no turn");
   assert.equal(sel.json.turns[0].input, "hi");
 
   const ok = await api(port, "POST", "/api/chat", { text: "again" });
@@ -178,45 +218,48 @@ let firstKey = "";
   console.log("2. restart: refuses chat, explicit resume restores history");
 }
 
-// ── 3. new chat: second session, first one's history intact ──
+// ── 3. new chat: second session, first one's history intact ───────────
+let brandNewKey = "";
 {
   const { port, server } = await boot();
-  const s = await api(port, "GET", "/api/session");
-  assert.equal(s.json.sessions.filter((x: any) => !x.remote).length, 2, "two local sessions restored");
   const n = await api(port, "POST", "/api/session", { new: true });
   assert.equal(n.status, 200);
   assert.notEqual(n.json.active, firstKey);
   assert.deepEqual(n.json.turns, []);
+  brandNewKey = n.json.active;
   const { json } = await api(port, "POST", "/api/chat", { text: "brand new" });
   await waitDone(port, json.turnId);
   const list = (await api(port, "GET", "/api/session")).json.sessions;
-  assert.equal(list.filter((x: any) => !x.remote).length, 3, "all sessions recorded");
   const old = list.find((x: any) => x.key === firstKey);
   assert.ok(old.turns >= 2, "old session history untouched");
   server.close();
   console.log("3. new chat: independent session, history preserved");
 
-  // ── 4. clear wipes ACTIVE session only ──
+  // ── 4. clear starts a NEW session; the left one stays selectable ────
   const { port: p4, server: srv4 } = await boot();
   await api(p4, "POST", "/api/session", { key: firstKey });
+  const before = (await api(p4, "GET", "/api/session")).json.turns.length;
+  assert.ok(before >= 2);
   const c = await api(p4, "POST", "/api/clear");
-  assert.equal(c.json.active, firstKey, "clear keeps the session active");
+  assert.equal(c.status, 200);
+  assert.notEqual(c.json.active, firstKey, "clear starts a fresh session");
   const after = await api(p4, "GET", "/api/session");
-  assert.equal(after.json.turns.length, 0, "active history cleared");
-  const other = after.json.sessions.find((x: any) => x.label === "brand new");
-  assert.ok(other && other.turns > 0, "other sessions unaffected");
+  assert.equal(after.json.turns.length, 0, "the fresh session is empty");
+  const kept = after.json.sessions.find((x: any) => x.key === firstKey);
+  assert.ok(kept && kept.turns >= 2, "the left conversation keeps its history in the picker");
 
-  // ── 5. delete removes from disk ──
-  const del = await api(p4, "POST", "/api/session", { delete: other.key });
+  // ── 5. delete tombstones the session but keeps its trace ────────────
+  const beforeRows = markerRows(ws, brandNewKey).length;
+  const del = await api(p4, "POST", "/api/session", { delete: brandNewKey });
   assert.equal(del.status, 200);
-  assert.ok(!(await api(p4, "GET", "/api/session")).json.sessions.find((x: any) => x.key === other.key));
-  const disk = JSON.parse(await fs.readFile(turnsFile, "utf8"));
-  assert.ok(!(other.key in disk), "deleted session gone from web-turns.json");
+  const list4 = (await api(p4, "GET", "/api/session")).json.sessions;
+  assert.ok(!list4.find((x: any) => x.key === brandNewKey), "deleted session gone from the picker");
+  assert.ok(markerRows(ws, brandNewKey).length > beforeRows, "the tombstone is a marker too");
   srv4.close();
-  console.log("4+5. clear scoped to active; delete purges from disk");
+  console.log("4+5. clear starts fresh; delete tombstones and keeps the trace");
 }
 
-// ── 6. auto-follow: the webui pins itself to the live telegram chat ──
+// ── 6. auto-follow: mirrored telegram turns land as markers ───────────
 {
   const ws6 = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-follow-"));
   await fs.mkdir(path.join(ws6, "logs"), { recursive: true });
@@ -224,14 +267,25 @@ let firstKey = "";
     { key: "777:0", updatedAt: Date.now() - 5000 },
     { key: "web:stale", updatedAt: Date.now() }, // newer, but must NOT be followed
   ];
+  const eng6 = engine(ws6);
   const agent6 = {
+    cache: eng6,
     sessionMeta: () => meta,
     sessionKeys: () => meta.map((m) => m.key),
+    sessionContinuationIds: () => new Map(),
     hasContinuation: () => true,
-    async run(key: string, _content: unknown, onEmit: (v: unknown) => void) {
+    consumesInputDirectly: async () => true,
+    sessionRef: () => undefined,
+    pinnedVersions: () => [],
+    modelSlots: () => [],
+    async run(key: string, content: unknown, onEmit: (v: unknown) => void, opts?: any) {
       usedKeys.push(key);
+      const runId = `run-follow-${++runSeq}`;
+      const raw = { run_id: runId, kind: "llm_call", branch_path: "relay", iteration: 1, content: { model: "cheap", messages: [{ role: "system", content: "TG-PROMPT" }] } };
+      eng6.log(runId, raw);
+      opts?.onEvent?.(raw);
       onEmit({ text: "ok" });
-      return { status: "waiting", continuation: "mock:1" };
+      return { status: "waiting", continuation: `${runId}:1` };
     },
     clear() {},
   } as any;
@@ -246,31 +300,27 @@ let firstKey = "";
 
   // Telegram-side turns mirror into the followed transcript, and a turn on
   // an unfollowed key surfaces that key as its own selectable session.
+  const tgRun = `run-tg-${++runSeq}`;
+  const tgEvents = [
+    { run_id: tgRun, kind: "llm_call", branch_path: "relay", iteration: 1, content: { model: "cheap", messages: [{ role: "system", content: "TG-PROMPT" }] } },
+    { run_id: tgRun, kind: "record", branch_path: "relay", iteration: 1, scope_id: 5, content: { child: "messages", op: "memoryUpdate", value: [1, 2, 3] } },
+  ];
   mod.remoteTurnStart("777:0", "on the phone");
-  mod.remoteTurnEvent("777:0", {
-    kind: "llm_call", branch_path: "relay", iteration: 1,
-    content: { model: "cheap", messages: [{ role: "system", content: "TG-PROMPT" }] },
-  });
-  mod.remoteTurnEvent("777:0", {
-    kind: "record", branch_path: "relay", scope_id: 5,
-    content: { child: "messages", op: "memoryUpdate", value: [1, 2, 3] },
-  });
+  for (const e of tgEvents) {
+    eng6.log(tgRun, e);
+    mod.remoteTurnEvent("777:0", e);
+  }
   mod.remoteTurnEnd("777:0", "answer from grandma's tree");
   const sm = await api(port, "GET", "/api/session");
   const tgTurn = sm.json.turns.find((t: any) => t.input === "on the phone");
   assert.ok(tgTurn && tgTurn.output === "answer from grandma's tree", "telegram turn appears in the followed web transcript");
   assert.equal(tgTurn.status, "done");
-  assert.equal(tgTurn.events.length, 2, "tree steps mirrored with the turn");
+  assert.equal(tgTurn.events.length, 2, "tree steps replayed from the log for the turn");
   assert.equal(tgTurn.events[0].kind, "llm_call");
   assert.equal(tgTurn.events[1].content.op, "memoryUpdate", "memory steps kept");
-  const rawTurns = (await api(port, "GET", "/api/turns")).json.turns;
-  const rawTurn = rawTurns.find((t: any) => t.input === "on the phone");
-  assert.ok(!JSON.stringify(rawTurn.events[0].content).includes("TG-PROMPT"),
-    "live copy no longer ships the raw prompt (summary only)");
-  assert.ok(typeof rawTurn.events[0].content.messages === "object",
-    "a messages summary is kept");
-  const tgDisk = JSON.parse(await fs.readFile(path.join(ws6, "logs", "web-turns.json"), "utf8"));
-  assert.ok(!JSON.stringify(tgDisk).includes("TG-PROMPT"), "persisted copy strips prompt messages");
+  assert.ok(!JSON.stringify(tgTurn.events[0].content).includes("TG-PROMPT"), "replayed events are sanitized");
+  const tgDisk = markerRows(ws6, "777:0");
+  assert.ok(!JSON.stringify(tgDisk).includes("TG-PROMPT"), "markers never carry prompt text");
   mod.remoteTurnStart("555:0", "other chat");
   mod.remoteTurnEnd("555:0", "other reply");
   const sm2 = await api(port, "GET", "/api/session");
@@ -295,7 +345,62 @@ let firstKey = "";
   const s5 = await api(port, "POST", "/api/session", { follow: true });
   assert.equal(s5.json.active, "999:9", "re-enabling follow adopts the newest conversation");
   server.close();
-  console.log("6. auto-follow telegram (one-way): adopt, retarget, opt out, re-enable");
+  eng6.close();
+  console.log("6. auto-follow telegram: adopt, mirror as markers, opt out, re-enable");
+}
+
+// ── 7. legacy migration: imported once, renamed away, never written ───
+{
+  const ws7 = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-migrate-"));
+  await fs.mkdir(path.join(ws7, "logs"), { recursive: true });
+  const eng7 = engine(ws7);
+  // The legacy session's current run, with one delivered human input.
+  eng7.log("run-legacy", { kind: "llm_call", branch_path: "relay", iteration: 1, content: { model: "cheap", messages: [{ role: "system", content: "SECRET-PROMPT" }] } });
+  eng7.log("run-legacy", { kind: "human", branch_path: "relay", iteration: 1, scope_id: 1, content: { child: "input", delivered: true, value: "second message" } });
+  eng7.close();
+  await fs.writeFile(
+    path.join(ws7, "logs", "web-turns.json"),
+    JSON.stringify({
+      "web:legacy": {
+        label: "legacy chat",
+        pattern: "trunk",
+        updatedAt: Date.now(),
+        turns: [
+          { turnId: "t-old-1", input: "first message", inputApp: "trunk", startedAt: Date.now() - 60000, endedAt: Date.now() - 50000, status: "done", error: null, output: "old reply 1", events: [] },
+          { turnId: "t-old-2", input: "second message", inputApp: "trunk", startedAt: Date.now() - 40000, endedAt: Date.now() - 30000, status: "done", error: null, output: "old reply 2", events: [] },
+        ],
+      },
+      "8473468946:0": {
+        label: "telegram · chat 8473468946 (general)",
+        pattern: "",
+        updatedAt: Date.now(),
+        turns: [],
+      },
+    }),
+  );
+  const continuations = new Map([["web:legacy", "run-legacy"]]);
+  const agent7 = mockAgent(ws7, continuations);
+  const { port, server } = await boot({ wsDir: ws7, agent: agent7 });
+  assert.ok(await fs.stat(path.join(ws7, "logs", "web-turns.json.migrated")), "legacy file renamed away");
+  await assert.rejects(fs.stat(path.join(ws7, "logs", "web-turns.json")), "no live legacy file");
+
+  const list = (await api(port, "GET", "/api/session")).json.sessions;
+  const legacy = list.find((x: any) => x.key === "web:legacy");
+  assert.equal(legacy.label, "legacy chat", "label override imported");
+  assert.equal(legacy.turns, 2);
+  const tg = list.find((x: any) => x.key === "8473468946:0");
+  assert.match(tg.label, /telegram/, "telegram key adopted by the migration");
+
+  const sel = await api(port, "POST", "/api/session", { key: "web:legacy" });
+  assert.equal(sel.json.turns.length, 2, "turns restored");
+  const second = sel.json.turns.find((t: any) => t.input === "second message");
+  assert.ok(second.events.length >= 1, "the matched turn replayed its event window");
+  assert.ok(!JSON.stringify(second.events).includes("SECRET-PROMPT"), "replayed events are sanitized");
+  const first = sel.json.turns.find((t: any) => t.input === "first message");
+  assert.equal(first.events.length, 0, "an unmatched legacy turn replays without a log window");
+  assert.equal(first.output, "old reply 1", "its stored reply survives");
+  server.close();
+  console.log("7. legacy web-turns.json imported into the log, then gone");
 }
 
 console.log("web-turns-test: all assertions passed");

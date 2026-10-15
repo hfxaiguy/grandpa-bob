@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   await ensureWorkspaceGitignore(config.workspaceDir, [
     "logs/grandma-kat.db*",
     "logs/sessions.json",
-    "logs/web-turns.json",
+    "logs/web-turns.json*",
     "logs/web-settings.json",
     "assets/inbox/",
   ]);

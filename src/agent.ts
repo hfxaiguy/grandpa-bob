@@ -165,6 +165,16 @@ export class Agent {
   }
 
   /**
+   * Conversation key → its current continuation checkpoint id
+   * ("<runId>:<seq>"), i.e. which engine run backs each live session.
+   * The web store uses this to match migrated history to the run whose
+   * events are in the log.
+   */
+  sessionContinuationIds(): Map<string, string> {
+    return new Map(this.continuations);
+  }
+
+  /**
    * Live sessions with their last-activity wall clock. The web UI uses
    * this to FOLLOW the most recently used Telegram conversation.
    */

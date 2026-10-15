@@ -109,6 +109,19 @@ const script = [
 
 // A flag the mock flips to simulate a failed turn (e.g. an LLM timeout).
 let failNext = false;
+let runSeq = 0;
+
+// The engine writes every event into the workspace log DB; the mock does the
+// same, because the admin reads completed turns back from there (web-log.ts).
+import { DatabaseSync } from "node:sqlite";
+const engDb = new DatabaseSync(path.join(ws, "logs", "grandma-kat.db"));
+engDb.exec("PRAGMA journal_mode = WAL");
+engDb.exec(`CREATE TABLE IF NOT EXISTS calls (
+  run_id TEXT NOT NULL, definition_id TEXT NOT NULL,
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, branch_path TEXT, iteration INTEGER,
+  scope_id INTEGER, kind TEXT NOT NULL, content TEXT)`);
+const engStmt = engDb.prepare(
+  "INSERT INTO calls (run_id, definition_id, branch_path, iteration, scope_id, kind, content) VALUES (?, 'test', ?, ?, ?, ?, ?)");
 
 const mockAgent = () =>
   ({
@@ -124,9 +137,15 @@ const mockAgent = () =>
         failNext = false;
         throw new Error("LLM request timed out after 120s (mock)");
       }
+      const runId = `run-attr-${++runSeq}`;
       for (const step of script) {
-        if ("emit" in step) onEmit?.({ text: step.emit });
-        else opts?.onEvent?.(step);
+        if ("emit" in step) {
+          onEmit?.({ text: step.emit });
+        } else {
+          const e = { run_id: runId, ...step } as Record<string, unknown>;
+          engStmt.run(runId, (e.branch_path as string) ?? null, (e.iteration as number) ?? 1, (e.scope_id as number) ?? null, String(e.kind), JSON.stringify(e.content ?? null));
+          opts?.onEvent?.(e);
+        }
       }
       return { status: "waiting", continuation: "mock" };
     },

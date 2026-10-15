@@ -1,15 +1,16 @@
 /**
- * Admin web sessions — the multi-session lifecycle (plan D fixes).
+ * Admin web sessions — the multi-session lifecycle.
  *
- *   1. An empty, unlabeled "new chat" is NEVER written to web-turns.json, and
+ *   1. An empty, unlabeled "new chat" has NO markers (nothing on disk), and
  *      clicking "new chat" again reuses it instead of minting another shell.
  *   2. Multiple local sessions are independent: each keeps its own turn
  *      history and its own continuation (the tree state keyed by session).
- *   3. The 10-session cap is enforced after every completed turn (it used to
- *      run only when a session was minted, so the store drifted past the cap).
- *   4. After a restart, no empty/unlabeled session is offered in the picker.
+ *   3. The 10-session cap is a display bound, enforced on every read; older
+ *      sessions are NOT destroyed (their markers stay in the log).
+ *   4. After a restart, only used sessions are offered in the picker.
  *
- * Mock agent + real admin HTTP API, no network. Run: npm run test:admin-sessions
+ * State lives in the log DB as host markers (src/web-log.ts). Mock agent +
+ * real admin HTTP API, no network. Run: npm run test:admin-sessions
  */
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -17,10 +18,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import events from "node:events";
+import { DatabaseSync } from "node:sqlite";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-admin-sessions-"));
 await fs.mkdir(path.join(ws, "logs"), { recursive: true });
-const turnsFile = path.join(ws, "logs", "web-turns.json");
 
 function freePort(): Promise<number> {
   return new Promise((resolve) => {
@@ -87,10 +88,22 @@ async function waitDone(port: number, turnId: string) {
   throw new Error("turn never finished");
 }
 
-const readTurns = async () => JSON.parse(await fs.readFile(turnsFile, "utf8"));
+/** Host markers for a key (the session's persisted state). */
+function markers(key: string) {
+  const db = new DatabaseSync(path.join(ws, "logs", "grandma-kat.db"), { readOnly: true });
+  let rows: { kind: string; content: string }[] = [];
+  try {
+    rows = db.prepare("SELECT kind, content FROM calls WHERE run_id = ? ORDER BY seq").all(key) as typeof rows;
+  } catch {
+    // table may not exist yet on the very first boot read
+  }
+  db.close();
+  return rows;
+}
+
 const localSessions = (json: any) => (json.sessions || []).filter((s: any) => !s.remote);
 
-// ── 1. empty shell never persisted; new chat reuses it ──
+// ── 1. empty shell has no markers; new chat reuses it ──
 {
   const { port, server } = await boot();
   const s0 = await api(port, "GET", "/api/session");
@@ -98,24 +111,24 @@ const localSessions = (json: any) => (json.sessions || []).filter((s: any) => !s
   const firstKey = s0.json.active;
   assert.match(firstKey, /^web:/);
 
-  // The auto-opened session is empty + unlabeled: it must not reach disk.
+  // The auto-opened session is empty + unlabeled: it must leave no markers.
   await new Promise((r) => setTimeout(r, 20));
-  const onDisk = await readTurns();
-  assert.ok(!(firstKey in onDisk), "an empty, unlabeled session is not persisted");
+  assert.deepEqual(markers(firstKey), [], "an empty, unlabeled session writes nothing");
 
   // Clicking "new chat" again reuses the empty active session (no shell minted).
   const again = await api(port, "POST", "/api/session", { new: true });
   assert.equal(again.json.active, firstKey, "an unused new chat is reused, not duplicated");
-  assert.ok(!(firstKey in (await readTurns())), "still nothing written while it stays empty");
+  assert.deepEqual(markers(firstKey), [], "still nothing written while it stays empty");
 
   // Using it labels it and it persists.
   const chat = await api(port, "POST", "/api/chat", { text: "hello" });
   await waitDone(port, chat.json.turnId);
-  const used = await readTurns();
-  assert.ok(firstKey in used && used[firstKey].turns.length === 1, "a used session persists");
-  assert.equal(used[firstKey].label, "hello");
+  const after = markers(firstKey);
+  assert.equal(after.filter((m) => m.kind === "web_turn_end").length, 1, "a used session persists a turn marker");
+  const label = (await api(port, "GET", "/api/session")).json.label;
+  assert.equal(label, "hello");
   server.close();
-  console.log("1. empty shell not persisted; new chat reuses it");
+  console.log("1. empty shell writes nothing; new chat reuses it");
 }
 
 // ── 2. independent sessions: own history, own continuation ──
@@ -156,10 +169,14 @@ const localSessions = (json: any) => (json.sessions || []).filter((s: any) => !s
   console.log("2. multiple sessions: independent history and continuations");
 }
 
-// ── 3. the session cap holds after every completed turn ──
+// ── 3. the cap is a display bound; older sessions are not destroyed ──
 {
+  const clearedBefore = cleared.length;
   const { port, server } = await boot();
   // Grow past the cap; each new chat is used so it is a real session.
+  const firstOfCap = await api(port, "GET", "/api/session");
+  const oldestKey = firstOfCap.json.sessions.find((s: any) => s.label === "second")?.key
+    ?? firstOfCap.json.sessions[0]?.key;
   for (let i = 0; i < 12; i++) {
     await api(port, "POST", "/api/session", { new: true });
     const chat = await api(port, "POST", "/api/chat", { text: `cap-${i}` });
@@ -168,13 +185,14 @@ const localSessions = (json: any) => (json.sessions || []).filter((s: any) => !s
   const s = await api(port, "GET", "/api/session");
   const local = localSessions(s.json);
   assert.ok(local.length <= 10, `local sessions stay capped (got ${local.length})`);
-  assert.ok(cleared.length > 0, "pruned sessions had their continuations cleared");
-  assert.ok(local.some((x: any) => x.key === s.json.active), "the active session is never pruned");
+  assert.equal(cleared.length, clearedBefore, "the cap never destroys a session's tree state");
+  assert.ok(local.some((x: any) => x.key === s.json.active), "the active session is always listed");
+  assert.ok(oldestKey && markers(oldestKey).length > 0, "a beyond-cap session keeps its markers in the log");
   server.close();
-  console.log("3. cap enforced after a turn end; continuations cleared");
+  console.log("3. cap is a display bound; older sessions stay in the log");
 }
 
-// ── 4. restart: no empty/unlabeled session offered ──
+// ── 4. restart: only used sessions are offered ──
 {
   const { port, server } = await boot();
   const s = await api(port, "GET", "/api/session");
@@ -182,10 +200,6 @@ const localSessions = (json: any) => (json.sessions || []).filter((s: any) => !s
   const local = localSessions(s.json);
   assert.ok(local.every((x: any) => x.turns > 0 && x.label), "only used, labeled sessions are offered");
   assert.ok(local.length <= 10, "the cap survives a restart");
-  const disk = await readTurns();
-  for (const [key, val] of Object.entries<any>(disk)) {
-    assert.ok(val.label || (val.turns?.length ?? 0) > 0, `no empty shell on disk (${key})`);
-  }
   server.close();
   console.log("4. restart offers only used sessions");
 }

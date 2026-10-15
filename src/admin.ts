@@ -47,7 +47,9 @@ import { serializeTree } from "./tree-serialize.js";
 import { attachmentPrompt, saveAttachment, MAX_ATTACHMENT_BYTES } from "./attachments.js";
 import { createNodePlatform } from "./platform/node.js";
 import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "./db-sync.js";
-import { newTurnApps, tagEventApp as sharedTagEventApp, retagEvents, type TurnApps } from "./app-attribution.js";
+import { newTurnApps, tagEventApp as sharedTagEventApp, type TurnApps } from "./app-attribution.js";
+import { WebLog, MAX_TURNS } from "./web-log.js";
+import { sanitizeEvent, type SanitizedEvent } from "./sanitize.js";
 
 /** Secret config files are small (credentials, JSON, keys). */
 const MAX_SECRET_BYTES = 1024 * 1024;
@@ -501,12 +503,12 @@ function readBody(req: http.IncomingMessage) {
 
 // ── web chat: turns, events, SSE ─────────────────────────────────────
 // The chat front page talks to the agent under a single conversation key.
-// Turns are strictly serialized (like the bot's per-topic queue) and every
-// grandma-kat event logged during a turn is sanitized (the raw events embed
-// the full message history — far too big to stream), kept in a small
-// in-memory history, and broadcast to connected browsers over SSE.
+// Turns are strictly serialized (like the bot's per-topic queue); every event
+// grandma-kat logs during a turn is sanitized (the raw events embed the full
+// message history — far too big to stream), kept in a small in-memory buffer
+// for the live turn, and broadcast to connected browsers over SSE. Completed
+// turns are persisted in the log DB (src/web-log.ts).
 
-const WEB_KEY = "web:chat";
 // Current memory values, grouped by the app (tree tool) that wrote them —
 // "trunk" for the top-level tree. A slot is identified by (scope_id, name):
 // .memoryUpdate() deep in a branch writes to the slot's *declaring* scope, so
@@ -514,12 +516,9 @@ const WEB_KEY = "web:chat";
 // leaving it stuck at its seed value.
 const webMemoryValues = new Map<string, Map<string, unknown>>(); // app -> slotKey -> value
 const webMemoryPaths = new Map<string, Map<string, Set<string>>>(); // app -> slotKey -> node paths
-const MAX_TURNS_KEPT = 20;
-const MAX_EVENT_STR = 400;
-// Events kept per turn. The full trace is in grandma-kat.db (`read_runs`); the
-// UI shows a tail, and an unbounded turn is what made web-turns.json 26 MB and
-// every save O(total history). This bounds the in-memory turn, the SSE replay,
-// /api/turns, and the file at once.
+// Events kept per turn in memory / SSE / responses. The full trace is in
+// grandma-kat.db (`read_runs`) and the log window is read back on demand; this
+// bounds the live turn, the SSE replay, and what a page receives at once.
 const MAX_TURN_EVENTS = 500;
 
 /** Keep only the last MAX_TURN_EVENTS of a turn's events (in place). */
@@ -553,28 +552,6 @@ function tagEventApp(key: string, e: unknown): string {
   return sharedTagEventApp(st, e);
 }
 
-/**
- * Recompute per-event app tags for a turn loaded from disk (turns recorded
- * before attribution have none). Emit apps are recovered when the `emit`
- * events line up one-to-one with the stored emits.
- */
-function retagTurnEvents(t: TurnRecord): void {
-  const { emitApps, awaiting } = retagEvents(t.events ?? []);
-  if (t.emits?.length && emitApps.length === t.emits.length) t.emitApps = emitApps;
-  if (t.awaiting === undefined) t.awaiting = awaiting;
-}
-
-interface SanitizedEvent {
-  kind: string;
-  branch_path: string;
-  iteration: number;
-  scope_id: number | null;
-  content: Record<string, unknown> | null;
-  ts: number;
-  /** The app (outermost tree tool) this event belongs to; "trunk" at top level. */
-  app?: string;
-}
-
 interface TurnRecord {
   turnId: string;
   input: string;
@@ -601,109 +578,55 @@ interface TurnRecord {
   /** Model slots offered after a quota wall (402); null/absent otherwise.
    *  A tap retargets the failed role and re-runs this turn (see /api/fallback). */
   fallback?: EmitButton[] | null;
+  /** The engine run this turn belongs to (captured from its first event). */
+  runId?: string | null;
+  /** Event seq bounds of the turn: (fromSeq, toSeq]. */
+  fromSeq?: number | null;
+  toSeq?: number | null;
   events: SanitizedEvent[];
 }
 
-// Every web session (`web:<id>`) owns a label and a bounded turn buffer.
-// Sessions are NEVER auto-resumed after a restart: `activeSession` starts
-// null and the chat page shows a session picker until the user explicitly
-// resumes one (loads its history + arms the stored continuation for the
-// next message) or starts a new one. This keeps a stale/broken checkpoint
-// from hanging the first turn after a refresh.
-interface WebSession {
-  label: string;
-  /** Tree pattern this session last ran under (for the picker). */
-  pattern: string;
-  updatedAt: number;
-  turns: TurnRecord[];
-  /** App the conversation is paused on awaiting human input, if any. */
-  awaiting?: string | null;
-}
-const sessionTurns = new Map<string, WebSession>();
+// Web chat history lives in the log DB as host markers (src/web-log.ts):
+// turns, labels, tombstones and adoptions are all rows in `calls`. In-memory
+// state is only the turn CURRENTLY running (for live SSE and a mid-turn page
+// load) — everything a page reads is derived from the log. Sessions are NEVER
+// auto-resumed after a restart: `activeSession` starts null and the chat page
+// shows a session picker until the user explicitly resumes one or starts a
+// new one. This keeps a stale/broken checkpoint from hanging the first turn
+// after a refresh.
+let webLog: WebLog | null = null;
 let activeSession: string | null = null;
 const MAX_SESSIONS_KEPT = 10;
-
-// Persisted copy of `sessionTurns` so chat history survives bot restarts.
-// Set inside startAdmin (config isn't available at module scope).
-let webTurnsPath = "";
-
-function slimTurn(t: TurnRecord): TurnRecord {
-  capTurnEvents(t);
-  return {
-    ...t,
-    // Live raw `messages` attached to events (full prompt + system text)
-    // are session telemetry already in grandma-kat.db — no reason to
-    // duplicate them on disk.
-    events: t.events.map((ev) => {
-      if (!ev.content || !("messages" in ev.content)) return ev;
-      const content = { ...ev.content };
-      delete content.messages;
-      return { ...ev, content };
-    }),
-  };
-}
-
-function saveTurns(): void {
-  if (!webTurnsPath) return;
-  try {
-    fs.mkdirSync(path.dirname(webTurnsPath), { recursive: true });
-    const out: Record<string, { label: string; pattern: string; updatedAt: number; turns: unknown[] }> = {};
-    for (const [key, s] of sessionTurns) {
-      const turns = s.turns.filter((t) => t.status !== "running");
-      // An empty, unlabeled session is a fresh chat the user never used — do
-      // not persist it (this mirrors loadTurns; plan D). It used to linger in
-      // the picker and on disk until the next restart.
-      if (!turns.length && !s.label) continue;
-      out[key] = {
-        label: s.label,
-        pattern: s.pattern,
-        updatedAt: s.updatedAt,
-        turns: turns.map(slimTurn),
-      };
-    }
-    const tmp = webTurnsPath + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(out));
-    fs.renameSync(tmp, webTurnsPath);
-  } catch (e) {
-    console.warn("[admin] failed to save web turns:", e instanceof Error ? e.message : e);
-  }
-}
-
-function loadTurns(): void {
-  if (!webTurnsPath) return;
-  try {
-    const raw = JSON.parse(fs.readFileSync(webTurnsPath, "utf8"));
-    // v1 was a bare array of turns for the single implicit `web:chat`
-    // session; v2 is a map of sessions. Migrate transparently.
-    const entries: [string, unknown][] = Array.isArray(raw)
-      ? [[WEB_KEY, { label: "", pattern: "", updatedAt: 0, turns: raw }]]
-      : raw && typeof raw === "object"
-        ? Object.entries(raw)
-        : [];
-    for (const [key, val] of entries) {
-      const v = val as Partial<WebSession>;
-      const turns = Array.isArray(v?.turns)
-        ? v.turns.filter((t: TurnRecord) => t && t.status !== "running").slice(-MAX_TURNS_KEPT)
-        : [];
-      if (!turns.length && !v?.label) continue;
-      for (const t of turns) { capTurnEvents(t); retagTurnEvents(t); }
-      const last = turns.at(-1);
-      sessionTurns.set(String(key), {
-        label: typeof v?.label === "string" ? v.label : "",
-        pattern: typeof v?.pattern === "string" ? v.pattern : "",
-        updatedAt: Number(v?.updatedAt) || (turns.at(-1)?.endedAt ?? turns.at(-1)?.startedAt) || 0,
-        turns,
-        awaiting: last?.awaiting ?? null,
-      });
-    }
-    if (sessionTurns.size) console.log(`[admin] restored ${sessionTurns.size} web chat session(s) from disk`);
-  } catch {
-    // no persisted history yet
-  }
-}
+/** Turns currently in flight, keyed by session key (web or mirrored). */
+const liveTurns = new Map<string, TurnRecord>();
 
 function newSessionKey(): string {
   return `web:${randomUUID().slice(0, 8)}`;
+}
+
+/** A session's turns: persisted markers, plus the live turn if one is running. */
+function turnsFor(key: string, withEvents = true): TurnRecord[] {
+  const turns = (webLog?.getTurns(key, { withEvents }) ?? []) as unknown as TurnRecord[];
+  const live = liveTurns.get(key);
+  if (live && !turns.some((t) => t.turnId === live.turnId)) turns.push(live);
+  return turns;
+}
+
+/**
+ * Keep the active session when it is still an unused private chat; otherwise
+ * the caller mints. Shared by "new chat" and clear, so neither piles up
+ * empty shells (plan D) nor wipes a real transcript.
+ */
+function reuseOrMintActive(): boolean {
+  if (!activeSession || !activeSession.startsWith("web:") || !webLog) return false;
+  return webLog.turnCount(activeSession) === 0 && !webLog.hasLabelPin(activeSession);
+}
+
+/** The app the conversation sits in awaiting input: live turn, else the log. */
+function awaitingFor(key: string): string | null {
+  const live = liveTurns.get(key);
+  if (live) return live.awaiting ?? null;
+  return webLog?.lastAwaiting(key) ?? null;
 }
 
 // ── auto-follow: the webui mirrors the live Telegram conversation ─────
@@ -789,12 +712,7 @@ export function newTelegramSession(tgKey: string): string {
   saveFollowSetting();
   // List it right away (empty until the first message), so it is visible in
   // the web UI's session picker instead of appearing only after a run.
-  sessionTurns.set(key, {
-    label: describeForeignKey(key),
-    pattern: getSelectedPattern(),
-    updatedAt: Date.now(),
-    turns: [],
-  });
+  webLog?.ensureOpen(key, describeForeignKey(key));
   broadcast({ type: "sessions", sessions: sessionList(adminAgent) });
   return key;
 }
@@ -859,16 +777,13 @@ function resolveFollow(agent?: Agent): void {
   if (!autoFollowTelegram) return;
   const target = followTarget(agent);
   if (!target) return; // no Telegram conversation to follow yet — keep current state
-  if (!sessionTurns.has(target)) {
-    sessionTurns.set(target, {
-      label: describeForeignKey(target), pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [],
-    });
-    saveTurns();
-  }
+  // Following a foreign key adopts it into the drawer (it may have no run
+  // history this browser ever saw, but its runs are in the log all the same).
+  webLog?.ensureOpen(target, describeForeignKey(target));
   if (activeSession !== target) {
     activeSession = target;
     clearWebMemory();
-    broadcast({ type: "follow", key: target, label: sessionTurns.get(target)?.label ?? target });
+    broadcast({ type: "follow", key: target, label: webLog?.labelOf(target) || target });
   }
 }
 
@@ -921,46 +836,35 @@ function trackMemoryWrite(
   return Object.keys(values).length ? { app, values } : null;
 }
 
-/** Find or create the web-store entry for a (foreign) conversation key. */
-function ensureSessionEntry(key: string): WebSession {
-  let s = sessionTurns.get(key);
-  if (!s) {
-    s = { label: describeForeignKey(key), pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] };
-    sessionTurns.set(key, s);
-    pruneSessions(adminAgent);
-    saveTurns();
-  }
-  return s;
-}
-
 // Live mirror of a turn that runs on another transport (Telegram). bot.ts
 // feeds these three calls while it runs the tree, so a followed browser
 // shows the exchange — bubbles AND tree steps — exactly like a web turn.
 // The key is normally the Telegram chat's; when the phone is reverse-following
 // a web session (see bindTelegramFollow) it is that session's `web:` key, and
 // recording here keeps the browser in step. Web-run turns use runTurn.
+// The completed turn is persisted as a marker in the log (web-log.ts).
 export function remoteTurnStart(key: string, input: string): void {
-  if (!key) return;
-  const s = ensureSessionEntry(key);
+  if (!key || !webLog) return;
+  webLog.ensureOpen(key, describeForeignKey(key));
   const turnId = randomUUID();
   const now = Date.now();
-  s.turns.push({
-    turnId, input, inputApp: s.awaiting ?? "trunk", startedAt: now, endedAt: null, status: "running",
-    error: null, output: null, events: [],
+  const inputApp = awaitingFor(key) ?? "trunk";
+  liveTurns.set(key, {
+    turnId, input, inputApp, startedAt: now, endedAt: null, status: "running",
+    error: null, output: null, events: [], runId: null, fromSeq: webLog.nextSeq(), toSeq: null,
   });
-  while (s.turns.length > MAX_TURNS_KEPT) s.turns.shift();
-  s.updatedAt = now;
-  s.awaiting = null;
   beginTurnApps(key);
-  saveTurns();
-  if (activeSession === key) broadcast({ type: "turn_start", turnId, session: key, input, inputApp: s.turns.at(-1)?.inputApp ?? "trunk", ts: now, awaiting: null });
+  if (activeSession === key) broadcast({ type: "turn_start", turnId, session: key, input, inputApp, ts: now, awaiting: null });
 }
 
 export function remoteTurnEvent(key: string, event: unknown): void {
-  if (!key) return;
-  const s = sessionTurns.get(key);
-  const t = s?.turns.at(-1);
+  if (!key || !webLog) return;
+  const t = liveTurns.get(key);
   if (!t || t.status !== "running") return;
+  if (!t.runId) {
+    const rid = (event as { run_id?: unknown } | null)?.run_id;
+    if (typeof rid === "string" && rid) t.runId = rid;
+  }
   const app = tagEventApp(key, event);
   const mem = trackMemoryWrite(event, app);
   const clean = sanitizeEvent(event as Parameters<typeof sanitizeEvent>[0], app);
@@ -973,17 +877,14 @@ export function remoteTurnEvent(key: string, event: unknown): void {
 }
 
 export function remoteTurnEnd(key: string, output: string, ok = true, paused = false): void {
-  if (!key) return;
-  const s = sessionTurns.get(key);
-  if (!s) return;
+  if (!key || !webLog) return;
   const now = Date.now();
-  let t = s.turns.at(-1);
+  let t = liveTurns.get(key);
   if (!t || t.status !== "running") {
     // End without a start (e.g. the grow pass failed before start) —
     // record a one-line turn rather than dropping the exchange.
-    t = { turnId: randomUUID(), input: "", inputApp: "trunk", startedAt: now, endedAt: null, status: "running", error: null, output: null, events: [] };
-    s.turns.push(t);
-    while (s.turns.length > MAX_TURNS_KEPT) s.turns.shift();
+    t = { turnId: randomUUID(), input: "", inputApp: "trunk", startedAt: now, endedAt: null, status: "running", error: null, output: null, events: [], fromSeq: webLog.nextSeq(), toSeq: null };
+    liveTurns.set(key, t);
     if (activeSession === key) broadcast({ type: "turn_start", turnId: t.turnId, session: key, input: "", ts: now, awaiting: null });
   }
   const st = turnApps.get(key);
@@ -997,27 +898,59 @@ export function remoteTurnEnd(key: string, output: string, ok = true, paused = f
   t.output = ok ? output || null : null;
   t.error = ok ? null : output || "agent error";
   t.awaiting = awaiting;
-  s.awaiting = awaiting;
-  s.updatedAt = now;
+  t.toSeq = webLog.nextSeq();
   endTurnApps(key);
-  saveTurns();
-  pruneSessions(adminAgent);
+  persistTurn(key, t);
+  liveTurns.delete(key);
   if (activeSession === key) {
     broadcast({ type: "turn_end", turnId: t.turnId, status: t.status, error: t.error, output: t.output, awaiting, ts: now });
   }
 }
 
+/** Persist a finished turn as a marker row (the UI's source of truth). */
+function persistTurn(key: string, t: TurnRecord): void {
+  webLog?.writeTurnEnd({
+    key,
+    turnId: t.turnId,
+    runId: t.runId ?? null,
+    fromSeq: t.fromSeq ?? null,
+    toSeq: t.toSeq ?? null,
+    input: t.input,
+    inputApp: t.inputApp ?? "trunk",
+    status: t.status === "error" ? "error" : "done",
+    error: t.error,
+    output: t.output,
+    emits: t.emits ?? null,
+    levels: t.levels ?? null,
+    emitApps: t.emitApps ?? null,
+    buttons: t.buttons ?? null,
+    fallback: t.fallback ?? null,
+    awaiting: t.awaiting ?? null,
+    startedAt: t.startedAt,
+    endedAt: t.endedAt,
+  });
+}
+
 function sessionList(agent?: Agent) {
-  const local = [...sessionTurns.entries()].map(([key, s]) => ({
-    key, label: s.label, pattern: s.pattern, updatedAt: s.updatedAt, turns: s.turns.length, remote: false,
-    ref: agent?.sessionRef?.(key) ?? "", awaiting: s.awaiting ?? null,
+  const local = (webLog?.listSessions() ?? []).slice(0, MAX_SESSIONS_KEPT).map((s) => ({
+    key: s.key, label: s.label, pattern: s.pattern, updatedAt: s.updatedAt, turns: s.turns, remote: false,
+    ref: agent?.sessionRef?.(s.key) ?? "", awaiting: s.awaiting ?? null,
   }));
+  // A freshly minted chat has no markers yet — still show it as the active
+  // entry, the way the old in-memory store did.
+  if (activeSession && !local.some((s) => s.key === activeSession)) {
+    local.unshift({
+      key: activeSession, label: webLog?.labelOf(activeSession) ?? "", pattern: getSelectedPattern(),
+      updatedAt: Date.now(), turns: 0, remote: false, ref: agent?.sessionRef?.(activeSession) ?? "", awaiting: null,
+    });
+  }
+  const known = new Set(local.map((s) => s.key));
   // Live continuations this page has no transcript for — Telegram topics
-  // and web sessions pruned from the store. The web UI may FOLLOW any of
+  // and web sessions with no markers yet. The web UI may FOLLOW any of
   // them: selecting one sends web messages into the same conversation key
   // the other transport uses, shared tree and all.
   const foreign = (agent?.sessionKeys() ?? [])
-    .filter((k) => !sessionTurns.has(k))
+    .filter((k) => !known.has(k))
     .map((k) => ({ key: k, label: describeForeignKey(k), pattern: "", updatedAt: 0, turns: 0, remote: true, ref: agent?.sessionRef?.(k) ?? "" }));
   return [...local, ...foreign].sort((a, b) => b.updatedAt - a.updatedAt);
 }
@@ -1035,24 +968,21 @@ function describeForeignKey(key: string): string {
   return `telegram · chat ${chat}${where}${id ? ` · session ${id}` : ""}`;
 }
 
-/** Drop the least recently active LOCAL sessions past the cap (and their trees).
- *  The cap counts local sessions (the active one included); a session that is
- *  mid-turn and the active session are never pruned. */
-function pruneSessions(agent: Agent | undefined): void {
-  const local = sessionList().filter((s) => !s.remote); // sorted updatedAt desc
-  if (local.length <= MAX_SESSIONS_KEPT) return;
-  const removable = local
-    .filter((s) => s.key !== activeSession)
-    .filter((s) => !sessionTurns.get(s.key)?.turns.some((t) => t.status === "running"))
-    .sort((a, b) => a.updatedAt - b.updatedAt); // oldest first
-  let count = local.length;
-  for (const s of removable) {
-    if (count <= MAX_SESSIONS_KEPT) break;
-    sessionTurns.delete(s.key);
-    agent?.clear(s.key);
-    count--;
+/** Key → its current run id, for matching migrated history to the log. */
+function sessionContinuations(agent?: Agent): Map<string, string> {
+  const out = new Map<string, string>();
+  try {
+    for (const [key, cp] of agent?.sessionContinuationIds?.() ?? []) {
+      const runId = String(cp).split(":")[0];
+      if (runId) out.set(key, runId);
+    }
+  } catch {
+    // a mock/older agent without continuation metadata — migrate without bounds
   }
+  return out;
 }
+// The session cap is a display bound now: older sessions stay in the log
+// (selectable by key, resumable, never destructively pruned).
 
 const sseClients = new Set<http.ServerResponse>();
 let webQueue: Promise<void> = Promise.resolve();
@@ -1112,59 +1042,6 @@ export function notifyTreesChanged(name?: string): void {
   broadcast({ type: "trees", name: name ?? null });
 }
 
-function truncStr(s: string): string {
-  return s.length > MAX_EVENT_STR ? s.slice(0, MAX_EVENT_STR) + "…" : s;
-}
-
-/** Recursively cap string length and long arrays so events stay streamable. */
-function sanitizeValue(v: unknown, depth = 0): unknown {
-  if (typeof v === "string") return truncStr(v);
-  if (v === null || typeof v !== "object") return v;
-  if (depth > 4) return "…";
-  if (Array.isArray(v)) {
-    if (v.length > 6) {
-      return { _summary: `${v.length} items`, last: sanitizeValue(v[v.length - 1], depth + 1) };
-    }
-    return v.map((x) => sanitizeValue(x, depth + 1));
-  }
-  const out: Record<string, unknown> = {};
-  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-    out[k] = sanitizeValue(val, depth + 1);
-  }
-  return out;
-}
-
-function sanitizeEvent(e: { kind?: string; branch_path?: string; iteration?: number; scope_id?: number | null; content?: Record<string, unknown> | null }, app = "trunk"): SanitizedEvent {
-  const content: Record<string, unknown> = { ...(e.content ?? {}) };
-  // Keep the prompt input exactly as sent: attach it raw after generic
-  // sanitization, which would otherwise truncate strings and collapse the
-  // message array into a summary.
-  const messages = Array.isArray(content.messages) ? content.messages : null;
-  delete content.messages;
-  const clean = sanitizeValue(content) as Record<string, unknown>;
-  // The prompt history is huge (the trunk's system prompt alone is ~10 KB) and
-  // the UI only ever summarizes it — send the count and size, never the array.
-  // This is what kept single llm_call events at ~130 KB.
-  if (messages) {
-    clean.messages = {
-      count: messages.length,
-      chars: messages.reduce(
-        (n, m) => n + String(typeof m?.content === "string" ? m.content : JSON.stringify(m?.content ?? "")).length,
-        0,
-      ),
-    };
-  }
-  return {
-    kind: e.kind ?? "unknown",
-    branch_path: e.branch_path ?? "",
-    iteration: e.iteration ?? 0,
-    scope_id: e.scope_id ?? null,
-    content: clean,
-    ts: Date.now(),
-    app,
-  };
-}
-
 function enqueueChat(agent: Agent, key: string, content: unknown, displayText: string): { turnId: string; queued: boolean } {
   const turnId = randomUUID();
   pendingTurns++;
@@ -1180,23 +1057,18 @@ function enqueueChat(agent: Agent, key: string, content: unknown, displayText: s
 async function runTurn(agent: Agent, key: string, turnId: string, content: unknown, displayText: string): Promise<void> {
   pendingTurns--;
   activeTurns++;
-  const session = sessionTurns.get(key);
-  if (!session) {
+  if (!webLog || !(key === activeSession || webLog.hasSession(key))) {
     console.warn(`[web-chat] dropped turn for unknown session ${key}`);
     activeTurns--;
     return;
   }
-  if (!session.label && displayText) session.label = displayText.slice(0, 60);
   // A new turn supersedes any pending quota-fallback prompt for this session
   // (the fallback re-run goes through here too, but confirm already consumed it).
   if (typeof agent.clearPendingFallback === "function") agent.clearPendingFallback(key);
-  // Stamp the tree this session is actually running under (the pattern is
-  // global, but a session may have been created before a switch).
-  session.pattern = getSelectedPattern();
   const record: TurnRecord = {
     turnId,
     input: displayText,
-    inputApp: session.awaiting ?? "trunk",
+    inputApp: awaitingFor(key) ?? "trunk",
     startedAt: Date.now(),
     endedAt: null,
     status: "running",
@@ -1204,10 +1076,11 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     output: null,
     emits: [],
     events: [],
+    runId: null,
+    fromSeq: webLog.nextSeq(),
+    toSeq: null,
   };
-  session.turns.push(record);
-  while (session.turns.length > MAX_TURNS_KEPT) session.turns.shift();
-  session.awaiting = null;
+  liveTurns.set(key, record);
   beginTurnApps(key);
   broadcast({ type: "turn_start", turnId, session: key, input: displayText, inputApp: record.inputApp ?? "trunk", ts: record.startedAt, awaiting: null });
 
@@ -1229,6 +1102,10 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
   mirror(`\ud83d\udcbb ${displayText}`);
 
   const onEvent = (e: unknown) => {
+    if (!record.runId) {
+      const rid = (e as { run_id?: unknown } | null)?.run_id;
+      if (typeof rid === "string" && rid) record.runId = rid;
+    }
     const app = tagEventApp(key, e);
     const mem = trackMemoryWrite(e, app);
     const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0], app);
@@ -1307,9 +1184,12 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     activeTurns--;
     record.endedAt = Date.now();
     record.awaiting = awaiting;
-    session.awaiting = awaiting;
-    session.updatedAt = record.endedAt;
+    record.toSeq = webLog.nextSeq();
     endTurnApps(key);
+    // Persist BEFORE broadcasting: a page that reloads the instant turn_end
+    // arrives must find this turn in the log.
+    persistTurn(key, record);
+    liveTurns.delete(key);
     broadcast({
       type: "turn_end",
       turnId,
@@ -1324,10 +1204,6 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       fallback: record.fallback ?? null,
       ts: record.endedAt,
     });
-    saveTurns();
-    // Enforce the session cap after every completed web turn (it used to run
-    // only when a new session was minted, so the store drifted past the cap).
-    pruneSessions(adminAgent);
     // The mirror was live (see `mirror` above): everything streamed already
     // reached the phone. Send only what did not stream — the final result of a
     // non-looping tree, or the error line — then flush the chain.
@@ -1402,25 +1278,33 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
     html.replace("</head>", `<script>window.__UI_VERSION__=${JSON.stringify(UI_VERSION)}</script></head>`);
   const SETTINGS_PAGE = injectUiVersion(SETTINGS_HTML);
 
-  // Restore the web chat history from the previous run (before any browser
-  // polls /api/turns).
-  webTurnsPath = path.resolve(config.workspaceDir, "logs", "web-turns.json");
+  // Web chat history lives in the log DB (host markers, src/web-log.ts) —
+  // there is no web-turns.json anymore. A legacy file is imported once, then
+  // renamed away; nothing reads it again.
+  webLog = new WebLog(path.resolve(config.workspaceDir, "logs", "grandma-kat.db"), describeForeignKey);
   webSettingsPath = path.resolve(config.workspaceDir, "logs", "web-settings.json");
   loadFollowSetting();
-  loadTurns();
+  const legacyTurns = path.resolve(config.workspaceDir, "logs", "web-turns.json");
+  if (fs.existsSync(legacyTurns) && !fs.existsSync(legacyTurns + ".migrated")) {
+    try {
+      const stats = webLog.migrateLegacy(legacyTurns, sessionContinuations(agent));
+      fs.renameSync(legacyTurns, legacyTurns + ".migrated");
+      console.log(`[admin] web-turns.json migrated into the log DB (${stats.sessions} session(s), ${stats.turns} turn(s), ${stats.matched} with events) → web-turns.json.migrated`);
+    } catch (e) {
+      console.warn("[admin] web-turns.json migration failed (file kept):", e instanceof Error ? e.message : e);
+    }
+  }
   // By default the webui follows the live Telegram conversation; only when
   // there is nothing to follow is a session opened — never re-arm a stored
   // session automatically after a restart (picker), except on a true first
   // boot, which opens a fresh chat.
   if (autoFollowTelegram) resolveFollow(agent);
   if (!activeSession) {
-    if (sessionTurns.size === 0) {
-      const key = newSessionKey();
-      sessionTurns.set(key, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
-      activeSession = key;
-      saveTurns();
+    const sessions = webLog.listSessions();
+    if (sessions.length === 0) {
+      activeSession = newSessionKey();
     } else {
-      console.log(`[admin] ${sessionTurns.size} web session(s) on disk awaiting explicit selection`);
+      console.log(`[admin] ${sessions.length} web session(s) in the log awaiting explicit selection`);
     }
   } else if (autoFollowTelegram) {
     console.log(`[admin] webui follows telegram conversation ${activeSession}`);
@@ -1515,8 +1399,8 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       }
 
       if (req.method === "GET" && url.pathname === "/api/turns") {
-        const turns = activeSession ? sessionTurns.get(activeSession)?.turns ?? [] : [];
-        const awaiting = activeSession ? sessionTurns.get(activeSession)?.awaiting ?? null : null;
+        const turns = activeSession ? turnsFor(activeSession) : [];
+        const awaiting = activeSession ? awaitingFor(activeSession) : null;
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ turns, session: activeSession, awaiting }));
         return;
@@ -1528,17 +1412,16 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       // and no stored checkpoint is touched.
       if (req.method === "GET" && url.pathname === "/api/session") {
         resolveFollow(agent);
-        const active = activeSession ? sessionTurns.get(activeSession) : null;
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
           active: activeSession,
-          label: active?.label || "",
+          label: activeSession ? webLog?.labelOf(activeSession) || "" : "",
           follow: autoFollowTelegram,
           model: activeSession ? agent?.sessionModel?.(activeSession) ?? null : null,
           models: activeSession ? agent?.sessionModelMap?.(activeSession) ?? {} : {},
-          awaiting: active?.awaiting ?? null,
+          awaiting: activeSession ? awaitingFor(activeSession) : null,
           sessions: sessionList(agent),
-          turns: active ? active.turns.map(slimTurn) : null,
+          turns: activeSession ? turnsFor(activeSession) : null,
         }));
         return;
       }
@@ -1558,73 +1441,61 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         }
 
         // Rename a session (the drawer's inline label edit). `key` defaults to
-        // the active session; an empty label clears it (the next message
-        // re-derives one from its text).
+        // the active session; an empty label clears it (the label re-derives
+        // from the first message's text).
         if (typeof sel.label === "string") {
           const target = typeof sel.key === "string" && sel.key ? sel.key : activeSession;
-          if (!target || !sessionTurns.has(target)) {
+          if (!target || !webLog || !(webLog.hasSession(target) || target === activeSession)) {
             res.writeHead(404, { "content-type": "application/json" });
             res.end('{"error":"no such session"}');
             return;
           }
-          const s = sessionTurns.get(target)!;
-          s.label = sel.label.trim().slice(0, 80);
-          s.updatedAt = Date.now();
-          saveTurns();
+          webLog.writeLabel(target, sel.label.trim().slice(0, 80));
           broadcast({ type: "sessions", sessions: sessionList(agent) });
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, key: target, label: s.label, sessions: sessionList(agent) }));
+          res.end(JSON.stringify({ ok: true, key: target, label: webLog.labelOf(target), sessions: sessionList(agent) }));
           return;
         }
 
+        // Mint-or-reuse a fresh chat (shared by "new chat" and /api/clear):
+        // reusing the active session only when it is still an unused private
+        // chat, so repeated clicks never pile up empty shells (plan D).
         if (sel.new === true) {
           // Taking the deliberate step of a private web chat ends the
           // telegram-follow until it's switched back on in settings.
           if (autoFollowTelegram) { autoFollowTelegram = false; saveFollowSetting(); }
-          // Reuse the active session when it is still an unused private chat:
-          // clicking "new chat" repeatedly must not mint empty shells (plan D).
-          const currentKey = activeSession;
-          const current = currentKey ? sessionTurns.get(currentKey) : undefined;
-          const reusable = !!current && !!currentKey && currentKey.startsWith("web:")
-            && !current.label && current.turns.length === 0;
-          if (!reusable) {
-            const key = newSessionKey();
-            sessionTurns.set(key, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
-            pruneSessions(agent);
-            activeSession = key;
-          }
+          if (!reuseOrMintActive()) activeSession = newSessionKey();
           clearWebMemory();
-          saveTurns();
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true, active: activeSession, follow: autoFollowTelegram, turns: [] }));
           return;
         }
         if (typeof sel.delete === "string") {
-          if (!sessionTurns.has(sel.delete)) { res.writeHead(404); res.end('{"error":"no such session"}'); return; }
-          sessionTurns.delete(sel.delete);
+          if (!webLog || !webLog.hasSession(sel.delete)) { res.writeHead(404); res.end('{"error":"no such session"}'); return; }
+          // A tombstone, not a purge: the transcript disappears from the
+          // picker while the run trace stays in the log (tree viewer keeps
+          // its history, and the deletion is itself auditable).
+          webLog.writeDelete(sel.delete);
           agent?.clear(sel.delete);
           unbindWebSession(sel.delete);
           if (activeSession === sel.delete) {
             activeSession = null;
             broadcast({ type: "cleared" });
           }
-          saveTurns();
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true, active: activeSession, sessions: sessionList(agent) }));
           return;
         }
         if (typeof sel.key === "string") {
-          let s = sessionTurns.get(sel.key);
-          if (!s && agent?.hasContinuation(sel.key)) {
+          let known = webLog?.hasSession(sel.key) ?? false;
+          if (!known && agent?.hasContinuation(sel.key)) {
             // FOLLOW a conversation owned by another transport (a Telegram
             // topic): adopt its key. Messages here run the very same tree;
-            // the transcript view starts empty (state lives in the
-            // checkpoint, and the other chat keeps working unchanged).
-            s = { label: describeForeignKey(sel.key), pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] };
-            sessionTurns.set(sel.key, s);
-            saveTurns();
+            // the transcript view shows whatever the log has for it.
+            webLog?.ensureOpen(sel.key, describeForeignKey(sel.key));
+            known = true;
           }
-          if (!s) { res.writeHead(404); res.end('{"error":"no such session"}'); return; }
+          if (!known) { res.writeHead(404); res.end('{"error":"no such session"}'); return; }
           // Pinning a local web session also releases the telegram-follow;
           // selecting a telegram key by hand is compatible with staying on.
           if (autoFollowTelegram && sel.key.startsWith("web:")) { autoFollowTelegram = false; saveFollowSetting(); }
@@ -1633,7 +1504,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           // show the previous session's values until this one logs again.
           clearWebMemory();
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, active: sel.key, follow: autoFollowTelegram, turns: s.turns.map(slimTurn) }));
+          res.end(JSON.stringify({ ok: true, active: sel.key, follow: autoFollowTelegram, turns: turnsFor(sel.key) }));
           return;
         }
         res.writeHead(400, { "content-type": "application/json" });
@@ -1919,12 +1790,11 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       }
 
       if (req.method === "POST" && url.pathname === "/api/clear") {
-        // Wipe the ACTIVE session's history + tree, but stay on it (fresh
-        // start under the same key). Session removal lives in /api/session.
+        // Clear starts a FRESH session (mint-or-reuse like "new chat"); the
+        // conversation being left keeps its run and stays in the picker,
+        // resumable. Session removal lives in /api/session.
         if (activeSession) {
-          agent?.clear(activeSession);
-          sessionTurns.set(activeSession, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
-          saveTurns();
+          if (!reuseOrMintActive()) activeSession = newSessionKey();
         }
         clearWebMemory();
         broadcast({ type: "cleared" });
@@ -1943,8 +1813,8 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           res.end('{"error":"no session selected — resume one or start a new chat"}');
           return;
         }
-        const session = sessionTurns.get(activeSession);
-        if (!session || !session.turns.length) {
+        const turns = activeSession ? turnsFor(activeSession) : [];
+        if (!turns.length) {
           res.writeHead(409, { "content-type": "application/json" });
           res.end('{"error":"this session has no turns to send yet"}');
           return;
@@ -1974,10 +1844,11 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         // Plain-text transcript: one block per turn, errors kept as ⚠️
         // lines. No buttons — mirrors are text-only by design (see the
         // emit-buttons continuation record).
+        const sessionLabel = webLog?.labelOf(activeSession) || activeSession;
         const lines: string[] = [
-          `📋 transcript · ${session.label || sessionTurns.get(target)?.label || activeSession} (${session.turns.length} turn${session.turns.length === 1 ? "" : "s"})`,
+          `📋 transcript · ${sessionLabel} (${turns.length} turn${turns.length === 1 ? "" : "s"})`,
         ];
-        for (const t of session.turns) {
+        for (const t of turns) {
           lines.push("", `—— you ——`, t.input || "(empty)");
           lines.push(
             `—— bob ——`,
@@ -2010,7 +1881,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
             );
           }
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, key: target, parts: parts.length, turns: session.turns.length, followWeb }));
+          res.end(JSON.stringify({ ok: true, key: target, parts: parts.length, turns: turns.length, followWeb }));
         } catch (e: unknown) {
           res.writeHead(502, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
@@ -2274,16 +2145,11 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         setSelectedPattern(name);
         try { await writeEnv(config.envPath, { TREE_PATTERN: name }); } catch { /* persist best-effort */ }
         // Pause state is pattern-specific: no stored continuation can be
-        // resumed under a different tree. The active session is wiped (and
-        // the page told via "cleared"); every other session's stale token is
-        // dropped too — its history stays, and the next message under it
-        // grows a fresh tree.
-        if (activeSession) {
-          sessionTurns.set(activeSession, { label: "", pattern: getSelectedPattern(), updatedAt: Date.now(), turns: [] });
-        }
-        for (const key of sessionTurns.keys()) agent?.clear(key);
+        // resumed under a different tree, so every live continuation is
+        // dropped. Transcripts stay in the log (a record of what actually
+        // happened under the old tree) — the next message grows a fresh tree.
+        for (const key of agent?.sessionKeys() ?? []) agent?.clear(key);
         clearWebMemory();
-        saveTurns();
         broadcast({ type: "cleared" });
         notifyTreesChanged(name);
         res.writeHead(200, { "content-type": "application/json" });
