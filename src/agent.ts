@@ -580,6 +580,7 @@ export class Agent {
       getCheckpoint: (...a: unknown[]) => (base.getCheckpoint as Function | undefined)?.(...a),
       deleteCheckpoint: (...a: unknown[]) => (base.deleteCheckpoint as Function | undefined)?.(...a),
       getEvents: (...a: unknown[]) => (base.getEvents as Function | undefined)?.(...a),
+      readRow: (...a: unknown[]) => (base.readRow as Function | undefined)?.(...a),
     };
   }
 
