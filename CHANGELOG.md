@@ -2,6 +2,46 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-15 — message provenance: every bot bubble answers "what was this written from?"
+
+Each bot bubble in the tiled UI now has an ⓘ button. It opens a **written
+from** panel built from the run log (`src/provenance.ts` + `GET
+/api/provenance`): the prompt that produced the message, the **memory slots
+and other pieces it read**, who wrote each piece, the ground facts, `ref://`
+handles, and a **view prompt** expander showing the exact messages sent.
+"Trace deeper" walks the read-graph one level per click (depth 6 max,
+breadth-capped at 60 pieces).
+
+How the anchor is found: the message's text is traced through the `record`
+rows that carried it (a prompt's result, a Memory() capture) to the `llm_call`
+whose output matches — following the causal chain, not just the nearest call;
+when no exact match exists the nearest prompt is shown and **flagged as
+uncertain**. From there the walk uses the engine's own `reads` provenance
+(`{ name, scope, seq }` on every llm_call and memory write):
+`read-link` (the write row the read named), `latest-write` (a slot written
+before a resume, so the read carries no seq — the latest memory write for the
+same run + scope fills in, so `state`/`priorities`/etc. show real values
+instead of "no write recorded"), `human` (a delivered `.human()` row, which
+carries no write link), or `host-seed`. Both fallbacks stay inside the read's
+own run, so another conversation's identically named slot never leaks in.
+
+UI: `ui/src/components.tsx` (the ⓘ button and the modal), `store.ts`
+(`fetchProvenance`), `styles.css`. The bubble→log-row alignment goes through
+the turn's `(fromSeq, toSeq]` bounds + run id, so a bubble re-run/rewound mid
+pass anchors on its **last** matching emit. The SSE `event`/`turn_end` frames
+now carry the turn's `runId` too, so a bubble's icon appears as soon as the
+engine run behind it exists; machine narration bubbles and turns with no
+recorded run (old markers, never-ran turns) get no icon, and a stale click
+still gets a clean 404 message.
+
+Tests: `test:provenance` — one real tree through the Agent (memory writes →
+prompt → emits, machine narration included), asserting the exact-text anchor,
+the pieces and their writers, the depth-2 walk, the "nearest" fallback, a
+synthetic `ref://` resolution, `pickEmitAnchor`, `WebLog.findTurn`, and the
+endpoint end to end (persisted turn + 404). Verified read-only against the
+production log: a trunk reply traced to its `response` prompt, its `messages`
+slot write, and seven underlying slots.
+
 ## 2026-10-15 — the run registry works again: `startRun` through the telemetry wrapper
 
 The web picker and tree tooling resolve "which runs belong to this session?"

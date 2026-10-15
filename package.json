@@ -28,6 +28,7 @@
     "test:sessions": "tsx scripts/sessions-resume-test.ts",
     "test:webturns": "tsx scripts/web-turns-test.ts",
     "test:runs-table": "tsx scripts/runs-table-test.ts",
+    "test:provenance": "tsx scripts/provenance-test.ts",
     "test:web-memory": "tsx scripts/web-memory-test.ts",
     "test:admin-sessions": "tsx scripts/admin-sessions-test.ts",
     "test:pages": "tsx scripts/page-scripts-test.ts",

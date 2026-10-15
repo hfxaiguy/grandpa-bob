@@ -15,6 +15,7 @@ import {
   chooseFallback,
   clearConversation,
   sendToTelegram,
+  fetchProvenance,
   toggleExpanded,
   toggleWide,
   toggleHidden,
@@ -24,20 +25,22 @@ import {
   transcribeAudio,
   transcribeFileStream,
 } from "./store";
-import type { AppInfo, Turn } from "./types";
+import type { AppInfo, ProvPiece, ProvWriter, Provenance, Turn } from "./types";
 
 const trunkOf = (a?: string | null) => a || "trunk";
 
 /** Chat bubbles for one app, across every turn. */
-function bubblesFor(app: string): { turn: Turn; text: string; kind: "user" | "bot" | "err" }[] {
-  const out: { turn: Turn; text: string; kind: "user" | "bot" | "err" }[] = [];
+function bubblesFor(app: string): { turn: Turn; text: string; kind: "user" | "bot" | "err"; emitIndex?: number }[] {
+  const out: { turn: Turn; text: string; kind: "user" | "bot" | "err"; emitIndex?: number }[] = [];
   for (const t of state.turns) {
     if ((t.inputApp ?? "trunk") === app && t.input) out.push({ turn: t, text: t.input, kind: "user" });
     const emits = t.emits ?? [];
     const apps = t.emitApps ?? [];
     for (let i = 0; i < emits.length; i++) {
       if (trunkOf(apps[i]) !== app) continue;
-      out.push({ turn: t, text: emits[i], kind: "bot" });
+      // emitIndex: the bubble's position in the turn's emit list — the anchor
+      // the provenance endpoint resolves back to the log's emit row.
+      out.push({ turn: t, text: emits[i], kind: "bot", emitIndex: i });
     }
     if (app === "trunk" && t.status === "done" && !emits.length && t.output) {
       out.push({ turn: t, text: t.output, kind: "bot" });
@@ -408,6 +411,219 @@ function Composer(props: { app: string }) {
   );
 }
 
+// ── provenance: "what was this message written from" ────────────────────
+// The info icon on a bot bubble opens this. The data comes from
+// /api/provenance — a walk over the run log from the message's emit row: the
+// prompt that produced it, the memory slots it read (and who wrote them),
+// ref:// handles, and the ground facts at the bottom of the read-graph.
+
+const resolvedLabel = (p: ProvPiece): string => {
+  switch (p.resolved) {
+    case "read-link":
+      return "written by";
+    case "latest-write":
+      return "written earlier — latest write";
+    case "human":
+      return "you said";
+    default:
+      return "host seed";
+  }
+};
+
+const writerHead = (w: ProvWriter): string =>
+  `${w.kind}${w.op ? ` · ${w.op}` : ""}${w.child ? ` · ${w.child}` : ""}`;
+
+function PieceRow(props: { piece: ProvPiece; depth: number }) {
+  const p = () => props.piece;
+  const [open, setOpen] = createSignal(false);
+  const preview = (w: ProvWriter) => {
+    const one = w.text.replace(/\s+/g, " ").trim();
+    return one.length > 160 ? one.slice(0, 160) + "…" : one || "(no value)";
+  };
+  return (
+    <div class="prov-piece" style={{ "padding-left": `${Math.min(props.depth, 5) * 14}px` }}>
+      <div class="prov-piece-head">
+        <span class="prov-slot">{p().name}</span>
+        <Show when={p().scopePath}>
+          <span class="prov-dim"> @{p().scopePath}</span>
+        </Show>
+        <span class="spacer" />
+        <span class="prov-res">{resolvedLabel(p())}</span>
+      </div>
+      <Show
+        when={p().writer}
+        fallback={
+          <div class="prov-writer none">
+            <span class="prov-val">no write recorded — a host seed or an older run</span>
+          </div>
+        }
+      >
+        {(w) => (
+          <div class="prov-writer" onClick={() => setOpen(!open())} title="click to expand the full value">
+            <div class="prov-writer-line">
+              {writerHead(w())}
+              <span class="prov-dim"> · seq {w().seq} · {w().when}</span>
+            </div>
+            <Show when={!open()}>
+              <div class="prov-val">{preview(w())}</div>
+            </Show>
+            <Show when={open()}>
+              <pre class="prov-value">
+                {(w().text || "(no value)") + (w().truncated ? `\n… (${w().chars} chars total)` : "")}
+              </pre>
+            </Show>
+          </div>
+        )}
+      </Show>
+      <Show when={p().reads?.length}>
+        <For each={p().reads}>{(sub) => <PieceRow piece={sub} depth={props.depth + 1} />}</For>
+      </Show>
+    </div>
+  );
+}
+
+function ProvenanceModal(props: { turnId: string; bubble: number; text: string; onClose: () => void }) {
+  const [data, setData] = createSignal<Provenance | null>(null);
+  const [loading, setLoading] = createSignal(true);
+  const [err, setErr] = createSignal("");
+  const load = async (depth: number) => {
+    setLoading(true);
+    setErr("");
+    try {
+      setData(await fetchProvenance({ turnId: props.turnId, bubble: props.bubble, text: props.text, depth }));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "provenance failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+  void load(1);
+
+  return (
+    <div class="mem-modal" onClick={(ev) => ev.target === ev.currentTarget && props.onClose()}>
+      <div class="mem-modal-card prov-card">
+        <div class="mem-modal-head">
+          <span class="mem-modal-path">written from</span>
+          <span class="spacer" />
+          <Show when={loading()}>
+            <span class="spinner" />
+          </Show>
+          <Show when={data()?.truncated}>
+            <span class="prov-note" title="a breadth cap cut the walk short">trace capped</span>
+          </Show>
+          <button onClick={props.onClose}>✕</button>
+        </div>
+        <div class="prov-body">
+          <Show when={err()}>
+            <div class="prov-err">{err()}</div>
+          </Show>
+          <Show when={data()}>
+            {(d) => (
+              <>
+                <div class="prov-sec">
+                  <div class="prov-title">the message</div>
+                  <div class="prov-emit">{d().emit.text || "(empty)"}</div>
+                  <div class="prov-dim prov-emit-meta">
+                    seq {d().emit.seq}
+                    {d().emit.branchPath ? ` · ${d().emit.branchPath}` : ""} · {d().emit.when}
+                  </div>
+                </div>
+
+                <Show
+                  when={d().prompt}
+                  fallback={<div class="prov-sec"><div class="prov-title">the prompt</div><div class="empty">no prompt was logged before this message</div></div>}
+                >
+                  {(p) => (
+                    <div class="prov-sec">
+                      <div class="prov-title">the prompt that wrote it</div>
+                      <div class="prov-meta">
+                        <span class="prov-slot">{p().child || "(unnamed)"}</span>
+                        <span class="prov-dim"> · {p().model ?? "?"} · round {p().round ?? 1}
+                          {p().branchPath ? ` · ${p().branchPath}` : ""} · seq {p().seq} · {p().when}</span>
+                      </div>
+                      <Show when={d().match === "nearest"}>
+                        <div class="prov-warn">
+                          no exact text match in the log — showing the closest prompt before this message
+                        </div>
+                      </Show>
+                      <Show when={p().rounds.length > 1}>
+                        <div class="prov-dim">
+                          rounds: {p().rounds.map((r) => `#${r.round ?? "?"} (seq ${r.seq})`).join(", ")}
+                        </div>
+                      </Show>
+                      <details class="prov-prompt">
+                        <summary>
+                          view prompt ({p().messageCount} message{p().messageCount === 1 ? "" : "s"}, {p().messageChars} chars)
+                        </summary>
+                        <div class="prov-msgs">
+                          <For each={p().messages}>
+                            {(m) => (
+                              <div class="prov-msg">
+                                <div class="prov-msg-role">
+                                  {m.role}
+                                  <span class="prov-dim"> · {m.chars} chars{m.truncated ? " · truncated" : ""}</span>
+                                </div>
+                                <pre class="prov-msg-body">{m.content}</pre>
+                              </div>
+                            )}
+                          </For>
+                        </div>
+                      </details>
+                    </div>
+                  )}
+                </Show>
+
+                <div class="prov-sec">
+                  <div class="prov-title">memory & slots it read</div>
+                  <Show when={d().pieces.length} fallback={<div class="empty">nothing recorded for this prompt</div>}>
+                    <For each={d().pieces}>{(piece) => <PieceRow piece={piece} depth={0} />}</For>
+                  </Show>
+                  <Show when={d().pieces.length && d().depth < d().maxDepth}>
+                    <button class="prov-deeper" disabled={loading()} onClick={() => void load(d().depth + 1)}>
+                      trace deeper ⤵ — show what those pieces were written from (depth {d().depth + 1})
+                    </button>
+                  </Show>
+                </div>
+
+                <Show when={d().refs.length}>
+                  <div class="prov-sec">
+                    <div class="prov-title">passed by reference (ref://)</div>
+                    <For each={d().refs}>
+                      {(r) => (
+                        <div class="prov-ref">
+                          <span class="prov-slot">ref://{r.seq}</span>
+                          <span class="prov-dim"> · {r.kind}{r.child ? ` · ${r.child}` : ""}</span>
+                          <div class="prov-val">{r.text.replace(/\s+/g, " ").slice(0, 200)}</div>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+
+                <Show when={d().leaves.length}>
+                  <div class="prov-sec">
+                    <div class="prov-title">ground facts</div>
+                    <For each={d().leaves}>
+                      {(l) => (
+                        <div class="prov-leaf">
+                          <span class="prov-slot">{l.child || l.kind}</span>
+                          <span class="prov-dim">
+                            {` · ${l.kind}${l.op ? ` · ${l.op}` : ""}`} · seq {l.seq} · {l.when}
+                          </span>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              </>
+            )}
+          </Show>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Tile(props: { app: AppInfo }) {
   const name = () => props.app.name;
   const expanded = () => state.layout.expanded.includes(name());
@@ -439,6 +655,8 @@ function Tile(props: { app: AppInfo }) {
   const running = () => currentApp() === name();
   const bubbles = createMemo(() => bubblesFor(name()));
   const chatRef = { el: undefined as HTMLDivElement | undefined };
+  // The bubble whose provenance panel is open (null = closed).
+  const [prov, setProv] = createSignal<{ turnId: string; bubble: number; text: string } | null>(null);
 
   createEffect(() => {
     bubbles();
@@ -499,8 +717,38 @@ function Tile(props: { app: AppInfo }) {
         <Show when={bubbles().length} fallback={<div class="empty">no messages yet</div>}>
           <For each={bubbles()}>
             {(b) => (
-              <div class="bubble" classList={{ user: b.kind === "user", bot: b.kind === "bot", err: b.kind === "err" }}>
+              <div
+                class="bubble"
+                classList={{
+                  user: b.kind === "user",
+                  bot: b.kind === "bot",
+                  err: b.kind === "err",
+                  "has-info":
+                    b.kind === "bot" &&
+                    b.emitIndex != null &&
+                    b.emitIndex >= 0 &&
+                    !!b.turn.runId &&
+                    b.turn.levels?.[b.emitIndex] !== "machine",
+                }}
+              >
                 {b.text}
+                <Show
+                  when={
+                    b.kind === "bot" &&
+                    b.emitIndex != null &&
+                    b.emitIndex >= 0 &&
+                    !!b.turn.runId &&
+                    b.turn.levels?.[b.emitIndex] !== "machine"
+                  }
+                >
+                  <button
+                    class="bubble-info"
+                    title="what was this written from?"
+                    onClick={() => setProv({ turnId: b.turn.turnId, bubble: b.emitIndex!, text: b.text })}
+                  >
+                    ⓘ
+                  </button>
+                </Show>
               </div>
             )}
           </For>
@@ -513,6 +761,9 @@ function Tile(props: { app: AppInfo }) {
         <MemoryPanel app={name()} />
         <EventLog app={name()} />
       </div>
+      <Show when={prov()}>
+        {(p) => <ProvenanceModal turnId={p().turnId} bubble={p().bubble} text={p().text} onClose={() => setProv(null)} />}
+      </Show>
     </section>
   );
 }

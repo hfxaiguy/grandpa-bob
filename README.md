@@ -408,7 +408,13 @@ The admin server (port `ADMIN_PORT`, default 8080) serves:
   that app's **own chat bubbles**, a read-only **memory panel** (values
   written inside that app, nested paths indented; **click a value to inspect
   its full content**), and a **mini event log**;
-  a global **event-stream side panel** shows every step tagged by app. The
+  a global **event-stream side panel** shows every step tagged by app. Every
+  bot bubble carries an **ⓘ "written from"** button — straight from the run
+  log it shows the prompt that produced the message, the **memory slots and
+  other pieces it read** (each with the row that wrote it: a tool result, your
+  message, an earlier prompt), a **trace deeper** walk of the read-graph, the
+  ground facts, any **ref://** handles, and a **view-prompt** expander with the
+  exact messages sent. The
   **human-input box appears only on the tile whose tree is paused at
   `.human()`**, and the **trunk tile always has one** (start a conversation,
   reply, or queue while a turn runs). The composer also takes **🎙 voice** and

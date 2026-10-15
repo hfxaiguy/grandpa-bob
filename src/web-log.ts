@@ -267,6 +267,20 @@ export class WebLog {
     }
   }
 
+  /** One turn marker by its turnId (the provenance endpoint's turn lookup). */
+  findTurn(turnId: string): TurnMarker | null {
+    if (!turnId) return null;
+    const row = this.db
+      .prepare("SELECT content FROM calls WHERE kind = ? AND json_extract(content, '$.turnId') = ? ORDER BY seq DESC LIMIT 1")
+      .get(MARKER_TURN, turnId) as { content: string } | undefined;
+    if (!row) return null;
+    try {
+      return JSON.parse(row.content) as TurnMarker;
+    } catch {
+      return null;
+    }
+  }
+
   /** The picker: every key the drawer has ever shown, minus deletions. */
   listSessions(): StoredSession[] {
     const rows = this.db

@@ -33,6 +33,9 @@ export interface Turn {
   status: "running" | "done" | "error";
   error: string | null;
   output: string | null;
+  /** The engine run this turn belongs to; null/absent when the turn never ran
+   *  (or predates run attribution). */
+  runId?: string | null;
   emits?: string[] | null;
   levels?: (string | null)[] | null;
   emitApps?: (string | null)[] | null;
@@ -76,4 +79,81 @@ export interface StreamLine {
   text: string;
   /** Chat emit vs engine step — styled differently. */
   emit: boolean;
+}
+
+// ── message provenance ("what was this written from") ───────────────────
+// Mirrors src/provenance.ts (the /api/provenance payload).
+
+export interface ProvWriter {
+  seq: number;
+  kind: string;
+  runId: string;
+  when: string;
+  branchPath: string;
+  child: string | null;
+  op: string | null;
+  text: string;
+  chars: number;
+  truncated: boolean;
+}
+
+export interface ProvPiece {
+  name: string;
+  scope: number | null;
+  scopePath: string | null;
+  resolved: "read-link" | "latest-write" | "human" | "host-seed";
+  writer: ProvWriter | null;
+  /** The writer's own reads — present once the walk is deeper (trace deeper). */
+  reads?: ProvPiece[];
+}
+
+export interface ProvPromptMessage {
+  role: string;
+  chars: number;
+  truncated: boolean;
+  content: string;
+}
+
+export interface ProvPrompt {
+  seq: number;
+  child: string;
+  model: string | null;
+  round: number | null;
+  scopeId: number | null;
+  branchPath: string;
+  when: string;
+  rounds: { seq: number; round: number | null; model: string | null }[];
+  messages: ProvPromptMessage[];
+  messageCount: number;
+  messageChars: number;
+}
+
+export interface ProvRef {
+  seq: number;
+  kind: string;
+  child: string | null;
+  text: string;
+}
+
+export interface Provenance {
+  emit: {
+    seq: number;
+    runId: string;
+    when: string;
+    child: string | null;
+    branchPath: string;
+    text: string;
+  };
+  match: "text" | "nearest" | "none";
+  prompt: ProvPrompt | null;
+  pieces: ProvPiece[];
+  leaves: ProvWriter[];
+  refs: ProvRef[];
+  depth: number;
+  maxDepth: number;
+  truncated: boolean;
+  /** Echoed turn/bubble the walk was anchored on. */
+  turnId: string;
+  bubble: number;
+  emitCount: number;
 }

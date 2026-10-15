@@ -36,6 +36,7 @@ import {
   type SttBackendOptions,
 } from "./stt.js";
 import { TreeLogReader, logDbPath } from "./treeLog.js";
+import { ProvenanceReader, pickEmitAnchor } from "./provenance.js";
 import { DEFAULT_PATTERN, loadPattern, splitTreeRef } from "./pattern-loader.js";
 import { PATTERNS_DIR_NAME, listAppTrees, listPatterns, listTreeSources } from "./tree-sources.js";
 import {
@@ -653,6 +654,13 @@ function turnsFor(key: string, withEvents = true): TurnRecord[] {
   return turns;
 }
 
+/** The turn currently running anywhere, by turnId (the provenance lookup). */
+function findLiveTurn(turnId: string): TurnRecord | null {
+  if (!turnId) return null;
+  for (const t of liveTurns.values()) if (t.turnId === turnId) return t;
+  return null;
+}
+
 /**
  * Keep the active session when it is still an unused private chat; otherwise
  * the caller mints. Shared by "new chat" and clear, so neither piles up
@@ -916,7 +924,7 @@ export function remoteTurnEvent(key: string, event: unknown): void {
   t.events.push(clean);
   capTurnEvents(t);
   if (activeSession === key) {
-    broadcast({ type: "event", turnId: t.turnId, event: clean });
+    broadcast({ type: "event", turnId: t.turnId, event: clean, runId: t.runId ?? null });
     if (mem) broadcast({ type: "memory", session: mem.session, app: mem.app, values: mem.values });
   }
 }
@@ -948,7 +956,7 @@ export function remoteTurnEnd(key: string, output: string, ok = true, paused = f
   persistTurn(key, t);
   liveTurns.delete(key);
   if (activeSession === key) {
-    broadcast({ type: "turn_end", turnId: t.turnId, status: t.status, error: t.error, output: t.output, awaiting, ts: now });
+    broadcast({ type: "turn_end", turnId: t.turnId, status: t.status, error: t.error, output: t.output, awaiting, runId: t.runId ?? null, ts: now });
   }
 }
 
@@ -1156,7 +1164,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0], app);
     record.events.push(s);
     capTurnEvents(record);
-    broadcast({ type: "event", turnId, event: s });
+    broadcast({ type: "event", turnId, event: s, runId: record.runId ?? null });
     if (mem) broadcast({ type: "memory", session: mem.session, app: mem.app, values: mem.values });
   };
 
@@ -1247,6 +1255,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       awaiting,
       buttons: record.buttons,
       fallback: record.fallback ?? null,
+      runId: record.runId ?? null,
       ts: record.endedAt,
     });
     // The mirror was live (see `mirror` above): everything streamed already
@@ -2592,6 +2601,65 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           res.end(JSON.stringify({ path: pathParam, value: values[pathParam] ?? null }));
         } else {
           res.end(JSON.stringify({ values, apps }));
+        }
+        return;
+      }
+
+      // Message provenance — "what was this reply written from?" Given a
+      // turn (live or persisted) and the index of one of its bubbles, walk
+      // the run log's read-graph from the message's emit row: the prompt that
+      // produced it, the memory slots and other pieces it read, their
+      // writers, and ref:// handles. Read-only, computed on click.
+      // Params: turnId, bubble (emit index, -1 = last emit), text (the
+      // bubble's text — the preferred matcher), depth (1..MAX_PROV_DEPTH).
+      if (req.method === "GET" && url.pathname === "/api/provenance") {
+        const turnId = url.searchParams.get("turnId") ?? "";
+        const bubbleIdx = Number.parseInt(url.searchParams.get("bubble") ?? "", 10);
+        const depth = Number.parseInt(url.searchParams.get("depth") ?? "1", 10) || 1;
+        const wantText = url.searchParams.get("text") ?? "";
+        const live = findLiveTurn(turnId);
+        const marker = live ? null : webLog?.findTurn(turnId) ?? null;
+        const runId = live?.runId ?? marker?.runId ?? null;
+        const fromSeq = live?.fromSeq ?? marker?.fromSeq ?? null;
+        // A running turn has no end bound yet — read up to the current tail.
+        const toSeq = (live ? live.toSeq ?? webLog?.nextSeq() : marker?.toSeq) ?? null;
+        if (!turnId || !runId || fromSeq == null || toSeq == null) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "this turn has no engine run recorded — nothing to trace" }));
+          return;
+        }
+        let reader: ProvenanceReader;
+        try {
+          reader = new ProvenanceReader(treeDbPath);
+        } catch (e: any) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: e?.message ?? "run log unavailable" }));
+          return;
+        }
+        try {
+          const emits = reader.listEmits(runId, fromSeq, toSeq);
+          if (!emits.length) {
+            res.writeHead(404, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "no message rows were logged for this turn" }));
+            return;
+          }
+          // The UI's preferred anchor: the last emit whose text is the
+          // bubble's (a re-run can log several passes; the final one wins),
+          // else the bubble index, else the last emit.
+          const anchor = pickEmitAnchor(emits, bubbleIdx, wantText);
+          const data = reader.provenance(emits[anchor].seq, depth);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            ...data,
+            turnId,
+            bubble: anchor,
+            emitCount: emits.length,
+          }));
+        } catch (e: any) {
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: e?.message ?? "provenance walk failed" }));
+        } finally {
+          reader.close();
         }
         return;
       }

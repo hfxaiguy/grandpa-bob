@@ -3,7 +3,7 @@
  *  chat page, but the stream is split per app. */
 import { createStore, produce, reconcile } from "solid-js/store";
 import { getJSON, postJSON, postForm, openEventStream } from "./api";
-import type { AppInfo, PatternInfo, SessionInfo, Slot, Turn } from "./types";
+import type { AppInfo, PatternInfo, Provenance, SessionInfo, Slot, Turn } from "./types";
 
 /** Events kept per turn in the live store. The full trace lives in the run log
  *  (`read_runs`); the UI only ever shows a tail, and an unbounded array is what
@@ -446,6 +446,30 @@ export async function sendToTelegram(): Promise<void> {
   }
 }
 
+// ── message provenance ──────────────────────────────────────────────────
+
+/**
+ * Fetch "what was this message written from" for one bubble: the prompt that
+ * produced it, the memory slots and other pieces it read (their writers), and
+ * ref:// handles. `bubble` is the turn-level emit index (-1 = last emit);
+ * `depth` grows the walk when the user asks to trace deeper. The endpoint's
+ * friendly error text (a turn with no run, no emits) is surfaced as-is.
+ */
+export async function fetchProvenance(p: {
+  turnId: string;
+  bubble: number;
+  text?: string;
+  depth?: number;
+}): Promise<Provenance> {
+  const q = new URLSearchParams({ turnId: p.turnId, bubble: String(p.bubble) });
+  if (p.text) q.set("text", p.text);
+  if (p.depth && p.depth > 1) q.set("depth", String(p.depth));
+  const r = await fetch(`/api/provenance?${q.toString()}`, { cache: "no-store" });
+  const d = (await r.json().catch(() => ({}))) as Partial<Provenance> & { error?: string };
+  if (!r.ok) throw new Error(d.error || `/api/provenance: ${r.status}`);
+  return d as Provenance;
+}
+
 // ── layout tweaks ───────────────────────────────────────────────────────
 
 /** Dismiss the global turn-failure banner. */
@@ -530,6 +554,8 @@ function handleSSE(msg: any): void {
         produce((s) => {
           const t = s.turns.find((x) => x.turnId === msg.turnId);
           if (!t) return;
+          // The engine run behind the turn — the provenance panel's anchor.
+          if (msg.runId && !t.runId) t.runId = msg.runId;
           t.events.push(ev);
           if (t.events.length > MAX_TURN_EVENTS) t.events.splice(0, t.events.length - MAX_TURN_EVENTS);
         }),
@@ -569,6 +595,7 @@ function handleSSE(msg: any): void {
             t.output = msg.output ?? t.output;
             t.endedAt = msg.ts ?? Date.now();
             t.awaiting = msg.awaiting ?? null;
+            if (msg.runId) t.runId = msg.runId;
             if (msg.emits) t.emits = msg.emits;
             if (msg.levels) t.levels = msg.levels;
             if (msg.emitApps) t.emitApps = msg.emitApps;
