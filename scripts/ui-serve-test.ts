@@ -4,8 +4,10 @@
  *   1. GET / serves ui/dist/index.html when the app is built.
  *   2. GET /assets/* serves the content-hashed bundle with a JS content type.
  *   3. Path traversal out of ui/dist is refused.
- *   4. Without a build, / shows a "UI not built" notice.
- *   5. /settings is unaffected.
+ *   4. A rebuild while the server runs (new index + assets, old files gone) is
+ *      served on the next request without a restart — no stale-hash 404s.
+ *   5. Without a build, / shows a "UI not built" notice.
+ *   6. /settings is unaffected.
  *
  * Mock agent + real admin HTTP API. Run: npm run test:ui-serve
  */
@@ -78,8 +80,26 @@ async function get(port: number, p: string) {
   assert.equal(settings.status, 200);
   assert.match(settings.type, /text\/html/);
 
+  // ── a `build:ui` while the server runs ──
+  // Vite rewrites index.html to new content hashes and clears the old assets.
+  // / must serve the current index (reading it per request) so the reloaded
+  // page asks for files that exist; a startup snapshot would 404 here.
+  await fs.rm(path.join(ws, "ui", "dist", "assets", "index-abc.js"));
+  await fs.writeFile(path.join(ws, "ui", "dist", "assets", "index-def.js"), "console.log('rebuilt');");
+  await fs.writeFile(
+    path.join(ws, "ui", "dist", "index.html"),
+    "<!doctype html><div id=\"root\">REBUILT_MARKER</div><script type=\"module\" src=\"/assets/index-def.js\"></script>",
+  );
+  const rebuilt = await get(port, "/");
+  assert.equal(rebuilt.status, 200);
+  assert.match(rebuilt.text, /REBUILT_MARKER/, "a rebuild while running is served on the next request");
+  const rebuiltAsset = await get(port, "/assets/index-def.js");
+  assert.equal(rebuiltAsset.status, 200, "the rebuilt bundle is served");
+  const gone = await get(port, "/assets/index-abc.js");
+  assert.equal(gone.status, 404, "the replaced bundle is gone (the old-hash 404 being avoided)");
+
   server.close();
-  console.log("1-3. built app served at / with assets; traversal refused; /settings intact");
+  console.log("1-4. built app served at / with assets; traversal refused; rebuild mid-run served; /settings intact");
 }
 
 // ── without a build: a clear "UI not built" notice at / ──
@@ -94,7 +114,7 @@ async function get(port: number, p: string) {
   assert.match(root.type, /text\/html/);
   assert.match(root.text, /UI not built/, "the notice tells the user to build the UI");
   server.close();
-  console.log("4. no build → UI-not-built notice at /");
+  console.log("5. no build → UI-not-built notice at /");
 }
 
 console.log("ui-serve-test: all assertions passed");

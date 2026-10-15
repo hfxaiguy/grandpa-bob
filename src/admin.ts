@@ -1304,11 +1304,20 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
   // from ui/dist; assets live under ui/dist/assets/. A checkout that has not
   // built the app gets a clear "run npm run build:ui" notice instead of a page.
   const UI_DIST = path.resolve(config.projectDir, "ui", "dist");
-  let appIndexHtml: string | null = null;
-  try {
-    appIndexHtml = fs.readFileSync(path.join(UI_DIST, "index.html"), "utf8");
-  } catch {
-    appIndexHtml = null;
+  // Read the index at request time, not once at startup: a `build:ui` while
+  // the server runs rewrites index.html to new content hashes and deletes the
+  // old assets, so a startup snapshot would reference files that no longer
+  // exist (404s for the CSS/JS on every reload). The page is served no-store
+  // anyway, and reading a small file per request is cheap.
+  const readAppIndexHtml = (): string | null => {
+    try {
+      return fs.readFileSync(path.join(UI_DIST, "index.html"), "utf8");
+    } catch {
+      return null;
+    }
+  };
+  const appIndexHtml = readAppIndexHtml();
+  if (!appIndexHtml) {
     console.log("[admin] ui/dist not built — run `npm run build:ui` (the tiled UI is served at /)");
   }
   const NOT_BUILT_HTML =
@@ -1405,8 +1414,9 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
 
       if (req.method === "GET" && url.pathname === "/") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        // The tiled app UI; a build notice when ui/dist is missing.
-        res.end(appIndexHtml ?? NOT_BUILT_HTML);
+        // The tiled app UI, read fresh so a rebuild while the server runs
+        // stays loadable; a build notice when ui/dist is missing.
+        res.end(readAppIndexHtml() ?? NOT_BUILT_HTML);
         return;
       }
 

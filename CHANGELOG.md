@@ -2,6 +2,20 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-15 — the served index is read per request: `build:ui` while running no longer 404s the page
+
+`startAdmin` read `ui/dist/index.html` once at startup. A `build:ui` while the
+server was up (a manual build, or any other checkout's build) rewrote the index
+to new content hashes and deleted the old files from `ui/dist/assets/`, so the
+running server kept serving HTML that referenced deleted bundles — every asset
+404'd (`/assets/index-*.css`) and the page stayed blank until a restart.
+
+The index is now read at request time (the page was already served `no-store`),
+so the next reload picks up the fresh HTML and its live assets; a first build
+appearing after startup is picked up the same way. `test:ui-serve` pins it: a
+rebuild mid-run serves the new marker and its bundle, and the replaced bundle
+is gone.
+
 ## 2026-10-15 — message provenance: every bot bubble answers "what was this written from?"
 
 Each bot bubble in the tiled UI now has an ⓘ button. It opens a **written
