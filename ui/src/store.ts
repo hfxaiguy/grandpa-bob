@@ -548,6 +548,25 @@ export function orderedApps(): AppInfo[] {
 
 // ── live stream (SSE) ───────────────────────────────────────────────────
 
+/**
+ * The one live subscription. Re-mounting the app (the browser target swaps
+ * chat for settings in place) must not stack subscriptions: every subscriber
+ * calls handleSSE, so a leak would append each engine event to the same turn
+ * twice. Close before re-opening, and close on unmount (mountApp's dispose).
+ */
+let stream: EventSource | null = null;
+
+export function openLiveStream(): void {
+  stream?.close();
+  stream = openEventStream(handleSSE, (connected) => setState("connected", connected));
+}
+
+export function closeLiveStream(): void {
+  stream?.close();
+  stream = null;
+  setState("connected", false);
+}
+
 function handleSSE(msg: any): void {
   switch (msg?.type) {
     case "turn_start": {
@@ -691,6 +710,6 @@ export async function init(): Promise<void> {
     console.warn("session:", e);
   }
   await refreshVersions();
-  openEventStream(handleSSE, (connected) => setState("connected", connected));
+  openLiveStream();
   setState("ready", true);
 }

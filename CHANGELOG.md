@@ -2,6 +2,20 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — one live event stream (duplicate run cards fixed)
+
+The tiled UI opened a new `/api/events` subscription on every mount and never
+closed it. The Node admin serves chat and settings as separate pages, but the
+browser target swaps them in place, so a trip to Settings and back left the old
+`EventSource` subscribed: every engine event was then appended to the same turn
+twice and the run log showed each step (for example `llm…response — calling
+strong`) as two identical cards. The engine and the model call were never
+duplicated — the run log has a single `llm_start` for the turn.
+
+`store.ts` now owns the single stream (`openLiveStream()` closes the previous
+one before opening, `closeLiveStream()` closes it for good), and `mountApp()`'s
+dispose calls it. One subscriber survives a chat ↔ settings remount.
+
 ## 2026-10-19 — browser model calls go through the admin's registry
 
 When `web/dist` is served by grandpa-bob's admin, the in-tab agent now reads
