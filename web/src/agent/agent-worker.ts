@@ -56,6 +56,25 @@ function post(message: unknown): void {
   (self as unknown as Worker).postMessage(message);
 }
 
+/**
+ * The registry a tree should see: each overridden role (e.g. "strong")
+ * resolves to the conversation's chosen target slot (e.g. "v4.1"). Unknown or
+ * stale targets are ignored so deleting a slot cannot break a live chat.
+ */
+function applyModelOverrides(
+  base: ModelRegistry,
+  overrides?: Record<string, string>,
+): ModelRegistry {
+  if (!overrides) return base;
+  let out: ModelRegistry | null = null;
+  for (const [role, target] of Object.entries(overrides)) {
+    if (target === role || !base[target]) continue;
+    if (!out) out = { ...base };
+    out[role] = base[target];
+  }
+  return out ?? base;
+}
+
 /** One-line description of every configured model slot, for error messages. */
 function describeModels(models: Record<string, { baseURL?: string; model?: string }>): string {
   const slots = Object.entries(models).map(([slot, entry]) => {
@@ -94,6 +113,36 @@ async function withModelContext<T>(
 }
 
 /**
+ * When the app is served by grandpa-bob's admin, use ITS models.json (the file
+ * Telegram reads) and route each call through `/api/llm/<slot>`. One config,
+ * server-side network (providers without CORS still work), and the API keys
+ * never reach the page. Returns null when no admin is serving the app.
+ */
+async function loadServerModels(env: Record<string, string>): Promise<ModelRegistry | null> {
+  try {
+    const res = await fetch("/api/models", { headers: { accept: "application/json" } });
+    if (!res.ok) return null;
+    const type = res.headers.get("content-type") ?? "";
+    if (!type.includes("application/json")) return null;
+    const data = (await res.json()) as { json?: string };
+    if (!data.json?.trim()) return null;
+    const registry = parseModels(data.json, env);
+    const origin = self.location.origin;
+    const out: ModelRegistry = {};
+    for (const [name, entry] of Object.entries(registry)) {
+      out[name] = {
+        ...entry,
+        baseURL: `${origin}/api/llm/${encodeURIComponent(name)}`,
+        apiKey: "proxy",
+      };
+    }
+    return Object.keys(out).length ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Wrap the tool map so any name a tree declares but this target doesn't
  * implement resolves to an error stub instead of failing the knit. Keeps
  * trunk working as the workspace's tool list evolves.
@@ -124,6 +173,10 @@ interface RunOptions {
   storage?: "browser" | "desktop" | "direct";
   server?: string;
   modelsJson?: string;
+  /** Served by the admin: use its models.json via the /api/llm proxy. */
+  serverModels?: boolean;
+  /** Per-conversation role→slot overrides (e.g. strong → "v4.1"). */
+  modelOverrides?: Record<string, string>;
   /** Direct mode: the folder picked with the File System Access API. */
   rootHandle?: FileSystemDirectoryHandle;
   /** Direct mode: write SQL changes back to the real .db files. */
@@ -274,6 +327,13 @@ async function handleRun(opts: RunOptions): Promise<void> {
   await ensureIndex(platform, sessionKey);
 
   const registry = await (async (): Promise<ModelRegistry> => {
+    // Served by the admin: its models.json is the single source (and the
+    // /api/llm proxy supplies the network + keys). Settings JSON is only a
+    // standalone fallback now.
+    if (opts.serverModels) {
+      const fromServer = await loadServerModels(opts.env ?? {});
+      if (fromServer) return fromServer;
+    }
     if (opts.modelsJson && opts.modelsJson.trim()) {
       try {
         return parseModels(opts.modelsJson, opts.env ?? {});
@@ -285,7 +345,7 @@ async function handleRun(opts: RunOptions): Promise<void> {
   })();
   const models =
     Object.keys(registry).length > 0
-      ? registry
+      ? applyModelOverrides(registry, opts.modelOverrides)
       : { default: { model: "mock", handler: async () => ({ content: `mock: ${task}` }) } };
 
   const onEmit = (value: unknown): void => post({ id: opts.id, type: "emit", value });

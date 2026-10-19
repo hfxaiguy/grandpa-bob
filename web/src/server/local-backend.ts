@@ -19,6 +19,7 @@ import { emitValue } from "../../../src/util/emit-text";
 import { createModuleLoader } from "../agent/module-loader";
 import { patternLabel } from "../agent/pattern-path";
 import { loadEnv, saveEnv, saveModelsJson } from "../settings";
+import { parseModels, type ModelRegistry } from "../../../src/model-config";
 import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "../../../src/db-sync";
 import { transcribeBlob } from "../stt/browser-whisper";
 
@@ -38,6 +39,11 @@ export interface BackendOptions {
   initialPattern: string;
   /** Model registry JSON from browser settings (overrides the workspace models.json). */
   modelsJson?: string;
+  /**
+   * Served by grandpa-bob's admin: the server's models.json is authoritative,
+   * so the models endpoints fall through to it and the chat proxy is used.
+   */
+  serverModels?: boolean;
   /** Direct mode: the folder picked with the File System Access API. */
   rootHandle?: FileSystemDirectoryHandle;
   /** Direct mode: write SQL changes back to the real .db files. */
@@ -84,6 +90,70 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   let updatedAt = Date.now();
   let modelsJson = opts.modelsJson ?? "";
   const activeRefs = new Map<string, string>();
+  /** Per-conversation role→slot overrides (the chat model picker). */
+  const sessionModels = new Map<string, Record<string, string>>();
+
+  /**
+   * GET a JSON object from the admin, when this page is served by it. XHR is
+   * used deliberately: the fetch shim routes `/api/*` back into this backend.
+   */
+  function adminGet(path: string): Promise<Record<string, unknown> | null> {
+    return new Promise((resolve) => {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", path);
+        xhr.setRequestHeader("accept", "application/json");
+        xhr.onload = () => {
+          try {
+            const data = JSON.parse(xhr.responseText) as unknown;
+            resolve(data && typeof data === "object" ? (data as Record<string, unknown>) : null);
+          } catch {
+            resolve(null);
+          }
+        };
+        xhr.onerror = () => resolve(null);
+        xhr.send();
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
+  /**
+   * The registry JSON the browser should use: the Settings JSON when set (it
+   * overrides the workspace file), else the workspace's `models.json` for the
+   * active storage mode. Without the fallback the chat model picker only ever
+   * saw "default" in the browser.
+   */
+  async function effectiveModelJson(): Promise<string> {
+    // Served by the admin: its models.json is authoritative (the settings page
+    // is the server's too, via the shim's 501 fallthrough). XHR bypasses the
+    // fetch shim, which would otherwise route this back into this backend.
+    if (opts.serverModels) {
+      const data = await adminGet("/api/models");
+      return typeof data?.json === "string" ? data.json : "";
+    }
+    if (modelsJson.trim()) return modelsJson;
+    try {
+      return await platform.fs.readFile(
+        platform.path.join(platform.workspaceRoot, "models.json"),
+        "utf8",
+      );
+    } catch {
+      return "";
+    }
+  }
+
+  /** The parsed effective registry, with alias slots resolved. */
+  async function effectiveModelRegistry(): Promise<ModelRegistry> {
+    const raw = await effectiveModelJson();
+    if (!raw.trim()) return {};
+    try {
+      return parseModels(raw, opts.env);
+    } catch {
+      return {};
+    }
+  }
 
   const parseBody = <T>(b: string | FormData | null): T => {
     try {
@@ -162,6 +232,8 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
           storage: opts.storage,
           server: opts.server,
           modelsJson,
+          serverModels: opts.serverModels,
+          modelOverrides: sessionModels.get(sessionKey),
           rootHandle: opts.rootHandle,
           sqlWriteBack: opts.sqlWriteBack,
         },
@@ -278,6 +350,17 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     search: URLSearchParams,
     body: string | FormData | null,
   ): Promise<BackendResponse> {
+    // Served by the admin: its models.json is authoritative, so model settings
+    // and tests are the server's (the shim forwards this 501). Slots are
+    // handled locally so the chat picker can merge this session's overrides.
+    if (
+      opts.serverModels &&
+      pathname.startsWith("/api/models") &&
+      pathname !== "/api/models/slots"
+    ) {
+      return UNAVAILABLE("models");
+    }
+
     // ── chat ──────────────────────────────────────────────────────────────
     if (pathname === "/api/session" && method === "GET") {
       return {
@@ -372,18 +455,62 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     }
     if (pathname === "/api/tree/memory") return { status: 200, body: memoryPayload() };
     if (pathname === "/api/models/slots" && method === "GET") {
+      // Served by the admin: list ITS slots (the real registry), but keep this
+      // session's own role→slot overrides. Falling through to the admin's
+      // /api/models/slots would return the admin session's overrides instead,
+      // resetting the browser picker to "default" after every choice.
       let slots: { name: string; model: string; baseURL: string }[] = [];
-      try {
-        const reg = JSON.parse(modelsJson || "{}") as Record<string, { model?: string; baseURL?: string }>;
-        slots = Object.entries(reg).map(([name, v]) => ({ name, model: v?.model ?? "", baseURL: v?.baseURL ?? "" }));
-      } catch {
-        /* malformed registry — no slots */
+      if (opts.serverModels) {
+        const data = await adminGet("/api/models/slots");
+        if (Array.isArray(data?.slots)) {
+          slots = (data.slots as { name?: unknown; model?: unknown; baseURL?: unknown }[])
+            .filter((s) => typeof s?.name === "string")
+            .map((s) => ({
+              name: String(s.name),
+              model: typeof s.model === "string" ? s.model : "",
+              baseURL: typeof s.baseURL === "string" ? s.baseURL : "",
+            }));
+        }
+      } else {
+        const reg = await effectiveModelRegistry();
+        slots = Object.entries(reg).map(([name, m]) => ({
+          name,
+          model: m.model,
+          baseURL: m.baseURL,
+        }));
       }
-      return { status: 200, body: { slots, active: sessionKey, models: {} } };
+      return {
+        status: 200,
+        body: { slots, active: sessionKey, models: sessionModels.get(sessionKey) ?? {} },
+      };
     }
     if (pathname === "/api/chat/model" && method === "POST") {
-      // Per-session model overrides are a Node-target feature; accept and no-op.
-      return { status: 200, body: { ok: true, models: {} } };
+      const { role = "", slot = "" } = parseBody<{ role?: string; slot?: string }>(body);
+      if (!role) return { status: 400, body: { error: "role is required" } };
+      const rec = { ...(sessionModels.get(sessionKey) ?? {}) };
+      if (slot) {
+        let known: Set<string>;
+        if (opts.serverModels) {
+          const data = await adminGet("/api/models/slots");
+          known = new Set(
+            (Array.isArray(data?.slots) ? (data.slots as { name?: unknown }[]) : [])
+              .map((s) => s?.name)
+              .filter((n): n is string => typeof n === "string"),
+          );
+        } else {
+          known = new Set(Object.keys(await effectiveModelRegistry()));
+        }
+        // A failed admin read (known.size === 0) must not block the picker.
+        if (known.size > 0 && !known.has(slot)) {
+          return { status: 400, body: { error: `unknown model slot "${slot}"` } };
+        }
+        rec[role] = slot;
+      } else {
+        delete rec[role];
+      }
+      if (Object.keys(rec).length) sessionModels.set(sessionKey, rec);
+      else sessionModels.delete(sessionKey);
+      return { status: 200, body: { ok: true, models: rec } };
     }
     if (pathname === "/api/tree/versions" && method === "GET") {
       const name = search.get("name") ?? "";
@@ -533,7 +660,9 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
 
     // ── models (browser settings; keys never touch the workspace) ─────────
     if (pathname === "/api/models" && method === "GET") {
-      return { status: 200, body: { json: modelsJson } };
+      // Show the effective config: the Settings override, else the workspace
+      // models.json. An empty editor here is why aliases could not be added.
+      return { status: 200, body: { json: await effectiveModelJson() } };
     }
     if (pathname === "/api/models" && method === "POST") {
       const json = parseBody<{ json?: string }>(body).json ?? "";

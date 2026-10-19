@@ -134,7 +134,18 @@ function normalizeEntry(raw: unknown, name: string, env: EnvMap): ModelEntry {
   return entry;
 }
 
-/** Parse and validate model-registry JSON. Throws on invalid input. */
+/**
+ * Parse and validate model-registry JSON. Throws on invalid input.
+ *
+ * An entry may also be a STRING naming another slot — an alias:
+ *
+ *   "v4.1":  { "baseURL": "...", "model": "deepseek-v4.1-flash" },
+ *   "strong": "v4.1"
+ *
+ * `strong` then resolves to the `v4.1` entry (same endpoint/model/key), so a
+ * role the trees reference can track another slot without duplicating secrets.
+ * Alias chains are followed; cycles and unknown targets are errors.
+ */
 export function parseModels(raw: string, env: EnvMap = {}): ModelRegistry {
   let parsed: unknown;
   try {
@@ -146,8 +157,34 @@ export function parseModels(raw: string, env: EnvMap = {}): ModelRegistry {
     throw new Error("models.json: top-level value must be an object of name -> entry");
   }
   const out: ModelRegistry = {};
+  const aliases = new Map<string, string>();
   for (const [name, entry] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof entry === "string") {
+      const target = entry.trim();
+      if (!target) throw new Error(`models.json: alias "${name}" is empty`);
+      aliases.set(name, target);
+      continue;
+    }
     out[name] = normalizeEntry(entry, name, env);
+  }
+  const resolveAlias = (name: string, seen: Set<string>): ModelEntry => {
+    if (out[name]) return out[name];
+    const target = aliases.get(name);
+    if (!target) {
+      const from = [...seen].at(-1);
+      throw new Error(
+        from
+          ? `models.json: alias "${from}" points at unknown slot "${name}"`
+          : `models.json: unknown slot "${name}"`,
+      );
+    }
+    if (seen.has(name)) {
+      throw new Error(`models.json: alias cycle ${[...seen, name].join(" -> ")}`);
+    }
+    return resolveAlias(target, new Set([...seen, name]));
+  };
+  for (const name of aliases.keys()) {
+    out[name] = resolveAlias(name, new Set());
   }
   if (Object.keys(out).length === 0) {
     throw new Error("models.json: no model entries defined");

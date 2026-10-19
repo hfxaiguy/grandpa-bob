@@ -24,6 +24,23 @@ assert.match(registry.strong.baseURL, /localhost:11434/);
 const missing = parseModels(JSON.stringify({ m: { baseURL: "x", model: "y", apiKey: "${NOT_SET}" } }), {});
 assert.equal(missing.m.apiKey, "");
 
+// A string entry is an alias to another slot, so a role the trees reference
+// (strong) can track v4.1 without duplicating its endpoint/key. Chains
+// resolve; cycles and unknown targets are rejected.
+const aliased = parseModels(
+  JSON.stringify({
+    "v4.1": { baseURL: "https://api.neuralwatt.com/v1", model: "deepseek-v4.1-flash", apiKey: "k" },
+    strong: "v4.1",
+    chain: "strong",
+  }),
+);
+assert.equal(aliased.strong.model, "deepseek-v4.1-flash", "alias resolves to the target entry");
+assert.equal(aliased.strong.baseURL, "https://api.neuralwatt.com/v1");
+assert.equal(aliased.chain, aliased.strong, "alias chains resolve to the same entry");
+assert.throws(() => parseModels(JSON.stringify({ a: "nope" })), /points at unknown slot "nope"/);
+assert.throws(() => parseModels(JSON.stringify({ a: "b", b: "a" })), /alias cycle/);
+assert.throws(() => parseModels(JSON.stringify({ a: "" })), /alias "a" is empty/);
+
 assert.throws(() => parseModels("not json"), /invalid JSON/);
 assert.throws(() => parseModels("[]"), /must be an object/);
 assert.throws(

@@ -24,6 +24,13 @@ export interface AgentRunOptions {
   server?: string;
   /** Model registry JSON from browser settings (takes precedence over models.json). */
   modelsJson?: string;
+  /**
+   * Served by grandpa-bob's admin: use its models.json and route model calls
+   * through /api/llm/<slot>, so the browser uses the same registry as Telegram.
+   */
+  serverModels?: boolean;
+  /** Per-conversation role→slot overrides from the chat model picker. */
+  modelOverrides?: Record<string, string>;
   /** Direct mode: the real folder chosen with the File System Access API. */
   rootHandle?: FileSystemDirectoryHandle;
   /** Direct mode: allow SQL writes to the real .db files. */

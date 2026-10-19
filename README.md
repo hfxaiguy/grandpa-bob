@@ -288,6 +288,23 @@ the schema (`toOpenAiDefinition`); `guide` feeds `TOOL GUIDANCE` — never the
 schema. Guides are assembled host → tree → app, so an app function tool's guide
 follows the tree guides.
 
+#### Built-in host tools (`read_runs`, `inspect_memory`)
+
+Two engine readers are registered by BOB itself, not by an app's `tools.mjs`:
+
+- **`read_runs`** — grandma-kat's run-log reader (`runLogTools`), for recall and
+  provenance.
+- **`inspect_memory`** — grandma-kat's bounded view of a value held by a
+  `ref://<name>.<seq>` handle or a live memory slot. It lets the model peek
+  (type/size + a random sample) before handing a big value to another tree.
+
+`inspect_memory` is **dispatched specially** (`ToolRegistry.dispatch`): its
+execute needs the engine's per-call context — `view`, `readRef`, `scopeInfo` —
+which the app-tool path replaces with the app's secrets context. It is
+registered as a built-in definition and forwarded `ctx`; do not add it as a
+`tools.mjs` app tool. Its guidance is a `HOST_GUIDES` entry in
+`src/tool-guides.ts`, and the trunk offers it via `TOOL_NAMES`.
+
 ## Setup
 
 1. **Telegram bot**: create one with @BotFather, copy the token. Get your numeric

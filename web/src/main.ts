@@ -229,7 +229,25 @@ async function ensureModels(target: Platform): Promise<void> {
   );
 }
 
-/** Load the sync fs index so tree patterns' `appTreeNames()` works on this thread. */async function buildFsIndex(target: Platform): Promise<void> {
+/**
+ * True when this page is served by grandpa-bob's admin (not a standalone Vite
+ * dev server). The admin answers `/api/models` with JSON; Vite's SPA fallback
+ * answers with index.html, so the content type is the tell.
+ */
+async function servedByAdmin(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/models", { headers: { accept: "application/json" } });
+    if (!res.ok) return false;
+    if (!(res.headers.get("content-type") ?? "").includes("application/json")) return false;
+    const data = (await res.json()) as { json?: unknown };
+    return typeof data.json === "string";
+  } catch {
+    return false;
+  }
+}
+
+/** Load the sync fs index so tree patterns' `appTreeNames()` works on this thread. */
+async function buildFsIndex(target: Platform): Promise<void> {
   const files: string[] = [];
   const walk = async (dir: string): Promise<void> => {
     const entries = await target.fs.readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -342,6 +360,9 @@ async function main(): Promise<void> {
 
   const pattern = await detectPattern(platform);
   const agent = new AgentClient();
+  // When the admin serves this page, use ITS models.json (and /api/llm proxy)
+  // so the browser, the chat UI and Telegram all share one model config.
+  const serverModels = await servedByAdmin();
   const backend = createLocalBackend({
     agent,
     platform,
@@ -351,6 +372,7 @@ async function main(): Promise<void> {
     remote: configuredRemote,
     initialPattern: pattern,
     modelsJson: loadModelsJson(),
+    serverModels,
     rootHandle,
     sqlWriteBack,
   });

@@ -2,6 +2,27 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — model slots can be aliases; the web picker lists them
+
+A `models.json` entry may now be a string naming another slot:
+
+```json
+"v4.1":  { "baseURL": "https://api.neuralwatt.com/v1", "model": "deepseek-v4.1-flash", "apiKey": "…" },
+"strong": "v4.1"
+```
+
+`parseModels` resolves alias chains and rejects cycles and unknown targets, so
+a role the trees reference (`Model("strong")`) can track another slot without
+duplicating its endpoint or key. The settings editor gained an **alias of**
+field; its Test button follows the target.
+
+The browser target's `/api/models/slots` only read the browser Settings JSON and
+ignored the workspace `models.json`, while `/api/chat/model` was a no-op — the
+chat picker therefore offered only "default" and forgot the choice. Slots now
+come from the effective registry (the admin's when served by it, else the
+workspace file), and role→slot overrides are kept per session and applied by
+the worker. `smoke:browser` pins slots + override.
+
 ## 2026-10-19 — named ref handles in provenance; `inspect_memory` registered
 
 Provenance scanning matched only bare `ref://<seq>` handles; the engine now

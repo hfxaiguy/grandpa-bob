@@ -573,7 +573,8 @@ function rawModelsOpen() {
   return !!w && w.style.display !== "none";
 }
 function slotCard(name, entry) {
-  entry = entry || {};
+  const alias = typeof entry === "string" ? entry : "";
+  entry = entry && typeof entry === "object" ? entry : {};
   const preset = presetId(entry.baseURL, entry.protocol);
   let opts = "";
   for (const id in MODEL_PRESETS) {
@@ -588,6 +589,7 @@ function slotCard(name, entry) {
       '<label style="flex:2;min-width:150px">provider<select class="ms-preset">' + opts + "</select></label>" +
       '<button class="secondary ms-del" type="button">remove</button>' +
     "</div>" +
+    '<label>alias of<input class="ms-alias" type="text" value="' + escAttr(alias) + '" placeholder="another slot name (optional - this slot becomes a pointer)"></label>' +
     '<label>base URL<input class="ms-base" type="text" value="' + escAttr(entry.baseURL || "") + '" placeholder="https://api.neuralwatt.com/v1"></label>' +
     '<div class="row" style="gap:8px;flex-wrap:wrap">' +
       '<label style="flex:2;min-width:160px">model<input class="ms-model" type="text" list="models-datalist" value="' + escAttr(entry.model || "") + '" placeholder="model id"></label>' +
@@ -613,6 +615,18 @@ function slotCard(name, entry) {
   });
   card.querySelector(".ms-del").addEventListener("click", () => { card.remove(); syncModelsJson(); });
   card.querySelector(".ms-test").addEventListener("click", () => testModelSlot(card));
+  // An alias pointer leaves the endpoint fields unused; dim them so it is
+  // obvious which fields matter (readSlot returns the alias string).
+  const aliasInput = card.querySelector(".ms-alias");
+  const aliasFields = card.querySelectorAll(
+    ".ms-preset,.ms-base,.ms-model,.ms-protocol,.ms-key,.ms-transform,.ms-reasoning,.ms-think,.ms-think-options",
+  );
+  const syncAliasMode = () => {
+    const on = !!aliasInput.value.trim();
+    aliasFields.forEach((el) => { el.disabled = on; });
+  };
+  aliasInput.addEventListener("input", syncAliasMode);
+  syncAliasMode();
   card.querySelectorAll("input,select").forEach((el) => {
     el.addEventListener("input", syncModelsJson);
     el.addEventListener("change", syncModelsJson);
@@ -628,6 +642,8 @@ function renderModelSlots() {
   for (const name of names) host.appendChild(slotCard(name, modelRegistry[name]));
 }
 function readSlot(card) {
+  const alias = (card.querySelector(".ms-alias").value || "").trim();
+  if (alias) return alias;
   const entry = {};
   const v = (sel) => { const el = card.querySelector(sel); return el ? el.value.trim() : ""; };
   entry.baseURL = v(".ms-base");
@@ -696,10 +712,17 @@ function toggleRawModels() {
 }
 async function testModelSlot(card) {
   const status = card.querySelector(".ms-test-status");
+  const slot = readSlot(card);
+  const target = typeof slot === "string" ? modelRegistry[slot] : slot;
+  if (!target || typeof target !== "object") {
+    status.textContent = typeof slot === "string" ? 'alias "' + slot + '" has no slot' : "no model fields";
+    status.style.color = "var(--red,#ef4444)";
+    return;
+  }
   status.textContent = "testing...";
   status.style.color = "var(--muted,#94a3b8)";
   try {
-    const d = await api("/api/models/test", { method: "POST", body: JSON.stringify(readSlot(card)) });
+    const d = await api("/api/models/test", { method: "POST", body: JSON.stringify(target) });
     const dl = $("models-datalist");
     if (dl && Array.isArray(d.models)) {
       dl.innerHTML = "";

@@ -108,6 +108,31 @@ if (parsed.status !== 200 || !parsed.text.includes("export default")) {
 }
 console.log("✓ OPFS mode boots and writes to the sandbox workspace");
 
+// The chat model picker must list the real slots (not only "default") and
+// accept a role→slot override; the browser backend used to ignore both.
+const modelPick = await evaluate(`(async () => {
+  const backend = window.__bobBackend;
+  await backend.ready;
+  const before = await backend.request("GET", "/api/models/slots", new URLSearchParams(), null);
+  const names = (before.body?.slots || []).map((s) => s.name);
+  if (!names.length) return JSON.stringify({ names, error: "no slots" });
+  const role = names.includes("strong") ? "strong" : names[0];
+  const target = names.find((n) => n !== role) || names[0];
+  const set = await backend.request(
+    "POST", "/api/chat/model", new URLSearchParams(),
+    JSON.stringify({ role, slot: target }),
+  );
+  const after = await backend.request("GET", "/api/models/slots", new URLSearchParams(), null);
+  return JSON.stringify({ names, set: set.status, overrides: after.body?.models || {}, role, target });
+})()`);
+const picked = JSON.parse(modelPick);
+if (!picked.names?.length || picked.set !== 200 || picked.overrides?.[picked.role] !== picked.target) {
+  console.error("model slots/override failed", picked);
+  console.log(exceptions.join("\n"));
+  cleanup(5);
+}
+console.log("✓ model picker lists slots and stores a role→slot override");
+
 // Header upload button: picker → folder prompt → file lands in the workspace.
 const upload = await evaluate(`(async () => {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
