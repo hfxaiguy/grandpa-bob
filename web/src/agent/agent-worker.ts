@@ -9,6 +9,7 @@
 import { Tree, name, Call, Return, Tools, knit, resume } from "grandma-kat";
 import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { createDesktopPlatform } from "../platform/desktop";
+import { createFsAccessPlatform } from "../platform/fsaccess";
 import type { Platform } from "../../../src/platform/types";
 import { browserTools, STUB_TOOL_NAMES } from "./browser-tools";
 import { setActiveFs, setFsIndex } from "../shims/node-fs-promises";
@@ -17,13 +18,30 @@ import { resolveTreeEntry } from "../../../src/tree-versions";
 import { assembleGuides, HOST_GUIDES } from "../../../src/tool-guides";
 import { createWorkspaceLogger, type MemoryLogger, type WorkspaceLogger } from "./logger";
 import { createModuleLoader } from "./module-loader";
+import { resolvePatternPath } from "./pattern-path";
 import { loadBrowserModels } from "./models";
 import { parseModels, type ModelRegistry } from "../../../src/model-config";
 
 const ready = initSqlite();
 const platforms = new Map<string, Platform>();
+let directPlatform: Platform | null = null;
+let directHandle: FileSystemDirectoryHandle | null = null;
 
-function getPlatform(storage: string, server: string): Platform {
+async function getPlatform(
+  storage: string,
+  server: string,
+  opts: { rootHandle?: FileSystemDirectoryHandle; sqlWriteBack?: boolean } = {},
+): Promise<Platform> {
+  if (storage === "direct") {
+    const handle = opts.rootHandle;
+    if (!handle) throw new Error("direct mode needs the folder handle from the main thread");
+    if (!directPlatform || directHandle !== handle) {
+      await initSqlite(handle, { writeBack: opts.sqlWriteBack });
+      directPlatform = createFsAccessPlatform(handle);
+      directHandle = handle;
+    }
+    return directPlatform;
+  }
   const key = `${storage}|${server}`;
   let platform = platforms.get(key);
   if (!platform) {
@@ -36,6 +54,43 @@ function getPlatform(storage: string, server: string): Platform {
 
 function post(message: unknown): void {
   (self as unknown as Worker).postMessage(message);
+}
+
+/** One-line description of every configured model slot, for error messages. */
+function describeModels(models: Record<string, { baseURL?: string; model?: string }>): string {
+  const slots = Object.entries(models).map(([slot, entry]) => {
+    const where = entry.baseURL || "(in-page handler)";
+    return `${slot}=${entry.model || "?"} @ ${where}`;
+  });
+  return slots.length ? slots.join(", ") : "(no models configured)";
+}
+
+/** Firefox says "NetworkError…", Chrome "Failed to fetch", Node "fetch failed". */
+function isNetworkError(message: string): boolean {
+  return /NetworkError|Failed to fetch|fetch failed|Load failed|ECONNREFUSED|ENOTFOUND/i.test(message);
+}
+
+/**
+ * Run a model-backed step and, when the failure is a failed `fetch`, say WHICH
+ * endpoint failed. Without this the worker's catch-all reports a bare
+ * "NetworkError when attempting to fetch resource." and the user cannot tell a
+ * dead model server from a CORS block or a broken workspace.
+ */
+async function withModelContext<T>(
+  models: Record<string, { baseURL?: string; model?: string }>,
+  fn: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!isNetworkError(message)) throw err;
+    throw new Error(
+      `${message} — the agent could not reach its model endpoint(s): ${describeModels(models)}. ` +
+        `Is the model server running (for the bundled mock: npm --prefix web run mock-llm), ` +
+        `and does it allow this page's origin (CORS)? Fix models.json or Settings → Models JSON.`,
+    );
+  }
 }
 
 /**
@@ -66,9 +121,13 @@ interface RunOptions {
   env?: Record<string, string>;
   pattern?: string;
   remote?: string;
-  storage?: "browser" | "desktop";
+  storage?: "browser" | "desktop" | "direct";
   server?: string;
   modelsJson?: string;
+  /** Direct mode: the folder picked with the File System Access API. */
+  rootHandle?: FileSystemDirectoryHandle;
+  /** Direct mode: write SQL changes back to the real .db files. */
+  sqlWriteBack?: boolean;
 }
 
 interface Session {
@@ -98,8 +157,7 @@ async function loadPattern(platform: Platform, patternPath: string): Promise<unk
     return mod.default ?? mod.pattern;
   } catch (err) {
     throw new Error(
-      `cannot load pattern ${patternPath}: ${err instanceof Error ? err.message : String(err)} ` +
-        "(is the workspace seeded? run `npm run make-seed`, or use Desktop storage)",
+      `cannot load pattern ${patternPath}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }
@@ -192,15 +250,28 @@ async function handleRun(opts: RunOptions): Promise<void> {
   const task = opts.task ?? "";
   const storage = opts.storage ?? "browser";
   const server = opts.server ?? "";
-  const patternPath = opts.pattern ?? "patterns/agent_demo.mjs";
-  const platform = getPlatform(storage, server);
+  const platform = await getPlatform(storage, server, {
+    rootHandle: opts.rootHandle,
+    sqlWriteBack: opts.sqlWriteBack,
+  });
   await ready;
 
-  const session = getSession(`${storage}|${server}|${patternPath}`, platform);
+  // The tree catalog (resolveTreeEntry) reads through the node:fs shim, so the
+  // shim must follow the selected backend *before* a pattern name is resolved.
+  // A fresh worker starts pointed at OPFS; resolving first made the first turn
+  // after a reload look for `patterns/context_manager.mjs` in the wrong place.
+  setActiveFs(platform.fs);
+
+  // The picker sends a logical name ("context_manager", "name@v3"); boot sends
+  // a path ("patterns/trunk.mjs"). Session identity uses the resolved file so
+  // both shapes share one conversation.
+  const patternPath = await resolvePatternPath(platform, opts.pattern);
+
+  const sessionKey = `${storage}|${server}|${patternPath}`;
+  const session = getSession(sessionKey, platform);
   session.currentId = opts.id;
 
-  setActiveFs(platform.fs);
-  await ensureIndex(platform, `${storage}|${server}`);
+  await ensureIndex(platform, sessionKey);
 
   const registry = await (async (): Promise<ModelRegistry> => {
     if (opts.modelsJson && opts.modelsJson.trim()) {
@@ -244,17 +315,24 @@ async function handleRun(opts: RunOptions): Promise<void> {
 
   let res: { result?: unknown; status?: string; continuation?: string; humanSlot?: unknown };
   if (session.continuation) {
-    res = (await resume(session.continuation, {
-      ...runtime,
-      memory: { guide },
-      humanInput: task,
-    })) as typeof res;
+    res = (await withModelContext(models, () =>
+      resume(session.continuation, {
+        ...runtime,
+        memory: { guide },
+        humanInput: task,
+      }),
+    )) as typeof res;
   } else {
     const pattern = await loadPattern(platform, patternPath);
-    res = (await knit(pattern, { ...runtime, memory: { guide } })) as typeof res;
+    res = (await withModelContext(models, () =>
+      knit(pattern, { ...runtime, memory: { guide } }),
+    )) as typeof res;
     if (res.status === "waiting") {
-      if (task) res = (await resume(res.continuation!, { ...runtime, humanInput: task })) as typeof res;
-      else {
+      if (task) {
+        res = (await withModelContext(models, () =>
+          resume(res.continuation!, { ...runtime, humanInput: task }),
+        )) as typeof res;
+      } else {
         session.continuation = res.continuation!;
         post({ id: opts.id, type: "result", result: { status: "waiting", humanSlot: res.humanSlot }, eventCount: 0 });
         void session.logger.flush();

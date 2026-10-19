@@ -16,6 +16,112 @@ replaces with the app's secrets context — so it cannot be a `tools.mjs` app
 tool. A `HOST_GUIDES` entry teaches the model to peek at a handle (or live slot)
 instead of re-querying, and to pass the ref on to hand over the whole value.
 
+## 2026-10-19 — a dead model endpoint now names itself
+
+`agent run failed: NetworkError when attempting to fetch resource.` was
+Firefox's wording for *any* failed `fetch`, surfaced by the worker's catch-all
+without context — so a stopped model server, a CORS block, and a broken
+workspace all looked identical. `knit()`/`resume()` now run through a
+`withModelContext` wrapper that, on a network-class error, appends the
+configured slots (`default=… @ http://…`), the mock-server hint, and the CORS
+note into the same message.
+
+## 2026-10-19 — trunk is discovered again, and the toolbar names the active pattern
+
+Two pattern-discovery/status fixes:
+
+- `listPatterns` skipped every `.prod`/`.vN` file as a snapshot, which hid
+  trees that exist **only** as a prod file — the live workspace's `trunk` is
+  `patterns/trunk.prod.mjs` with no draft. Boot detection therefore picked the
+  alphabetically-first draft (`context_manager`) as the default pattern, and
+  the pattern picker could not offer trunk at all. Prod snapshots are now listed
+  when the tree has no editable draft (drafts still win when both exist).
+- The web UI's `detectPattern` now reads the same `scanTreeVersions` catalog the
+  Node target uses, preferring `trunk` whether it is a draft or prod-only, and
+  returns the logical name. `patternCatalog` compares `activePattern` by logical
+  name, so a boot path no longer resets the selection to `names[0]`.
+- The toolbar status shows the logical name (`trunk`, not `trunk.mjs`) and
+  updates when the picker changes pattern (the in-browser backend emits
+  `bob:pattern`), instead of showing the boot-time value forever.
+- `test:pattern-path` now asserts prod-only discovery; `smoke:direct` asserts
+  the status line follows a switch.
+
+## 2026-10-19 — first turn after a reload resolves a picked pattern against the right backend
+
+`resolvePatternPath` reads the tree catalog through the `node:fs` shim, but the
+agent worker pointed that shim at the selected storage *after* resolving. A
+fresh worker starts on OPFS, so the first turn after a page load looked for
+`patterns/context_manager.mjs` in the browser sandbox, found nothing, and fell
+back to a path that does not exist — failing with ENOENT even though the
+workspace had `context_manager.prod.mjs` (later turns worked because the shim
+was already repointed). `setActiveFs(platform.fs)` now runs before resolution.
+A name that resolves nowhere now fails with `unknown pattern '<name>' —
+available: …` instead of a bare ENOENT, and `smoke:direct` runs a first-turn
+name-picked pattern end to end so the ordering cannot regress.
+
+## 2026-10-19 — high-contrast toolbar (the storage bridge URL input)
+
+The storage toolbar used the browser's default light controls over a dark app,
+so the bridge URL input was low-contrast and in a mismatched font. It now uses
+the tiled app's palette (`--bg/--panel/--card/--border/--fg`), explicit
+foreground/background/border on every control, a visible focus ring, a
+high-contrast placeholder, and a monospace font for the URL field. The outer
+page is `color-scheme: dark` so select popups and checkboxes match too.
+
+## 2026-10-19 — a pattern picked from the dropdown loads by name, not by raw path
+
+The pattern picker sends a logical name (`context_manager`, optionally
+`name@draft`), while boot detection sends a workspace path
+(`patterns/trunk.mjs`). The agent worker treated every value as a path, so
+switching patterns in the UI made the module loader open
+`<workspace>/context_manager` and every turn failed with
+`cannot load pattern context_manager: ENOENT`. `resolvePatternPath()` now
+resolves bare names through the version-aware tree catalog
+(`context_manager` → `patterns/context_manager.prod.mjs`) and passes real paths
+through unchanged; the session key uses the resolved file so the same pattern
+picked by name or path shares one conversation. `test:pattern-path` pins the
+name/ref/path/empty/missing cases, and the misleading "is the workspace
+seeded?" hint is gone from the load error.
+
+## 2026-10-19 — header upload button: put files into the workspace from the browser
+
+The tiled UI header (shared by the web UI and the Node admin UI) has an
+**upload** button: a normal OS file picker (multi-select), then a prompt for the
+destination folder — pre-filled with the last one used and suggested from the
+folders already in the workspace. Each file POSTs to the existing
+`/api/files/upload`, so it lands wherever the active storage backend writes:
+the picked real folder in direct mode, the OPFS sandbox, the storage bridge, or
+the Node workspace. The folder may not contain `..`.
+
+`smoke:browser` and `smoke:direct` now drive the button end to end (file →
+prompt → upload) and assert the file arrives under the chosen folder.
+
+## 2026-10-19 — the browser UI is the main interface, and it can use the real folder
+
+The web target (`web/`) is now what `http://<host>:8080` serves (the legacy
+`ui/dist` remains only as a fallback when `web/dist` is missing), and `npm run
+build` builds it. Telegram is unchanged.
+
+New storage mode **Desktop (direct folder)**: a File System Access adapter
+(`web/src/platform/fsaccess.ts`) lets the fully client-side UI read and write a
+real folder on the hard drive **in place, with no server process**. The picked
+handle is persisted in IndexedDB and re-granted with one click after a reload.
+The handle-backed filesystem is shared with OPFS (`handle-fs.ts`), so patterns,
+tree versions, the file browser, virtual coreutils and `git_status` follow the
+selected storage automatically; isomorphic-git commits are now proven over a
+real folder (`scripts/fsaccess-test.ts`, `npm run test:fsaccess`).
+
+SQLite follows the same seam: the sqlite worker can be pointed at the picked
+folder and imports/exports the real `.db` files. Direct mode is read-only for
+app databases by default (`SQL writes` in the toolbar enables write-back);
+`logs/grandma-kat.db` stays writable. Firefox keeps using the existing loopback
+storage bridge, which implements the same Platform interface.
+
+Voice in the web UI no longer needs a server: `/api/transcribe` runs whisper in
+the tab with Transformers.js (WebGPU when available, WASM otherwise; the model
+is downloaded once and cached). The Vulkan whisper-server is still what Telegram
+voice notes use.
+
 ## 2026-10-17 — the event log and stream show a prompts count beside tool calls
 
 The tiled UI's panel headers counted events and tool calls; a prompt count

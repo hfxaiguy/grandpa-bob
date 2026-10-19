@@ -10,6 +10,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "smoke": "node smoke.mjs",
+    "smoke:direct": "node scripts/direct-smoke.mjs",
+    "smoke:browser": "node scripts/browser-smoke.mjs",
     "mock-llm": "node mock-llm.mjs",
     "make-seed": "node scripts/make-seed.mjs",
     "git-server": "node scripts/git-server.mjs",
@@ -23,6 +25,7 @@
   },
   "dependencies": {
     "@componentor/opfs-fs": "^1.1.7",
+    "@huggingface/transformers": "^4.3.1",
     "@sqlite.org/sqlite-wasm": "^3.53.4-build2",
     "buffer": "^6.0.3",
     "isomorphic-git": "^1.42.6",

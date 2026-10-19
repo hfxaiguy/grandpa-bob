@@ -96,6 +96,11 @@ export async function stat(path: string) {
   return activeFs.stat(path);
 }
 
+/** `fs.access` — resolve when the path exists, reject otherwise. */
+export async function access(path: string): Promise<void> {
+  await activeFs.stat(path);
+}
+
 export async function rm(path: string): Promise<void> {
   return activeFs.rm(path);
 }
@@ -114,6 +119,7 @@ export default {
   mkdir,
   readdir,
   stat,
+  access,
   rm,
   unlink,
   rename,

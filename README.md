@@ -8,12 +8,21 @@ every change it makes is **git-committed automatically**.
 
 - **Telegram**: long polling via grammY. Works in DMs and in **forum-topic groups** —
   each topic is an independent conversation with its own history.
-- **Web UI**: chat front page at `http://<host>:8080` — talk to the agent by
-  text or voice and watch every step of the tree execute live. Settings
-  (credentials, sync, logs, patterns, files) live at `/settings`.
-- **Voice → text**: voice notes are transcribed locally by
-  [whisper.cpp](https://github.com/ggml-org/whisper.cpp) built with the **Vulkan**
-  backend, running on the AMD RX 570. No audio leaves the machine.
+- **Web UI** — the main interface at `http://<host>:8080`: the browser target
+  (`web/`) runs the agent in the tab and serves chat, settings (credentials,
+  sync, logs, patterns, files) and the tree view. It operates on storage chosen
+  in the header:
+  - **Browser (OPFS)** — a private sandbox in the tab, seeded from the workspace;
+  - **Desktop (direct folder)** — a folder picked with the File System Access
+    API (Chrome/Edge): reads and writes the real workspace in place with **no
+    server process**;
+  - **Desktop (local server)** — the loopback storage bridge, for Firefox and
+    other browsers.
+  The header's **upload** button puts files from a normal OS picker into any
+  workspace folder (asked per upload, remembered next time).
+- **Voice → text**: Telegram voice notes use the local Vulkan whisper-server;
+  the web UI transcribes in the tab with whisper (Transformers.js, WebGPU/WASM),
+  so no server is needed there.
 - **Brain**: any OpenAI-compatible endpoint (default: Hugging Face router running
   Gemma 4), switchable via `.env`.
 - **Attachments**: Telegram documents and non-audio web uploads are stored under

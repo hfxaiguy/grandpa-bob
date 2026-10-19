@@ -87,12 +87,15 @@ export function saveModelsJson(json: string): void {
   }
 }
 
-export type StorageMode = "browser" | "desktop";
+export type StorageMode = "browser" | "desktop" | "direct";
 
-/** Where BOB's tools operate: browser OPFS, or the desktop via the bridge. */
+const STORAGE_MODES: StorageMode[] = ["browser", "desktop", "direct"];
+
+/** Where BOB's tools operate: browser OPFS, desktop bridge, or a picked real folder. */
 export function loadStorage(): StorageMode {
   try {
-    return localStorage.getItem(STORAGE_KEY) === "desktop" ? "desktop" : "browser";
+    const value = localStorage.getItem(STORAGE_KEY);
+    return value === "desktop" || value === "direct" ? value : "browser";
   } catch {
     return "browser";
   }
@@ -100,7 +103,30 @@ export function loadStorage(): StorageMode {
 
 export function saveStorage(mode: StorageMode): void {
   try {
-    localStorage.setItem(STORAGE_KEY, mode);
+    localStorage.setItem(STORAGE_KEY, STORAGE_MODES.includes(mode) ? mode : "browser");
+  } catch {
+    // ignore
+  }
+}
+
+const SQL_WRITEBACK_KEY = "bob:sql-writeback";
+
+/**
+ * Direct mode is read-only for `.db` files by default. Enabling this writes
+ * changes back to the real database files on disk.
+ */
+export function loadSqlWriteBack(): boolean {
+  try {
+    return localStorage.getItem(SQL_WRITEBACK_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveSqlWriteBack(enabled: boolean): void {
+  try {
+    if (enabled) localStorage.setItem(SQL_WRITEBACK_KEY, "1");
+    else localStorage.removeItem(SQL_WRITEBACK_KEY);
   } catch {
     // ignore
   }

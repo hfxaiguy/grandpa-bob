@@ -40,6 +40,42 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 | Multi-file patterns (relative imports + named exports + node shims) | done — **verified in real Chromium** (`read/the notes file`) |
 | Real `trunk` (scratch builder, app `src/*`, `appTreeNames()` scan) | not yet |
 
+## Main-and-only UI (2026-10-19)
+
+The web target is now the primary interface:
+
+| Piece | State |
+|---|---|
+| `File System Access` adapter (`web/src/platform/fsaccess.ts`) | done — folder picked once, handle in IndexedDB, one-click re-grant |
+| Handle filesystem shared with OPFS (`web/src/platform/handle-fs.ts`) | done — `test:fsaccess` |
+| isomorphic-git over a real folder (`web/src/platform/git-handle.ts`) | done — `test:fsaccess` |
+| SQLite over the real `.db` files (`initSqlite(handle, {writeBack})`) | done — read-only by default, `SQL writes` toggle |
+| Served at `:8080` by the admin server (chat = front page) | done — falls back to `ui/dist` when `web/dist` is missing |
+| Browser-local whisper (`web/src/stt/browser-whisper.ts`) | done — `/api/transcribe` runs in-tab via Transformers.js |
+
+### Direct folder mode (Chromium)
+
+```sh
+npm --prefix web run build      # or: npm run build:web (rerun after changes)
+npm start                       # http://127.0.0.1:8080 -> Storage: Desktop (direct folder)
+```
+
+Pick the workspace folder once. The handle is stored in IndexedDB; after a
+reload the browser only needs one click to re-grant permission (a browser rule,
+not an app choice). The tab then reads and writes the **real** folder — file
+tools, patterns, tree versions, the file browser and `git_status` all operate in
+place, with no storage-server process.
+
+`SQL writes` is off by default: querying `contacts.db` / `comms.db` / `email.db`
+works, mutation tools report that writes are disabled, and `logs/grandma-kat.db`
+stays writable for BOB's own run log. Enable it to let `sql_write` persist
+changes to the real `.db` files (single tab at a time; the file is imported on
+open and exported after a mutation).
+
+Firefox has no File System Access API: pick **Desktop (local server)** there —
+the bridge implements the same `Platform` interface over loopback HTTP.
+
+
 ## `node:*` shims
 
 Existing NodeNext shared modules bundle unchanged via Vite aliases:
@@ -98,8 +134,11 @@ exposing it).
 The header has a **Storage** selector:
 
 - **Browser (OPFS)** — everything lives in the browser (the mode above).
+- **Desktop (direct folder)** — a real folder picked with the File System
+  Access API (Chromium only). The tab reads/writes it in place; no server.
+  See [Direct folder mode](#direct-folder-mode-chromium) above.
 - **Desktop (local server)** — BOB's file/shell/git tools operate on the real
-  workspace via a loopback bridge:
+  workspace via a loopback bridge (works in any browser, including Firefox):
 
 ```sh
 npm run storage-server /home/love/grandma-workspace   # -> http://127.0.0.1:8795
@@ -133,7 +172,10 @@ CORS http url. `?gitremote=…&gitbranch=…` preconfigures it.
 `npm run smoke` needs a Chromium/Chrome binary (override with `CHROME_BIN`) and
 a running dev server. It exercises OPFS writes/rename, `tree-versions`
 snapshot/promote, `grandma-kat knit()`, WASM SQLite persistence, and a real LLM
-round-trip.
+round-trip — this is the older demo runner (`#out`). The storage-mode checks are
+`npm run smoke:browser` and `npm run smoke:direct` (both need the dev server
+and Chromium; `smoke:direct` fakes the folder picker to a real OPFS directory
+and asserts file writes plus the sqlite read-only/write-back behavior).
 
 The LLM smoke also needs the mock endpoint: `npm run mock-llm` (port 8787) in a
 second terminal.

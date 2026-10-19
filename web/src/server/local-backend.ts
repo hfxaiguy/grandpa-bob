@@ -12,13 +12,15 @@
 import type { AgentClient } from "../agent/agent-client";
 import type { Platform } from "../../../src/platform/types";
 import { listAppTrees, listPatterns, listTreeSources } from "../../../src/tree-sources";
-import { promoteTree, resolveTreeEntry, scanTreeVersions, snapshotTree } from "../../../src/tree-versions";
+import { promoteDraft, resolveTreeEntry, scanTreeVersions } from "../../../src/tree-versions";
 import { serializeTree } from "../../../src/tree-serialize";
 import { newTurnApps, tagEventApp, type TurnApps } from "../../../src/app-attribution";
 import { emitValue } from "../../../src/util/emit-text";
 import { createModuleLoader } from "../agent/module-loader";
+import { patternLabel } from "../agent/pattern-path";
 import { loadEnv, saveEnv, saveModelsJson } from "../settings";
 import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "../../../src/db-sync";
+import { transcribeBlob } from "../stt/browser-whisper";
 
 export interface BackendResponse {
   status: number;
@@ -29,13 +31,17 @@ export interface BackendResponse {
 export interface BackendOptions {
   agent: AgentClient;
   platform: Platform;
-  storage: "browser" | "desktop";
+  storage: "browser" | "desktop" | "direct";
   server: string;
   env: Record<string, string>;
   remote: string;
   initialPattern: string;
   /** Model registry JSON from browser settings (overrides the workspace models.json). */
   modelsJson?: string;
+  /** Direct mode: the folder picked with the File System Access API. */
+  rootHandle?: FileSystemDirectoryHandle;
+  /** Direct mode: write SQL changes back to the real .db files. */
+  sqlWriteBack?: boolean;
 }
 
 interface TurnRecord {
@@ -156,6 +162,8 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
           storage: opts.storage,
           server: opts.server,
           modelsJson,
+          rootHandle: opts.rootHandle,
+          sqlWriteBack: opts.sqlWriteBack,
         },
         {
           onEvent: (event) => {
@@ -253,7 +261,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       const sources = await listTreeSources(platform.workspaceRoot);
       const patterns = sources.map((s) => ({ name: s.name, group: s.group, description: s.description, draft: s.draft }));
       const names = patterns.map((p) => p.name);
-      const current = names.includes(activePattern) ? activePattern : names[0] ?? activePattern;
+      // `activePattern` may arrive as a path from boot detection; compare by
+      // logical name so a prod-only tree (trunk) is not replaced by names[0].
+      const wanted = patternLabel(activePattern);
+      const current = names.includes(wanted) ? wanted : names[0] ?? activePattern;
       activePattern = current;
       return { status: 200, body: { current, pattern: current, patterns, ref: "prod", refs: ["prod", "draft"] } };
     } catch {
@@ -336,7 +347,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         status: 200,
         body: {
           telegram: "n/a",
-          voice: "not configured",
+          voice: "browser whisper (local)",
           llm: "n/a",
           uptime: Math.round(performance.now() / 1000),
           pid: null,
@@ -349,7 +360,14 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     if (pathname === "/api/pattern" && method === "GET") return patternCatalog();
     if (pathname === "/api/pattern" && method === "POST") {
       const want = (parseBody(body) as { name?: string }).name;
-      if (want) activePattern = want;
+      if (want) {
+        activePattern = patternLabel(want) || want;
+        // The toolbar above the app shows the active pattern; let it follow
+        // switches without polling.
+        window.dispatchEvent(
+          new CustomEvent("bob:pattern", { detail: { pattern: activePattern } }),
+        );
+      }
       return { status: 200, body: { pattern: activePattern } };
     }
     if (pathname === "/api/tree/memory") return { status: 200, body: memoryPayload() };
@@ -380,13 +398,9 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         },
       };
     }
-    if (pathname === "/api/tree/versions" && method === "POST") {
-      const name = (parseBody(body) as { name?: string }).name ?? "";
-      return { status: 200, body: await snapshotTree(platform.workspaceRoot, name) };
-    }
     if (pathname === "/api/tree/version/promote" && method === "POST") {
-      const { name = "", version = "" } = parseBody(body) as { name?: string; version?: string };
-      return { status: 200, body: await promoteTree(platform.workspaceRoot, name, version) };
+      const { name = "" } = parseBody(body) as { name?: string };
+      return { status: 200, body: await promoteDraft(platform.workspaceRoot, name) };
     }
     if (pathname === "/api/tree/version/active" && method === "POST") {
       const { name = "", ref = "prod" } = parseBody(body) as { name?: string; ref?: string };
@@ -450,6 +464,24 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         return { status: 200, contentType: "text/plain; charset=utf-8", body: content };
       } catch (err) {
         return { status: 404, body: { error: String(err) } };
+      }
+    }
+
+    // ── voice (browser-local whisper) ─────────────────────────────────────
+    if (pathname === "/api/transcribe" && method === "POST") {
+      if (!(body instanceof FormData)) return { status: 400, body: { error: "multipart required" } };
+      const file = body.get("file");
+      if (!(file instanceof Blob) || file.size === 0) {
+        return { status: 400, body: { error: "no audio file" } };
+      }
+      try {
+        const text = await transcribeBlob(file);
+        return { status: 200, body: { text } };
+      } catch (err) {
+        return {
+          status: 502,
+          body: { error: `transcription failed: ${err instanceof Error ? err.message : String(err)}` },
+        };
       }
     }
 

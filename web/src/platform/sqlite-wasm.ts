@@ -42,15 +42,23 @@ function call<T = unknown>(op: string, payload: Record<string, unknown> = {}): P
   });
 }
 
-/** Boot the sqlite worker and install the OPFS VFS. Idempotent. */
-export async function initSqlite(): Promise<void> {
-  await call("init");
+/**
+ * Boot the sqlite worker and point it at a database root. Idempotent.
+ *
+ * `rootHandle` is the folder picked with the File System Access API in direct
+ * mode; omit it for OPFS. `writeBack: false` makes direct mode read-only.
+ */
+export async function initSqlite(
+  rootHandle?: FileSystemDirectoryHandle,
+  opts?: { writeBack?: boolean },
+): Promise<void> {
+  await call("init", { rootHandle: rootHandle ?? null, writeBack: opts?.writeBack });
 }
 
 export function createSqliteWasm(): SqliteFactory {
   return {
-    async open(path: string): Promise<SqliteDatabase> {
-      const { dbId } = await call<{ dbId: number }>("open", { path });
+    async open(path: string, opts?: { readOnly?: boolean }): Promise<SqliteDatabase> {
+      const { dbId } = await call<{ dbId: number }>("open", { path, readOnly: opts?.readOnly === true });
       return {
         async prepare(sql: string): Promise<SqliteStatement> {
           const { stmtId, columns } = await call<{ stmtId: number; columns: SqliteColumn[] }>("prepare", {

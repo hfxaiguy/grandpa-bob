@@ -5,17 +5,53 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>BOB</title>
     <style>
-      :root { color-scheme: light dark; }
+      :root {
+        color-scheme: dark;
+        --bg: #0b1224;
+        --panel: #111a30;
+        --card: #16203a;
+        --border: #26324f;
+        --fg: #dbe4f5;
+        --muted: #a9b8d6;
+        --accent: #6ea8fe;
+      }
       html, body { margin: 0; height: 100%; }
-      body { display: flex; flex-direction: column; font-family: system-ui, sans-serif; }
+      body {
+        display: flex; flex-direction: column;
+        background: var(--bg); color: var(--fg);
+        font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
       #toolbar {
         display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
-        padding: 0.35rem 0.6rem; border-bottom: 1px solid #8884; font-size: 13px;
+        padding: 0.45rem 0.7rem;
+        background: var(--panel); color: var(--fg);
+        border-bottom: 1px solid var(--border);
+        font-size: 13px;
       }
-      #toolbar label { display: inline-flex; align-items: center; gap: 0.3rem; }
-      #toolbar select, #toolbar input, #toolbar button { font: inherit; padding: 0.15rem 0.35rem; }
+      #toolbar label { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--fg); }
+      #toolbar select, #toolbar input, #toolbar button {
+        font: inherit; font-size: 13px;
+        color: var(--fg);
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.3rem 0.5rem;
+      }
+      #toolbar input::placeholder { color: var(--muted); opacity: 1; }
+      #toolbar select:hover, #toolbar input:hover, #toolbar button:hover { border-color: var(--accent); }
+      #toolbar select:focus-visible, #toolbar input:focus-visible, #toolbar button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+      #toolbar input[type="checkbox"] { accent-color: var(--accent); width: 1rem; height: 1rem; padding: 0; }
+      #storage-server {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12.5px;
+        min-width: 15rem;
+        letter-spacing: 0.01em;
+      }
+      #status { color: var(--muted); }
       #app { flex: 1; min-height: 0; }
-      #status { opacity: 0.7; }
     </style>
   </head>
   <body>
@@ -23,8 +59,13 @@
       <label>Storage
         <select id="storage-mode">
           <option value="browser">Browser (OPFS)</option>
+          <option value="direct">Desktop (direct folder)</option>
           <option value="desktop">Desktop (local server)</option>
         </select>
+      </label>
+      <button id="pick-folder" type="button" title="Pick the workspace folder on your hard drive">Choose folder…</button>
+      <label id="writeback-label" title="Write SQL changes back to the real .db files">
+        <input id="sql-writeback" type="checkbox" /> SQL writes
       </label>
       <input id="storage-server" placeholder="http://127.0.0.1:8795" size="22" />
       <span id="status">starting…</span>
