@@ -294,6 +294,55 @@ if (sql.rows?.[0]?.x !== 7) {
 }
 console.log("✓ sqlite: read-only default, opt-in write-back to the real file");
 
+// First agent turn after a page load must resolve a pattern NAME picked from
+// the dropdown against the selected backend (the worker's node:fs shim starts
+// out pointing at OPFS). Regression: the first turn failed with
+// `cannot load pattern patterns/<name>.mjs`.
+const switched = await evaluate(`(async () => {
+  const backend = window.__bobBackend;
+  await backend.ready;
+  const content = [
+    'import { Tree, name, Return } from "grandma-kat";',
+    'export default Tree(name("smoke"), Return(() => "smoke ok"));',
+    "",
+  ].join("\\n");
+  const created = await backend.request("POST", "/api/patterns", new URLSearchParams(),
+    JSON.stringify({ name: "smoke_pattern", content }));
+  const selected = await backend.request("POST", "/api/pattern", new URLSearchParams(),
+    JSON.stringify({ name: "smoke_pattern" }));
+  const chat = await backend.request("POST", "/api/chat", new URLSearchParams(),
+    JSON.stringify({ text: "hello from the direct smoke" }));
+  return { created: created.status, selected: selected.status, chat: chat.status };
+})()`);
+if (switched.created !== 200 || switched.selected !== 200 || switched.chat !== 200) {
+  console.error("could not start the pattern-switch turn:", switched);
+  cleanup(6);
+}
+
+let turn = null;
+for (let i = 0; i < 120; i++) {
+  const raw = await evaluate(`(async () => {
+    const backend = window.__bobBackend;
+    const r = await backend.request("GET", "/api/turns", new URLSearchParams(), null);
+    const t = r.body.turns || [];
+    return JSON.stringify(t[t.length - 1] || null);
+  })()`);
+  turn = raw ? JSON.parse(raw) : null;
+  if (turn && turn.status !== "running") break;
+  await sleep(250);
+}
+if (!turn || turn.status === "running") {
+  console.error("pattern-switch turn did not finish", turn);
+  console.log(logs.join("\n"));
+  cleanup(6);
+}
+if (turn.status !== "done" || /cannot load pattern|unknown pattern/.test(String(turn.error ?? ""))) {
+  console.error("pattern picked by name failed on the first turn:", turn);
+  console.log(logs.join("\n"));
+  cleanup(6);
+}
+console.log("✓ pattern picked by name runs on the first turn");
+
 if (logs.some((line) => line.startsWith("[exception]"))) {
   console.log(logs.join("\n"));
   cleanup(6);

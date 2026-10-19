@@ -2,6 +2,19 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — first turn after a reload resolves a picked pattern against the right backend
+
+`resolvePatternPath` reads the tree catalog through the `node:fs` shim, but the
+agent worker pointed that shim at the selected storage *after* resolving. A
+fresh worker starts on OPFS, so the first turn after a page load looked for
+`patterns/context_manager.mjs` in the browser sandbox, found nothing, and fell
+back to a path that does not exist — failing with ENOENT even though the
+workspace had `context_manager.prod.mjs` (later turns worked because the shim
+was already repointed). `setActiveFs(platform.fs)` now runs before resolution.
+A name that resolves nowhere now fails with `unknown pattern '<name>' —
+available: …` instead of a bare ENOENT, and `smoke:direct` runs a first-turn
+name-picked pattern end to end so the ordering cannot regress.
+
 ## 2026-10-19 — high-contrast toolbar (the storage bridge URL input)
 
 The storage toolbar used the browser's default light controls over a dark app,

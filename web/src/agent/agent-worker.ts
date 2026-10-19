@@ -219,6 +219,12 @@ async function handleRun(opts: RunOptions): Promise<void> {
   });
   await ready;
 
+  // The tree catalog (resolveTreeEntry) reads through the node:fs shim, so the
+  // shim must follow the selected backend *before* a pattern name is resolved.
+  // A fresh worker starts pointed at OPFS; resolving first made the first turn
+  // after a reload look for `patterns/context_manager.mjs` in the wrong place.
+  setActiveFs(platform.fs);
+
   // The picker sends a logical name ("context_manager", "name@v3"); boot sends
   // a path ("patterns/trunk.mjs"). Session identity uses the resolved file so
   // both shapes share one conversation.
@@ -228,7 +234,6 @@ async function handleRun(opts: RunOptions): Promise<void> {
   const session = getSession(sessionKey, platform);
   session.currentId = opts.id;
 
-  setActiveFs(platform.fs);
   await ensureIndex(platform, sessionKey);
 
   const registry = await (async (): Promise<ModelRegistry> => {

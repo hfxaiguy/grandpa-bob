@@ -10,6 +10,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Platform } from "../src/platform/types";
+import { createNodePlatform } from "../src/platform/node";
 import { resolvePatternPath } from "../web/src/agent/pattern-path";
 
 async function main(): Promise<void> {
@@ -20,11 +21,12 @@ async function main(): Promise<void> {
       "context_manager.draft.mjs",
       "context_manager.prod.mjs",
       "trunk.prod.mjs",
+      "legacy.mjs",
     ]) {
       await writeFile(path.join(ws, "patterns", file), "export default {};\n");
     }
 
-    const platform = { workspaceRoot: ws } as Platform;
+    const platform = createNodePlatform(ws) as Platform;
 
     assert.equal(
       await resolvePatternPath(platform, "context_manager"),
@@ -47,9 +49,14 @@ async function main(): Promise<void> {
       "an empty pattern falls back to trunk",
     );
     assert.equal(
-      await resolvePatternPath(platform, "not_here"),
-      "patterns/not_here.mjs",
-      "a missing logical name still gets the conventional path (real ENOENT)",
+      await resolvePatternPath(platform, "legacy"),
+      "patterns/legacy.mjs",
+      "a single-file pattern outside the version catalog still works",
+    );
+    await assert.rejects(
+      () => resolvePatternPath(platform, "not_here"),
+      /unknown pattern 'not_here'.*available: context_manager, legacy, trunk/,
+      "a missing name lists the patterns that do exist",
     );
     console.log("pattern-path: logical names resolve to version-aware files");
   } finally {

@@ -12,7 +12,7 @@
  * which does not exist.
  */
 import type { Platform } from "../../../src/platform/types";
-import { resolveTreeEntry } from "../../../src/tree-versions";
+import { listTreeEntries, resolveTreeEntry } from "../../../src/tree-versions";
 
 export const DEFAULT_PATTERN_PATH = "patterns/trunk.mjs";
 
@@ -32,7 +32,24 @@ export async function resolvePatternPath(platform: Platform, pattern?: string | 
   const entry = await resolveTreeEntry(platform.workspaceRoot, logical, ref).catch(() => null);
   if (entry) return entry.file;
 
-  // Not in the catalog (yet): fall back to the conventional pattern path so a
-  // missing file surfaces the loader's own ENOENT instead of a bad path.
-  return `patterns/${logical}.mjs`;
+  // Not in the catalog. A plain `patterns/<name>.mjs` may still exist (older
+  // single-file patterns), so allow that; otherwise fail with the names that
+  // do exist instead of a bare ENOENT pointing at a file nobody wrote.
+  const conventional = `patterns/${logical}.mjs`;
+  const exists = await platform.fs
+    .stat(platform.path.join(platform.workspaceRoot, conventional))
+    .then((st) => st.isFile())
+    .catch(() => false);
+  if (exists) return conventional;
+
+  const entries = await listTreeEntries(platform.workspaceRoot).catch(() => []);
+  const available = [
+    ...new Set(entries.filter((e) => e.kind === "pattern").map((e) => e.logical)),
+  ]
+    .sort()
+    .join(", ");
+  throw new Error(
+    `unknown pattern '${logical}'${ref ? ` (@${ref})` : ""}` +
+      (available ? ` — available: ${available}` : ""),
+  );
 }
