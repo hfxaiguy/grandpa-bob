@@ -13,17 +13,31 @@ export async function listPatterns(workspaceDir: string) {
   const patternsDir = path.join(workspaceDir, PATTERNS_DIR_NAME);
   try {
     const files = await readdir(patternsDir);
+    // A pattern normally has an editable draft (`name.draft.mjs` / `name.mjs`);
+    // its `.prod`/`.vN` files are snapshots and stay out of the list. But a
+    // tree that exists ONLY as a snapshot (trunk in the live workspace is
+    // `trunk.prod.mjs`) is still runnable — the default ref picks prod — so it
+    // must be listed, or the picker and boot detection cannot see it.
+    const editable = new Set<string>();
+    for (const f of files) {
+      const parsed = parsePatternFileName(f);
+      if (parsed && parsed.version === null && !parsed.prod) editable.add(parsed.logical);
+    }
     const out: { file: string; name: string; description: string; guide: string }[] = [];
     for (const f of files) {
       if (!f.endsWith(".mjs")) continue;
       if (f.endsWith(".test.mjs")) continue; // smoke tests, not runnable patterns
-      if (isVersionFileName(f)) continue; // versions are not trees of their own
+      const parsed = parsePatternFileName(f);
+      if (isVersionFileName(f)) {
+        // Keep the prod snapshot only when no draft exists for that tree.
+        if (!parsed?.prod || editable.has(parsed.logical)) continue;
+      }
       try {
         const content = await readFile(path.join(patternsDir, f), "utf8");
         const m = content.match(/^\/\/\s*(\S+\.mjs)\s*[—–-]\s*(.+)/m);
         // The logical name comes from the filename — `.draft`/`.prod`/`.vN`
         // are reserved suffixes — never from the first-line comment.
-        const name = parsePatternFileName(f)?.logical ?? f.replace(/\.mjs$/, "");
+        const name = parsed?.logical ?? f.replace(/\.mjs$/, "");
         const desc = m ? m[2] : "(no description)";
         // One spec per tree: patterns/<name>.spec.md carries the `## Guide`
         // (the agent-facing "how to use me" text), same as an app tree.

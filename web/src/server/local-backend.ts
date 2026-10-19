@@ -17,6 +17,7 @@ import { serializeTree } from "../../../src/tree-serialize";
 import { newTurnApps, tagEventApp, type TurnApps } from "../../../src/app-attribution";
 import { emitValue } from "../../../src/util/emit-text";
 import { createModuleLoader } from "../agent/module-loader";
+import { patternLabel } from "../agent/pattern-path";
 import { loadEnv, saveEnv, saveModelsJson } from "../settings";
 import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "../../../src/db-sync";
 import { transcribeBlob } from "../stt/browser-whisper";
@@ -260,7 +261,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       const sources = await listTreeSources(platform.workspaceRoot);
       const patterns = sources.map((s) => ({ name: s.name, group: s.group, description: s.description, draft: s.draft }));
       const names = patterns.map((p) => p.name);
-      const current = names.includes(activePattern) ? activePattern : names[0] ?? activePattern;
+      // `activePattern` may arrive as a path from boot detection; compare by
+      // logical name so a prod-only tree (trunk) is not replaced by names[0].
+      const wanted = patternLabel(activePattern);
+      const current = names.includes(wanted) ? wanted : names[0] ?? activePattern;
       activePattern = current;
       return { status: 200, body: { current, pattern: current, patterns, ref: "prod", refs: ["prod", "draft"] } };
     } catch {
@@ -356,7 +360,14 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     if (pathname === "/api/pattern" && method === "GET") return patternCatalog();
     if (pathname === "/api/pattern" && method === "POST") {
       const want = (parseBody(body) as { name?: string }).name;
-      if (want) activePattern = want;
+      if (want) {
+        activePattern = patternLabel(want) || want;
+        // The toolbar above the app shows the active pattern; let it follow
+        // switches without polling.
+        window.dispatchEvent(
+          new CustomEvent("bob:pattern", { detail: { pattern: activePattern } }),
+        );
+      }
       return { status: 200, body: { pattern: activePattern } };
     }
     if (pathname === "/api/tree/memory") return { status: 200, body: memoryPayload() };

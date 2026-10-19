@@ -2,6 +2,26 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — trunk is discovered again, and the toolbar names the active pattern
+
+Two pattern-discovery/status fixes:
+
+- `listPatterns` skipped every `.prod`/`.vN` file as a snapshot, which hid
+  trees that exist **only** as a prod file — the live workspace's `trunk` is
+  `patterns/trunk.prod.mjs` with no draft. Boot detection therefore picked the
+  alphabetically-first draft (`context_manager`) as the default pattern, and
+  the pattern picker could not offer trunk at all. Prod snapshots are now listed
+  when the tree has no editable draft (drafts still win when both exist).
+- The web UI's `detectPattern` now reads the same `scanTreeVersions` catalog the
+  Node target uses, preferring `trunk` whether it is a draft or prod-only, and
+  returns the logical name. `patternCatalog` compares `activePattern` by logical
+  name, so a boot path no longer resets the selection to `names[0]`.
+- The toolbar status shows the logical name (`trunk`, not `trunk.mjs`) and
+  updates when the picker changes pattern (the in-browser backend emits
+  `bob:pattern`), instead of showing the boot-time value forever.
+- `test:pattern-path` now asserts prod-only discovery; `smoke:direct` asserts
+  the status line follows a switch.
+
 ## 2026-10-19 — first turn after a reload resolves a picked pattern against the right backend
 
 `resolvePatternPath` reads the tree catalog through the `node:fs` shim, but the

@@ -16,6 +16,17 @@ import { listTreeEntries, resolveTreeEntry } from "../../../src/tree-versions";
 
 export const DEFAULT_PATTERN_PATH = "patterns/trunk.mjs";
 
+/**
+ * Human-facing name for a pattern path or logical name:
+ * `patterns/context_manager.prod.mjs` → `context_manager`.
+ */
+export function patternLabel(pattern?: string | null): string {
+  const raw = (pattern ?? "").trim();
+  if (!raw) return "";
+  const file = raw.split("/").pop() ?? raw;
+  return file.replace(/\.mjs$/, "").replace(/\.(draft|prod|v\d+)$/, "");
+}
+
 function looksLikePath(pattern: string): boolean {
   return pattern.includes("/") || pattern.endsWith(".mjs") || pattern.endsWith(".js");
 }

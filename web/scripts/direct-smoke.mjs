@@ -312,10 +312,19 @@ const switched = await evaluate(`(async () => {
     JSON.stringify({ name: "smoke_pattern" }));
   const chat = await backend.request("POST", "/api/chat", new URLSearchParams(),
     JSON.stringify({ text: "hello from the direct smoke" }));
-  return { created: created.status, selected: selected.status, chat: chat.status };
+  return {
+    created: created.status,
+    selected: selected.status,
+    chat: chat.status,
+    status: document.getElementById("status")?.textContent ?? "",
+  };
 })()`);
 if (switched.created !== 200 || switched.selected !== 200 || switched.chat !== 200) {
   console.error("could not start the pattern-switch turn:", switched);
+  cleanup(6);
+}
+if (!/· smoke_pattern$/.test(switched.status)) {
+  console.error("the status line did not follow the pattern switch:", switched.status);
   cleanup(6);
 }
 

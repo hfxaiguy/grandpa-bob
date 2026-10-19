@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Platform } from "../src/platform/types";
 import { createNodePlatform } from "../src/platform/node";
+import { listTreeSources } from "../src/tree-sources";
 import { resolvePatternPath } from "../web/src/agent/pattern-path";
 
 async function main(): Promise<void> {
@@ -58,7 +59,20 @@ async function main(): Promise<void> {
       /unknown pattern 'not_here'.*available: context_manager, legacy, trunk/,
       "a missing name lists the patterns that do exist",
     );
-    console.log("pattern-path: logical names resolve to version-aware files");
+
+    // Discovery must list a tree that only exists as a prod snapshot (trunk in
+    // the live workspace), while still listing each logical tree exactly once.
+    const sources = await listTreeSources(ws);
+    const names = sources.map((s) => s.name).sort();
+    assert.deepEqual(names, ["context_manager", "legacy", "trunk"]);
+    assert.equal(
+      sources.find((s) => s.name === "trunk")?.file,
+      "trunk.prod.mjs",
+      "the prod snapshot is the listed file when there is no draft",
+    );
+    console.log(
+      "pattern-path: logical names resolve to version-aware files; prod-only trees are discovered",
+    );
   } finally {
     await rm(ws, { recursive: true, force: true });
   }

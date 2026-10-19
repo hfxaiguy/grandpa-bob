@@ -44,6 +44,8 @@ import { cloneWorkspace } from "./platform/git-opfs";
 import { applyDatabaseDumps } from "../../src/db-sync";
 import { createAutoSync, DEFAULT_INTERVAL_MS } from "../../src/auto-sync";
 import { listTreeSources } from "../../src/tree-sources";
+import { resolveTreeEntry, scanTreeVersions } from "../../src/tree-versions";
+import { patternLabel } from "./agent/pattern-path";
 import type { Platform } from "../../src/platform/types";
 
 const params = new URLSearchParams(location.search);
@@ -63,6 +65,19 @@ const statusEl = document.getElementById("status")!;
 const setStatus = (text: string): void => {
   statusEl.textContent = text;
 };
+
+/** Storage-specific half of the status line (set once the backend is ready). */
+let statusBase: string = storageMode;
+
+/** `direct · grandma-workspace · trunk` — pattern switches update this live. */
+function showStatus(pattern: string): void {
+  setStatus(`${statusBase} · ${patternLabel(pattern)}`);
+}
+
+window.addEventListener("bob:pattern", (event) => {
+  const pattern = (event as CustomEvent<{ pattern?: string }>).detail?.pattern;
+  if (pattern) showStatus(pattern);
+});
 
 const appEl = document.getElementById("app")!;
 const storageSelect = document.getElementById("storage-mode") as HTMLSelectElement | null;
@@ -230,13 +245,22 @@ async function buildFsIndex(target: Platform): Promise<void> {
 
 async function detectPattern(target: Platform): Promise<string> {
   try {
+    // Use the version catalog, not just editable drafts: a tree that exists
+    // only as a prod snapshot (the live workspace's `trunk.prod.mjs`) is
+    // runnable and must win over alphabetically-first drafts.
+    const catalog = await scanTreeVersions(target.workspaceRoot);
+    const ordered = [...catalog].sort((a, b) => a.logical.localeCompare(b.logical));
+    const preferred = ordered.find((c) => c.logical === "trunk") ?? ordered[0];
+    if (preferred) {
+      const entry = await resolveTreeEntry(target.workspaceRoot, preferred.logical, null);
+      if (entry) return preferred.logical;
+    }
     const sources = await listTreeSources(target.workspaceRoot);
-    if (sources.some((s) => s.name === "trunk")) return "patterns/trunk.mjs";
-    if (sources[0]) return `patterns/${sources[0].name}.mjs`;
+    if (sources[0]) return sources[0].name;
   } catch {
     /* fall through */
   }
-  return "patterns/trunk.mjs";
+  return "trunk";
 }
 
 /** Resolve the direct-mode folder, or show the gate and stop booting. */
@@ -281,17 +305,18 @@ async function main(): Promise<void> {
     platform = createFsAccessPlatform(handle);
     setActiveFs(platform.fs);
     await buildFsIndex(platform);
-    setStatus(`direct · ${handle.name}${sqlWriteBack ? "" : " · sql read-only"}`);
+    statusBase = `direct · ${handle.name}${sqlWriteBack ? "" : " · sql read-only"}`;
   } else if (storageMode === "desktop") {
     await initSqlite();
     platform = createDesktopPlatform("/", storageServer);
     setActiveFs(platform.fs);
     await buildFsIndex(platform);
+    statusBase = "desktop";
     try {
       const health = await fetch(`${storageServer}/health`).then((r) => r.json());
-      setStatus(`desktop: ${health.root}`);
+      statusBase = `desktop: ${health.root}`;
     } catch {
-      setStatus(`desktop bridge unreachable at ${storageServer}`);
+      statusBase = `desktop bridge unreachable at ${storageServer}`;
     }
   } else {
     await initSqlite();
@@ -300,6 +325,7 @@ async function main(): Promise<void> {
     await prepareBrowserWorkspace();
     await buildFsIndex(platform);
     await ensureModels(platform);
+    statusBase = "browser";
   }
 
   // Periodic two-way git sync (pull then push) for the OPFS mirror only.
@@ -330,7 +356,7 @@ async function main(): Promise<void> {
   });
 
   hostUi(backend, appEl, { page: "chat", port: 8080 });
-  setStatus(`${storageMode} · ${pattern.replace("patterns/", "")}`);
+  showStatus(pattern);
 }
 
 main().catch((err) => {
