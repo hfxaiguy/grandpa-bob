@@ -18,6 +18,7 @@ import { resolveTreeEntry } from "../../../src/tree-versions";
 import { assembleGuides, HOST_GUIDES } from "../../../src/tool-guides";
 import { createWorkspaceLogger, type MemoryLogger, type WorkspaceLogger } from "./logger";
 import { createModuleLoader } from "./module-loader";
+import { resolvePatternPath } from "./pattern-path";
 import { loadBrowserModels } from "./models";
 import { parseModels, type ModelRegistry } from "../../../src/model-config";
 
@@ -119,8 +120,7 @@ async function loadPattern(platform: Platform, patternPath: string): Promise<unk
     return mod.default ?? mod.pattern;
   } catch (err) {
     throw new Error(
-      `cannot load pattern ${patternPath}: ${err instanceof Error ? err.message : String(err)} ` +
-        "(is the workspace seeded? run `npm run make-seed`, or use Desktop storage)",
+      `cannot load pattern ${patternPath}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }
@@ -213,12 +213,16 @@ async function handleRun(opts: RunOptions): Promise<void> {
   const task = opts.task ?? "";
   const storage = opts.storage ?? "browser";
   const server = opts.server ?? "";
-  const patternPath = opts.pattern ?? "patterns/agent_demo.mjs";
   const platform = await getPlatform(storage, server, {
     rootHandle: opts.rootHandle,
     sqlWriteBack: opts.sqlWriteBack,
   });
   await ready;
+
+  // The picker sends a logical name ("context_manager", "name@v3"); boot sends
+  // a path ("patterns/trunk.mjs"). Session identity uses the resolved file so
+  // both shapes share one conversation.
+  const patternPath = await resolvePatternPath(platform, opts.pattern);
 
   const sessionKey = `${storage}|${server}|${patternPath}`;
   const session = getSession(sessionKey, platform);

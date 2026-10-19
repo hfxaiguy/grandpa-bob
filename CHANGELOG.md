@@ -2,6 +2,21 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — a pattern picked from the dropdown loads by name, not by raw path
+
+The pattern picker sends a logical name (`context_manager`, optionally
+`name@draft`), while boot detection sends a workspace path
+(`patterns/trunk.mjs`). The agent worker treated every value as a path, so
+switching patterns in the UI made the module loader open
+`<workspace>/context_manager` and every turn failed with
+`cannot load pattern context_manager: ENOENT`. `resolvePatternPath()` now
+resolves bare names through the version-aware tree catalog
+(`context_manager` → `patterns/context_manager.prod.mjs`) and passes real paths
+through unchanged; the session key uses the resolved file so the same pattern
+picked by name or path shares one conversation. `test:pattern-path` pins the
+name/ref/path/empty/missing cases, and the misleading "is the workspace
+seeded?" hint is gone from the load error.
+
 ## 2026-10-19 — header upload button: put files into the workspace from the browser
 
 The tiled UI header (shared by the web UI and the Node admin UI) has an
