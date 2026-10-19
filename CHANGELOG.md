@@ -2,6 +2,32 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — the browser UI is the main interface, and it can use the real folder
+
+The web target (`web/`) is now what `http://<host>:8080` serves (the legacy
+`ui/dist` remains only as a fallback when `web/dist` is missing), and `npm run
+build` builds it. Telegram is unchanged.
+
+New storage mode **Desktop (direct folder)**: a File System Access adapter
+(`web/src/platform/fsaccess.ts`) lets the fully client-side UI read and write a
+real folder on the hard drive **in place, with no server process**. The picked
+handle is persisted in IndexedDB and re-granted with one click after a reload.
+The handle-backed filesystem is shared with OPFS (`handle-fs.ts`), so patterns,
+tree versions, the file browser, virtual coreutils and `git_status` follow the
+selected storage automatically; isomorphic-git commits are now proven over a
+real folder (`scripts/fsaccess-test.ts`, `npm run test:fsaccess`).
+
+SQLite follows the same seam: the sqlite worker can be pointed at the picked
+folder and imports/exports the real `.db` files. Direct mode is read-only for
+app databases by default (`SQL writes` in the toolbar enables write-back);
+`logs/grandma-kat.db` stays writable. Firefox keeps using the existing loopback
+storage bridge, which implements the same Platform interface.
+
+Voice in the web UI no longer needs a server: `/api/transcribe` runs whisper in
+the tab with Transformers.js (WebGPU when available, WASM otherwise; the model
+is downloaded once and cached). The Vulkan whisper-server is still what Telegram
+voice notes use.
+
 ## 2026-10-15 — promoting an app tree now drops a paused session that depended on it
 
 The session staleness hash (`resumeHash`) covers only the root pattern's

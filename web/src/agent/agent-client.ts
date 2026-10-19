@@ -20,10 +20,14 @@ export interface AgentRunOptions {
   env?: Record<string, string>;
   pattern?: string;
   remote?: string;
-  storage?: "browser" | "desktop";
+  storage?: "browser" | "desktop" | "direct";
   server?: string;
   /** Model registry JSON from browser settings (takes precedence over models.json). */
   modelsJson?: string;
+  /** Direct mode: the real folder chosen with the File System Access API. */
+  rootHandle?: FileSystemDirectoryHandle;
+  /** Direct mode: allow SQL writes to the real .db files. */
+  sqlWriteBack?: boolean;
 }
 
 interface Pending {

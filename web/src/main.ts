@@ -5,20 +5,36 @@
  * serves their /api/* calls from an in-browser backend (AgentClient + Platform)
  * via a fetch/EventSource shim. A thin toolbar above the iframe selects the
  * storage backend; everything else — including git sync — is the shared UI.
+ *
+ * Storage modes:
+ *   browser  — OPFS sandbox (offline, seeded from web/public/seed)
+ *   direct   — a real folder picked with the File System Access API (Chromium;
+ *              no server process, reads/writes the workspace in place)
+ *   desktop  — the existing loopback storage bridge (any browser, incl. Firefox)
  */
 import "./shims/process";
 import { setActiveFs, setFsIndex } from "./shims/node-fs-promises";
 import { createBrowserPlatform, initSqlite } from "./platform/browser";
 import { createDesktopPlatform } from "./platform/desktop";
+import {
+  createFsAccessPlatform,
+  directoryPermission,
+  loadDirectoryHandle,
+  pickWorkspaceDirectory,
+  requestDirectoryPermission,
+  supportsFsAccess,
+} from "./platform/fsaccess";
 import { AgentClient } from "./agent/agent-client";
 import { createLocalBackend } from "./server/local-backend";
 import { hostUi } from "./ui-host";
 import {
   loadEnv,
   loadRemote,
+  loadSqlWriteBack,
   loadStorage,
   loadStorageServer,
   loadModelsJson,
+  saveSqlWriteBack,
   saveStorage,
   saveStorageServer,
   type StorageMode,
@@ -31,20 +47,51 @@ import { listTreeSources } from "../../src/tree-sources";
 import type { Platform } from "../../src/platform/types";
 
 const params = new URLSearchParams(location.search);
-const storageMode: StorageMode = (params.get("storage") as StorageMode) ?? loadStorage();
+const requestedStorage = params.get("storage");
+const storedStorage = loadStorage();
+const storageMode: StorageMode =
+  requestedStorage === "direct" || requestedStorage === "desktop" || requestedStorage === "browser"
+    ? requestedStorage
+    : storedStorage === "direct" && !supportsFsAccess()
+      ? "browser"
+      : storedStorage;
 const storageServer = params.get("server") ?? loadStorageServer();
 let configuredRemote = params.get("remote") ?? loadRemote();
+const sqlWriteBack = loadSqlWriteBack();
 
 const statusEl = document.getElementById("status")!;
 const setStatus = (text: string): void => {
   statusEl.textContent = text;
 };
 
-// ── toolbar ──────────────────────────────────────────────────────────────
+const appEl = document.getElementById("app")!;
 const storageSelect = document.getElementById("storage-mode") as HTMLSelectElement | null;
 const storageServerInput = document.getElementById("storage-server") as HTMLInputElement | null;
+const pickFolderButton = document.getElementById("pick-folder") as HTMLButtonElement | null;
+const writeBackInput = document.getElementById("sql-writeback") as HTMLInputElement | null;
+
 if (storageSelect) storageSelect.value = storageMode;
 if (storageServerInput) storageServerInput.value = storageServer;
+if (writeBackInput) writeBackInput.checked = sqlWriteBack;
+
+/** Show only the controls that matter for the selected storage backend. */
+function configureToolbar(): void {
+  const direct = storageMode === "direct";
+  const bridge = storageMode === "desktop";
+  if (pickFolderButton) pickFolderButton.style.display = direct ? "" : "none";
+  if (writeBackInput?.parentElement) writeBackInput.parentElement.style.display = direct ? "" : "none";
+  if (storageServerInput) storageServerInput.style.display = bridge ? "" : "none";
+  const directOption = storageSelect?.querySelector('option[value="direct"]') as HTMLOptionElement | null;
+  if (directOption) {
+    if (!supportsFsAccess()) {
+      directOption.disabled = true;
+      directOption.textContent = "Desktop (direct folder) — Chrome/Edge only";
+    } else {
+      directOption.disabled = false;
+    }
+  }
+}
+configureToolbar();
 
 const applyStorage = (): void => {
   if (storageSelect) saveStorage(storageSelect.value as StorageMode);
@@ -54,18 +101,69 @@ const applyStorage = (): void => {
 storageSelect?.addEventListener("change", applyStorage);
 storageServerInput?.addEventListener("change", applyStorage);
 
+writeBackInput?.addEventListener("change", () => {
+  saveSqlWriteBack(writeBackInput.checked);
+  location.reload();
+});
+
+/**
+ * Direct mode needs one click to pick (or re-grant) the folder — browsers only
+ * allow `showDirectoryPicker`/`requestPermission` from a user gesture.
+ */
+function showFolderGate(handle: FileSystemDirectoryHandle | null, reason: string): void {
+  const box = document.createElement("div");
+  box.style.cssText = "max-width:32rem;margin:4rem auto;font:15px system-ui;line-height:1.5;padding:0 1rem";
+  const title = document.createElement("h2");
+  title.textContent = "Choose BOB's workspace";
+  const text = document.createElement("p");
+  text.textContent = reason;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = handle ? `Grant access to “${handle.name}”` : "Choose folder…";
+  button.style.cssText = "font:inherit;padding:0.4rem 0.9rem;cursor:pointer";
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      const picked = handle ?? (await pickWorkspaceDirectory());
+      if (handle) {
+        if (!(await requestDirectoryPermission(picked))) {
+          throw new Error("access was not granted");
+        }
+      }
+      location.reload();
+    } catch (err) {
+      button.disabled = false;
+      text.textContent = `Could not open the folder: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  });
+  box.append(title, text, button);
+  appEl.replaceChildren(box);
+}
+
+pickFolderButton?.addEventListener("click", async () => {
+  pickFolderButton.disabled = true;
+  try {
+    await pickWorkspaceDirectory();
+    location.reload();
+  } catch (err) {
+    pickFolderButton.disabled = false;
+    setStatus(`folder: ${err instanceof Error ? err.message : String(err)}`);
+  }
+});
+
+let platform: Platform;
+
+/** The platform selected at boot; all callers share it (and its handles). */
 function activePlatform(): Platform {
-  return storageMode === "desktop"
-    ? createDesktopPlatform("/", storageServer)
-    : createBrowserPlatform("/workspace");
+  return platform;
 }
 
-// ── workspace preparation (browser mode) ─────────────────────────────────
+// ── browser (OPFS) workspace preparation ────────────────────────────────
 async function isFile(p: string): Promise<boolean> {
-  return activePlatform().fs.stat(p).then(() => true).catch(() => false);
+  return platform.fs.stat(p).then(() => true).catch(() => false);
 }
 
-async function seedWorkspace(root: string, platform: Platform): Promise<void> {
+async function seedWorkspace(root: string): Promise<void> {
   const marker = platform.path.join(root, ".seeded");
   const trunk = platform.path.join(root, "patterns", "trunk.mjs");
   const force = params.has("reseed");
@@ -81,40 +179,31 @@ async function seedWorkspace(root: string, platform: Platform): Promise<void> {
   }
 }
 
-async function prepareWorkspace(): Promise<void> {
-  if (storageMode === "desktop") {
-    try {
-      const health = await fetch(`${storageServer}/health`).then((r) => r.json());
-      setStatus(`desktop: ${health.root}`);
-    } catch {
-      setStatus(`desktop bridge unreachable at ${storageServer}`);
-    }
-    return;
-  }
-  const platform = createBrowserPlatform("/workspace");
+async function prepareBrowserWorkspace(): Promise<void> {
+  const root = "/workspace";
   if (configuredRemote) {
-    const gitDir = platform.path.join("/workspace", ".git");
+    const gitDir = platform.path.join(root, ".git");
     const hasRepo = await isFile(gitDir);
     if (!hasRepo || params.has("reclone")) {
       setStatus(`cloning ${configuredRemote}…`);
-      if (await isFile("/workspace")) await platform.fs.rm("/workspace");
-      await cloneWorkspace("/workspace", configuredRemote);
+      if (await isFile(root)) await platform.fs.rm(root);
+      await cloneWorkspace(root, configuredRemote);
     }
     await applyDatabaseDumps(platform, { onlyMissing: true }).catch(() => {});
     setStatus("workspace ready");
     return;
   }
   setStatus("seeding workspace…");
-  await seedWorkspace("/workspace", platform);
+  await seedWorkspace(root);
   await applyDatabaseDumps(platform, { onlyMissing: true }).catch(() => {});
   setStatus("workspace ready");
 }
 
-/** Make sure models.json exists (a mock entry) so the agent can run. */
-async function ensureModels(platform: Platform): Promise<void> {
-  const file = platform.path.join(platform.workspaceRoot, "models.json");
+/** Make sure models.json exists (a mock entry) so the agent can run in OPFS. */
+async function ensureModels(target: Platform): Promise<void> {
+  const file = target.path.join(target.workspaceRoot, "models.json");
   if (await isFile(file)) return;
-  await platform.fs.writeFile(
+  await target.fs.writeFile(
     file,
     JSON.stringify({
       default: { baseURL: "http://127.0.0.1:8787/v1", apiKey: "test-key", model: "mock-model" },
@@ -125,23 +214,23 @@ async function ensureModels(platform: Platform): Promise<void> {
 }
 
 /** Load the sync fs index so tree patterns' `appTreeNames()` works on this thread. */
-async function buildFsIndex(platform: Platform): Promise<void> {
+async function buildFsIndex(target: Platform): Promise<void> {
   const files: string[] = [];
   const walk = async (dir: string): Promise<void> => {
-    const entries = await platform.fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    const entries = await target.fs.readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      const full = platform.path.join(dir, entry.name);
+      const full = target.path.join(dir, entry.name);
       if (entry.isDirectory()) await walk(full);
       else files.push(full);
     }
   };
-  await walk(platform.workspaceRoot);
+  await walk(target.workspaceRoot);
   setFsIndex(files);
 }
 
-async function detectPattern(platform: Platform): Promise<string> {
+async function detectPattern(target: Platform): Promise<string> {
   try {
-    const sources = await listTreeSources(platform.workspaceRoot);
+    const sources = await listTreeSources(target.workspaceRoot);
     if (sources.some((s) => s.name === "trunk")) return "patterns/trunk.mjs";
     if (sources[0]) return `patterns/${sources[0].name}.mjs`;
   } catch {
@@ -150,19 +239,73 @@ async function detectPattern(platform: Platform): Promise<string> {
   return "patterns/trunk.mjs";
 }
 
+/** Resolve the direct-mode folder, or show the gate and stop booting. */
+async function resolveDirectHandle(): Promise<FileSystemDirectoryHandle | null> {
+  const handle = await loadDirectoryHandle();
+  if (!handle) {
+    showFolderGate(null, "Pick the folder on your hard drive that holds your workspace.");
+    return null;
+  }
+  const permission = await directoryPermission(handle);
+  if (permission !== "granted") {
+    showFolderGate(
+      handle,
+      `The browser needs permission to read and write “${handle.name}”.`,
+    );
+    return null;
+  }
+  return handle;
+}
+
 // ── boot ─────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
-  await initSqlite().catch(() => {});
-  await prepareWorkspace();
+  let rootHandle: FileSystemDirectoryHandle | undefined;
 
-  const platform = activePlatform();
-  setActiveFs(platform.fs);
-  await buildFsIndex(platform);
-  await ensureModels(platform);
+  if (storageMode === "direct") {
+    if (!supportsFsAccess()) {
+      setStatus("direct folder access needs Chrome/Edge (use Desktop local server on Firefox)");
+      showFolderGate(
+        null,
+        "This browser does not support the File System Access API. " +
+          "Use “Desktop (local server)” instead, or open BOB in Chrome/Edge.",
+      );
+      return;
+    }
+    const handle = await resolveDirectHandle();
+    if (!handle) {
+      setStatus("waiting for folder access");
+      return;
+    }
+    rootHandle = handle;
+    await initSqlite(handle, { writeBack: sqlWriteBack });
+    platform = createFsAccessPlatform(handle);
+    setActiveFs(platform.fs);
+    await buildFsIndex(platform);
+    setStatus(`direct · ${handle.name}${sqlWriteBack ? "" : " · sql read-only"}`);
+  } else if (storageMode === "desktop") {
+    await initSqlite();
+    platform = createDesktopPlatform("/", storageServer);
+    setActiveFs(platform.fs);
+    await buildFsIndex(platform);
+    try {
+      const health = await fetch(`${storageServer}/health`).then((r) => r.json());
+      setStatus(`desktop: ${health.root}`);
+    } catch {
+      setStatus(`desktop bridge unreachable at ${storageServer}`);
+    }
+  } else {
+    await initSqlite();
+    platform = createBrowserPlatform("/workspace");
+    setActiveFs(platform.fs);
+    await prepareBrowserWorkspace();
+    await buildFsIndex(platform);
+    await ensureModels(platform);
+  }
 
-  // Periodic two-way git sync (pull then push) when a remote is configured.
-  if (storageMode !== "desktop" && configuredRemote) {
-    const intervalMs = Number(localStorage.getItem("autoSyncIntervalMs") ?? "") || DEFAULT_INTERVAL_MS;
+  // Periodic two-way git sync (pull then push) for the OPFS mirror only.
+  if (storageMode === "browser" && configuredRemote) {
+    const intervalMs =
+      Number(localStorage.getItem("autoSyncIntervalMs") ?? "") || DEFAULT_INTERVAL_MS;
     createAutoSync({
       platform,
       remote: () => configuredRemote,
@@ -182,9 +325,11 @@ async function main(): Promise<void> {
     remote: configuredRemote,
     initialPattern: pattern,
     modelsJson: loadModelsJson(),
+    rootHandle,
+    sqlWriteBack,
   });
 
-  hostUi(backend, document.getElementById("app")!, { page: "chat", port: 8080 });
+  hostUi(backend, appEl, { page: "chat", port: 8080 });
   setStatus(`${storageMode} · ${pattern.replace("patterns/", "")}`);
 }
 

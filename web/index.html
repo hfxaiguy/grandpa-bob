@@ -23,8 +23,13 @@
       <label>Storage
         <select id="storage-mode">
           <option value="browser">Browser (OPFS)</option>
+          <option value="direct">Desktop (direct folder)</option>
           <option value="desktop">Desktop (local server)</option>
         </select>
+      </label>
+      <button id="pick-folder" type="button" title="Pick the workspace folder on your hard drive">Choose folder…</button>
+      <label id="writeback-label" title="Write SQL changes back to the real .db files">
+        <input id="sql-writeback" type="checkbox" /> SQL writes
       </label>
       <input id="storage-server" placeholder="http://127.0.0.1:8795" size="22" />
       <span id="status">starting…</span>

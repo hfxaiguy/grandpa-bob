@@ -9,6 +9,7 @@
 import { Tree, name, Call, Return, Tools, knit, resume } from "grandma-kat";
 import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { createDesktopPlatform } from "../platform/desktop";
+import { createFsAccessPlatform } from "../platform/fsaccess";
 import type { Platform } from "../../../src/platform/types";
 import { browserTools, STUB_TOOL_NAMES } from "./browser-tools";
 import { setActiveFs, setFsIndex } from "../shims/node-fs-promises";
@@ -22,8 +23,24 @@ import { parseModels, type ModelRegistry } from "../../../src/model-config";
 
 const ready = initSqlite();
 const platforms = new Map<string, Platform>();
+let directPlatform: Platform | null = null;
+let directHandle: FileSystemDirectoryHandle | null = null;
 
-function getPlatform(storage: string, server: string): Platform {
+async function getPlatform(
+  storage: string,
+  server: string,
+  opts: { rootHandle?: FileSystemDirectoryHandle; sqlWriteBack?: boolean } = {},
+): Promise<Platform> {
+  if (storage === "direct") {
+    const handle = opts.rootHandle;
+    if (!handle) throw new Error("direct mode needs the folder handle from the main thread");
+    if (!directPlatform || directHandle !== handle) {
+      await initSqlite(handle, { writeBack: opts.sqlWriteBack });
+      directPlatform = createFsAccessPlatform(handle);
+      directHandle = handle;
+    }
+    return directPlatform;
+  }
   const key = `${storage}|${server}`;
   let platform = platforms.get(key);
   if (!platform) {
@@ -66,9 +83,13 @@ interface RunOptions {
   env?: Record<string, string>;
   pattern?: string;
   remote?: string;
-  storage?: "browser" | "desktop";
+  storage?: "browser" | "desktop" | "direct";
   server?: string;
   modelsJson?: string;
+  /** Direct mode: the folder picked with the File System Access API. */
+  rootHandle?: FileSystemDirectoryHandle;
+  /** Direct mode: write SQL changes back to the real .db files. */
+  sqlWriteBack?: boolean;
 }
 
 interface Session {
@@ -193,14 +214,18 @@ async function handleRun(opts: RunOptions): Promise<void> {
   const storage = opts.storage ?? "browser";
   const server = opts.server ?? "";
   const patternPath = opts.pattern ?? "patterns/agent_demo.mjs";
-  const platform = getPlatform(storage, server);
+  const platform = await getPlatform(storage, server, {
+    rootHandle: opts.rootHandle,
+    sqlWriteBack: opts.sqlWriteBack,
+  });
   await ready;
 
-  const session = getSession(`${storage}|${server}|${patternPath}`, platform);
+  const sessionKey = `${storage}|${server}|${patternPath}`;
+  const session = getSession(sessionKey, platform);
   session.currentId = opts.id;
 
   setActiveFs(platform.fs);
-  await ensureIndex(platform, `${storage}|${server}`);
+  await ensureIndex(platform, sessionKey);
 
   const registry = await (async (): Promise<ModelRegistry> => {
     if (opts.modelsJson && opts.modelsJson.trim()) {

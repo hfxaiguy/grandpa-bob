@@ -102,6 +102,40 @@ async function get(port: number, p: string) {
   console.log("1-4. built app served at / with assets; traversal refused; rebuild mid-run served; /settings intact");
 }
 
+// ── web/dist (the browser UI) wins over the legacy ui/dist ──
+{
+  const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-ui-web-"));
+  await fs.mkdir(path.join(ws, "logs"), { recursive: true });
+  await fs.mkdir(path.join(ws, "web", "dist", "assets"), { recursive: true });
+  await fs.mkdir(path.join(ws, "ui", "dist", "assets"), { recursive: true });
+  await fs.writeFile(path.join(ws, "web", "dist", "index.html"), '<!doctype html><div id="app">WEB_MARKER</div>');
+  await fs.writeFile(path.join(ws, "web", "dist", "assets", "web-1.js"), "console.log('web');");
+  await fs.writeFile(path.join(ws, "ui", "dist", "index.html"), '<!doctype html><div id="root">LEGACY_MARKER</div>');
+  await fs.writeFile(path.join(ws, "ui", "dist", "assets", "legacy-1.js"), "console.log('legacy');");
+
+  const port = await freePort();
+  const server = startAdmin({
+    port,
+    workspaceDir: ws,
+    projectDir: ws,
+    envPath: path.join(ws, "absent.env"),
+    agent: mockAgent(),
+  });
+  await events.once(server, "listening");
+
+  const root = await get(port, "/");
+  assert.equal(root.status, 200);
+  assert.match(root.text, /WEB_MARKER/, "web/dist is the main UI");
+  assert.doesNotMatch(root.text, /LEGACY_MARKER/);
+
+  const asset = await get(port, "/assets/web-1.js");
+  assert.equal(asset.status, 200, "web assets are served");
+  assert.match(asset.text, /console\.log\('web'\)/);
+
+  server.close();
+  console.log("web. web/dist is served at / and wins over ui/dist");
+}
+
 // ── without a build: a clear "UI not built" notice at / ──
 {
   const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-ui-nobuild-"));

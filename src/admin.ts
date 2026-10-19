@@ -1300,32 +1300,36 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
   const stt = cfg?.stt;
   const SETTINGS_HTML = buildSettingsHtml(config);
 
-  // The tiled app UI (SolidJS, built by `npm run build` in ui/). Served at "/"
-  // from ui/dist; assets live under ui/dist/assets/. A checkout that has not
-  // built the app gets a clear "run npm run build:ui" notice instead of a page.
+  // The browser target (web/, SolidJS + platform adapters) is the main UI: chat,
+  // settings and every storage mode (OPFS, a directly picked folder, the
+  // storage bridge). It is served at "/" when built. A checkout without a web
+  // build falls back to the legacy tiled app in ui/dist.
+  const WEB_DIST = path.resolve(config.projectDir, "web", "dist");
   const UI_DIST = path.resolve(config.projectDir, "ui", "dist");
-  // Read the index at request time, not once at startup: a `build:ui` while
-  // the server runs rewrites index.html to new content hashes and deletes the
-  // old assets, so a startup snapshot would reference files that no longer
-  // exist (404s for the CSS/JS on every reload). The page is served no-store
-  // anyway, and reading a small file per request is cheap.
+  const distForApp = (): string =>
+    fs.existsSync(path.join(WEB_DIST, "index.html")) ? WEB_DIST : UI_DIST;
+  // Read the index at request time, not once at startup: a build while the
+  // server runs rewrites index.html to new content hashes and deletes the old
+  // assets, so a startup snapshot would reference files that no longer exist.
   const readAppIndexHtml = (): string | null => {
     try {
-      return fs.readFileSync(path.join(UI_DIST, "index.html"), "utf8");
+      return fs.readFileSync(path.join(distForApp(), "index.html"), "utf8");
     } catch {
       return null;
     }
   };
   const appIndexHtml = readAppIndexHtml();
   if (!appIndexHtml) {
-    console.log("[admin] ui/dist not built — run `npm run build:ui` (the tiled UI is served at /)");
+    console.log(
+      "[admin] no UI build found — run `npm --prefix web run build` (or `npm run build:ui` for the legacy app)",
+    );
   }
   const NOT_BUILT_HTML =
     '<!doctype html><meta charset="utf-8"><title>grandpa-bob</title>' +
     '<body style="font:15px system-ui;background:#0f172a;color:#e2e8f0;padding:2rem">' +
     "<h1>UI not built</h1>" +
-    "<p>The tiled chat app is served from <code>ui/dist</code>, which is missing.</p>" +
-    "<p>Run <code>npm run build:ui</code> (or <code>npm run build</code>) and reload.</p>" +
+    "<p>The browser UI is served from <code>web/dist</code>, which is missing.</p>" +
+    "<p>Run <code>npm --prefix web run build</code> and reload.</p>" +
     "</body>";
 
   // A fingerprint of the served pages. A browser tab keeps running the JS it
@@ -1420,24 +1424,33 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         return;
       }
 
-      // Static assets for the built app UI (ui/dist/assets/*). Served with a
-      // long cache because Vite content-hashes the filenames.
-      if (req.method === "GET" && url.pathname.startsWith("/assets/")) {
+      // Static assets for the built app (assets/*, plus public/ files such as
+      // the OPFS seed). Served with a long cache because Vite content-hashes
+      // the filenames. The web build wins; ui/dist is the legacy fallback.
+      if (req.method === "GET" && (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/seed/"))) {
         const rel = path.posix.normalize(url.pathname.slice(1));
-        const file = path.resolve(UI_DIST, rel);
-        if (!file.startsWith(UI_DIST + path.sep)) {
-          res.writeHead(403);
-          res.end("forbidden");
-          return;
+        const roots = [distForApp()];
+        // `/seed/` is an authoring input, not a build artifact: serve it from
+        // web/public when the app is the web target.
+        if (url.pathname.startsWith("/seed/")) roots.unshift(path.resolve(config.projectDir, "web", "public"));
+        for (const root of roots) {
+          const file = path.resolve(root, rel);
+          if (!file.startsWith(root + path.sep)) continue;
+          try {
+            const buf = await readFile(file);
+            const immutable = url.pathname.startsWith("/assets/");
+            res.writeHead(200, {
+              "content-type": mimeFor(file),
+              "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-store",
+            });
+            res.end(buf);
+            return;
+          } catch {
+            /* try the next root */
+          }
         }
-        try {
-          const buf = await readFile(file);
-          res.writeHead(200, { "content-type": mimeFor(file), "cache-control": "public, max-age=31536000, immutable" });
-          res.end(buf);
-        } catch {
-          res.writeHead(404);
-          res.end("not found");
-        }
+        res.writeHead(404);
+        res.end("not found");
         return;
       }
 

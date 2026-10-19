@@ -37,6 +37,11 @@ export function installShim(target: Window): void {
       return wait()
         .then(() => backend().request(method, api.pathname, new URLSearchParams(api.search), body))
         .then((res) => {
+          // Endpoints the browser target cannot serve (restart, logs, Telegram,
+          // secrets, streaming transcription) return 501. When the app is
+          // served by grandpa-bob's admin server, let those hit the real API
+          // instead — the user gets one UI for both.
+          if (res.status === 501 && nativeFetch) return nativeFetch(input, init);
           const text = typeof res.body === "string" ? res.body : JSON.stringify(res.body);
           return new Response(text, { status: res.status || 200, headers: { "content-type": res.contentType || "application/json" } });
         });
