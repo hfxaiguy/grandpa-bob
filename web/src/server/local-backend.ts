@@ -20,6 +20,7 @@ import { createModuleLoader } from "../agent/module-loader";
 import { patternLabel } from "../agent/pattern-path";
 import { loadEnv, saveEnv, saveModelsJson } from "../settings";
 import { parseModels, type ModelRegistry } from "../../../src/model-config";
+import { refTargetFromRow } from "../../../src/ref-target";
 import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "../../../src/db-sync";
 import { transcribeBlob } from "../stt/browser-whisper";
 
@@ -64,7 +65,7 @@ interface TurnRecord {
   emitApps: string[];
   awaiting: string | null;
   buttons: unknown[];
-  events: { kind?: string; app?: string; content?: Record<string, unknown> }[];
+  events: { seq?: number; run_id?: string; branch_path?: string | null; kind?: string; app?: string; content?: Record<string, unknown> }[];
 }
 
 type EventMessage = Record<string, unknown>;
@@ -328,6 +329,31 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     return turns.length ? turns[turns.length - 1].awaiting : null;
   }
 
+  /** The streamed run-log row for a ref seq (newest turn wins on a rewind). */
+  function findLoggedRow(seq: number): {
+    seq: number;
+    run_id: string;
+    kind: string;
+    branch_path: string | null;
+    content: unknown;
+  } | null {
+    for (let t = turns.length - 1; t >= 0; t--) {
+      const events = turns[t].events;
+      for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i];
+        if (ev.seq !== seq) continue;
+        return {
+          seq,
+          run_id: ev.run_id ?? "",
+          kind: ev.kind ?? "record",
+          branch_path: ev.branch_path ?? null,
+          content: ev.content ?? null,
+        };
+      }
+    }
+    return null;
+  }
+
   async function patternCatalog(): Promise<BackendResponse> {
     try {
       const sources = await listTreeSources(platform.workspaceRoot);
@@ -383,6 +409,18 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     }
     if (pathname === "/api/turns" && method === "GET") {
       return { status: 200, body: { turns, session: sessionKey, awaiting: activeAwaiting() } };
+    }
+    if (pathname === "/api/ref" && method === "GET") {
+      // Refs are `ref://<seq>` handles into THIS page's run log. The engine's
+      // logger assigns the seqs it streams here, and they do not match the
+      // rows a workspace DB gets on disk (AUTOINCREMENT across sessions), so
+      // the browser must resolve them from the events it received — falling
+      // through to the admin would read a different row (or none).
+      const seq = Number(search.get("seq"));
+      if (!Number.isInteger(seq)) return { status: 400, body: { error: "seq is required" } };
+      const row = findLoggedRow(seq);
+      if (!row) return { status: 404, body: { error: `no run-log row ${seq} in this browser session` } };
+      return { status: 200, body: refTargetFromRow(row, search.get("path")) };
     }
     if (pathname === "/api/apps" && method === "GET") {
       const appTrees = await listAppTrees(platform.workspaceRoot).catch(() => []);

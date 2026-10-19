@@ -257,43 +257,24 @@ async function loadTreeRef(platform: Platform, name: string): Promise<unknown> {
   return pending;
 }
 
-/** Every runnable app tree (`app/<name>/tree.mjs`) as a callable tool, plus its guide. */
+/** Every runnable app tree (`app/<name>/tree.mjs`) as a callable tree tool, plus its guide. */
 async function buildAppTreeTools(
   platform: Platform,
-  ctx: { models: unknown; tools: unknown; logger: MemoryLogger; onEmit: (value: unknown) => void },
 ): Promise<{ tools: Record<string, unknown>; guides: Map<string, string> }> {
   const apps = await listAppTrees(platform.workspaceRoot).catch(() => []);
   const tools: Record<string, unknown> = {};
   const guides = new Map<string, string>();
   for (const app of apps) {
     if (app.guide && app.guide.trim()) guides.set(app.name, app.guide);
+    // `tree` (not a plain execute) is what makes the engine run the app as a
+    // tree tool: it logs tree_enter/tree_exit, tags emits to the app, and lets
+    // a Human() inside pause/resume in place. A plain tool here made every app
+    // emit look like the trunk's, so an app tile showed no bubbles.
     tools[app.name] = {
       description: app.description,
-      parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
-      execute: async (args: Record<string, unknown>) => {
-        try {
-          const def = await loadTreeRef(platform, app.name);
-          const res = (await knit(def, {
-            models: ctx.models as ModelRegistry,
-            tools: ctx.tools as Record<string, unknown>,
-            logger: ctx.logger,
-            loadTree: (name: string) => loadTreeRef(platform, name),
-            memory: { input: String(args.input ?? "") },
-            onEmit: ctx.onEmit,
-          })) as { result?: unknown; status?: string };
-          const text =
-            res.result != null
-              ? typeof res.result === "string"
-                ? res.result
-                : JSON.stringify(res.result)
-              : res.status === "waiting"
-                ? "the app tree paused for human input"
-                : "";
-          return { handled: true, text };
-        } catch (err) {
-          return { error: err instanceof Error ? err.message : String(err) };
-        }
-      },
+      parameters: { type: "object", properties: { input: { type: "string", description: "Input seeded into the tree as 'input'." } }, required: ["input"] },
+      tree: app.name,
+      guide: app.guide ?? "",
     };
   }
   return { tools, guides };
@@ -353,7 +334,7 @@ async function handleRun(opts: RunOptions): Promise<void> {
     ...browserTools(platform, { remote: opts.remote ?? "", flushLog: () => session.logger.flush() }),
   };
   const tools = withStubs(toolsMap);
-  const appTree = await buildAppTreeTools(platform, { models, tools, logger: session.logger, onEmit });
+  const appTree = await buildAppTreeTools(platform);
   Object.assign(toolsMap, appTree.tools);
 
   // Host + app guidance comes from the shared module, so the browser and Node

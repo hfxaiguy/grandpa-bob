@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — app tiles get their bubbles; refs resolve in the page
+
+The browser host wrapped every app tree in a plain function tool whose
+`execute()` called `knit()` itself. The engine therefore never saw a tree
+tool: no `tree_enter`/`tree_exit` rows, so `tagEventApp()` kept the app stack
+at "trunk" and every app emit landed on the trunk tile. A run that used the
+contacts app showed its summary on the trunk and left the contacts tile empty.
+The host now hands the engine a `tree: <name>` tool (like the Node target); the
+engine runs the tree, logs the enter/exit pair, and the emit carries the app
+name.
+
+`/api/ref` had no browser implementation: the shim forwarded it to the admin,
+which reads the workspace log DB. The in-tab engine's refs use the seqs its
+logger assigns while streaming, and those do not match the on-disk
+AUTOINCREMENT rows, so every handle inspected a different row (or 404'd). The
+local backend now resolves a ref from the events it received, using the same
+`refTargetFromRow()` as the Node reader (moved to `src/ref-target.ts`, so the
+browser does not pull in `node:sqlite`).
+
+Verified in a browser-mode run at `:8080`: the contacts emit is tagged
+`contacts`, and `/api/ref?seq=<row>` returns that row's kind and value in the
+page.
+
 ## 2026-10-19 — one live event stream (duplicate run cards fixed)
 
 The tiled UI opened a new `/api/events` subscription on every mount and never
