@@ -18,6 +18,8 @@ every change it makes is **git-committed automatically**.
     server process**;
   - **Desktop (local server)** — the loopback storage bridge, for Firefox and
     other browsers.
+  The header's **upload** button puts files from a normal OS picker into any
+  workspace folder (asked per upload, remembered next time).
 - **Voice → text**: Telegram voice notes use the local Vulkan whisper-server;
   the web UI transcribes in the tab with whisper (Transformers.js, WebGPU/WASM),
   so no server is needed there.

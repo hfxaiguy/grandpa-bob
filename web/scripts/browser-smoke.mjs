@@ -107,6 +107,42 @@ if (parsed.status !== 200 || !parsed.text.includes("export default")) {
   cleanup(4);
 }
 console.log("✓ OPFS mode boots and writes to the sandbox workspace");
+
+// Header upload button: picker → folder prompt → file lands in the workspace.
+const upload = await evaluate(`(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const input = document.getElementById("workspace-upload-input");
+  if (!input) return "no upload input";
+  const dt = new DataTransfer();
+  dt.items.add(new File(["hello upload\\n"], "upload-smoke.txt", { type: "text/plain" }));
+  input.files = dt.files;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+
+  for (let i = 0; i < 40 && !document.querySelector(".drawer-card"); i++) await wait(100);
+  const card = document.querySelector(".drawer-card");
+  if (!card) return "folder prompt did not open";
+  const field = card.querySelector('input[type="text"]');
+  if (!field) return "no folder field";
+  field.value = "smoke-uploads";
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  const button = Array.from(card.querySelectorAll("button")).find((b) => /^upload/.test(b.textContent.trim()));
+  if (!button) return "no upload button";
+  button.click();
+  for (let i = 0; i < 80 && document.querySelector(".drawer-card"); i++) await wait(100);
+  if (document.querySelector(".drawer-card")) return "prompt did not close";
+
+  const root = await navigator.storage.getDirectory();
+  const workspace = await root.getDirectoryHandle("workspace");
+  const dir = await workspace.getDirectoryHandle("smoke-uploads");
+  const file = await (await dir.getFileHandle("upload-smoke.txt")).getFile();
+  return "uploaded:" + (await file.text()).trim();
+})()`);
+if (upload !== "uploaded:hello upload") {
+  console.error("upload button failed:", upload);
+  console.log(exceptions.join("\n"));
+  cleanup(5);
+}
+console.log("✓ upload button writes into the chosen workspace folder");
 if (exceptions.length) { console.log(exceptions.join("\n")); cleanup(5); }
 console.log("browser smoke: all assertions passed");
 ws.close();

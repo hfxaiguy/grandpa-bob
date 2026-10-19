@@ -1,6 +1,6 @@
 /** App shell: toolbar + tiled grid + global stream + session drawer. */
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
-import { GlobalStream, SessionPanel, Tiles } from "./components";
+import { GlobalStream, SessionPanel, Tiles, WorkspaceUpload } from "./components";
 import { init, orderedApps, state, toggleHidden, dismissError, retryLast } from "./store";
 
 function TilesMenu() {
@@ -54,6 +54,7 @@ export function App() {
           {state.label || state.active || "no session"}
         </span>
         <span class="spacer" />
+        <WorkspaceUpload />
         <TilesMenu />
         <button onClick={() => setShowSession(true)}>session</button>
         <a class="link-btn" href="/settings">

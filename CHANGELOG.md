@@ -2,6 +2,19 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — header upload button: put files into the workspace from the browser
+
+The tiled UI header (shared by the web UI and the Node admin UI) has an
+**upload** button: a normal OS file picker (multi-select), then a prompt for the
+destination folder — pre-filled with the last one used and suggested from the
+folders already in the workspace. Each file POSTs to the existing
+`/api/files/upload`, so it lands wherever the active storage backend writes:
+the picked real folder in direct mode, the OPFS sandbox, the storage bridge, or
+the Node workspace. The folder may not contain `..`.
+
+`smoke:browser` and `smoke:direct` now drive the button end to end (file →
+prompt → upload) and assert the file arrives under the chosen folder.
+
 ## 2026-10-19 — the browser UI is the main interface, and it can use the real folder
 
 The web target (`web/`) is now what `http://<host>:8080` serves (the legacy

@@ -917,3 +917,169 @@ export function SessionPanel(props: { onClose: () => void }) {
     </div>
   );
 }
+
+/**
+ * Upload files into the workspace with a normal OS file picker. The
+ * destination folder is asked each time, remembered for next time, and
+ * suggested from folders already in the workspace.
+ *
+ * The request goes to `/api/files/upload`, which both targets implement, so the
+ * same button uploads into the picked real folder (direct mode), the OPFS
+ * sandbox, the storage bridge, or the Node workspace.
+ */
+export function WorkspaceUpload() {
+  let fileInput: HTMLInputElement | undefined;
+  const LAST_DIR = "bob:upload-dir";
+  const [files, setFiles] = createSignal<File[] | null>(null);
+  const [dest, setDest] = createSignal("");
+  const [dirs, setDirs] = createSignal<string[]>([]);
+  const [busy, setBusy] = createSignal(false);
+
+  const lastDir = (): string => {
+    try {
+      return localStorage.getItem(LAST_DIR) || "assets/inbox";
+    } catch {
+      return "assets/inbox";
+    }
+  };
+
+  /** Normalize a folder path; null when it tries to escape (`..`). */
+  const normalizeDir = (raw: string): string | null => {
+    const cleaned = raw.trim().replace(/^\/+/, "").replace(/\/+$/, "").replace(/^\.\//, "");
+    const parts = cleaned.split("/").filter((p) => p && p !== ".");
+    if (parts.some((p) => p === "..")) return null;
+    return parts.join("/");
+  };
+
+  const loadDirs = async (base: string): Promise<void> => {
+    const found = new Set<string>();
+    for (const dir of ["", normalizeDir(base) ?? ""]) {
+      try {
+        const res = await fetch(`/api/files?path=${encodeURIComponent(dir)}`);
+        const data = (await res.json()) as { files?: { name: string; isDir?: boolean }[] };
+        for (const f of data.files ?? []) {
+          if (f.isDir) found.add(dir ? `${dir}/${f.name}` : f.name);
+        }
+      } catch {
+        /* suggestions are best-effort */
+      }
+    }
+    setDirs([...found].sort());
+  };
+
+  const openPicker = (): void => {
+    if (fileInput) fileInput.value = "";
+    fileInput?.click();
+  };
+
+  const onPicked = (list: FileList | null): void => {
+    if (!list || !list.length) return;
+    setFiles(Array.from(list));
+    setDest(lastDir());
+    void loadDirs(lastDir());
+  };
+
+  const close = (): void => {
+    if (!busy()) setFiles(null);
+  };
+
+  const upload = async (): Promise<void> => {
+    const target = normalizeDir(dest());
+    if (target === null) {
+      toast("folder may not contain '..'", true);
+      return;
+    }
+    const picked = files() ?? [];
+    if (!picked.length) return;
+    setBusy(true);
+    let done = 0;
+    for (const file of picked) {
+      const fd = new FormData();
+      fd.append("path", target);
+      fd.append("file", file);
+      try {
+        const res = await fetch("/api/files/upload", { method: "POST", body: fd });
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) {
+          toast(`upload failed: ${data.error || res.status}`, true);
+          continue;
+        }
+        done++;
+      } catch (e) {
+        toast(`upload failed: ${e instanceof Error ? e.message : String(e)}`, true);
+      }
+    }
+    if (done) {
+      try {
+        localStorage.setItem(LAST_DIR, target);
+      } catch {
+        /* private mode */
+      }
+      toast(`uploaded ${done} file${done === 1 ? "" : "s"} → ${target || "workspace root"}`);
+      void loadDirs(target);
+    }
+    setBusy(false);
+    setFiles(null);
+  };
+
+  return (
+    <>
+      <button title="upload files into the workspace" onClick={openPicker}>
+        ⬆ upload
+      </button>
+      <input
+        ref={(el) => (fileInput = el)}
+        id="workspace-upload-input"
+        type="file"
+        multiple
+        class="hidden-input"
+        onChange={(e) => onPicked(e.currentTarget.files)}
+      />
+      <Show when={files()}>
+        {(picked) => (
+          <div class="drawer" onClick={(e) => e.target === e.currentTarget && close()}>
+            <div class="drawer-card">
+              <div class="drawer-head">
+                <strong>
+                  upload {picked().length} file{picked().length === 1 ? "" : "s"}
+                </strong>
+                <span class="spacer" />
+                <button onClick={close} disabled={busy()}>
+                  ✕
+                </button>
+              </div>
+              <div class="row muted small">{picked().map((f) => f.name).join(", ")}</div>
+              <label class="col">
+                folder in the workspace
+                <input
+                  type="text"
+                  list="bob-upload-dirs"
+                  value={dest()}
+                  placeholder="assets/inbox"
+                  autofocus
+                  onInput={(e) => setDest(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void upload();
+                  }}
+                />
+              </label>
+              <datalist id="bob-upload-dirs">
+                <For each={dirs()}>{(d) => <option value={d} />}</For>
+              </datalist>
+              <div class="row muted small">leave empty to upload to the workspace root</div>
+              <div class="row">
+                <span class="spacer" />
+                <button class="secondary" onClick={close} disabled={busy()}>
+                  cancel
+                </button>
+                <button onClick={() => void upload()} disabled={busy()}>
+                  {busy() ? "uploading…" : "upload"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Show>
+    </>
+  );
+}

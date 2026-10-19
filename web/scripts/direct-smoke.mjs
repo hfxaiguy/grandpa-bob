@@ -221,6 +221,36 @@ if (!onDisk.includes("export default")) {
 }
 console.log("✓ file tools write to the picked folder");
 
+// Header upload button lands in the picked folder, not the browser sandbox.
+const upload = await evaluate(`(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const input = document.getElementById("workspace-upload-input");
+  if (!input) return "no upload input";
+  const dt = new DataTransfer();
+  dt.items.add(new File(["direct upload\\n"], "direct-upload.txt", { type: "text/plain" }));
+  input.files = dt.files;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  for (let i = 0; i < 40 && !document.querySelector(".drawer-card"); i++) await wait(100);
+  const card = document.querySelector(".drawer-card");
+  if (!card) return "folder prompt did not open";
+  const field = card.querySelector('input[type="text"]');
+  field.value = "uploads";
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  const button = Array.from(card.querySelectorAll("button")).find((b) => /^upload/.test(b.textContent.trim()));
+  button.click();
+  for (let i = 0; i < 80 && document.querySelector(".drawer-card"); i++) await wait(100);
+  const root = await (await navigator.storage.getDirectory()).getDirectoryHandle("direct-smoke");
+  const dir = await root.getDirectoryHandle("uploads");
+  const file = await (await dir.getFileHandle("direct-upload.txt")).getFile();
+  return "uploaded:" + (await file.text()).trim();
+})()`);
+if (upload !== "uploaded:direct upload") {
+  console.error("upload button failed in direct mode:", upload);
+  console.log(logs.join("\n"));
+  cleanup(4);
+}
+console.log("✓ upload button writes into the picked folder");
+
 // SQLite: read-only by default, write-back after opting in.
 const sql = await evaluate(`(async () => {
   const { initSqlite, createSqliteWasm } = await import("/src/platform/sqlite-wasm.ts");
