@@ -17,6 +17,19 @@ import { listAppTrees } from "../../../src/tree-sources";
 import { resolveTreeEntry } from "../../../src/tree-versions";
 import { assembleGuides, HOST_GUIDES } from "../../../src/tool-guides";
 import { createWorkspaceLogger, type MemoryLogger, type WorkspaceLogger } from "./logger";
+import {
+  getTurns,
+  hasLabelPin,
+  hasSession,
+  labelOf,
+  lastAwaiting,
+  listSessions,
+  turnCount,
+  writeDelete,
+  writeLabel,
+  writeTurnEnd,
+} from "./log-store";
+import type { TurnMarker } from "../../../src/web-log";
 import { createModuleLoader } from "./module-loader";
 import { resolvePatternPath } from "./pattern-path";
 import { loadBrowserModels } from "./models";
@@ -172,6 +185,8 @@ interface RunOptions {
   remote?: string;
   storage?: "browser" | "desktop" | "direct";
   server?: string;
+  /** The chat session this run belongs to (the drawer's active key). */
+  chatKey?: string;
   modelsJson?: string;
   /** Served by the admin: use its models.json via the /api/llm proxy. */
   serverModels?: boolean;
@@ -187,14 +202,22 @@ interface Session {
   logger: WorkspaceLogger;
   continuation: string;
   currentId: number;
+  platform: Platform;
 }
 
 const sessions = new Map<string, Session>();
+/** The session each in-flight/completed run used, so a turn marker can find it. */
+const runs = new Map<number, Session>();
 
 function getSession(key: string, platform: Platform): Session {
   let session = sessions.get(key);
   if (!session) {
-    const created: Session = { logger: null as unknown as WorkspaceLogger, continuation: "", currentId: 0 };
+    const created: Session = {
+      logger: null as unknown as WorkspaceLogger,
+      continuation: "",
+      currentId: 0,
+      platform,
+    };
     created.logger = createWorkspaceLogger(platform, (event) =>
       post({ id: created.currentId, type: "event", event }),
     );
@@ -301,9 +324,13 @@ async function handleRun(opts: RunOptions): Promise<void> {
   // both shapes share one conversation.
   const patternPath = await resolvePatternPath(platform, opts.pattern);
 
-  const sessionKey = `${storage}|${server}|${patternPath}`;
+  // One continuation per chat session: two chats on the same tree must not
+  // share a pause/checkpoint.
+  const chatKey = opts.chatKey || "local";
+  const sessionKey = `${storage}|${server}|${chatKey}|${patternPath}`;
   const session = getSession(sessionKey, platform);
   session.currentId = opts.id;
+  runs.set(opts.id, session);
 
   await ensureIndex(platform, sessionKey);
 
@@ -375,6 +402,7 @@ async function handleRun(opts: RunOptions): Promise<void> {
         )) as typeof res;
       } else {
         session.continuation = res.continuation!;
+        runs.delete(opts.id);
         post({ id: opts.id, type: "result", result: { status: "waiting", humanSlot: res.humanSlot }, eventCount: 0 });
         void session.logger.flush();
         return;
@@ -393,10 +421,14 @@ async function handleRun(opts: RunOptions): Promise<void> {
 }
 
 self.onmessage = async (ev: MessageEvent) => {
-  const msg = ev.data as RunOptions & { type: string };
+  const msg = ev.data as (RunOptions & { type: string }) | LogMessage;
+  if (msg.type === "log") {
+    await handleLog(msg as LogMessage);
+    return;
+  }
   if (msg.type !== "run") return;
   try {
-    await handleRun(msg);
+    await handleRun(msg as RunOptions);
   } catch (err) {
     post({
       id: msg.id,
@@ -405,3 +437,96 @@ self.onmessage = async (ev: MessageEvent) => {
     });
   }
 };
+
+// ── session log RPC ─────────────────────────────────────────────────────
+// The main-thread local backend asks the worker (which owns the platform and
+// therefore the run log) to read/write sessions, so every access shares the
+// logger's serial queue and connection.
+
+interface LogMessage {
+  id: number;
+  type: "log";
+  op: string;
+  payload?: Record<string, unknown>;
+  storage?: "browser" | "desktop" | "direct";
+  server?: string;
+  rootHandle?: FileSystemDirectoryHandle;
+  sqlWriteBack?: boolean;
+}
+
+function describeKey(key: string): string {
+  // Same labels as src/admin.ts's describeForeignKey: a shared desktop log can
+  // hold Telegram keys as well as web ones.
+  if (key.startsWith("web:")) return `web ${key.slice(4)} (no history)`;
+  const m = key.match(/^(-?\d+):(\d+)(?::([0-9a-f]{1,12}))?$/);
+  if (!m) return key;
+  const [, chat, thread, id] = m;
+  const where = thread === "0" ? " (general)" : ` · topic ${thread}`;
+  return `telegram · chat ${chat}${where}${id ? ` · session ${id}` : ""}`;
+}
+
+async function handleLog(msg: LogMessage): Promise<void> {
+  const p = msg.payload ?? {};
+  try {
+    const platform = await getPlatform(msg.storage ?? "browser", msg.server ?? "", {
+      rootHandle: msg.rootHandle,
+      sqlWriteBack: msg.sqlWriteBack,
+    });
+    await ready;
+    let result: unknown;
+
+    switch (msg.op) {
+      case "listSessions":
+        result = await listSessions(platform, describeKey);
+        break;
+      case "turns":
+        result = await getTurns(platform, String(p.key ?? ""), { withEvents: p.withEvents === true });
+        break;
+      case "turnEnd": {
+        // Flush the engine events first, then write the marker with the run's
+        // real seq bounds. The run session is the one that logged them.
+        const session = typeof p.run === "number" ? runs.get(p.run) : undefined;
+        if (session) await session.logger.flush();
+        const marker = p.marker as TurnMarker;
+        if (!marker || typeof marker.key !== "string") throw new Error("turnEnd needs a marker");
+        await writeTurnEnd(session?.platform ?? platform, marker);
+        if (session && typeof p.run === "number") runs.delete(p.run);
+        result = { ok: true };
+        break;
+      }
+      case "label":
+        await writeLabel(platform, String(p.key ?? ""), String(p.label ?? ""));
+        result = { ok: true };
+        break;
+      case "delete":
+        await writeDelete(platform, String(p.key ?? ""));
+        result = { ok: true };
+        break;
+      case "hasSession":
+        result = await hasSession(platform, String(p.key ?? ""));
+        break;
+      case "turnCount":
+        result = await turnCount(platform, String(p.key ?? ""));
+        break;
+      case "labelOf":
+        result = await labelOf(platform, String(p.key ?? ""));
+        break;
+      case "hasLabelPin":
+        result = await hasLabelPin(platform, String(p.key ?? ""));
+        break;
+      case "lastAwaiting":
+        result = await lastAwaiting(platform, String(p.key ?? ""));
+        break;
+      default:
+        throw new Error(`unknown log op: ${msg.op}`);
+    }
+    post({ id: msg.id, type: "log-result", ok: true, result });
+  } catch (err) {
+    post({
+      id: msg.id,
+      type: "log-result",
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}

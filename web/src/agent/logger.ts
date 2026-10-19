@@ -10,8 +10,11 @@
  * run log (logs/grandma-kat.db) so `read_runs` / `logs_review` can recall past
  * turns in the browser. Writes are buffered and flushed as one batched INSERT,
  * because the browser SQLite engine exports the whole DB on every mutation.
+ * The batched write shares log-store's serial queue and open connection with
+ * the session markers, so the two never lose each other's rows.
  */
 import type { Platform } from "../../../src/platform/types";
+import { appendEvents } from "./log-store";
 
 export interface KatEvent {
   run_id?: string;
@@ -76,45 +79,7 @@ export function createMemoryLogger(onEvent?: (event: KatEvent) => void): MemoryL
 }
 
 // Mirrors grandma-kat's SqliteLogger schema (src/logger.mjs CREATE_TABLES).
-const RUN_LOG_DDL = `
-CREATE TABLE IF NOT EXISTS calls (
-  run_id TEXT NOT NULL,
-  definition_id TEXT NOT NULL,
-  seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  branch_path TEXT,
-  iteration INTEGER,
-  scope_id INTEGER,
-  kind TEXT NOT NULL,
-  content TEXT
-);
-CREATE TABLE IF NOT EXISTS checkpoints (
-  id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL,
-  seq INTEGER NOT NULL,
-  resume_positions TEXT NOT NULL
-)`;
-
-function sqlLiteral(value: unknown): string {
-  if (value === null || value === undefined) return "NULL";
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
-
-function insertCalls(events: KatEvent[]): string {
-  const values = events.map(
-    (e) =>
-      `(${[
-        sqlLiteral(e.run_id),
-        sqlLiteral(e.definition_id),
-        sqlLiteral(e.branch_path ?? null),
-        sqlLiteral(e.iteration ?? null),
-        sqlLiteral(e.scope_id ?? null),
-        sqlLiteral(e.kind),
-        sqlLiteral(JSON.stringify(e.content ?? null)),
-      ].join(",")})`,
-  );
-  return `INSERT INTO calls (run_id, definition_id, branch_path, iteration, scope_id, kind, content) VALUES ${values.join(",")}`;
-}
+// log-store owns the DDL now; the logger and the session markers share it.
 
 /**
  * In-memory + persistent logger for the browser agent worker. The in-memory
@@ -127,40 +92,14 @@ export function createWorkspaceLogger(
   onEvent?: (event: KatEvent) => void,
 ): WorkspaceLogger {
   const mem = createMemoryLogger(onEvent);
-  const dbPath = platform.path.join(platform.workspaceRoot, "logs/grandma-kat.db");
   let pending: KatEvent[] = [];
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let ready: Promise<void> | null = null;
   let chain: Promise<void> = Promise.resolve();
-
-  const init = (): Promise<void> => {
-    if (!ready) {
-      ready = (async () => {
-        await platform.fs.mkdir(platform.path.dirname(dbPath), { recursive: true }).catch(() => {});
-        const db = await platform.sqlite.open(dbPath, { readOnly: false });
-        try {
-          await db.exec(RUN_LOG_DDL);
-        } finally {
-          await db.close();
-        }
-      })();
-    }
-    return ready;
-  };
 
   const write = (batch: KatEvent[]): void => {
     if (!batch.length) return;
-    const sql = insertCalls(batch);
     chain = chain
-      .then(async () => {
-        await init();
-        const db = await platform.sqlite.open(dbPath, { readOnly: false });
-        try {
-          await db.exec(sql);
-        } finally {
-          await db.close();
-        }
-      })
+      .then(() => appendEvents(platform, batch))
       .catch(() => {
         /* best-effort: a failed log write must never break a run */
       });

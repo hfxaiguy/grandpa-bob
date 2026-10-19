@@ -35,6 +35,14 @@ async function git(args) {
   return { stdout: stdout.trim(), stderr: stderr.trim() };
 }
 
+function openDb(p, opts) {
+  const db = new DatabaseSync(resolveIn(p), opts);
+  // The admin process may hold its own connection to the KAT log; wait for a
+  // short write lock instead of failing a turn marker with SQLITE_BUSY.
+  db.exec("PRAGMA busy_timeout = 2000");
+  return db;
+}
+
 const routes = {
   async "GET /health"() {
     return { ok: true, root: ROOT };
@@ -109,7 +117,7 @@ const routes = {
     throw new Error(`unknown git op: ${op}`);
   },
   async "POST /sql/columns"({ path: p, sql }) {
-    const db = new DatabaseSync(resolveIn(p), { readOnly: true });
+    const db = openDb(p, { readOnly: true });
     try {
       return { columns: db.prepare(sql).columns().map((c) => ({ name: c.name ?? "" })) };
     } finally {
@@ -117,7 +125,7 @@ const routes = {
     }
   },
   async "POST /sql/all"({ path: p, sql, params = [] }) {
-    const db = new DatabaseSync(resolveIn(p), { readOnly: true });
+    const db = openDb(p, { readOnly: true });
     try {
       return { rows: db.prepare(sql).all(...params) };
     } finally {
@@ -125,7 +133,7 @@ const routes = {
     }
   },
   async "POST /sql/get"({ path: p, sql, params = [] }) {
-    const db = new DatabaseSync(resolveIn(p), { readOnly: true });
+    const db = openDb(p, { readOnly: true });
     try {
       return { row: db.prepare(sql).get(...params) ?? null };
     } finally {
@@ -133,7 +141,7 @@ const routes = {
     }
   },
   async "POST /sql/run"({ path: p, sql, params = [] }) {
-    const db = new DatabaseSync(resolveIn(p));
+    const db = openDb(p);
     try {
       const info = db.prepare(sql).run(...params);
       return { changes: Number(info.changes), lastInsertRowid: Number(info.lastInsertRowid ?? 0) };
@@ -142,7 +150,7 @@ const routes = {
     }
   },
   async "POST /sql/exec"({ path: p, sql }) {
-    const db = new DatabaseSync(resolveIn(p));
+    const db = openDb(p);
     try {
       db.exec(sql);
       return { ok: true };

@@ -9,6 +9,19 @@ export interface AgentRunResult {
   emits: unknown[];
 }
 
+/** A run promise that knows its message id (the turn marker targets it). */
+export interface AgentRunPromise extends Promise<AgentRunResult> {
+  runId: number;
+}
+
+/** Context for session-log calls (which storage backend the platform needs). */
+export interface AgentLogContext {
+  storage?: "browser" | "desktop" | "direct";
+  server?: string;
+  rootHandle?: FileSystemDirectoryHandle;
+  sqlWriteBack?: boolean;
+}
+
 /** Live hooks so a backend can re-emit events as they arrive (SSE). */
 export interface AgentRunHooks {
   onEvent?: (event: unknown) => void;
@@ -22,6 +35,8 @@ export interface AgentRunOptions {
   remote?: string;
   storage?: "browser" | "desktop" | "direct";
   server?: string;
+  /** The chat session this run belongs to (per-session continuation state). */
+  chatKey?: string;
   /** Model registry JSON from browser settings (takes precedence over models.json). */
   modelsJson?: string;
   /**
@@ -49,6 +64,7 @@ export class AgentClient {
   private worker: Worker;
   private nextId = 1;
   private pending = new Map<number, Pending>();
+  private logPending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 
   constructor() {
     this.worker = new Worker(new URL("./agent-worker.ts", import.meta.url), { type: "module" });
@@ -60,7 +76,16 @@ export class AgentClient {
         event?: unknown;
         value?: unknown;
         error?: string;
+        ok?: boolean;
       };
+      if (msg.type === "log-result") {
+        const lp = this.logPending.get(msg.id);
+        if (!lp) return;
+        this.logPending.delete(msg.id);
+        if (msg.ok) lp.resolve(msg.result);
+        else lp.reject(new Error(msg.error ?? "session log error"));
+        return;
+      }
       const p = this.pending.get(msg.id);
       if (!p) return;
       if (msg.type === "event") {
@@ -84,11 +109,32 @@ export class AgentClient {
     };
   }
 
-  run(opts: AgentRunOptions = {}, hooks?: AgentRunHooks): Promise<AgentRunResult> {
+  run(opts: AgentRunOptions = {}, hooks?: AgentRunHooks): AgentRunPromise {
     const id = this.nextId++;
-    return new Promise<AgentRunResult>((resolve, reject) => {
+    const promise = new Promise<AgentRunResult>((resolve, reject) => {
       this.pending.set(id, { resolve, reject, events: [], emits: [], hooks });
       this.worker.postMessage({ id, type: "run", ...opts });
+    }) as AgentRunPromise;
+    promise.runId = id;
+    return promise;
+  }
+
+  /**
+   * Session-log RPC. The worker owns the platform (and thus the run log), so
+   * reads and marker writes share the engine logger's queue and connection.
+   */
+  log<T = unknown>(
+    op: string,
+    payload: Record<string, unknown> = {},
+    ctx: AgentLogContext = {},
+  ): Promise<T> {
+    const id = this.nextId++;
+    return new Promise<T>((resolve, reject) => {
+      this.logPending.set(id, {
+        resolve: resolve as (value: unknown) => void,
+        reject,
+      });
+      this.worker.postMessage({ id, type: "log", op, payload, ...ctx });
     });
   }
 

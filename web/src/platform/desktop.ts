@@ -2,7 +2,8 @@
  * "Desktop storage" platform: the browser uses the real workspace on the
  * machine running scripts/storage-server.mjs, via a loopback HTTP bridge.
  *
- * Files and git go to the desktop; SQLite is not bridged yet (phase 2).
+ * Files, git, and SQLite go to the desktop; the session log reads and writes
+ * `logs/grandma-kat.db` through the bridge like any other DB.
  */
 import { posixPath } from "../../../src/platform/paths";
 import { sha256hex } from "../../../src/platform/sha256";

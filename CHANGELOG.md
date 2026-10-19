@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — web sessions persist in the workspace KAT log
+
+The browser's chat was a single in-memory `web:local` session: every reload
+started empty and the drawer had one entry. Sessions now live where the
+workspace lives, as the same `web_turn_end` / `web_session_label` /
+`web_session_delete` marker rows the admin's `src/web-log.ts` uses in
+`logs/grandma-kat.db`:
+
+- **OPFS** (browser) → the sandbox workspace's log
+- **Desktop** (bridge) → the real workspace's log, on disk
+- **Direct folder** → the picked folder's log (the log is internal, so it is
+  written even when SQL write-back is off)
+
+New/select/rename/delete work per session; the drawer lists older chats with
+labels derived from their first message, and reopening one replays its turns
+from the log (event tails are sanitized exactly like the admin's). A page load
+still opens a fresh chat by design; the old ones stay in the drawer.
+
+The agent worker now owns every session-log read and write, sharing one
+serialized connection with the engine's event flush so a turn marker cannot
+race the events it describes. Tree continuations are keyed by chat session too,
+so two chats on the same pattern no longer share a pause checkpoint.
+
 ## 2026-10-19 — app tiles get their bubbles; refs resolve in the page
 
 The browser host wrapped every app tree in a plain function tool whose

@@ -23,6 +23,7 @@ import { parseModels, type ModelRegistry } from "../../../src/model-config";
 import { refTargetFromRow } from "../../../src/ref-target";
 import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "../../../src/db-sync";
 import { transcribeBlob } from "../stt/browser-whisper";
+import type { SessionSummary } from "../agent/log-store";
 
 export interface BackendResponse {
   status: number;
@@ -83,12 +84,17 @@ const UNAVAILABLE = (what: string): BackendResponse => ({
 
 export function createLocalBackend(opts: BackendOptions): LocalBackend {
   const { agent, platform } = opts;
-  const sessionKey = "web:local";
-  const turns: TurnRecord[] = [];
+  /** The active chat session key (`web:<id>`); persisted across reloads. */
+  let activeSession: string | null = null;
+  let sessionsLoaded = false;
+  let sessionsLoad: Promise<void> | null = null;
+  /**
+   * Turns that ran in this page and whose marker is not on disk yet. Once the
+   * marker lands the persisted copy is the source of truth.
+   */
+  const liveTurns = new Map<string, TurnRecord[]>();
   const subscribers = new Set<(msg: EventMessage) => void>();
   let activePattern = opts.initialPattern || "trunk";
-  let sessionLabel = "";
-  let updatedAt = Date.now();
   let modelsJson = opts.modelsJson ?? "";
   const activeRefs = new Map<string, string>();
   /** Per-conversation role→slot overrides (the chat model picker). */
@@ -156,6 +162,183 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     }
   }
 
+  // ── sessions (KAT log marker rows) ────────────────────────────────────
+  // The worker owns the platform and the run log; these calls share its
+  // serialized DB connection, so a turn marker never races the event flush.
+
+  const ACTIVE_KEY = "bob:web:active-session";
+
+  const logCtx = () => ({
+    storage: opts.storage,
+    server: opts.server,
+    rootHandle: opts.rootHandle,
+    sqlWriteBack: opts.sqlWriteBack,
+  });
+
+  const readActive = (): string | null => {
+    try {
+      return localStorage.getItem(ACTIVE_KEY);
+    } catch {
+      return null;
+    }
+  };
+  const saveActive = (): void => {
+    try {
+      if (activeSession) localStorage.setItem(ACTIVE_KEY, activeSession);
+      else localStorage.removeItem(ACTIVE_KEY);
+    } catch {
+      /* quota/private mode */
+    }
+  };
+  const mintKey = (): string => `web:${crypto.randomUUID().slice(0, 8)}`;
+
+  async function logSessions(): Promise<SessionSummary[]> {
+    try {
+      const list = await agent.log<SessionSummary[]>("listSessions", {}, logCtx());
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Pick the saved session, else the most recent one, else a fresh chat. */
+  async function loadSessionState(): Promise<void> {
+    if (sessionsLoaded) return;
+    if (sessionsLoad) return sessionsLoad;
+    sessionsLoad = (async () => {
+      const list = await logSessions();
+      const saved = readActive();
+      activeSession = saved || list[0]?.key || mintKey();
+      saveActive();
+      sessionsLoaded = true;
+    })().finally(() => {
+      sessionsLoad = null;
+    });
+    return sessionsLoad;
+  }
+
+  async function ensureSession(): Promise<string> {
+    if (!activeSession) await loadSessionState();
+    if (!activeSession) {
+      activeSession = mintKey();
+      saveActive();
+    }
+    return activeSession;
+  }
+
+  async function persistedTurns(key: string): Promise<TurnRecord[]> {
+    try {
+      const list = await agent.log<TurnRecord[]>("turns", { key, withEvents: true }, logCtx());
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Persisted turns plus this page's not-yet-logged ones. */
+  async function turnsFor(key: string): Promise<TurnRecord[]> {
+    const persisted = await persistedTurns(key);
+    const live = liveTurns.get(key) ?? [];
+    if (!live.length) return persisted;
+    const seen = new Set(persisted.map((t) => t.turnId));
+    return [...persisted, ...live.filter((t) => !seen.has(t.turnId))];
+  }
+
+  async function awaitingFor(key: string): Promise<string | null> {
+    const live = liveTurns.get(key);
+    if (live?.length) return live[live.length - 1].awaiting;
+    try {
+      return (await agent.log<string | null>("lastAwaiting", { key }, logCtx())) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function labelFor(key: string): Promise<string> {
+    try {
+      return (await agent.log<string>("labelOf", { key }, logCtx())) ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  /** The drawer's list, with this page's active shell added when it is new. */
+  async function sessionList(): Promise<SessionSummary[]> {
+    const list = await logSessions();
+    const key = activeSession;
+    if (!key) return list;
+    const live = liveTurns.get(key) ?? [];
+    const i = list.findIndex((s) => s.key === key);
+    if (i < 0) {
+      list.unshift({
+        key,
+        label: await labelFor(key),
+        pattern: activePattern,
+        updatedAt: live[live.length - 1]?.startedAt ?? Date.now(),
+        turns: live.length,
+        remote: false,
+        awaiting: live[live.length - 1]?.awaiting ?? null,
+      });
+    } else if (live.length) {
+      const last = live[live.length - 1];
+      list[i] = {
+        ...list[i],
+        updatedAt: Math.max(list[i].updatedAt, last.endedAt ?? last.startedAt),
+        turns: list[i].turns + live.filter((t) => t.status !== "running").length,
+        awaiting: last.awaiting,
+      };
+    }
+    return list;
+  }
+
+  /** Persist a finished turn as a `web_turn_end` marker row. */
+  async function persistTurn(key: string, record: TurnRecord, run: number): Promise<void> {
+    const events = record.events;
+    let runId: string | null = null;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const id = events[i].run_id;
+      if (typeof id === "string" && id) {
+        runId = id;
+        break;
+      }
+    }
+    try {
+      await agent.log(
+        "turnEnd",
+        {
+          run,
+          marker: {
+            key,
+            turnId: record.turnId,
+            runId,
+            input: record.input,
+            inputApp: record.inputApp ?? "trunk",
+            status: record.status === "error" ? "error" : "done",
+            error: record.error,
+            output: record.output,
+            emits: record.emits,
+            levels: record.levels,
+            emitApps: record.emitApps,
+            buttons: record.buttons,
+            awaiting: record.awaiting,
+            startedAt: record.startedAt,
+            endedAt: record.endedAt,
+          },
+        },
+        logCtx(),
+      );
+    } catch (err) {
+      console.warn("session log: could not persist turn", err);
+      return;
+    }
+    // The marker is the source of truth from now on; drop the live copy.
+    const list = liveTurns.get(key);
+    if (!list) return;
+    const at = list.findIndex((t) => t.turnId === record.turnId);
+    if (at >= 0) list.splice(at, 1);
+    if (!list.length) liveTurns.delete(key);
+  }
+
   const parseBody = <T>(b: string | FormData | null): T => {
     try {
       return JSON.parse(typeof b === "string" ? b : "{}") as T;
@@ -202,10 +385,11 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   };
 
   async function runTurn(turnId: string, text: string): Promise<void> {
+    const key = await ensureSession();
     const record: TurnRecord = {
       turnId,
       input: text,
-      inputApp: activeAwaiting() ?? "trunk",
+      inputApp: (await awaitingFor(key)) ?? "trunk",
       startedAt: Date.now(),
       endedAt: null,
       status: "running",
@@ -218,49 +402,52 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       buttons: [],
       events: [],
     };
-    turns.push(record);
-    if (turns.length > 20) turns.shift();
-    updatedAt = Date.now();
+    const list = liveTurns.get(key) ?? [];
+    list.push(record);
+    if (list.length > 20) list.shift();
+    liveTurns.set(key, list);
     const apps = newTurnApps();
-    broadcast({ type: "turn_start", turnId, session: sessionKey, input: text, inputApp: record.inputApp ?? "trunk", ts: record.startedAt, awaiting: null });
+    broadcast({ type: "turn_start", turnId, session: key, input: text, inputApp: record.inputApp ?? "trunk", ts: record.startedAt, awaiting: null });
+    const running = agent.run(
+      {
+        task: text,
+        env: opts.env,
+        pattern: activePattern,
+        remote: opts.remote,
+        storage: opts.storage,
+        server: opts.server,
+        chatKey: key,
+        modelsJson,
+        serverModels: opts.serverModels,
+        modelOverrides: sessionModels.get(key),
+        rootHandle: opts.rootHandle,
+        sqlWriteBack: opts.sqlWriteBack,
+      },
+      {
+        onEvent: (event) => {
+          const ev = event as { kind?: string; content?: Record<string, unknown>; scope_id?: number | null; branch_path?: string };
+          const app = tagEventApp(apps, ev);
+          trackMemory(app, ev);
+          const tagged = { ...ev, app };
+          record.events.push(tagged);
+          broadcast({ type: "event", turnId, event: tagged });
+        },
+        onEmit: (value) => {
+          const { text: t, buttons, level } = emitValue(value);
+          const app = apps.current;
+          if (t) {
+            record.emits.push(t);
+            record.levels.push(level ?? null);
+            record.emitApps.push(app);
+            record.output = record.output ? record.output + "\n\n" + t : t;
+          }
+          if (buttons?.length) record.buttons = buttons;
+          broadcast({ type: "emit", turnId, text: t, buttons, level, app });
+        },
+      },
+    );
     try {
-      const { result, emits } = await agent.run(
-        {
-          task: text,
-          env: opts.env,
-          pattern: activePattern,
-          remote: opts.remote,
-          storage: opts.storage,
-          server: opts.server,
-          modelsJson,
-          serverModels: opts.serverModels,
-          modelOverrides: sessionModels.get(sessionKey),
-          rootHandle: opts.rootHandle,
-          sqlWriteBack: opts.sqlWriteBack,
-        },
-        {
-          onEvent: (event) => {
-            const ev = event as { kind?: string; content?: Record<string, unknown>; scope_id?: number | null; branch_path?: string };
-            const app = tagEventApp(apps, ev);
-            trackMemory(app, ev);
-            const tagged = { ...ev, app };
-            record.events.push(tagged);
-            broadcast({ type: "event", turnId, event: tagged });
-          },
-          onEmit: (value) => {
-            const { text: t, buttons, level } = emitValue(value);
-            const app = apps.current;
-            if (t) {
-              record.emits.push(t);
-              record.levels.push(level ?? null);
-              record.emitApps.push(app);
-              record.output = record.output ? record.output + "\n\n" + t : t;
-            }
-            if (buttons?.length) record.buttons = buttons;
-            broadcast({ type: "emit", turnId, text: t, buttons, level, app });
-          },
-        },
-      );
+      const { result, emits } = await running;
       record.status = "done";
       const last = emits.length ? emits[emits.length - 1] : result;
       const lastText = emitValue(last).text;
@@ -270,6 +457,9 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       // available on the next turn.
       record.awaiting = apps.suspended ?? "trunk";
       record.endedAt = Date.now();
+      // Persist before announcing the end: a refresh (or a reload right after
+      // the reply appears) then always finds the marker.
+      await persistTurn(key, record, running.runId);
       broadcast({
         type: "turn_end", turnId, status: "done", error: null, output: record.output,
         buttons: record.buttons, emits: record.emits, levels: record.levels, emitApps: record.emitApps,
@@ -279,6 +469,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       record.status = "error";
       record.error = err instanceof Error ? err.message : String(err);
       record.endedAt = Date.now();
+      await persistTurn(key, record, running.runId);
       broadcast({ type: "turn_end", turnId, status: "error", error: record.error, output: "", buttons: [], emits: [], awaiting: null, ts: record.endedAt });
     }
   }
@@ -325,10 +516,6 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     }
     return { values, apps };
   }
-  function activeAwaiting(): string | null {
-    return turns.length ? turns[turns.length - 1].awaiting : null;
-  }
-
   /** The streamed run-log row for a ref seq (newest turn wins on a rewind). */
   function findLoggedRow(seq: number): {
     seq: number;
@@ -337,18 +524,22 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     branch_path: string | null;
     content: unknown;
   } | null {
-    for (let t = turns.length - 1; t >= 0; t--) {
-      const events = turns[t].events;
-      for (let i = events.length - 1; i >= 0; i--) {
-        const ev = events[i];
-        if (ev.seq !== seq) continue;
-        return {
-          seq,
-          run_id: ev.run_id ?? "",
-          kind: ev.kind ?? "record",
-          branch_path: ev.branch_path ?? null,
-          content: ev.content ?? null,
-        };
+    // Refs point into THIS page's in-memory logger (its seqs are per worker
+    // session, not the DB's AUTOINCREMENT): only turns that ran here resolve.
+    for (const list of liveTurns.values()) {
+      for (let t = list.length - 1; t >= 0; t--) {
+        const events = list[t].events;
+        for (let i = events.length - 1; i >= 0; i--) {
+          const ev = events[i];
+          if (ev.seq !== seq) continue;
+          return {
+            seq,
+            run_id: ev.run_id ?? "",
+            kind: ev.kind ?? "record",
+            branch_path: ev.branch_path ?? null,
+            content: ev.content ?? null,
+          };
+        }
       }
     }
     return null;
@@ -389,26 +580,117 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
 
     // ── chat ──────────────────────────────────────────────────────────────
     if (pathname === "/api/session" && method === "GET") {
+      const key = await ensureSession();
       return {
         status: 200,
         body: {
-          active: sessionKey,
-          label: sessionLabel,
+          active: key,
+          label: await labelFor(key),
           follow: false,
-          models: {},
-          awaiting: activeAwaiting(),
-          sessions: [{ key: sessionKey, label: sessionLabel || "local", pattern: activePattern, updatedAt, turns: turns.length, remote: false, awaiting: activeAwaiting() }],
-          turns,
+          models: sessionModels.get(key) ?? {},
+          awaiting: await awaitingFor(key),
+          sessions: await sessionList(),
+          turns: await turnsFor(key),
         },
       };
     }
     if (pathname === "/api/session" && method === "POST") {
-      const parsed = parseBody(body) as { label?: string };
-      if (typeof parsed.label === "string") sessionLabel = parsed.label.trim().slice(0, 80);
-      return { status: 200, body: { ok: true, active: sessionKey, label: sessionLabel, turns } };
+      const sel = parseBody<{
+        key?: unknown;
+        new?: unknown;
+        delete?: unknown;
+        follow?: unknown;
+        label?: unknown;
+      }>(body);
+
+      if (typeof sel.follow === "boolean") {
+        return {
+          status: 200,
+          body: { ok: true, active: await ensureSession(), follow: false, sessions: await sessionList() },
+        };
+      }
+
+      // Rename: `key` defaults to the active session; empty re-derives the
+      // label from the first message (matching the admin's `/api/session`).
+      if (typeof sel.label === "string") {
+        const target = typeof sel.key === "string" && sel.key ? sel.key : await ensureSession();
+        const known =
+          target === activeSession ||
+          (await agent.log<boolean>("hasSession", { key: target }, logCtx()).catch(() => false));
+        if (!known) return { status: 404, body: { error: "no such session" } };
+        await agent.log("label", { key: target, label: sel.label.trim().slice(0, 80) }, logCtx());
+        activeSession = target;
+        saveActive();
+        const list = await sessionList();
+        broadcast({ type: "sessions", sessions: list });
+        return {
+          status: 200,
+          body: { ok: true, key: target, label: await labelFor(target), sessions: list },
+        };
+      }
+
+      // Mint-or-reuse: repeated "new chat" clicks must not pile up empty
+      // shells (same rule as the admin's reuseOrMintActive).
+      if (sel.new === true) {
+        const key = await ensureSession();
+        const count = await agent
+          .log<number>("turnCount", { key }, logCtx())
+          .catch(() => 0);
+        const pinned = await agent
+          .log<boolean>("hasLabelPin", { key }, logCtx())
+          .catch(() => false);
+        if (!(key.startsWith("web:") && count === 0 && !pinned)) {
+          activeSession = mintKey();
+          saveActive();
+        }
+        const list = await sessionList();
+        broadcast({ type: "sessions", sessions: list });
+        return { status: 200, body: { ok: true, active: activeSession, follow: false, turns: [] } };
+      }
+
+      if (typeof sel.delete === "string") {
+        const known = await agent
+          .log<boolean>("hasSession", { key: sel.delete }, logCtx())
+          .catch(() => false);
+        // The active chat can be a freshly minted shell with no markers yet;
+        // clearing it is still valid (it simply disappears).
+        if (!known && sel.delete !== activeSession) {
+          return { status: 404, body: { error: "no such session" } };
+        }
+        if (known) {
+          // A tombstone, not a purge: the trace stays in the log.
+          await agent.log("delete", { key: sel.delete }, logCtx());
+        }
+        liveTurns.delete(sel.delete);
+        sessionModels.delete(sel.delete);
+        if (activeSession === sel.delete) {
+          activeSession = null;
+          saveActive();
+          broadcast({ type: "cleared" });
+        }
+        return { status: 200, body: { ok: true, active: activeSession, sessions: await sessionList() } };
+      }
+
+      if (typeof sel.key === "string") {
+        const known = await agent
+          .log<boolean>("hasSession", { key: sel.key }, logCtx())
+          .catch(() => false);
+        if (!known && sel.key !== activeSession) {
+          return { status: 404, body: { error: "no such session" } };
+        }
+        activeSession = sel.key;
+        saveActive();
+        return {
+          status: 200,
+          body: { ok: true, active: sel.key, follow: false, turns: await turnsFor(sel.key) },
+        };
+      }
+
+      return { status: 400, body: { error: "key, new, or delete required" } };
     }
     if (pathname === "/api/turns" && method === "GET") {
-      return { status: 200, body: { turns, session: sessionKey, awaiting: activeAwaiting() } };
+      const key = await ensureSession();
+      return { status: 200, body: { turns: await turnsFor(key), session: key, awaiting: await awaitingFor(key) } };
     }
     if (pathname === "/api/ref" && method === "GET") {
       // Refs are `ref://<seq>` handles into THIS page's run log. The engine's
@@ -459,9 +741,16 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       return { status: 200, body: { ok: true, turnId } };
     }
     if (pathname === "/api/clear" && method === "POST") {
-      turns.length = 0;
+      // Same rule as "new chat": reuse an unused private chat, otherwise mint.
+      const key = await ensureSession();
+      const count = await agent.log<number>("turnCount", { key }, logCtx()).catch(() => 0);
+      const pinned = await agent.log<boolean>("hasLabelPin", { key }, logCtx()).catch(() => false);
+      if (!(key.startsWith("web:") && count === 0 && !pinned)) {
+        activeSession = mintKey();
+        saveActive();
+      }
       broadcast({ type: "cleared" });
-      return { status: 200, body: { ok: true } };
+      return { status: 200, body: { ok: true, active: activeSession } };
     }
     if (pathname === "/api/status" && method === "GET") {
       return {
@@ -519,13 +808,14 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       }
       return {
         status: 200,
-        body: { slots, active: sessionKey, models: sessionModels.get(sessionKey) ?? {} },
+        body: { slots, active: await ensureSession(), models: sessionModels.get(await ensureSession()) ?? {} },
       };
     }
     if (pathname === "/api/chat/model" && method === "POST") {
       const { role = "", slot = "" } = parseBody<{ role?: string; slot?: string }>(body);
       if (!role) return { status: 400, body: { error: "role is required" } };
-      const rec = { ...(sessionModels.get(sessionKey) ?? {}) };
+      const key = await ensureSession();
+      const rec = { ...(sessionModels.get(key) ?? {}) };
       if (slot) {
         let known: Set<string>;
         if (opts.serverModels) {
@@ -546,8 +836,8 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       } else {
         delete rec[role];
       }
-      if (Object.keys(rec).length) sessionModels.set(sessionKey, rec);
-      else sessionModels.delete(sessionKey);
+      if (Object.keys(rec).length) sessionModels.set(key, rec);
+      else sessionModels.delete(key);
       return { status: 200, body: { ok: true, models: rec } };
     }
     if (pathname === "/api/tree/versions" && method === "GET") {

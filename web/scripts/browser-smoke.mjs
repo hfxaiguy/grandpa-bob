@@ -168,6 +168,54 @@ if (upload !== "uploaded:hello upload") {
   cleanup(5);
 }
 console.log("✓ upload button writes into the chosen workspace folder");
+
+// Sessions: a turn lands in the workspace KAT log and survives a reload.
+const chat = await evaluate(`(async () => {
+  const backend = window.__bobBackend;
+  await backend.ready;
+  const sent = await backend.request("POST", "/api/chat", new URLSearchParams(),
+    JSON.stringify({ text: "session persistence smoke" }));
+  if (sent.status !== 200) return "chat " + sent.status;
+  for (let i = 0; i < 120; i++) {
+    const r = await backend.request("GET", "/api/turns", new URLSearchParams(), null);
+    const turns = r.body?.turns || [];
+    if (turns.some((t) => t.status === "done" || t.status === "error")) {
+      return JSON.stringify({ ok: true, turns: turns.length, status: turns[turns.length - 1].status });
+    }
+    await new Promise((res) => setTimeout(res, 250));
+  }
+  return "turn timeout";
+})()`);
+if (!String(chat).startsWith("{\"ok\":true")) {
+  console.error("session turn failed:", chat);
+  console.log(exceptions.join("\n"));
+  cleanup(5);
+}
+console.log("✓ a turn is written to the workspace KAT log");
+
+await send("Page.reload", { ignoreCache: true });
+let rebooted = "";
+for (let i = 0; i < 240; i++) {
+  rebooted = (await evaluate(`document.getElementById("status")?.textContent ?? ""`).catch(() => "")) || "";
+  if (rebooted.startsWith("browser ·")) break;
+  await sleep(250);
+}
+const restored = await evaluate(`(async () => {
+  for (let i = 0; i < 100 && !window.__bobBackend; i++) await new Promise((r) => setTimeout(r, 100));
+  const backend = window.__bobBackend;
+  if (!backend) return "no backend after reload";
+  await backend.ready;
+  const d = await backend.request("GET", "/api/session", new URLSearchParams(), null);
+  const old = (d.body?.sessions || []).find((s) => s.turns > 0 && String(s.label).includes("session persistence"));
+  return old ? "restored:" + old.turns : "missing:" + JSON.stringify(d.body?.sessions || []);
+})()`);
+if (!String(restored).startsWith("restored:")) {
+  console.error("session did not survive reload:", restored);
+  console.log(exceptions.join("\n"));
+  cleanup(5);
+}
+console.log("✓ sessions survive a reload (workspace KAT log)");
+
 if (exceptions.length) { console.log(exceptions.join("\n")); cleanup(5); }
 console.log("browser smoke: all assertions passed");
 ws.close();
