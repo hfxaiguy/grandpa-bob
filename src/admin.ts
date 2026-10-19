@@ -122,6 +122,7 @@ function mimeFor(file: string): string {
     case ".png": return "image/png";
     case ".ico": return "image/x-icon";
     case ".woff2": return "font/woff2";
+    case ".wasm": return "application/wasm";
     case ".map": return "application/json";
     default: return "application/octet-stream";
   }
@@ -2076,6 +2077,81 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         );
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, reachable: Object.fromEntries(reachable) }));
+        return;
+      }
+
+      // ── same-origin LLM proxy (the browser UI's model calls) ────────────
+      // When web/dist is served by this admin, the in-tab agent sends its model
+      // calls here instead of hitting the provider directly. It then uses this
+      // process's live models.json (the same registry Telegram uses), the
+      // server-side network (no CORS), and the server-held API keys — so the
+      // browser and Telegram cannot drift apart.
+      if (url.pathname.startsWith("/api/llm/")) {
+        if (req.method !== "POST") {
+          res.writeHead(405, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "POST required" }));
+          return;
+        }
+        // Browsers send Origin on POST; refuse another site using us as an open
+        // relay. Non-browser callers (curl/tests) send none.
+        const origin = req.headers.origin;
+        if (origin && origin !== `http://${req.headers.host}` && origin !== `https://${req.headers.host}`) {
+          res.writeHead(403, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "cross-origin LLM proxy refused" }));
+          return;
+        }
+        const rest = url.pathname.slice("/api/llm/".length);
+        const slash = rest.indexOf("/");
+        const slot = decodeURIComponent(slash < 0 ? rest : rest.slice(0, slash));
+        const tail = slash < 0 ? "" : rest.slice(slash);
+        if (tail !== "/chat/completions" && tail !== "/api/chat") {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "unknown model endpoint" }));
+          return;
+        }
+        let registry: ModelRegistry;
+        try {
+          const raw = await readFile(path.resolve(config.projectDir, "models.json"), "utf8");
+          registry = parseModels(raw, process.env);
+        } catch (e) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: e instanceof Error ? e.message : "models.json unavailable" }));
+          return;
+        }
+        const entry = registry[slot];
+        if (!entry) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: `unknown model slot '${slot}'` }));
+          return;
+        }
+        let payload: Record<string, unknown>;
+        try {
+          payload = JSON.parse(await readBody(req)) as Record<string, unknown>;
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid JSON body" }));
+          return;
+        }
+        // The slot, not the client, decides which model id the provider sees.
+        payload.model = entry.model;
+        const headers: Record<string, string> = { "content-type": "application/json" };
+        if (entry.apiKey && entry.apiKey !== "no-key") headers.authorization = `Bearer ${entry.apiKey}`;
+        try {
+          const upstream = await fetch(`${entry.baseURL.replace(/\/$/, "")}${tail}`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload),
+          });
+          const buf = Buffer.from(await upstream.arrayBuffer());
+          res.writeHead(upstream.status, {
+            "content-type": upstream.headers.get("content-type") ?? "application/json",
+            "cache-control": "no-store",
+          });
+          res.end(buf);
+        } catch (e) {
+          res.writeHead(502, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: e instanceof Error ? e.message : "upstream request failed" }));
+        }
         return;
       }
 

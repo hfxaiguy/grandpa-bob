@@ -132,18 +132,42 @@ export function saveSqlWriteBack(enabled: boolean): void {
   }
 }
 
+/** Default loopback address of the storage bridge (scripts/storage-server.mjs). */
+const DEFAULT_SERVER = "http://127.0.0.1:8795";
+
+/**
+ * Normalize a bridge URL. Only http(s) is allowed: a stale `file:///…` (or any
+ * other scheme) in localStorage would otherwise be passed to `fetch`, which
+ * Firefox reports as "Content at … may not load or link to file:///".
+ * A bare `host:port` gets `http://`; an unusable value falls back to the
+ * default instead of poisoning every request.
+ */
+export function normalizeStorageServer(raw: string): string {
+  const value = String(raw ?? "").trim();
+  if (!value) return DEFAULT_SERVER;
+  try {
+    const url = new URL(value.includes("://") ? value : `http://${value}`);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return DEFAULT_SERVER;
+    const path = url.pathname === "/" ? "" : url.pathname.replace(/\/+$/, "");
+    return `${url.origin}${path}`;
+  } catch {
+    return DEFAULT_SERVER;
+  }
+}
+
 /** URL of the local storage bridge (scripts/storage-server.mjs). */
 export function loadStorageServer(): string {
   try {
-    return localStorage.getItem(SERVER_KEY) ?? "http://127.0.0.1:8795";
+    return normalizeStorageServer(localStorage.getItem(SERVER_KEY) ?? "");
   } catch {
-    return "http://127.0.0.1:8795";
+    return DEFAULT_SERVER;
   }
 }
 
 export function saveStorageServer(url: string): void {
+  const normalized = normalizeStorageServer(url);
   try {
-    localStorage.setItem(SERVER_KEY, url);
+    localStorage.setItem(SERVER_KEY, normalized);
   } catch {
     // ignore
   }

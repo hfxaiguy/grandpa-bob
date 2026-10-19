@@ -34,6 +34,7 @@ import {
   loadStorage,
   loadStorageServer,
   loadModelsJson,
+  normalizeStorageServer,
   saveSqlWriteBack,
   saveStorage,
   saveStorageServer,
@@ -57,7 +58,7 @@ const storageMode: StorageMode =
     : storedStorage === "direct" && !supportsFsAccess()
       ? "browser"
       : storedStorage;
-const storageServer = params.get("server") ?? loadStorageServer();
+const storageServer = normalizeStorageServer(params.get("server") ?? loadStorageServer());
 let configuredRemote = params.get("remote") ?? loadRemote();
 const sqlWriteBack = loadSqlWriteBack();
 
@@ -228,8 +229,7 @@ async function ensureModels(target: Platform): Promise<void> {
   );
 }
 
-/** Load the sync fs index so tree patterns' `appTreeNames()` works on this thread. */
-async function buildFsIndex(target: Platform): Promise<void> {
+/** Load the sync fs index so tree patterns' `appTreeNames()` works on this thread. */async function buildFsIndex(target: Platform): Promise<void> {
   const files: string[] = [];
   const walk = async (dir: string): Promise<void> => {
     const entries = await target.fs.readdir(dir, { withFileTypes: true }).catch(() => []);
