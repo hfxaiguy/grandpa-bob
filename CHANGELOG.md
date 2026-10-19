@@ -2,6 +2,16 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — a dead model endpoint now names itself
+
+`agent run failed: NetworkError when attempting to fetch resource.` was
+Firefox's wording for *any* failed `fetch`, surfaced by the worker's catch-all
+without context — so a stopped model server, a CORS block, and a broken
+workspace all looked identical. `knit()`/`resume()` now run through a
+`withModelContext` wrapper that, on a network-class error, appends the
+configured slots (`default=… @ http://…`), the mock-server hint, and the CORS
+note into the same message.
+
 ## 2026-10-19 — trunk is discovered again, and the toolbar names the active pattern
 
 Two pattern-discovery/status fixes:

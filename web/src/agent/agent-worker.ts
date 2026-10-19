@@ -56,6 +56,43 @@ function post(message: unknown): void {
   (self as unknown as Worker).postMessage(message);
 }
 
+/** One-line description of every configured model slot, for error messages. */
+function describeModels(models: Record<string, { baseURL?: string; model?: string }>): string {
+  const slots = Object.entries(models).map(([slot, entry]) => {
+    const where = entry.baseURL || "(in-page handler)";
+    return `${slot}=${entry.model || "?"} @ ${where}`;
+  });
+  return slots.length ? slots.join(", ") : "(no models configured)";
+}
+
+/** Firefox says "NetworkError…", Chrome "Failed to fetch", Node "fetch failed". */
+function isNetworkError(message: string): boolean {
+  return /NetworkError|Failed to fetch|fetch failed|Load failed|ECONNREFUSED|ENOTFOUND/i.test(message);
+}
+
+/**
+ * Run a model-backed step and, when the failure is a failed `fetch`, say WHICH
+ * endpoint failed. Without this the worker's catch-all reports a bare
+ * "NetworkError when attempting to fetch resource." and the user cannot tell a
+ * dead model server from a CORS block or a broken workspace.
+ */
+async function withModelContext<T>(
+  models: Record<string, { baseURL?: string; model?: string }>,
+  fn: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!isNetworkError(message)) throw err;
+    throw new Error(
+      `${message} — the agent could not reach its model endpoint(s): ${describeModels(models)}. ` +
+        `Is the model server running (for the bundled mock: npm --prefix web run mock-llm), ` +
+        `and does it allow this page's origin (CORS)? Fix models.json or Settings → Models JSON.`,
+    );
+  }
+}
+
 /**
  * Wrap the tool map so any name a tree declares but this target doesn't
  * implement resolves to an error stub instead of failing the knit. Keeps
@@ -278,17 +315,24 @@ async function handleRun(opts: RunOptions): Promise<void> {
 
   let res: { result?: unknown; status?: string; continuation?: string; humanSlot?: unknown };
   if (session.continuation) {
-    res = (await resume(session.continuation, {
-      ...runtime,
-      memory: { guide },
-      humanInput: task,
-    })) as typeof res;
+    res = (await withModelContext(models, () =>
+      resume(session.continuation, {
+        ...runtime,
+        memory: { guide },
+        humanInput: task,
+      }),
+    )) as typeof res;
   } else {
     const pattern = await loadPattern(platform, patternPath);
-    res = (await knit(pattern, { ...runtime, memory: { guide } })) as typeof res;
+    res = (await withModelContext(models, () =>
+      knit(pattern, { ...runtime, memory: { guide } }),
+    )) as typeof res;
     if (res.status === "waiting") {
-      if (task) res = (await resume(res.continuation!, { ...runtime, humanInput: task })) as typeof res;
-      else {
+      if (task) {
+        res = (await withModelContext(models, () =>
+          resume(res.continuation!, { ...runtime, humanInput: task }),
+        )) as typeof res;
+      } else {
         session.continuation = res.continuation!;
         post({ id: opts.id, type: "result", result: { status: "waiting", humanSlot: res.humanSlot }, eventCount: 0 });
         void session.logger.flush();
