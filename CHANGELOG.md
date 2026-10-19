@@ -2,6 +2,15 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — high-contrast toolbar (the storage bridge URL input)
+
+The storage toolbar used the browser's default light controls over a dark app,
+so the bridge URL input was low-contrast and in a mismatched font. It now uses
+the tiled app's palette (`--bg/--panel/--card/--border/--fg`), explicit
+foreground/background/border on every control, a visible focus ring, a
+high-contrast placeholder, and a monospace font for the URL field. The outer
+page is `color-scheme: dark` so select popups and checkboxes match too.
+
 ## 2026-10-19 — a pattern picked from the dropdown loads by name, not by raw path
 
 The pattern picker sends a logical name (`context_manager`, optionally
