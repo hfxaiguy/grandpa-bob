@@ -14,7 +14,7 @@
  *      (`{ name, scope, seq }`, seq = the log row that last wrote the slot);
  *   3. the writer of each piece (tool result, your message, an earlier
  *      prompt's output, a host seed), walked deeper on request (depth);
- *   4. `ref://<seq>` handles inside the prompt's messages, resolved to the
+ *   4. `ref://<name>.<seq>` handles inside the prompt's messages, resolved to the
  *      full tool-result row they point at.
  *
  * Nothing here writes to the log; the engine never reads the rows this module
@@ -29,6 +29,8 @@ export const MAX_PROV_DEPTH = 6;
 const MAX_BREADTH = 60;
 /** Display cap for a writer row's value. */
 const VALUE_CHARS = 4000;
+/** Display cap for an inspected `ref://` target (a click wants the whole thing). */
+const REF_VALUE_CHARS = 200000;
 /** Display cap per prompt message. */
 const PROMPT_MSG_CHARS = 8000;
 /** How many text-matching record rows to consider as emit sources. */
@@ -104,6 +106,23 @@ export interface ProvRef {
   text: string;
 }
 
+/** An inspected `ref://` target: the referenced row's value, in full. */
+export interface RefTarget {
+  seq: number;
+  kind: string;
+  runId: string;
+  when: string;
+  branchPath: string;
+  child: string | null;
+  op: string | null;
+  /** The `/path` segment of the handle (`ref://<seq>/list` → "list"), or null. */
+  path: string | null;
+  /** The full value rendered for display (JSON for objects). */
+  value: string;
+  chars: number;
+  truncated: boolean;
+}
+
 export interface Provenance {
   emit: ProvEmit;
   /** "text": the prompt's output matched the message; "nearest": no match was
@@ -152,7 +171,7 @@ export function when(runId: string | null): string {
 }
 
 /** A row's value rendered for display, with its truncation facts. */
-function valueDisplay(v: unknown): { text: string; chars: number; truncated: boolean } {
+function valueDisplay(v: unknown, cap = VALUE_CHARS): { text: string; chars: number; truncated: boolean } {
   let text: string;
   if (typeof v === "string") text = v;
   else if (v == null) text = "";
@@ -164,7 +183,7 @@ function valueDisplay(v: unknown): { text: string; chars: number; truncated: boo
     }
   }
   const chars = text.length;
-  return { text: chars > VALUE_CHARS ? text.slice(0, VALUE_CHARS) + "…" : text, chars, truncated: chars > VALUE_CHARS };
+  return { text: chars > cap ? text.slice(0, cap) + "…" : text, chars, truncated: chars > cap };
 }
 
 const norm = (s: string): string => s.replace(/\s+/g, " ").trim();
@@ -430,7 +449,7 @@ export class ProvenanceReader {
     };
   }
 
-  /** `ref://<seq>` handles carried by the prompt's messages. */
+  /** `ref://<name>.<seq>` handles carried by the prompt's messages. */
   private refs(call: Row): ProvRef[] {
     const c = call.content as { messages?: unknown } | null;
     if (!Array.isArray(c?.messages)) return [];
@@ -439,7 +458,7 @@ export class ProvenanceReader {
     const scan = (v: unknown) => {
       if (out.length >= MAX_REFS) return;
       if (typeof v === "string") {
-        for (const m of v.matchAll(/ref:\/\/(\d+)/g)) {
+        for (const m of v.matchAll(/ref:\/\/(?:[a-z][\w-]*\.)?(\d+)/g)) {
           const seq = Number(m[1]);
           if (seen.has(seq)) continue;
           seen.add(seq);
@@ -462,6 +481,54 @@ export class ProvenanceReader {
     };
     for (const m of c.messages) scan(((m ?? {}) as { content?: unknown }).content);
     return out;
+  }
+
+  /**
+   * Resolve one `ref://<seq>[/path]` handle for inspection: the referenced
+   * row's value in full (a `/path` segment drills into it, e.g. `/list`),
+   * plus the row's metadata so the UI can say where it came from.
+   */
+  refTarget(seq: number, path?: string | null): RefTarget | null {
+    const row = this.row(seq);
+    if (!row) return null;
+    let value = rowValue(row);
+    const segs = String(path ?? "").split("/").filter(Boolean);
+    for (const seg of segs) {
+      if (Array.isArray(value)) {
+        const i = Number.parseInt(seg, 10);
+        value = Number.isInteger(i) ? value[i] : undefined;
+      } else if (value && typeof value === "object") {
+        value = (value as Record<string, unknown>)[seg];
+      } else {
+        value = undefined;
+      }
+    }
+    let text: string;
+    if (typeof value === "string") text = value;
+    else if (value == null) text = "";
+    else {
+      try {
+        text = JSON.stringify(value, null, 2);
+      } catch {
+        text = String(value);
+      }
+    }
+    const chars = text.length;
+    const truncated = chars > REF_VALUE_CHARS;
+    const c = row.content as Record<string, unknown> | null;
+    return {
+      seq,
+      kind: row.kind,
+      runId: row.run_id,
+      when: when(row.run_id),
+      branchPath: row.branch_path ?? "",
+      child: rowKindChild(row),
+      op: typeof c?.op === "string" ? c.op : null,
+      path: segs.length ? segs.join("/") : null,
+      value: truncated ? text.slice(0, REF_VALUE_CHARS) + "…" : text,
+      chars,
+      truncated,
+    };
   }
 
   // ── the read-graph walk ──────────────────────────────────────────────

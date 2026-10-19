@@ -81,6 +81,21 @@ export interface StreamLine {
   emit: boolean;
 }
 
+/** An inspected `ref://` target (mirrors src/provenance.ts RefTarget). */
+export interface RefTarget {
+  seq: number;
+  kind: string;
+  runId: string;
+  when: string;
+  branchPath: string;
+  child: string | null;
+  op: string | null;
+  path: string | null;
+  value: string;
+  chars: number;
+  truncated: boolean;
+}
+
 // ── message provenance ("what was this written from") ───────────────────
 // Mirrors src/provenance.ts (the /api/provenance payload).
 

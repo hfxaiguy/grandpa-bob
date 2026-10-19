@@ -59,6 +59,18 @@ export const HOST_GUIDES: HostGuide[] = [
       "a direct sql_query / sql_write against an app's store is refused with a pointer to " +
       "the app. Databases no app owns (duckdb files, ad-hoc .db) are yours to query directly.",
   },
+  {
+    tools: ["inspect_memory"],
+    guide:
+      "INSPECTING A HANDLE: a truncated tool result carries a ref://<name>.<seq> " +
+      "handle for the full value, and live memory slots are addressable by name. " +
+      "When you need to see inside one before deciding — how many rows, or what a " +
+      "few of them look like — call inspect_memory with { ref } (or { name } for a " +
+      "live slot, or a path to walk in). It returns a small sampled view, not the " +
+      "whole value, so the list never enters context. To hand the whole value to " +
+      "another tree, pass the ref string on unchanged; never invent a ref. Use " +
+      '{ name: "*" } to list the slots in scope.',
+  },
 ];
 
 /**

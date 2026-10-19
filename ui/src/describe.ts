@@ -19,6 +19,8 @@ export interface EventLine {
   app: string;
   ts: number;
   emit: boolean;
+  /** The raw event kind, so callers can count by category (e.g. tool_call). */
+  kind: string;
   /** Pretty-printed event payload for the expandable detail. */
   detail: string;
 }
@@ -42,7 +44,7 @@ export function describeEvent(ev: SanitizedEvent): EventLine {
     null,
     2,
   );
-  const base = { app, ts: ev.ts, emit: false, detail };
+  const base = { app, ts: ev.ts, emit: false, kind: ev.kind, detail };
   switch (ev.kind) {
     case "tree_enter":
       return { ...base, badge: "▶", text: `${s(c.tool ?? c.tree)} — enter`, cls: "enter" };

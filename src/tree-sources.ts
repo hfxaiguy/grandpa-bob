@@ -47,9 +47,10 @@ export async function listPatterns(workspaceDir: string) {
 }
 
 /**
- * App trees: every `app/<dir>/tree.draft.mjs` is runnable as a top-level tree,
- * the same way a `patterns/<name>.draft.mjs` is. The directory name is the
- * selector value (loadPattern resolves it).
+ * App trees: every `app/<dir>/tree.prod.mjs` (V2; `tree.draft.mjs` / `tree.mjs`
+ * are the older spellings) is runnable as a top-level tree, the same way a
+ * `patterns/<name>.draft.mjs` is. The directory name is the selector value
+ * (loadPattern resolves it).
  */
 export async function listAppTrees(workspaceDir: string) {
   const appDir = path.join(workspaceDir, "app");
@@ -59,23 +60,28 @@ export async function listAppTrees(workspaceDir: string) {
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const dir = path.join(appDir, entry.name);
-      // The draft is tree.draft.mjs; tree.mjs is the back-compat spelling.
-      let draftFile: string | null = null;
-      for (const cand of ["tree.draft.mjs", "tree.mjs"]) {
+      // V2 trees are a single tree.prod.mjs; tree.draft.mjs / tree.mjs (and
+      // versioned snapshots) are the older spellings and still count.
+      let treeFile: string | null = null;
+      for (const cand of ["tree.draft.mjs", "tree.mjs", "tree.prod.mjs"]) {
         try {
           await readFile(path.join(dir, cand), "utf8");
-          draftFile = cand;
+          treeFile = cand;
           break;
         } catch {
           // try the next spelling
         }
       }
-      if (!draftFile) continue; // apps without a tree are tools-only
+      if (!treeFile) continue; // apps without a tree are tools-only
       out.push({
-        file: `app/${entry.name}/${draftFile}`,
+        file: `app/${entry.name}/${treeFile}`,
         name: entry.name,
         description: await appTreeDescription(dir),
-        guide: await guideFrom([path.join(dir, "tree.spec.md"), path.join(dir, "tree.md")]),
+        guide: await guideFrom([
+          path.join(dir, "tree.spec.md"),
+          path.join(dir, "tree.md"),
+          path.join(dir, "README.md"),
+        ]),
         group: "app",
       });
     }
@@ -116,8 +122,10 @@ async function appTreeDescription(appDir: string): Promise<string> {
 }
 
 /**
- * The `## Guide` section of the first spec file that has one, trimmed, else "".
+ * The `## Guide` section of the first file that has one, trimmed, else "".
  * This is the agent-facing "how to use me" text, injected as TOOL GUIDANCE.
+ * App guides live in the app's README (tree.spec.md / tree.md are the older
+ * spellings); patterns carry theirs in patterns/<name>.spec.md.
  */
 async function guideFrom(files: string[]): Promise<string> {
   for (const file of files) {

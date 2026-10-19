@@ -1,4 +1,6 @@
 import type OpenAI from "openai";
+// @ts-ignore — grandma-kat ships no .d.ts files.
+import { inspectMemoryTool } from "grandma-kat";
 import { FileTools } from "./files.js";
 import { ShellTools } from "./shell.js";
 import { ExaSearchTools } from "./websearch.js";
@@ -21,6 +23,12 @@ export interface ToolCallContext {
   view?: unknown;
   context?: unknown;
   boundary?: boolean;
+  /** The nearest enclosing named tree (the engine's `ctx.tree`). */
+  tree?: string | null;
+  /** Resolve a `ref://<name>.<seq>` handle against this run's log. */
+  readRef?: (ref: string) => unknown;
+  /** The slots visible from the call site, with their write seqs. */
+  scopeInfo?: () => unknown;
 }
 
 /**
@@ -77,6 +85,21 @@ function toOpenAiDefinition(tool: AppTool): OpenAI.Chat.Completions.ChatCompleti
   };
 }
 
+// KAT's own memory inspector (grandma-kat/src/inspect.mjs). It is NOT an app
+// tool: its execute needs the ENGINE's per-call context — `view`, `readRef`,
+// `scopeInfo` — which the app-tool path replaces with the app's secrets
+// context. So it is registered as a built-in definition and dispatched below
+// with the engine ctx forwarded.
+const INSPECT_MEMORY = inspectMemoryTool();
+const INSPECT_MEMORY_DEFINITION: OpenAI.Chat.Completions.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: INSPECT_MEMORY.name,
+    description: INSPECT_MEMORY.description,
+    parameters: INSPECT_MEMORY.parameters,
+  },
+};
+
 export class ToolRegistry {
   private files: FileTools;
   private shell: ShellTools;
@@ -113,6 +136,7 @@ export class ToolRegistry {
     this.appTools = new Map(appTools.map((tool) => [tool.name, tool]));
     this.definitions.push(...appTools.map(toOpenAiDefinition));
     this.definitions.push(...GIT_DEFINITIONS);
+    this.definitions.push(INSPECT_MEMORY_DEFINITION);
   }
 
   readonly definitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
@@ -331,6 +355,11 @@ export class ToolRegistry {
       return `error: invalid JSON arguments for ${name}`;
     }
     try {
+      // KAT's memory inspector needs the engine's ctx (view/readRef/scopeInfo),
+      // so it bypasses the app-tool path (which passes the app's own context).
+      if (name === "inspect_memory") {
+        return INSPECT_MEMORY.execute(args, ctx) as string | Json;
+      }
       const appTool = this.appTools.get(name);
       if (appTool) {
         const result = await appTool.execute(args, appTool.appContext);

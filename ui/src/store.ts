@@ -1,9 +1,10 @@
 /** App state + actions, shared by every component. A module-level Solid store
  *  keeps the tree simple: one screen follows one session, exactly like the old
  *  chat page, but the stream is split per app. */
+import { createSignal } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
 import { getJSON, postJSON, postForm, openEventStream } from "./api";
-import type { AppInfo, PatternInfo, Provenance, SessionInfo, Slot, Turn } from "./types";
+import type { AppInfo, PatternInfo, Provenance, RefTarget, SessionInfo, Slot, Turn } from "./types";
 
 /** Events kept per turn in the live store. The full trace lives in the run log
  *  (`read_runs`); the UI only ever shows a tail, and an unbounded array is what
@@ -97,6 +98,18 @@ function saveLayout() {
   } catch {
     /* ignore */
   }
+}
+
+// ── ref:// inspector ─────────────────────────────────────────────────────
+/** The ref handle open in the inspector, or null. Module-level so any text in
+ *  the UI (a bubble, a log line, the provenance panel) can render a `ref://…`
+ *  token as a link that opens the row it points at ("the handle IS the value"). */
+export const [refView, setRefView] = createSignal<{ seq: number; path: string | null } | null>(null);
+export function openRef(seq: number, path?: string | null): void {
+  if (Number.isInteger(seq) && seq > 0) setRefView({ seq, path: path ?? null });
+}
+export function closeRef(): void {
+  setRefView(null);
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -470,6 +483,19 @@ export async function fetchProvenance(p: {
   return d as Provenance;
 }
 
+/**
+ * Resolve one `ref://<seq>[/path]` handle to the run-log row it points at.
+ * `path` (the `/list` in `ref://123/list`) drills into the row's value.
+ */
+export async function fetchRef(seq: number, path?: string | null): Promise<RefTarget> {
+  const q = new URLSearchParams({ seq: String(seq) });
+  if (path) q.set("path", path);
+  const r = await fetch(`/api/ref?${q.toString()}`, { cache: "no-store" });
+  const d = (await r.json().catch(() => ({}))) as Partial<RefTarget> & { error?: string };
+  if (!r.ok) throw new Error(d.error || `/api/ref: ${r.status}`);
+  return d as RefTarget;
+}
+
 // ── layout tweaks ───────────────────────────────────────────────────────
 
 /** Dismiss the global turn-failure banner. */
@@ -645,9 +671,20 @@ function handleSSE(msg: any): void {
   }
 }
 
-/** Boot the UI: load catalogs, then follow the live stream. */
+/** Boot the UI: load catalogs, open a fresh chat, then follow the live stream. */
 export async function init(): Promise<void> {
   await Promise.all([refreshApps(), refreshPatterns(), refreshModels()]);
+  // A page load always opens a NEW chat. The server's active session (and the
+  // Telegram-follow) survive a browser refresh, so without this a reload drops
+  // you back into whatever was last on screen. Older sessions stay in the
+  // picker for an explicit pick. Mint-or-reuse, so reloading an untouched chat
+  // never piles up empty shells. `new: true` also ends the Telegram-follow
+  // (same as clicking "new chat"); re-enable it in settings when wanted.
+  try {
+    await postJSON("/api/session", { new: true });
+  } catch (e) {
+    console.warn("session:", e);
+  }
   try {
     await refreshSession();
   } catch (e) {

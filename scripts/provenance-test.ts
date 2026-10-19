@@ -12,7 +12,7 @@
  *      each.
  *   3. depth 2 walks each writer's own reads ("trace deeper") and bottoms out
  *      in ground-fact leaves.
- *   4. ref:// handles in the prompt's messages resolve to their rows.
+ *   4. ref://<name>.<seq> handles in the prompt's messages resolve to their rows.
  *   5. pickEmitAnchor prefers the bubble's text over its index, and
  *      WebLog.findTurn resolves a turnId to its marker.
  *
@@ -181,13 +181,17 @@ const slotSeq = (name: string) =>
   assert.equal(p.prompt!.child, reader.provenance(anchorOf("pong-1"), 1).prompt!.child, "same prompt");
 }
 
-// 5. ref:// handles in the prompt's messages resolve to their rows: a
-//    synthetic prompt (rows written by hand, as a host tool would) that
-//    points at a real tool_result row.
+// 5. ref://<name>.<seq> handles in the prompt's messages resolve to their rows:
+//    a synthetic prompt (rows written by hand, as a host tool would) that
+//    points at real tool_result rows — one bare, one named.
 {
   const wdb = new DatabaseSync(dbPath); // writable handle for the synthetic rows
   const insert = wdb.prepare(
     "INSERT INTO calls (run_id, definition_id, branch_path, iteration, scope_id, kind, content) VALUES (?, 'test', NULL, 1, 0, ?, ?)",
+  );
+  const namedSeq = Number(
+    insert.run(runId, "tool_result", JSON.stringify({ tool: "sql_query", args: {}, result: "NAMED REF", isError: false }))
+      .lastInsertRowid,
   );
   const toolSeq = Number(
     insert.run(runId, "tool_result", JSON.stringify({ tool: "read_file", args: {}, result: "REF CONTENT", isError: false }))
@@ -201,7 +205,13 @@ const slotSeq = (name: string) =>
       round: 1,
       model: "cheap",
       content: "syn-ref answer",
-      messages: [{ role: "tool", tool_call_id: "t1", content: "full value at ref://" + toolSeq }],
+      messages: [
+        {
+          role: "tool",
+          tool_call_id: "t1",
+          content: `full value at ref://${toolSeq} and ref://sql_query.${namedSeq}/list`,
+        },
+      ],
       reads: [{ name: "facts", scope: 0, seq: null }],
     }),
   );
@@ -213,10 +223,11 @@ const slotSeq = (name: string) =>
   const p = reader.provenance(emitSeq, 1);
   assert.equal(p.match, "text", "the synthetic prompt matched by text");
   assert.equal(p.prompt!.seq, toolSeq + 1, "the synthetic llm_call is the prompt");
-  assert.equal(p.refs.length, 1, "the ref:// handle was resolved");
-  assert.equal(p.refs[0].seq, toolSeq, "ref points at the tool_result row");
-  assert.equal(p.refs[0].kind, "tool_result");
-  assert.equal(p.refs[0].text, "REF CONTENT", "the referenced value is shown");
+  assert.equal(p.refs.length, 2, "bare and named ref:// handles both resolve");
+  const bySeq = new Map(p.refs.map((r) => [r.seq, r]));
+  assert.equal(bySeq.get(toolSeq)?.text, "REF CONTENT", "the bare handle resolved");
+  assert.equal(bySeq.get(namedSeq)?.text, "NAMED REF", "the named handle resolved");
+  assert.equal(bySeq.get(namedSeq)?.kind, "tool_result");
   // A seq-less read from a root slot falls back to the latest write.
   assert.equal(p.pieces[0].name, "facts");
   assert.equal(p.pieces[0].resolved, "latest-write", "no seq link — latest write resolved it");

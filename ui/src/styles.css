@@ -154,6 +154,8 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .panel-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); padding: 6px 10px 3px; }
 .as-button { background: none; border: 0; width: 100%; text-align: left; cursor: pointer; }
 .count { color: var(--accent); }
+.count.tool { color: var(--pink); }
+.count.prompt { color: var(--warn); }
 
 .mem-list, .ev-list { list-style: none; margin: 0; padding: 4px 10px 8px; max-height: 150px; overflow: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .mem-list li { display: flex; gap: 8px; padding: 1px 0; cursor: pointer; border-radius: 4px; }
@@ -266,6 +268,16 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .prov-value { margin: 4px 0 0; padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
 .prov-deeper { margin-top: 8px; background: #1d2f52; border-color: #2c4370; font-size: 12px; }
 .prov-deeper:disabled { opacity: 0.6; }
+
+/* ref:// handles: inline links that open the run-log row they point at. */
+.ref-link {
+  display: inline; background: none; border: 0; padding: 0; margin: 0;
+  font: inherit; color: var(--accent); cursor: pointer;
+  text-decoration: underline dotted; text-underline-offset: 2px;
+  white-space: inherit; word-break: break-all;
+}
+.ref-link:hover { color: var(--pink); }
+.ref-value { max-height: min(62vh, 560px); }
 
 .prov-prompt { margin-top: 6px; }
 .prov-prompt > summary { cursor: pointer; color: var(--accent); font-size: 12.5px; }

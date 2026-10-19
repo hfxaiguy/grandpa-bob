@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — named ref handles in provenance; `inspect_memory` registered
+
+Provenance scanning matched only bare `ref://<seq>` handles; the engine now
+mints `ref://<tool>.<seq>[/path]`, so the scan accepts an optional name segment
+and keeps the seq as the resolution key. `scripts/provenance-test.ts` pins both
+forms (a bare handle and a named one, each resolving to its own row).
+
+`inspect_memory` (grandma-kat) is registered as a built-in tool and offered to
+the trunk via `TOOL_NAMES`. It is dispatched **specially**: its execute needs
+the engine's tool ctx (`view`/`readRef`/`scopeInfo`), which the app-tool path
+replaces with the app's secrets context — so it cannot be a `tools.mjs` app
+tool. A `HOST_GUIDES` entry teaches the model to peek at a handle (or live slot)
+instead of re-querying, and to pass the ref on to hand over the whole value.
+
+## 2026-10-17 — the event log and stream show a prompts count beside tool calls
+
+The tiled UI's panel headers counted events and tool calls; a prompt count
+tells you how many model calls a run made without opening it. Both headers now
+read `events N · prompts M · tool calls K`, where `M` counts `llm_call` events
+(one per round, so a tool-looping prompt contributes more than one) and `K`
+counts `tool_call` events as before. The count is taken from the same
+`LOG_WINDOW`/stream line arrays the panel already builds, so it stays O(window).
+
 ## 2026-10-15 — promoting an app tree now drops a paused session that depended on it
 
 The session staleness hash (`resumeHash`) covers only the root pattern's

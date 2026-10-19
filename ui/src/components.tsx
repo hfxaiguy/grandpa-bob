@@ -16,6 +16,10 @@ import {
   clearConversation,
   sendToTelegram,
   fetchProvenance,
+  fetchRef,
+  refView,
+  openRef,
+  closeRef,
   toggleExpanded,
   toggleWide,
   toggleHidden,
@@ -25,7 +29,7 @@ import {
   transcribeAudio,
   transcribeFileStream,
 } from "./store";
-import type { AppInfo, ProvPiece, ProvWriter, Provenance, Turn } from "./types";
+import type { AppInfo, ProvPiece, ProvWriter, Provenance, RefTarget, Turn } from "./types";
 
 const trunkOf = (a?: string | null) => a || "trunk";
 
@@ -93,7 +97,7 @@ function MemoryPanel(props: { app: string }) {
                 <span class="spacer" />
                 <button onClick={() => setInspect(null)}>✕</button>
               </div>
-              <pre class="mem-modal-body">{full(sel().value)}</pre>
+              <pre class="mem-modal-body"><RefText text={full(sel().value)} /></pre>
             </div>
           </div>
         )}
@@ -112,16 +116,140 @@ function LogRow(props: { line: EventLine; showApp?: boolean }) {
           <span class="stream-app">{props.line.app}</span>
         </Show>
         <span class="badge">{props.line.badge}</span>
-        <span class="log-text">{props.line.text}</span>
+        <span class="log-text"><RefText text={props.line.text} /></span>
       </summary>
       <pre class="log-detail">{props.line.detail}</pre>
     </details>
   );
 }
 
+// ── ref:// handles ─────────────────────────────────────────────────────
+// A `ref://<seq>`, `ref://<seq>/<path>` or `ref://<label>.<seq>` token in any
+// text becomes a link that opens the referenced run-log row in the inspector.
+
+/** Matches a whole ref token (label.seq, optional /path). */
+const REF_TOKEN = /ref:\/\/[A-Za-z0-9_.\/-]+/g;
+
+/** The row seq and optional `/path` a ref token points at. */
+function parseRef(token: string): { seq: number; path: string | null } | null {
+  const body = token.slice("ref://".length);
+  const [head, ...rest] = body.split("/");
+  const m = /(\d+)$/.exec(head); // "146629" or "rows.146629"
+  if (!m) return null;
+  return { seq: Number(m[1]), path: rest.length ? rest.join("/") : null };
+}
+
+/** Render text with any `ref://…` tokens as clickable inspect links. */
+function RefText(props: { text: string }) {
+  const parts = createMemo(() => {
+    const text = String(props.text ?? "");
+    const out: { t: string; ref: string | null }[] = [];
+    let last = 0;
+    for (const m of text.matchAll(REF_TOKEN)) {
+      const i = m.index ?? 0;
+      const raw = m[0];
+      // Sentence punctuation after the handle is not part of it.
+      const link = raw.replace(/[.,;:!?\])}]+$/, "");
+      const trail = raw.slice(link.length);
+      if (i > last) out.push({ t: text.slice(last, i), ref: null });
+      if (link) out.push({ t: link, ref: link });
+      if (trail) out.push({ t: trail, ref: null });
+      last = i + raw.length;
+    }
+    if (last < text.length) out.push({ t: text.slice(last), ref: null });
+    return out;
+  });
+  return (
+    <For each={parts()}>
+      {(p) =>
+        p.ref ? (
+          <button
+            class="ref-link"
+            title={`inspect ${p.ref}`}
+            onClick={(ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              const r = parseRef(p.ref!);
+              if (r) openRef(r.seq, r.path);
+            }}
+          >
+            {p.t}
+          </button>
+        ) : (
+          p.t
+        )
+      }
+    </For>
+  );
+}
+
+/** The ref inspector: the run-log row a `ref://…` handle points at, in full. */
+export function RefModal() {
+  const [data, setData] = createSignal<RefTarget | null>(null);
+  const [loading, setLoading] = createSignal(false);
+  const [err, setErr] = createSignal("");
+  createEffect(() => {
+    const t = refView();
+    if (!t) return;
+    setLoading(true);
+    setErr("");
+    setData(null);
+    fetchRef(t.seq, t.path)
+      .then((d) => setData(d))
+      .catch((e) => setErr(e instanceof Error ? e.message : "ref lookup failed"))
+      .finally(() => setLoading(false));
+  });
+  return (
+    <Show when={refView()}>
+      {(t) => (
+        <div class="mem-modal" onClick={(ev) => ev.target === ev.currentTarget && closeRef()}>
+          <div class="mem-modal-card">
+            <div class="mem-modal-head">
+              <span class="mem-modal-path">ref://{t().seq}{t().path ? `/${t().path}` : ""}</span>
+              <span class="spacer" />
+              <Show when={loading()}>
+                <span class="spinner" />
+              </Show>
+              <button onClick={closeRef}>✕</button>
+            </div>
+            <div class="prov-body">
+              <Show when={err()}>
+                <div class="prov-err">{err()}</div>
+              </Show>
+              <Show when={data()}>
+                {(d) => (
+                  <>
+                    <div class="prov-meta">
+                      <span class="prov-slot">{d().child || d().kind}</span>
+                      <span class="prov-dim">
+                        {` · ${d().kind}${d().op ? ` · ${d().op}` : ""}`}
+                        {d().branchPath ? ` · ${d().branchPath}` : ""} · seq {d().seq} · {d().when}
+                      </span>
+                    </div>
+                    <div class="prov-dim">
+                      {d().chars} chars{d().truncated ? " — shown truncated" : ""}
+                    </div>
+                    <pre class="prov-value ref-value"><RefText text={d().value} /></pre>
+                  </>
+                )}
+              </Show>
+            </div>
+          </div>
+        </div>
+      )}
+    </Show>
+  );
+}
+
 /** Lines the log builds per recompute. The display shows the last 200; we build
  *  a little more for a stable window, and never walk the whole history. */
 const LOG_WINDOW = 400;
+
+/** How many of a line window are tool calls (kind `tool_call`). */
+const toolCallCount = (lines: EventLine[]) => lines.filter((l) => l.kind === "tool_call").length;
+
+/** How many of a line window are prompts (kind `llm_call`, one per round). */
+const promptCount = (lines: EventLine[]) => lines.filter((l) => l.kind === "llm_call").length;
 
 function EventLog(props: { app: string }) {
   const [open, setOpen] = createSignal(false);
@@ -139,10 +267,14 @@ function EventLog(props: { app: string }) {
     out.reverse();
     return out;
   });
+  const tools = createMemo(() => toolCallCount(lines()));
+  const prompts = createMemo(() => promptCount(lines()));
   return (
     <div class="evlog">
       <button class="panel-title as-button" onClick={() => setOpen(!open())}>
-        events <span class="count">{lines().length}</span> {open() ? "▾" : "▸"}
+        events <span class="count">{lines().length}</span>
+        {" · "}prompts <span class="count prompt">{prompts()}</span>
+        {" · "}tool calls <span class="count tool">{tools()}</span> {open() ? "▾" : "▸"}
       </button>
       <Show when={open()}>
         <div class="ev-list">
@@ -563,7 +695,7 @@ function ProvenanceModal(props: { turnId: string; bubble: number; text: string; 
                                   {m.role}
                                   <span class="prov-dim"> · {m.chars} chars{m.truncated ? " · truncated" : ""}</span>
                                 </div>
-                                <pre class="prov-msg-body">{m.content}</pre>
+                                <pre class="prov-msg-body"><RefText text={m.content} /></pre>
                               </div>
                             )}
                           </For>
@@ -591,7 +723,7 @@ function ProvenanceModal(props: { turnId: string; bubble: number; text: string; 
                     <For each={d().refs}>
                       {(r) => (
                         <div class="prov-ref">
-                          <span class="prov-slot">ref://{r.seq}</span>
+                          <span class="prov-slot"><RefText text={`ref://${r.seq}`} /></span>
                           <span class="prov-dim"> · {r.kind}{r.child ? ` · ${r.child}` : ""}</span>
                           <div class="prov-val">{r.text.replace(/\s+/g, " ").slice(0, 200)}</div>
                         </div>
@@ -731,7 +863,7 @@ function Tile(props: { app: AppInfo }) {
                     b.turn.levels?.[b.emitIndex] !== "machine",
                 }}
               >
-                {b.text}
+                <RefText text={b.text} />
                 <Show
                   when={
                     b.kind === "bot" &&
@@ -779,6 +911,8 @@ export function Tiles(props: { apps: AppInfo[] }) {
 export function GlobalStream() {
   const [open, setOpen] = createSignal(true);
   const lines = createMemo(() => streamLines(state.turns));
+  const tools = createMemo(() => toolCallCount(lines()));
+  const prompts = createMemo(() => promptCount(lines()));
   let ref: HTMLDivElement | undefined;
   createEffect(() => {
     lines();
@@ -787,7 +921,9 @@ export function GlobalStream() {
   return (
     <aside class="stream" classList={{ collapsed: !open() }}>
       <button class="panel-title as-button stream-head" onClick={() => setOpen(!open())}>
-        event stream <span class="count">{lines().length}</span> {open() ? "▸" : "◂"}
+        event stream <span class="count">{lines().length}</span>
+        {" · "}prompts <span class="count prompt">{prompts()}</span>
+        {" · "}tool calls <span class="count tool">{tools()}</span> {open() ? "▸" : "◂"}
       </button>
       <Show when={open()}>
         <div class="stream-body" ref={ref}>

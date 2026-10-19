@@ -2674,6 +2674,43 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         return;
       }
 
+      // A `ref://<seq>[/path]` handle: the referenced run-log row's value, in
+      // full. The UI turns ref handles in message text into links that open
+      // this — "the handle IS the value".
+      if (req.method === "GET" && url.pathname === "/api/ref") {
+        const seq = Number.parseInt(url.searchParams.get("seq") ?? "", 10);
+        const refPath = url.searchParams.get("path") ?? "";
+        if (!Number.isInteger(seq) || seq <= 0) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"seq is required"}');
+          return;
+        }
+        let reader: ProvenanceReader;
+        try {
+          reader = new ProvenanceReader(treeDbPath);
+        } catch (e: any) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: e?.message ?? "run log unavailable" }));
+          return;
+        }
+        try {
+          const target = reader.refTarget(seq, refPath || undefined);
+          if (!target) {
+            res.writeHead(404, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: `no run-log row at seq ${seq}` }));
+            return;
+          }
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify(target));
+        } catch (e: any) {
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: e?.message ?? "ref lookup failed" }));
+        } finally {
+          reader.close();
+        }
+        return;
+      }
+
       // The app tiles: the trunk plus every `app/<name>/tree.draft.mjs` in the
       // workspace. The tiled UI lays one tile out per entry.
       if (req.method === "GET" && url.pathname === "/api/apps") {

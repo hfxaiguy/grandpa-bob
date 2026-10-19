@@ -1,6 +1,6 @@
 /** App shell: toolbar + tiled grid + global stream + session drawer. */
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
-import { GlobalStream, SessionPanel, Tiles } from "./components";
+import { GlobalStream, RefModal, SessionPanel, Tiles } from "./components";
 import { init, orderedApps, state, toggleHidden, dismissError, retryLast } from "./store";
 
 function TilesMenu() {
@@ -101,6 +101,8 @@ export function App() {
       <Show when={showSession()}>
         <SessionPanel onClose={() => setShowSession(false)} />
       </Show>
+
+      <RefModal />
 
       <Show when={state.toast}>
         <div class="toast" classList={{ err: state.toastErr }}>
