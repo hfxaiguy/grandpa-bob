@@ -352,6 +352,24 @@ if (turn.status !== "done" || /cannot load pattern|unknown pattern/.test(String(
 }
 console.log("✓ pattern picked by name runs on the first turn");
 
+// The turn also becomes a session in the picked folder's KAT log (written
+// even though SQL write-back is off: logs/ is internal).
+await sleep(800);
+const sessionRaw = await evaluate(`(async () => {
+  const backend = window.__bobBackend;
+  await backend.ready;
+  const d = await backend.request("GET", "/api/session", new URLSearchParams(), null);
+  const s = (d.body?.sessions || []).find((x) => x.turns > 0);
+  return JSON.stringify({ active: d.body?.active ?? null, session: s || null });
+})()`);
+const session = JSON.parse(sessionRaw);
+if (!session.session || session.session.turns < 1) {
+  console.error("turn was not persisted as a session:", session);
+  console.log(logs.join("\n"));
+  cleanup(6);
+}
+console.log("✓ sessions persist in the picked folder's KAT log");
+
 if (logs.some((line) => line.startsWith("[exception]"))) {
   console.log(logs.join("\n"));
   cleanup(6);
