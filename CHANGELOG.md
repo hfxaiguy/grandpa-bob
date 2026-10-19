@@ -2,6 +2,19 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — browser model calls go through the admin's registry
+
+When `web/dist` is served by grandpa-bob's admin, the in-tab agent now reads
+that process's `models.json` and sends its model calls through the same-origin
+`/api/llm/<slot>/{chat/completions|api/chat}` proxy. Before, the browser used
+the workspace `models.json` (the mock in the live workspace), so the same page
+at `:8080` could answer through a different model set than Telegram. Now there
+is one registry, the request uses the server-side network (Ollama Cloud works
+despite having no browser CORS), and the API keys never reach the page. The
+proxy refuses non-POST requests, unknown slots/endpoints, and cross-origin
+callers (`Origin` ≠ the served host). Standalone (Vite/static) keeps the
+workspace `models.json` + Settings JSON fallback.
+
 ## 2026-10-19 — model slots can be aliases; the web picker lists them
 
 A `models.json` entry may now be a string naming another slot:
