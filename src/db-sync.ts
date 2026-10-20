@@ -254,35 +254,15 @@ export interface ApplyResult {
   conflicts: string[];
 }
 
-/** Does the DB have any user tables (an empty file/database counts as new)? */
-async function hasUserTables(platform: Platform, name: string): Promise<boolean> {
-  const abs = platform.path.join(platform.workspaceRoot, name);
-  const db = await platform.sqlite.open(abs, { readOnly: true });
-  try {
-    const rows = await all(
-      db,
-      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1",
-    );
-    return rows.length > 0;
-  } catch {
-    // Unreadable/corrupt: don't treat it as new; the conflict check decides.
-    return true;
-  } finally {
-    await db.close();
-  }
-}
-
 /**
  * Replay `db/<name>.db.sql` into `<name>.db`. Unless `force`, a DB whose current
  * content differs from the dump AND has no corresponding committed dump state
  * is left alone (reported in `conflicts`) rather than clobbered.
  *
- * A database that does not exist (or exists only as an empty file, which the
- * browser's SQLite adapter happily opens as an empty in-memory database) has
- * no local state to protect and is always created from the dump. This must not
- * rely on opening a missing DB throwing: in the browser it does not, and the
- * empty dump used to look like a conflict, so OPFS workspaces never got their
- * app databases.
+ * A database file that does not exist has no local state to protect and is
+ * always created from the dump. This must not rely on opening a missing DB
+ * throwing: in the browser it does not, and the empty dump used to look like a
+ * conflict, so OPFS workspaces never got their app databases.
  */
 export async function applyDatabaseDumps(
   platform: Platform,
@@ -298,17 +278,13 @@ export async function applyDatabaseDumps(
     if (!name.endsWith(".db")) continue;
     const dbPath = platform.path.join(platform.workspaceRoot, name);
     const exists = await platform.fs.stat(dbPath).then(() => true).catch(() => false);
-    // A present-but-empty database is as good as missing: there is nothing in
-    // it to clobber. `onlyMissing` is the boot path, so this also heals a DB
-    // left empty by an earlier failed/blocked write.
-    const fresh = !exists || (opts.onlyMissing ? !(await hasUserTables(platform, name)) : false);
-    if (opts.onlyMissing && !fresh) {
+    if (opts.onlyMissing && exists) {
       result.unchanged.push(name);
       continue;
     }
     const path = platform.path.join(dir, entry.name);
     const committed = await platform.fs.readFile(path, "utf8");
-    if (!fresh) {
+    if (exists) {
       try {
         const current = await dumpDatabase(platform, name);
         if (current === committed) {

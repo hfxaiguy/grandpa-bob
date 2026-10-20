@@ -10,14 +10,14 @@ replay compared that empty dump with the committed one, called it a conflict,
 and skipped it — so a fresh browser workspace had no `contacts.db` /
 `comms.db` / `email.db`, and the bot reported `no such table: profiles`.
 
-- `applyDatabaseDumps` checks for the database file itself and always replays
-  the dump into a missing one. On the boot path (`onlyMissing`) it also heals
-  a database that exists but has no tables.
+- `applyDatabaseDumps` checks for the database file itself and replays the
+  dump only when it is missing. An existing database is left alone, even if
+  it has no tables.
 - The browser logs a warning when the dumps cannot be applied instead of
   swallowing the error.
 - `npm run test:db-sync` emulates the browser's missing-file behavior, checks
-  that the dump creates the DB, and that a locally edited DB is still
-  preserved as a conflict.
+  that the dump creates the DB, that an existing (empty) DB is not replaced,
+  and that a locally edited DB is still preserved as a conflict.
 
 ## 2026-10-19 — fresh browser seed; snapshot age in the status line
 

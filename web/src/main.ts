@@ -254,13 +254,17 @@ async function prepareBrowserWorkspace(): Promise<void> {
       if (await isFile(root)) await platform.fs.rm(root);
       await cloneWorkspace(root, configuredRemote);
     }
-    await applyDatabaseDumps(platform, { onlyMissing: true }).catch(() => {});
+    await applyDatabaseDumps(platform, { onlyMissing: true }).catch((err) => {
+      console.warn("database dumps could not be applied:", err);
+    });
     setStatus("workspace ready");
     return;
   }
   setStatus("seeding workspace…");
   await seedWorkspace(root);
-  await applyDatabaseDumps(platform, { onlyMissing: true }).catch(() => {});
+  await applyDatabaseDumps(platform, { onlyMissing: true }).catch((err) => {
+    console.warn("database dumps could not be applied:", err);
+  });
   setStatus("workspace ready");
 }
 

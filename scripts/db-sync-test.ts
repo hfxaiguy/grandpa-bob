@@ -11,7 +11,7 @@
  * Run: `npm run test:db-sync`.
  */
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -70,14 +70,23 @@ try {
   assert.deepEqual(first.conflicts, [], "a missing DB is not a conflict");
   assert.equal(await countPeople(), 2, "the dump's rows are present");
 
-  // A DB left behind as an empty file (e.g. a failed write) is healed too.
+  // An existing DB is never replayed over on the boot path — even one with no
+  // tables. Only a missing file is created.
+  await rm(dbPath);
   await writeFile(dbPath, "");
-  const healed = await applyDatabaseDumps(platform, { onlyMissing: true });
-  assert.deepEqual(healed.applied, ["people.db"], "an empty DB is recreated from the dump");
+  const untouched = await applyDatabaseDumps(platform, { onlyMissing: true });
+  assert.deepEqual(untouched.applied, [], "an existing empty DB is not replaced");
+  assert.deepEqual(untouched.unchanged, ["people.db"]);
+  assert.equal(statSync(dbPath).size, 0, "the empty DB is left as-is");
+
+  // Remove it again so the next checks run against the dump-created DB.
+  await rm(dbPath);
+  const recreated = await applyDatabaseDumps(platform, { onlyMissing: true });
+  assert.deepEqual(recreated.applied, ["people.db"]);
   assert.equal(await countPeople(), 2);
 
   // An initialized DB with local changes still wins: dump replay must not
-  // clobber it. (The boot path skips initialized DBs; the regular sync path
+  // clobber it. (The boot path skips existing DBs; the regular sync path
   // reports the conflict.)
   const edited = await realOpen(dbPath, { readOnly: false });
   await edited.exec("INSERT INTO people (name) VALUES ('Linus')");
@@ -87,7 +96,7 @@ try {
   assert.deepEqual(conflict.applied, []);
   assert.equal(await countPeople(), 3, "the local row survives");
 
-  console.log("db-sync: dumps create missing/empty DBs, edited DBs are preserved OK");
+  console.log("db-sync: dumps create missing DBs only; existing DBs are preserved OK");
 } finally {
   await rm(workspace, { recursive: true, force: true });
 }
