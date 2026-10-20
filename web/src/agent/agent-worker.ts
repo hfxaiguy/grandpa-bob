@@ -318,7 +318,11 @@ async function buildAppTools(
       const mod = (await loader.load(file)) as {
         tools?: unknown;
         guide?: unknown;
+        ready?: unknown;
       };
+      if (mod.ready && typeof (mod.ready as Promise<unknown>).then === "function") {
+        await mod.ready;
+      }
       if (!Array.isArray(mod.tools)) continue;
       if (typeof mod.guide === "string" && mod.guide.trim()) {
         guides.set(app.name, mod.guide.trim());

@@ -86,6 +86,9 @@ export async function loadAppTools(workspace: string, secrets?: SecretsStore): P
 
     try {
       const mod = await import(pathToFileURL(modulePath).href);
+      if (mod.ready && typeof mod.ready.then === "function") {
+        await mod.ready;
+      }
       if (!Array.isArray(mod.tools)) throw new Error("must export an array named tools");
       for (const tool of mod.tools as unknown[]) {
         validateTool(tool, entry.name);

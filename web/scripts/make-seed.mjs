@@ -1,11 +1,16 @@
-// Pack a grandpa-bob workspace into the browser's WorkspaceArchive JSON so the
-// browser target can seed OPFS without a server-side filesystem.
+// Pack the browser-relevant parts of a grandpa-bob workspace into the
+// WorkspaceArchive JSON so the browser target can seed OPFS without a
+// server-side filesystem.
 //
 //   node scripts/make-seed.mjs [workspaceDir]
 //
 // Defaults to $WORKSPACE_DIR or ../../workspace. Writes web/public/seed/
 // workspace.json, which web/src/main.ts imports into OPFS on first run.
 // Paths are prefixed with "workspace/" so they land in the browser workspace.
+//
+// Only app/, patterns/ and lib/ are packed. Knowledge, scraped pages, assets,
+// database dumps and root notes are desktop-only; the browser starts with an
+// empty contacts store (its app code creates the schema on first use).
 //
 // The run log (logs/) is not copied: it is the desktop's history, and it is
 // large. Instead we seed an EMPTY logs/grandma-kat.db with the logger's schema,
@@ -22,6 +27,9 @@ const workspace =
   process.env.WORKSPACE_DIR ??
   path.resolve(here, "..", "..", "workspace");
 const out = path.resolve(here, "..", "public", "seed", "workspace.json");
+
+/** Top-level directories the browser needs to run app trees and patterns. */
+const KEEP_DIRS = new Set(["app", "patterns", "lib"]);
 
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", "tmp", "logs", ".commandcode"]);
 const SKIP_FILE = /\.(db|db-wal|db-shm|sqlite|sqlite3|log)$/i;
@@ -76,7 +84,10 @@ async function walk(dir, rel) {
 }
 
 try {
-  await walk(workspace, "");
+  for (const entry of await fs.readdir(workspace, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !KEEP_DIRS.has(entry.name)) continue;
+    await walk(path.join(workspace, entry.name), entry.name);
+  }
 } catch (err) {
   console.error(`cannot read workspace at ${workspace}: ${err.message}`);
   process.exit(1);

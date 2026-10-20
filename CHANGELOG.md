@@ -2,6 +2,21 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-20 — browser seed is code-only (1.9 MB)
+
+`make-seed` now packs only the three trees the browser runs — `app/`,
+`patterns/`, `lib/` — plus an empty `logs/grandma-kat.db` (schema only).
+Database dumps, `knowledge/`, scraped pages, assets, root notes and
+`models.json` are desktop-only. The seed drops from 28 MB to ~1.9 MB.
+
+- The browser starts with an empty contacts store. The contacts app now
+  initializes its schema when its tools load (`appReady`), before a tree can
+  query it, so `sql_query` against `contacts.db` works on a first boot.
+- Both app-tool loaders await an app's optional `ready` promise before exposing
+  its tools.
+- Browser saves still create `db/*.sql` dumps when a database changes; the
+  desktop's existing data is simply not preloaded.
+
 ## 2026-10-20 — one dev server: Vite HMR on :8080
 
 `npm run dev` now starts the admin server with Vite in middleware mode on the
