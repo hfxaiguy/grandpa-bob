@@ -23,6 +23,8 @@ export interface EventLine {
   kind: string;
   /** Pretty-printed event payload for the expandable detail. */
   detail: string;
+  /** Run-log row, used to fetch the full (untruncated) payload on demand. */
+  seq?: number;
 }
 
 /** One log line for an event, plus its app attribution. */
@@ -44,7 +46,14 @@ export function describeEvent(ev: SanitizedEvent): EventLine {
     null,
     2,
   );
-  const base = { app, ts: ev.ts, emit: false, kind: ev.kind, detail };
+  const base = {
+    app,
+    ts: ev.ts,
+    emit: false,
+    kind: ev.kind,
+    detail,
+    ...(Number.isInteger(ev.seq) ? { seq: ev.seq } : {}),
+  };
   switch (ev.kind) {
     case "tree_enter":
       return { ...base, badge: "▶", text: `${s(c.tool ?? c.tree)} — enter`, cls: "enter" };
@@ -65,8 +74,17 @@ export function describeEvent(ev: SanitizedEvent): EventLine {
         cls: "llm",
       };
     }
-    case "llm_call":
-      return { ...base, badge: "llm", text: s(c.child) || "prompt", cls: "llm" };
+    case "llm_call": {
+      const out = s(c.content);
+      const calls = Array.isArray(c.toolCalls) ? (c.toolCalls as unknown[]).length : 0;
+      const callLabel = calls ? ` (${calls} tool call${calls === 1 ? "" : "s"})` : "";
+      return {
+        ...base,
+        badge: "llm",
+        text: `${s(c.child) || "prompt"}${out ? ` → ${out}` : ""}${callLabel}`,
+        cls: "llm",
+      };
+    }
     case "llm_error":
       return { ...base, badge: "llm!", text: s(c.error ?? c.message), cls: "err" };
     case "tool_call":

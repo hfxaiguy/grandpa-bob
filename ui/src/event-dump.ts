@@ -45,7 +45,7 @@ async function collect(): Promise<{ dump: EventDump; events: number }> {
   };
 }
 
-async function copyText(text: string): Promise<boolean> {
+export async function copyText(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);
     return true;

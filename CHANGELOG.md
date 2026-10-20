@@ -2,6 +2,15 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-20 — inspect exact LLM prompt/output in the event stream
+
+`llm_call` rows now preview the model's output when collapsed. Expanding one
+auto-loads the raw run-log row (`/api/ref`) so the complete `messages` array,
+output, reasoning and tool-call arguments are visible; the detail also has
+copy-event and copy-messages actions. The live sanitized event keeps output,
+reasoning and tool calls intact (only the message array stays summarized
+until the full row is fetched).
+
 ## 2026-10-20 — copy/download the full event stream
 
 The stream panel only keeps a tail in memory. Its header now has **copy** and

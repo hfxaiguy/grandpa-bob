@@ -56,7 +56,8 @@ export function sanitizeEvent(
   const clean = sanitizeValue(content) as Record<string, unknown>;
   // The prompt history is huge (the trunk's system prompt alone is ~10 KB) and
   // the UI only ever summarizes it — send the count and size, never the array.
-  // This is what kept single llm_call events at ~130 KB.
+  // This is what kept single llm_call events at ~130 KB. The exact array is
+  // fetched on demand through /api/ref when the user expands the event.
   if (messages) {
     clean.messages = {
       count: messages.length,
@@ -65,6 +66,18 @@ export function sanitizeEvent(
         0,
       ),
     };
+  }
+  // The model's answer, reasoning and tool arguments are what the user is
+  // inspecting; don't truncate them to the generic 400-char event cap.
+  if (e.kind === "llm_call") {
+    for (const key of ["content", "reasoning", "toolCalls", "reads"] as const) {
+      if (content[key] !== undefined) clean[key] = content[key];
+    }
+  }
+  // Tools offered to the prompt: a short list, and the UI shows it in the
+  // llm_start line; keep all names rather than the array summary.
+  if (e.kind === "llm_start" && Array.isArray(content.tools)) {
+    clean.tools = content.tools;
   }
   return {
     kind: e.kind ?? "unknown",

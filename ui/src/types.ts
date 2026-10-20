@@ -14,6 +14,8 @@ export interface SanitizedEvent {
   scope_id: number | null;
   content: Record<string, unknown> | null;
   ts: number;
+  /** Run-log row, used to fetch the raw event on demand. */
+  seq?: number;
   app?: string;
 }
 

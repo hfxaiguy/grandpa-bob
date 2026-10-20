@@ -1,7 +1,7 @@
 /** Tile, memory, per-tile event log, global stream, session panel. */
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { describeEvent, streamLines, type EventLine } from "./describe";
-import { copyEventStream, downloadEventStream } from "./event-dump";
+import { copyEventStream, copyText, downloadEventStream } from "./event-dump";
 import {
   state,
   send,
@@ -108,10 +108,64 @@ function MemoryPanel(props: { app: string }) {
 }
 
 // A single log line, expandable to its full event payload. Native
-// <details>/<summary> keeps it keyboard-accessible for free.
+// <details>/<summary> keeps it keyboard-accessible for free. The detail is the
+// sanitized event; "full" fetches the raw run-log row (complete messages, no
+// 400-char caps) for exact prompt/output inspection.
 function LogRow(props: { line: EventLine; showApp?: boolean }) {
+  const [full, setFull] = createSignal<{ text: string; chars: number; truncated: boolean } | null>(null);
+  const [loading, setLoading] = createSignal(false);
+
+  const loadFull = async (): Promise<void> => {
+    const seq = props.line.seq;
+    if (!seq) return;
+    setLoading(true);
+    try {
+      const target = await fetchRef(seq);
+      setFull({ text: target.value, chars: target.chars, truncated: target.truncated });
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copy = async (text: string, label: string): Promise<void> => {
+    const ok = await copyText(text);
+    toast(ok ? `copied ${label}` : "clipboard blocked", !ok);
+  };
+
+  const copyMessages = (): void => {
+    const current = full();
+    if (!current) return;
+    try {
+      const parsed = JSON.parse(current.text) as { messages?: unknown };
+      if (!Array.isArray(parsed.messages)) {
+        toast("this event has no message array", true);
+        return;
+      }
+      void copy(JSON.stringify(parsed.messages, null, 2), `${parsed.messages.length} messages`);
+    } catch {
+      toast("could not parse the full event", true);
+    }
+  };
+
   return (
-    <details class="log-row" classList={{ emit: props.line.emit, [props.line.cls]: !!props.line.cls }}>
+    <details
+      class="log-row"
+      classList={{ emit: props.line.emit, [props.line.cls]: !!props.line.cls }}
+      onToggle={(event) => {
+        // Opening an LLM call should show the exact prompt immediately, not
+        // require a second click. Other rows fetch on demand.
+        if (
+          (event.currentTarget as HTMLDetailsElement).open &&
+          props.line.kind === "llm_call" &&
+          !full() &&
+          !loading()
+        ) {
+          void loadFull();
+        }
+      }}
+    >
       <summary>
         <Show when={props.showApp}>
           <span class="stream-app">{props.line.app}</span>
@@ -120,6 +174,27 @@ function LogRow(props: { line: EventLine; showApp?: boolean }) {
         <span class="log-text"><RefText text={props.line.text} /></span>
       </summary>
       <pre class="log-detail">{props.line.detail}</pre>
+      <div class="log-actions">
+        <button type="button" onClick={() => void copy(props.line.detail, "event")}>copy</button>
+        <Show when={props.line.seq}>
+          <button type="button" onClick={() => void loadFull()}>
+            {loading() ? "loading…" : full() ? "reload full" : "full"}
+          </button>
+        </Show>
+      </div>
+      <Show when={full()}>
+        {(value) => (
+          <>
+            <div class="log-actions">
+              <span class="log-note">
+                full row · {value().chars} chars{value().truncated ? " · truncated" : ""}
+              </span>
+              <button type="button" onClick={() => copyMessages()}>copy messages</button>
+            </div>
+            <pre class="log-detail full">{value().text}</pre>
+          </>
+        )}
+      </Show>
     </details>
   );
 }
