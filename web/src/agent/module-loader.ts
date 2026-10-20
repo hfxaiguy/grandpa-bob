@@ -99,6 +99,16 @@ interface TransformResult {
   specs: string[];
 }
 
+/** `a, b as c` -> the `export { ... }` clauses that name real bindings. */
+function reexportItems(body: string): RegExpMatchArray[] {
+  return body
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((item) => item.match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/))
+    .filter((m): m is RegExpMatchArray => m != null);
+}
+
 function transform(source: string, fileUrl: string): TransformResult {
   const specs: string[] = [];
   let out = source;
@@ -145,24 +155,56 @@ function transform(source: string, fileUrl: string): TransformResult {
   // export default X;  (may span multiple lines — replace only the keyword)
   out = out.replace(/^[ \t]*export\s+default\s+/m, "module.exports.default = ");
 
-  // export const/let/var/function/class NAME ...
+  // export const/let/var/function/class NAME ...  (also `export async function`)
   const named: string[] = [];
   out = out.replace(
-    /^[ \t]*export\s+(const|let|var|function|class)\s+([\w$]+)/gm,
+    /^[ \t]*export\s+((?:async\s+)?(?:const|let|var|function|class))\s+([\w$]+)/gm,
     (_m, kind: string, name: string) => {
       named.push(name);
       return `${kind} ${name}`;
     },
   );
 
-  // export { a, b as c };
+  // export * as ns from "./mod.js";
+  out = out.replace(
+    /^[ \t]*export\s*\*\s*as\s+([\w$]+)\s+from\s*(['"])([^'"]+)\2[ \t]*;?/gm,
+    (_m, ns: string, _q: string, spec: string) => {
+      specs.push(spec);
+      return `module.exports.${ns} = require(${JSON.stringify(spec)});`;
+    },
+  );
+
+  // export * from "./mod.js";  (everything but default, per ESM)
+  out = out.replace(
+    /^[ \t]*export\s*\*\s*from\s*(['"])([^'"]+)\1[ \t]*;?/gm,
+    (_m, _q: string, spec: string) => {
+      specs.push(spec);
+      const tmp = `__imp${imp++}`;
+      return (
+        `const ${tmp} = require(${JSON.stringify(spec)}); ` +
+        `for (const __k of Object.keys(${tmp})) if (__k !== "default") module.exports[__k] = ${tmp}[__k];`
+      );
+    },
+  );
+
+  // export { a, b as c } from "./mod.js";  (re-export)
+  out = out.replace(
+    /^[ \t]*export\s*\{([^}]*)\}[ \t]*from\s*(['"])([^'"]+)\2[ \t]*;?/gm,
+    (_m, body: string, _q: string, spec: string) => {
+      specs.push(spec);
+      const tmp = `__imp${imp++}`;
+      const assigns = reexportItems(body).map(
+        (m) => `module.exports.${m[2] ?? m[1]} = ${tmp}.${m[1]};`,
+      );
+      return `const ${tmp} = require(${JSON.stringify(spec)}); ${assigns.join(" ")}`;
+    },
+  );
+
+  // export { a, b as c };  (local names)
   out = out.replace(/^[ \t]*export\s*\{([^}]*)\}[ \t]*;?/gm, (_m, body: string) => {
-    const assigns: string[] = [];
-    for (const item of body.split(",").map((s) => s.trim()).filter(Boolean)) {
-      const m = item.match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
-      if (m) assigns.push(`module.exports.${m[2] ?? m[1]} = ${m[1]};`);
-    }
-    return assigns.join(" ");
+    return reexportItems(body)
+      .map((m) => `module.exports.${m[2] ?? m[1]} = ${m[1]};`)
+      .join(" ");
   });
 
   if (named.length) {

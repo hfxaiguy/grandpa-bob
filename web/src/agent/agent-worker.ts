@@ -11,6 +11,7 @@ import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { createDesktopPlatform } from "../platform/desktop";
 import type { Platform } from "../../../src/platform/types";
 import { browserTools, STUB_TOOL_NAMES } from "./browser-tools";
+import { createAppStore } from "../../../src/app-store";
 import { setActiveFs, setFsIndex } from "../shims/node-fs-promises";
 import { listAppTrees } from "../../../src/tree-sources";
 import { resolveTreeEntry } from "../../../src/tree-versions";
@@ -283,11 +284,68 @@ async function buildAppTreeTools(
   return { tools, guides };
 }
 
+/**
+ * App-level plain tools (`app/<name>/tools.mjs`). Node loads these with a real
+ * import; the browser evaluates the same modules through the module loader and
+ * hosts their DB access on `globalThis.__BOB_STORE__`. A broken app is skipped,
+ * exactly like the Node loader.
+ */
+async function buildAppTools(
+  platform: Platform,
+): Promise<{ tools: Record<string, unknown>; guides: Map<string, string> }> {
+  const apps = await listAppTrees(platform.workspaceRoot).catch(() => []);
+  const tools: Record<string, unknown> = {};
+  const guides = new Map<string, string>();
+  const loader = createModuleLoader(platform);
+
+  for (const app of apps) {
+    const candidates = ["tools.mjs", "tools.js"].map((name) =>
+      platform.path.join("app", app.name, name),
+    );
+    let file: string | null = null;
+    for (const candidate of candidates) {
+      const stat = await platform.fs
+        .stat(platform.path.join(platform.workspaceRoot, candidate))
+        .catch(() => null);
+      if (stat?.isFile()) {
+        file = candidate;
+        break;
+      }
+    }
+    if (!file) continue;
+
+    try {
+      const mod = (await loader.load(file)) as {
+        tools?: unknown;
+        guide?: unknown;
+      };
+      if (!Array.isArray(mod.tools)) continue;
+      if (typeof mod.guide === "string" && mod.guide.trim()) {
+        guides.set(app.name, mod.guide.trim());
+      }
+      for (const value of mod.tools) {
+        const tool = value as { name?: unknown; execute?: unknown; description?: unknown; parameters?: unknown };
+        if (!tool || typeof tool !== "object") continue;
+        if (typeof tool.name !== "string" || !tool.name) continue;
+        if (typeof tool.execute !== "function") continue;
+        if (tools[tool.name]) continue; // never shadow a host or earlier app tool
+        tools[tool.name] = tool;
+      }
+    } catch (err) {
+      console.warn(
+        `[app-tools] skipped ${app.name}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  return { tools, guides };
+}
+
 async function handleRun(opts: RunOptions): Promise<void> {
   const task = opts.task ?? "";
   const storage = opts.storage ?? "browser";
   const server = opts.server ?? "";
   const platform = await getPlatform(storage, server);
+  globalThis.__BOB_STORE__ = createAppStore(platform);
   await ready;
 
   // The tree catalog (resolveTreeEntry) reads through the node:fs shim, so the
@@ -340,6 +398,8 @@ async function handleRun(opts: RunOptions): Promise<void> {
   const toolsMap: Record<string, unknown> = {
     ...browserTools(platform, { remote: opts.remote ?? "", flushLog: () => session.logger.flush() }),
   };
+  const appTools = await buildAppTools(platform);
+  Object.assign(toolsMap, appTools.tools);
   const tools = withStubs(toolsMap);
   const appTree = await buildAppTreeTools(platform);
   Object.assign(toolsMap, appTree.tools);
@@ -347,9 +407,10 @@ async function handleRun(opts: RunOptions): Promise<void> {
   // Host + app guidance comes from the shared module, so the browser and Node
   // targets teach the model the same tool etiquette. Stubs are excluded so a
   // guide never points at a tool this target only stands in for.
+  const appGuides = new Map([...appTools.guides, ...appTree.guides]);
   const guide = assembleGuides({
     hostGuides: HOST_GUIDES,
-    appGuides: appTree.guides,
+    appGuides,
     inScope: Object.keys(toolsMap).filter((name) => !STUB_TOOL_NAMES.includes(name)),
   });
 

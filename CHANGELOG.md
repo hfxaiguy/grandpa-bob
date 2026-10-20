@@ -2,6 +2,32 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-20 — browser app trees: host-owned stores and app tools
+
+`enrich-profile` could not load in browser mode. Two layers were missing: the
+module loader did not handle ESM re-exports (`app/contacts/src/index.js`), and
+the app opened its own `node:sqlite` connection at module load — impossible in
+the browser, where OPFS SQLite is asynchronous and lives behind the platform.
+
+- The browser module loader now handles named, aliased, default, star and
+  namespace re-exports, plus `export async function`.
+- `src/app-store.ts` is the host-owned app database seam: apps ask it for a DB
+  by workspace name, it uses `Platform.sqlite` (Node or sqlite-wasm), caches
+  writable handles and marks writes dirty for the existing dump/sync path.
+  The Node entry point and the browser agent worker install it as
+  `globalThis.__BOB_STORE__`.
+- The browser agent worker also loads each `app/*/tools.mjs` through the module
+  loader. App tools such as `upsert_contact`, `get_contact`,
+  `company_context` and `log_message` are now available to app trees alongside
+  the host tools (stubs still cover target-only tools).
+- The workspace's contacts app is async and store-backed; its schema and
+  queries are unchanged. Its Node tests and the caller-list/enrich-profile
+  fixtures were updated for the async API.
+- `npm run test:module-loader` covers the loader cases.
+
+Other apps that still import `node:sqlite` directly remain Node-only in the
+browser; they are skipped by the app-tool loader until they adopt the store.
+
 ## 2026-10-19 — browser refs are on-disk addresses again
 
 The in-tab logger numbered events with its own per-session counter starting at

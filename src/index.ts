@@ -12,6 +12,7 @@ import { checkStt } from "./stt.js";
 import { telegramHtml, telegramRichHtml } from "./util/telegram-text.js";
 import { startAdmin, getSelectedPattern, getSelectedRef, telegramFollowKey, telegramChatKey, newTelegramSession, remoteTurnStart, remoteTurnEvent, remoteTurnEnd, isAdminBusy } from "./admin.js";
 import { createNodePlatform } from "./platform/node.js";
+import { createAppStore } from "./app-store.js";
 import { createAutoSync, DEFAULT_INTERVAL_MS, MIN_INTERVAL_MS } from "./auto-sync.js";
 import type { Bot } from "grammy";
 import { loadAppTools } from "./app-tools.js";
@@ -35,6 +36,9 @@ async function main(): Promise<void> {
   ]);
 
   const secrets = new SecretsStore(config.secretsDb);
+  // App code asks the host for its database; it must be in place before the
+  // app tool modules are imported (their DB handles are lazy).
+  globalThis.__BOB_STORE__ = createAppStore(createNodePlatform(config.workspaceDir));
   const appTools = [
     ...(await loadAppTools(config.workspaceDir, secrets)),
     // KAT's own run-log reader, so a tree can recall what happened in past
