@@ -11,6 +11,7 @@
     "build:ui": "node scripts/build-ui.mjs",
     "predev": "npm run build:web",
     "start": "node dist/index.js",
+    "storage-server": "WORKSPACE_DIR=\"${WORKSPACE_DIR:-$HOME/grandma-workspace}\" node web/scripts/storage-server.mjs",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.ts",
     "test:model-switch": "tsx scripts/model-switch-test.ts",
