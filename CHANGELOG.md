@@ -2,6 +2,14 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-20 — Telegram command sync retries; IPv4-first startup
+
+`setMyCommands` at startup could hit a transient `ETIMEDOUT` (IPv6 to
+`api.telegram.org` has no route on this machine). The command sync now retries
+each scope with backoff, and `npm run dev` / `npm start` pin Node to
+IPv4-first DNS. The failure was already non-fatal — the bot kept running — but
+the slash-command menu could be left stale.
+
 ## 2026-10-20 — browser seed is code-only (1.9 MB)
 
 `make-seed` now packs only the three trees the browser runs — `app/`,

@@ -110,6 +110,21 @@ function chunk(text: string, size = MAX_TG_MESSAGE): string[] {
 export function createBot(deps: BotDeps): Bot {
   const bot = new Bot(deps.token);
   const platform = createNodePlatform(deps.workspace);
+
+  /** Telegram startup calls can hit a transient ETIMEDOUT; retry briefly. */
+  async function retrying<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+    let last: unknown;
+    for (let i = 0; i < attempts; i += 1) {
+      try {
+        return await fn();
+      } catch (err) {
+        last = err;
+        if (i < attempts - 1) await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+      }
+    }
+    throw last;
+  }
+
   // Keep the Telegram command menu in sync with the handlers below.
   // setMyCommands without a scope only touches the default scope, so stale
   // commands set earlier (BotFather, old versions) survive in the other
@@ -123,10 +138,12 @@ export function createBot(deps: BotDeps): Bot {
       { type: "all_chat_administrators" },
     ];
     for (const scope of scopes) {
-      await bot.api.setMyCommands([], { scope }).catch((err) => console.error("[commands]", err));
+      await retrying(() => bot.api.setMyCommands([], { scope })).catch((err) =>
+        console.error("[commands]", err),
+      );
     }
-    await bot.api
-      .setMyCommands(
+    await retrying(() =>
+      bot.api.setMyCommands(
         [
           { command: "tree", description: "Switch the active tree" },
           { command: "model", description: "Show or switch the model for this topic" },
@@ -135,8 +152,8 @@ export function createBot(deps: BotDeps): Bot {
           { command: "status", description: "Show workspace, git, model and STT status" },
         ],
         { scope: { type: "default" } },
-      )
-      .catch((err) => console.error("[commands]", err));
+      ),
+    ).catch((err) => console.error("[commands]", err));
   })();
   // Serialize work per conversation so parallel voice notes don't interleave agent runs.
   const queues = new Map<string, Promise<void>>();
