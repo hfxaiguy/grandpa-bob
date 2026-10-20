@@ -16,6 +16,8 @@ Database dumps, `knowledge/`, scraped pages, assets, root notes and
   its tools.
 - Browser saves still create `db/*.sql` dumps when a database changes; the
   desktop's existing data is simply not preloaded.
+- `npm run make-seed` at the repo root regenerates the seed (defaults to
+  `$HOME/grandma-workspace`; override with `WORKSPACE_DIR=…`).
 
 ## 2026-10-20 — one dev server: Vite HMR on :8080
 
