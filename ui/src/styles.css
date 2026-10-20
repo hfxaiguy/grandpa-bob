@@ -189,7 +189,10 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
   min-height: 0;
 }
 .stream.collapsed { width: auto; }
-.stream-head { padding: 10px; }
+.stream-head { display: flex; align-items: center; gap: 6px; padding: 6px 8px 3px; }
+.stream-head .stream-toggle { flex: 1; width: auto; padding: 4px 2px; }
+.stream-tools { display: flex; gap: 4px; flex: none; }
+.stream-tools button { padding: 2px 8px; font-size: 11px; line-height: 1.4; }
 .stream-body { flex: 1; overflow: auto; padding: 6px 10px 10px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .stream-app { color: var(--pink); min-width: 66px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

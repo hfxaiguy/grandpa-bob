@@ -2,6 +2,14 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-20 — copy/download the full event stream
+
+The stream panel only keeps a tail in memory. Its header now has **copy** and
+**↓** actions: both refetch `/api/turns` and dump the full raw turn/event JSON
+for the active session, ready to paste into an agent/debug chat. Copy falls
+back to a JSON download when the clipboard is unavailable (insecure origin or
+headless browser).
+
 ## 2026-10-20 — Telegram command sync retries; IPv4-first startup
 
 `setMyCommands` at startup could hit a transient `ETIMEDOUT` (IPv6 to

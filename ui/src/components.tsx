@@ -1,6 +1,7 @@
 /** Tile, memory, per-tile event log, global stream, session panel. */
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { describeEvent, streamLines, type EventLine } from "./describe";
+import { copyEventStream, downloadEventStream } from "./event-dump";
 import {
   state,
   send,
@@ -920,11 +921,35 @@ export function GlobalStream() {
   });
   return (
     <aside class="stream" classList={{ collapsed: !open() }}>
-      <button class="panel-title as-button stream-head" onClick={() => setOpen(!open())}>
-        event stream <span class="count">{lines().length}</span>
-        {" · "}prompts <span class="count prompt">{prompts()}</span>
-        {" · "}tool calls <span class="count tool">{tools()}</span> {open() ? "▸" : "◂"}
-      </button>
+      <div class="stream-head">
+        <button class="panel-title as-button stream-toggle" onClick={() => setOpen(!open())}>
+          event stream <span class="count">{lines().length}</span>
+          {" · "}prompts <span class="count prompt">{prompts()}</span>
+          {" · "}tool calls <span class="count tool">{tools()}</span> {open() ? "▸" : "◂"}
+        </button>
+        <span class="stream-tools">
+          <button
+            type="button"
+            title="Copy the full event stream (all events in the turn log) as JSON"
+            onClick={(event) => {
+              event.stopPropagation();
+              void copyEventStream();
+            }}
+          >
+            copy
+          </button>
+          <button
+            type="button"
+            title="Download the full event stream as JSON"
+            onClick={(event) => {
+              event.stopPropagation();
+              void downloadEventStream();
+            }}
+          >
+            ↓
+          </button>
+        </span>
+      </div>
       <Show when={open()}>
         <div class="stream-body" ref={ref}>
           <For each={lines().slice(-400)}>{(l) => <LogRow line={l} showApp />}</For>
