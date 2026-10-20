@@ -1315,7 +1315,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
     }
   };
   const appIndexHtml = readAppIndexHtml();
-  if (!appIndexHtml) {
+  if (!appIndexHtml && process.env.BOB_DEV !== "1") {
     console.log("[admin] web UI not built — run `npm --prefix web run build` (or `npm run build`)");
   }
   const NOT_BUILT_HTML =
@@ -1406,9 +1406,31 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
   }, 1000);
   treePoll.unref();
 
+  // Dev mode: Vite serves the web app (source + HMR) through this same HTTP
+  // server. Production (`npm start`) serves the built web/dist instead.
+  const DEV = process.env.BOB_DEV === "1";
+  let viteDev: { middlewares: (req: http.IncomingMessage, res: http.ServerResponse, next: () => void) => void } | null = null;
+
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url!, `http://localhost:${config.port}`);
+
+      // Vite owns the frontend in dev, except the admin API and the
+      // server-rendered settings page. One port, one process, real HMR.
+      if (
+        viteDev &&
+        (req.method === "GET" || req.method === "HEAD") &&
+        !url.pathname.startsWith("/api/") &&
+        url.pathname !== "/settings"
+      ) {
+        viteDev.middlewares(req, res, () => {
+          if (!res.headersSent) {
+            res.writeHead(404);
+            res.end("not found");
+          }
+        });
+        return;
+      }
 
       if (req.method === "GET" && url.pathname === "/") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
@@ -2816,6 +2838,35 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       res.end("error: " + e.message);
     }
   });
+
+  if (DEV) {
+    // Resolve Vite from web/ (its dependency home), not the repo root.
+    void (async () => {
+      try {
+        const { createRequire } = await import("node:module");
+        const { pathToFileURL } = await import("node:url");
+        const requireFromWeb = createRequire(path.join(config.projectDir, "web", "package.json"));
+        const viteEntry = requireFromWeb.resolve("vite");
+        const { createServer } = (await import(pathToFileURL(viteEntry).href)) as {
+          createServer: (opts: unknown) => Promise<typeof viteDev>;
+        };
+        viteDev = await createServer({
+          root: path.resolve(config.projectDir, "web"),
+          appType: "spa",
+          server: {
+            middlewareMode: true,
+            hmr: { server },
+          },
+        });
+        console.log(`[admin] Vite dev middleware on :${config.port} (HMR enabled)`);
+      } catch (err) {
+        console.error(
+          "[admin] Vite dev middleware failed:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    })();
+  }
 
   server.listen(config.port, "0.0.0.0", () => {
     console.log(`admin UI : http://0.0.0.0:${config.port} (bound on all interfaces)`);

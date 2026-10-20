@@ -2,6 +2,15 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-20 — one dev server: Vite HMR on :8080
+
+`npm run dev` now starts the admin server with Vite in middleware mode on the
+same port. The web app is served from source with real HMR; `/api/*`,
+`/settings` and Telegram stay in the same process. Production `npm start`
+still serves the built `web/dist`, and `npm run build` remains the only step
+needed before it. The separate `:5173` Vite server is no longer part of the
+normal workflow.
+
 ## 2026-10-20 — browser app trees: host-owned stores and app tools
 
 `enrich-profile` could not load in browser mode. Two layers were missing: the
