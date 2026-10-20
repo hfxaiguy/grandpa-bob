@@ -18,7 +18,7 @@
  * rows.
  */
 import type { Platform } from "../../../src/platform/types";
-import type { DerivedTurn, StoredSession, TurnMarker } from "../../../src/web-log";
+import type { DerivedTurn, StoredSession, TurnMarker } from "../../../src/web-log-types";
 import { sanitizeEvent, type SanitizedEvent } from "../../../src/sanitize";
 import { newTurnApps, tagEventApp } from "../../../src/app-attribution";
 import type { KatEvent } from "./logger";
@@ -107,6 +107,48 @@ export async function withLogDb<T>(
   return enqueue(logDbPath(platform), async () => task(await dbFor(platform)));
 }
 
+// ── seq allocation ───────────────────────────────────────────────────────
+// Refs are `ref://<label>.<seq>` addresses into THIS table, so the seq the
+// engine logs must be the row's seq on disk — not a per-session counter. One
+// cursor per log DB is shared by every logger in this worker; it is seeded from
+// MAX(seq) once and then handed out synchronously (knit's logger contract is
+// synchronous). Turn markers allocate from it too, so a marker never steals
+// the next engine seq.
+
+const cursors = new Map<string, number>();
+
+async function seedCursor(platform: Platform): Promise<number> {
+  const key = logDbPath(platform);
+  const row = (await withLogDb(platform, async (db) => {
+    return (await (await db.prepare("SELECT COALESCE(MAX(seq), 0) m FROM calls")).get()) as
+      | { m: number }
+      | undefined;
+  })) ?? { m: 0 };
+  const max = Number(row.m ?? 0);
+  const current = cursors.get(key) ?? 0;
+  if (current < max) cursors.set(key, max);
+  return cursors.get(key) ?? 0;
+}
+
+/** Seed the seq cursor from the log DB (idempotent, safe to await repeatedly). */
+export async function ensureLogCursor(platform: Platform): Promise<void> {
+  if (cursors.has(logDbPath(platform))) return;
+  await seedCursor(platform);
+}
+
+/** The next row seq. Requires ensureLogCursor() to have completed. */
+export function nextLogSeq(platform: Platform): number {
+  const key = logDbPath(platform);
+  const seq = (cursors.get(key) ?? 0) + 1;
+  cursors.set(key, seq);
+  return seq;
+}
+
+function adoptLogSeq(platform: Platform, seq: number): void {
+  const key = logDbPath(platform);
+  if ((cursors.get(key) ?? 0) < seq) cursors.set(key, seq);
+}
+
 // ── writes ───────────────────────────────────────────────────────────────
 
 function sqlLiteral(value: unknown): string {
@@ -119,6 +161,7 @@ function insertCalls(events: KatEvent[]): string {
   const values = events.map(
     (e) =>
       `(${[
+        sqlLiteral(e.seq),
         sqlLiteral(e.run_id),
         sqlLiteral(e.definition_id),
         sqlLiteral(e.branch_path ?? null),
@@ -128,32 +171,50 @@ function insertCalls(events: KatEvent[]): string {
         sqlLiteral(JSON.stringify(e.content ?? null)),
       ].join(",")})`,
   );
-  return `INSERT INTO calls (run_id, definition_id, branch_path, iteration, scope_id, kind, content) VALUES ${values.join(",")}`;
+  return `INSERT INTO calls (seq, run_id, definition_id, branch_path, iteration, scope_id, kind, content) VALUES ${values.join(",")}`;
 }
 
 /** Persist one batch of engine events (the logger's flush). */
 export async function appendEvents(platform: Platform, events: KatEvent[]): Promise<void> {
   if (!events.length) return;
-  const sql = insertCalls(events);
+  await ensureLogCursor(platform);
   await withLogDb(platform, async (db) => {
-    await db.exec(sql);
+    // The DB may have rows we did not write (a Telegram turn through the
+    // desktop bridge). Re-key the batch to start after its max seq so an
+    // explicit-seq insert cannot collide. Refs cite rows flushed in earlier
+    // batches, so the pending batch is safe to move.
+    const row = (await (
+      await db.prepare("SELECT COALESCE(MAX(seq), 0) m FROM calls")
+    ).get()) as { m: number } | undefined;
+    const max = Number(row?.m ?? 0);
+    const first = events[0].seq;
+    if (typeof first === "number" && max >= first) {
+      const shift = max + 1 - first;
+      for (const e of events) if (typeof e.seq === "number") e.seq += shift;
+    }
+    await db.exec(insertCalls(events));
+    const last = events[events.length - 1].seq;
+    if (typeof last === "number") adoptLogSeq(platform, last);
   });
 }
 
 async function insertMarker(
   db: Db,
+  platform: Platform,
   runId: string,
   kind: string,
   content: unknown,
 ): Promise<void> {
+  const seq = nextLogSeq(platform);
   const stmt = await db.prepare(
-    "INSERT INTO calls (run_id, definition_id, branch_path, iteration, scope_id, kind, content) VALUES (?, 'web', NULL, 0, NULL, ?, ?)",
+    "INSERT INTO calls (seq, run_id, definition_id, branch_path, iteration, scope_id, kind, content) VALUES (?, ?, 'web', NULL, 0, NULL, ?, ?)",
   );
-  await stmt.run(runId, kind, JSON.stringify(content));
+  await stmt.run(seq, runId, kind, JSON.stringify(content));
 }
 
 /** Persist a finished turn; computes the event-seq bounds from the run id. */
 export async function writeTurnEnd(platform: Platform, m: TurnMarker): Promise<void> {
+  await ensureLogCursor(platform);
   await withLogDb(platform, async (db) => {
     let fromSeq: number | null = null;
     let toSeq: number | null = null;
@@ -177,7 +238,7 @@ export async function writeTurnEnd(platform: Platform, m: TurnMarker): Promise<v
       }
       fromSeq = prevMarker && prevMarker.runId === m.runId ? (prevMarker.toSeq ?? 0) : 0;
     }
-    await insertMarker(db, m.key, MARKER_TURN, {
+    await insertMarker(db, platform, m.key, MARKER_TURN, {
       ...m,
       fromSeq,
       toSeq,
@@ -187,21 +248,26 @@ export async function writeTurnEnd(platform: Platform, m: TurnMarker): Promise<v
 }
 
 export async function writeLabel(platform: Platform, key: string, label: string): Promise<void> {
+  await ensureLogCursor(platform);
   await withLogDb(platform, (db) =>
-    insertMarker(db, key, MARKER_LABEL, { key, label, ts: Date.now() }),
+    insertMarker(db, platform, key, MARKER_LABEL, { key, label, ts: Date.now() }),
   );
 }
 
 export async function writeDelete(platform: Platform, key: string): Promise<void> {
-  await withLogDb(platform, (db) => insertMarker(db, key, MARKER_DELETE, { key, ts: Date.now() }));
+  await ensureLogCursor(platform);
+  await withLogDb(platform, (db) =>
+    insertMarker(db, platform, key, MARKER_DELETE, { key, ts: Date.now() }),
+  );
 }
 
 export async function ensureOpen(platform: Platform, key: string, label = ""): Promise<void> {
+  await ensureLogCursor(platform);
   await withLogDb(platform, async (db) => {
     const row = await (
       await db.prepare("SELECT 1 x FROM calls WHERE run_id = ? AND kind = ? LIMIT 1")
     ).get(key, MARKER_OPEN);
-    if (!row) await insertMarker(db, key, MARKER_OPEN, { key, label, ts: Date.now() });
+    if (!row) await insertMarker(db, platform, key, MARKER_OPEN, { key, label, ts: Date.now() });
   });
 }
 
@@ -219,6 +285,31 @@ function parseJson(raw: unknown): unknown {
 function rowContent(row: { content: string } | undefined): Record<string, unknown> | null {
   const parsed = parseJson(row?.content);
   return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+}
+
+export interface LogRow {
+  seq: number;
+  run_id: string;
+  definition_id?: string;
+  branch_path: string | null;
+  iteration?: number | null;
+  scope_id?: number | null;
+  kind: string;
+  content: unknown;
+}
+
+/** One run-log row by seq, content parsed — the store behind `ref://` handles. */
+export async function readRow(platform: Platform, seq: number): Promise<LogRow | null> {
+  return withLogDb(platform, async (db) => {
+    const row = (await (
+      await db.prepare("SELECT * FROM calls WHERE seq = ?")
+    ).get(seq)) as { content: string | null } | undefined;
+    if (!row) return null;
+    return {
+      ...(row as unknown as Omit<LogRow, "content">),
+      content: parseJson(row.content),
+    } as LogRow;
+  });
 }
 
 /** The picker: every session key in the log, minus deletions. */
@@ -375,6 +466,7 @@ async function turnEvents(
         branch_path: r.branch_path ?? "",
         iteration: r.iteration ?? 0,
         scope_id: r.scope_id,
+        seq: r.seq,
         content: (parseJson(r.content) as Record<string, unknown> | null) ?? {},
       },
       app(r.seq),

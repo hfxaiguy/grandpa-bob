@@ -179,8 +179,14 @@ const chat = await evaluate(`(async () => {
   for (let i = 0; i < 120; i++) {
     const r = await backend.request("GET", "/api/turns", new URLSearchParams(), null);
     const turns = r.body?.turns || [];
-    if (turns.some((t) => t.status === "done" || t.status === "error")) {
-      return JSON.stringify({ ok: true, turns: turns.length, status: turns[turns.length - 1].status });
+    const last = turns[turns.length - 1];
+    if (last && (last.status === "done" || last.status === "error")) {
+      // A logged row's seq is the ref address; keep one for the reload check.
+      const row = (last.events || []).filter((e) => Number.isInteger(e.seq)).pop();
+      return JSON.stringify({
+        ok: true, turns: turns.length, status: last.status,
+        seq: row?.seq ?? null, kind: row?.kind ?? null,
+      });
     }
     await new Promise((res) => setTimeout(res, 250));
   }
@@ -215,6 +221,27 @@ if (!String(restored).startsWith("restored:")) {
   cleanup(5);
 }
 console.log("✓ sessions survive a reload (workspace KAT log)");
+
+// The reloaded page has no streamed events in memory: /api/ref must read the
+// row from the workspace log DB, at the same seq the engine logged.
+const logged = JSON.parse(String(chat));
+if (Number.isInteger(logged.seq)) {
+  const ref = await evaluate(`(async () => {
+    const backend = window.__bobBackend;
+    await backend.ready;
+    const r = await backend.request("GET", "/api/ref",
+      new URLSearchParams({ seq: "${logged.seq}" }), null);
+    return JSON.stringify({ status: r.status, seq: r.body?.seq, kind: r.body?.kind,
+      chars: r.body?.chars, error: r.body?.error });
+  })()`);
+  const got = JSON.parse(ref);
+  if (got.status !== 200 || got.seq !== logged.seq || got.kind !== logged.kind) {
+    console.error("ref did not resolve against the workspace log:", { logged, got });
+    console.log(exceptions.join("\n"));
+    cleanup(5);
+  }
+  console.log("✓ ref:// resolves against the workspace log after reload");
+}
 
 if (exceptions.length) { console.log(exceptions.join("\n")); cleanup(5); }
 console.log("browser smoke: all assertions passed");

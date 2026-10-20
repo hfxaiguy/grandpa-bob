@@ -23,12 +23,13 @@ import {
   labelOf,
   lastAwaiting,
   listSessions,
+  readRow,
   turnCount,
   writeDelete,
   writeLabel,
   writeTurnEnd,
 } from "./log-store";
-import type { TurnMarker } from "../../../src/web-log";
+import type { TurnMarker } from "../../../src/web-log-types";
 import { createModuleLoader } from "./module-loader";
 import { resolvePatternPath } from "./pattern-path";
 import { loadBrowserModels } from "./models";
@@ -309,6 +310,9 @@ async function handleRun(opts: RunOptions): Promise<void> {
   runs.set(opts.id, session);
 
   await ensureIndex(platform, sessionKey);
+  // The logger allocates on-disk seqs synchronously (refs are addresses), so
+  // its cursor must be seeded from the log DB before the first event.
+  await session.logger.ready;
 
   const registry = await (async (): Promise<ModelRegistry> => {
     // Served by the admin: its models.json is the single source (and the
@@ -487,6 +491,9 @@ async function handleLog(msg: LogMessage): Promise<void> {
         break;
       case "lastAwaiting":
         result = await lastAwaiting(platform, String(p.key ?? ""));
+        break;
+      case "readRow":
+        result = await readRow(platform, Number(p.seq));
         break;
       default:
         throw new Error(`unknown log op: ${msg.op}`);

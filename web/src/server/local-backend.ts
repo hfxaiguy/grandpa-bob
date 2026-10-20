@@ -685,15 +685,22 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       return { status: 200, body: { turns: await turnsFor(key), session: key, awaiting: await awaitingFor(key) } };
     }
     if (pathname === "/api/ref" && method === "GET") {
-      // Refs are `ref://<seq>` handles into THIS page's run log. The engine's
-      // logger assigns the seqs it streams here, and they do not match the
-      // rows a workspace DB gets on disk (AUTOINCREMENT across sessions), so
-      // the browser must resolve them from the events it received — falling
-      // through to the admin would read a different row (or none).
+      // Refs are `ref://<seq>` addresses into the run log of the SELECTED
+      // storage (OPFS, or the real workspace through the bridge). Ask the
+      // worker — it owns that log and its serialized connection — so the row
+      // inspected is the one on disk. Only a row logged inside the last flush
+      // window is still memory-only; fall back to the streamed event for that.
       const seq = Number(search.get("seq"));
       if (!Number.isInteger(seq)) return { status: 400, body: { error: "seq is required" } };
-      const row = findLoggedRow(seq);
-      if (!row) return { status: 404, body: { error: `no run-log row ${seq} in this browser session` } };
+      const stored = await agent
+        .log<{ seq: number; run_id: string; kind: string; branch_path: string | null; content: unknown } | null>(
+          "readRow",
+          { seq },
+          logCtx(),
+        )
+        .catch(() => null);
+      const row = stored ?? findLoggedRow(seq);
+      if (!row) return { status: 404, body: { error: `no run-log row ${seq} in this workspace log` } };
       return { status: 200, body: refTargetFromRow(row, search.get("path")) };
     }
     if (pathname === "/api/apps" && method === "GET") {

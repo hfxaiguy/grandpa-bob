@@ -2,6 +2,36 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — browser refs are on-disk addresses again
+
+The in-tab logger numbered events with its own per-session counter starting at
+1, while the log DB assigned AUTOINCREMENT rowids. Every `ref://<label>.<seq>`
+minted by a tree (and by the engine's own truncation shaper) therefore pointed
+at a row that did not exist — or at an unrelated one. The logger also had no
+`readRow`, so knit's `refsResolvable()` was false and the engine neither minted
+nor resolved refs in the browser.
+
+The logger now allocates the seq the log DB will use: one cursor per log file,
+seeded from `MAX(seq)` before the first event and shared by every session
+logger and turn marker in the worker. Flushes insert explicit seqs (so memory
+and disk agree), and a flush that sees foreign rows — a Telegram turn through
+the desktop bridge — re-keys its pending batch from the DB's new max. A
+`readRow(seq)` method turns `refsResolvable()` on, so the engine mints and
+resolves handles exactly as it does on the Node target.
+
+`/api/ref` now asks the worker (`readRow`, through the same serialized
+connection as the log writes) so it reads the log DB of the **selected
+storage** — OPFS or the real workspace through the bridge. The streamed events
+remain only as the fallback for a row that has not flushed yet. Replayed turn
+events also keep their `seq`, so a reloaded chat can still navigate refs.
+
+Types for the session log moved to `src/web-log-types.ts`, so the web tsconfig
+no longer type-checks the Node `web-log.ts` against the browser's `node:sqlite`
+stub (a pre-existing web typecheck failure).
+
+The browser smoke now reloads, then resolves a logged seq through `/api/ref`
+and checks the row kind, proving the address survived the in-memory session.
+
 ## 2026-10-19 — drop the File System Access ("direct folder") storage mode
 
 The browser header offered three storage backends; the third read a real

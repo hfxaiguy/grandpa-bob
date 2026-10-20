@@ -42,58 +42,9 @@ export const MAX_TURN_EVENTS = 500;
 /** Turns kept per session in a response (matches MAX_TURNS_KEPT). */
 export const MAX_TURNS = 20;
 
-export interface TurnMarker {
-  key: string;
-  turnId: string;
-  /** The engine run this turn belongs to; null when the engine never ran. */
-  runId: string | null;
-  /** Event seq bounds: the turn's events are (fromSeq, toSeq]. */
-  fromSeq: number | null;
-  toSeq: number | null;
-  input: string;
-  inputApp?: string | null;
-  status: "done" | "error";
-  error?: string | null;
-  output?: string | null;
-  emits?: string[] | null;
-  levels?: (string | null)[] | null;
-  emitApps?: (string | null)[] | null;
-  buttons?: EmitButton[] | null;
-  fallback?: EmitButton[] | null;
-  awaiting?: string | null;
-  startedAt: number;
-  endedAt: number | null;
-  ts: number;
-}
+import type { DerivedTurn, StoredSession, TurnMarker } from "./web-log-types.js";
 
-export interface DerivedTurn {
-  turnId: string;
-  runId: string | null;
-  input: string;
-  inputApp?: string | null;
-  startedAt: number;
-  endedAt: number | null;
-  status: "done" | "error";
-  error: string | null;
-  output: string | null;
-  emits?: string[] | null;
-  levels?: (string | null)[] | null;
-  emitApps?: (string | null)[] | null;
-  buttons?: EmitButton[] | null;
-  fallback?: EmitButton[] | null;
-  awaiting?: string | null;
-  events: SanitizedEvent[];
-}
-
-export interface StoredSession {
-  key: string;
-  label: string;
-  pattern: string;
-  updatedAt: number;
-  turns: number;
-  remote: false;
-  awaiting?: string | null;
-}
+export type { DerivedTurn, StoredSession, TurnMarker } from "./web-log-types.js";
 
 /**
  * Resolve the app each event belongs to when the run's stream is replayed.
@@ -395,6 +346,7 @@ export class WebLog {
       branch_path: r.branch_path ?? "",
       iteration: r.iteration ?? 0,
       scope_id: r.scope_id,
+      seq: r.seq,
       content: parseJson(r.content) as Record<string, unknown> | null ?? {},
     }, app(r.seq)));
   }

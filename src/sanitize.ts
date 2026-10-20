@@ -15,6 +15,8 @@ export interface SanitizedEvent {
   scope_id: number | null;
   content: Record<string, unknown> | null;
   ts: number;
+  /** The run-log row this event was (kept for replay/ref navigation). */
+  seq?: number;
   /** The app (outermost tree tool) this event belongs to; "trunk" at top level. */
   app?: string;
 }
@@ -42,7 +44,7 @@ export function sanitizeValue(v: unknown, depth = 0): unknown {
 }
 
 export function sanitizeEvent(
-  e: { kind?: string; branch_path?: string; iteration?: number; scope_id?: number | null; content?: Record<string, unknown> | null },
+  e: { kind?: string; branch_path?: string; iteration?: number; scope_id?: number | null; seq?: number; content?: Record<string, unknown> | null },
   app = "trunk",
 ): SanitizedEvent {
   const content: Record<string, unknown> = { ...(e.content ?? {}) };
@@ -71,6 +73,7 @@ export function sanitizeEvent(
     scope_id: e.scope_id ?? null,
     content: clean,
     ts: Date.now(),
+    ...(Number.isInteger(e.seq) ? { seq: e.seq } : {}),
     app,
   };
 }
