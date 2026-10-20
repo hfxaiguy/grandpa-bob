@@ -70,6 +70,26 @@ const setStatus = (text: string): void => {
 /** Storage-specific half of the status line (set once the backend is ready). */
 let statusBase: string = storageMode;
 
+/** Days after which the shipped OPFS snapshot is old enough to call out. */
+const STALE_SEED_DAYS = 14;
+
+/** `browser · snapshot Oct 3` (+ a hint when the seed has gone stale). */
+function seedStatus(): string {
+  if (!seedStamp) return "browser";
+  const when = new Date(seedStamp);
+  if (Number.isNaN(when.getTime())) return "browser";
+  const sameYear = when.getFullYear() === new Date().getFullYear();
+  const date = when.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" as const }),
+  });
+  const days = Math.floor((Date.now() - when.getTime()) / 86_400_000);
+  return days > STALE_SEED_DAYS
+    ? `browser · snapshot ${date} · seed stale — regenerate with make-seed`
+    : `browser · snapshot ${date}`;
+}
+
 /** `direct · grandma-workspace · trunk` — pattern switches update this live. */
 function showStatus(pattern: string): void {
   setStatus(`${statusBase} · ${patternLabel(pattern)}`);
@@ -179,18 +199,40 @@ async function isFile(p: string): Promise<boolean> {
   return platform.fs.stat(p).then(() => true).catch(() => false);
 }
 
+/** When the OPFS workspace was imported from the shipped seed (ISO), if known. */
+let seedStamp: string | null = null;
+
+async function readSeedStamp(marker: string): Promise<string | null> {
+  try {
+    const raw = (await platform.fs.readFile(marker, "utf8")).trim();
+    return raw && !Number.isNaN(Date.parse(raw)) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 async function seedWorkspace(root: string): Promise<void> {
   const marker = platform.path.join(root, ".seeded");
-  const trunk = platform.path.join(root, "patterns", "trunk.mjs");
   const force = params.has("reseed");
-  if (!force && (await isFile(marker)) && (await isFile(trunk))) return;
+  // The seed's trunk may be a prod snapshot (`trunk.prod.mjs`), not the bare
+  // `trunk.mjs` the old seeds shipped; use the version catalog, not a filename.
+  const hasTrunk = await resolveTreeEntry(platform.workspaceRoot, "trunk", null)
+    .then((entry) => !!entry)
+    .catch(() => false);
+  if (!force && (await isFile(marker)) && hasTrunk) {
+    seedStamp = await readSeedStamp(marker);
+    return;
+  }
   try {
     const res = await fetch("/seed/workspace.json");
     if (!res.ok) return;
     const archive = (await res.json()) as Parameters<typeof importWorkspace>[0];
     await importWorkspace(archive);
-    await platform.fs.writeFile(marker, new Date().toISOString());
+    const stamp = new Date().toISOString();
+    await platform.fs.writeFile(marker, stamp);
+    seedStamp = stamp;
   } catch {
+    seedStamp = await readSeedStamp(marker);
     /* seed is optional */
   }
 }
@@ -343,7 +385,7 @@ async function main(): Promise<void> {
     await prepareBrowserWorkspace();
     await buildFsIndex(platform);
     await ensureModels(platform);
-    statusBase = "browser";
+    statusBase = seedStatus();
   }
 
   // Periodic two-way git sync (pull then push) for the OPFS mirror only.

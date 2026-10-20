@@ -2,6 +2,25 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — fresh browser seed; snapshot age in the status line
+
+The OPFS sandbox was still running the Oct 3 seed. Its `patterns/trunk.mjs`
+was the old auto-tool-loop design; with a real model a trivial "remember X"
+wandered the workspace for twelve rounds and died on the tree's own
+`tool-iteration limit: stuck`. The seed has been regenerated from the live
+workspace (`make-seed`), so the browser now runs the current
+`trunk.prod.mjs` — the same turn answers in one round.
+
+Two related fixes:
+
+- `seedWorkspace` checked for the literal `patterns/trunk.mjs`. The live
+  workspace ships `trunk.prod.mjs`, so with the fresh archive that guard
+  would have re-imported the whole 27 MB seed on every boot. It now resolves
+  the trunk through the version catalog.
+- The browser status line shows the snapshot date (`browser · snapshot Oct 3`)
+  and calls the seed stale after 14 days, so an old sandbox is visible instead
+  of silently changing how the bot behaves.
+
 ## 2026-10-19 — web sessions persist in the workspace KAT log
 
 The browser's chat was a single in-memory `web:local` session: every reload
