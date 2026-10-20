@@ -1,14 +1,13 @@
 // src/admin.ts
 //
-// Web UI for grandpa-bob. Starts an HTTP server on ADMIN_PORT (default
-// 8080) with two surfaces:
+// HTTP server for grandpa-bob on ADMIN_PORT (default 8080). The web app in
+// `web/` is the only browser UI (built into `web/dist`); Telegram is the other
+// interface. Two surfaces:
 //
-//   /          — the tiled chat app (SolidJS, built from `ui/` into
-//                `ui/dist` and served from there). One tile per app; every
-//                grandma-kat tree event streams live over SSE.
-//   /settings  — admin page: .env credentials, bot/sherpa tmux status,
-//                log tails, bot restart, workspace git sync, tree
-//                patterns, workspace file browser.
+//   /          — the web app: chat, sessions, models, settings.
+//   /settings  — server-rendered settings HTML embedded by the web app:
+//                .env credentials, bot/sherpa tmux status, log tails, bot
+//                restart, workspace git sync, tree patterns, file browser.
 //
 // Access from the phone's browser:
 //   http://127.0.0.1:8080
@@ -1301,29 +1300,23 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
   const stt = cfg?.stt;
   const SETTINGS_HTML = buildSettingsHtml(config);
 
-  // The browser target (web/, SolidJS + platform adapters) is the main UI: chat,
-  // settings and every storage mode (OPFS, a directly picked folder, the
-  // storage bridge). It is served at "/" when built. A checkout without a web
-  // build falls back to the legacy tiled app in ui/dist.
+  // The web app (web/) is the only browser UI: chat, settings and every
+  // storage mode. It is served at "/" from web/dist. There is no legacy
+  // fallback — a checkout without the web build gets a build notice.
   const WEB_DIST = path.resolve(config.projectDir, "web", "dist");
-  const UI_DIST = path.resolve(config.projectDir, "ui", "dist");
-  const distForApp = (): string =>
-    fs.existsSync(path.join(WEB_DIST, "index.html")) ? WEB_DIST : UI_DIST;
   // Read the index at request time, not once at startup: a build while the
   // server runs rewrites index.html to new content hashes and deletes the old
   // assets, so a startup snapshot would reference files that no longer exist.
   const readAppIndexHtml = (): string | null => {
     try {
-      return fs.readFileSync(path.join(distForApp(), "index.html"), "utf8");
+      return fs.readFileSync(path.join(WEB_DIST, "index.html"), "utf8");
     } catch {
       return null;
     }
   };
   const appIndexHtml = readAppIndexHtml();
   if (!appIndexHtml) {
-    console.log(
-      "[admin] no UI build found — run `npm --prefix web run build` (or `npm run build:ui` for the legacy app)",
-    );
+    console.log("[admin] web UI not built — run `npm --prefix web run build` (or `npm run build`)");
   }
   const NOT_BUILT_HTML =
     '<!doctype html><meta charset="utf-8"><title>grandpa-bob</title>' +
@@ -1419,18 +1412,17 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
 
       if (req.method === "GET" && url.pathname === "/") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-        // The tiled app UI, read fresh so a rebuild while the server runs
-        // stays loadable; a build notice when ui/dist is missing.
+        // Read fresh so a rebuild while the server runs stays loadable.
         res.end(readAppIndexHtml() ?? NOT_BUILT_HTML);
         return;
       }
 
-      // Static assets for the built app (assets/*, plus public/ files such as
-      // the OPFS seed). Served with a long cache because Vite content-hashes
-      // the filenames. The web build wins; ui/dist is the legacy fallback.
+      // Static assets for the built web app (assets/*, plus public/ files such
+      // as the OPFS seed). Served with a long cache because Vite content-hashes
+      // the filenames.
       if (req.method === "GET" && (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/seed/"))) {
         const rel = path.posix.normalize(url.pathname.slice(1));
-        const roots = [distForApp()];
+        const roots = [WEB_DIST];
         // `/seed/` is an authoring input, not a build artifact: serve it from
         // web/public when the app is the web target.
         if (url.pathname.startsWith("/seed/")) roots.unshift(path.resolve(config.projectDir, "web", "public"));

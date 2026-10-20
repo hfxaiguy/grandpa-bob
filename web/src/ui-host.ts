@@ -1,11 +1,11 @@
 /**
- * Host the UI inside the browser target.
+ * Host the web frontend inside the browser target.
  *
- * The tiled app (ui/, SolidJS) mounts directly in this window with the
+ * The chat UI (`ui/`, SolidJS) mounts directly in this window with the
  * transport shim installed, so its `/api/*` calls hit the in-browser backend.
- * The settings page is still the shared server-rendered HTML, hosted in a
- * same-origin iframe (with the shim) as before. Links between "/" and
- * "/settings" swap the two instead of navigating away.
+ * The settings page is the shared server-rendered HTML, hosted in a
+ * same-origin iframe (with the shim). Links between "/" and "/settings" swap
+ * the two instead of navigating away.
  */
 import { buildSettingsHtml } from "../../src/ui/pages";
 import { installShim, SHIM_SCRIPT } from "./server/shim";
@@ -21,7 +21,7 @@ export function hostUi(
 ): void {
   (window as unknown as { __bobBackend?: LocalBackend }).__bobBackend = backend;
   (window as unknown as { __bobBackendReady?: Promise<void> }).__bobBackendReady = backend.ready;
-  // The tiled app runs in this window, so the shim must be installed here too.
+  // The chat UI runs in this window, so the shim must be installed here too.
   installShim(window);
 
   let disposeChat: (() => void) | undefined;
@@ -81,7 +81,7 @@ export function hostUi(
     });
   };
 
-  // The tiled app links to /settings; intercept that click at the container.
+  // The chat UI links to /settings; intercept that click at the container.
   container.addEventListener(
     "click",
     (event) => {
