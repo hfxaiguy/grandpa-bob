@@ -9,7 +9,6 @@
 import { Tree, name, Call, Return, Tools, knit, resume } from "grandma-kat";
 import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { createDesktopPlatform } from "../platform/desktop";
-import { createFsAccessPlatform } from "../platform/fsaccess";
 import type { Platform } from "../../../src/platform/types";
 import { browserTools, STUB_TOOL_NAMES } from "./browser-tools";
 import { setActiveFs, setFsIndex } from "../shims/node-fs-promises";
@@ -37,24 +36,8 @@ import { parseModels, type ModelRegistry } from "../../../src/model-config";
 
 const ready = initSqlite();
 const platforms = new Map<string, Platform>();
-let directPlatform: Platform | null = null;
-let directHandle: FileSystemDirectoryHandle | null = null;
 
-async function getPlatform(
-  storage: string,
-  server: string,
-  opts: { rootHandle?: FileSystemDirectoryHandle; sqlWriteBack?: boolean } = {},
-): Promise<Platform> {
-  if (storage === "direct") {
-    const handle = opts.rootHandle;
-    if (!handle) throw new Error("direct mode needs the folder handle from the main thread");
-    if (!directPlatform || directHandle !== handle) {
-      await initSqlite(handle, { writeBack: opts.sqlWriteBack });
-      directPlatform = createFsAccessPlatform(handle);
-      directHandle = handle;
-    }
-    return directPlatform;
-  }
+async function getPlatform(storage: string, server: string): Promise<Platform> {
   const key = `${storage}|${server}`;
   let platform = platforms.get(key);
   if (!platform) {
@@ -183,7 +166,7 @@ interface RunOptions {
   env?: Record<string, string>;
   pattern?: string;
   remote?: string;
-  storage?: "browser" | "desktop" | "direct";
+  storage?: "browser" | "desktop";
   server?: string;
   /** The chat session this run belongs to (the drawer's active key). */
   chatKey?: string;
@@ -192,10 +175,6 @@ interface RunOptions {
   serverModels?: boolean;
   /** Per-conversation role→slot overrides (e.g. strong → "v4.1"). */
   modelOverrides?: Record<string, string>;
-  /** Direct mode: the folder picked with the File System Access API. */
-  rootHandle?: FileSystemDirectoryHandle;
-  /** Direct mode: write SQL changes back to the real .db files. */
-  sqlWriteBack?: boolean;
 }
 
 interface Session {
@@ -307,10 +286,7 @@ async function handleRun(opts: RunOptions): Promise<void> {
   const task = opts.task ?? "";
   const storage = opts.storage ?? "browser";
   const server = opts.server ?? "";
-  const platform = await getPlatform(storage, server, {
-    rootHandle: opts.rootHandle,
-    sqlWriteBack: opts.sqlWriteBack,
-  });
+  const platform = await getPlatform(storage, server);
   await ready;
 
   // The tree catalog (resolveTreeEntry) reads through the node:fs shim, so the
@@ -448,10 +424,8 @@ interface LogMessage {
   type: "log";
   op: string;
   payload?: Record<string, unknown>;
-  storage?: "browser" | "desktop" | "direct";
+  storage?: "browser" | "desktop";
   server?: string;
-  rootHandle?: FileSystemDirectoryHandle;
-  sqlWriteBack?: boolean;
 }
 
 function describeKey(key: string): string {
@@ -468,10 +442,7 @@ function describeKey(key: string): string {
 async function handleLog(msg: LogMessage): Promise<void> {
   const p = msg.payload ?? {};
   try {
-    const platform = await getPlatform(msg.storage ?? "browser", msg.server ?? "", {
-      rootHandle: msg.rootHandle,
-      sqlWriteBack: msg.sqlWriteBack,
-    });
+    const platform = await getPlatform(msg.storage ?? "browser", msg.server ?? "");
     await ready;
     let result: unknown;
 

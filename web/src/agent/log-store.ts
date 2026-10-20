@@ -9,8 +9,8 @@
  *   web_session_open   a key adopted from another transport
  *
  * The database belongs to whichever storage backend the page is using: OPFS,
- * the desktop bridge (the real workspace on disk) or a picked folder. That is
- * what makes sessions survive a reload without a server.
+ * or the desktop bridge (the real workspace on disk). That is what makes
+ * sessions survive a reload without a server.
  *
  * All access goes through one serial queue and one cached connection per
  * platform. The browser sqlite engine exports the whole file after every

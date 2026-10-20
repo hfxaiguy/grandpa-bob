@@ -16,10 +16,8 @@ export interface AgentRunPromise extends Promise<AgentRunResult> {
 
 /** Context for session-log calls (which storage backend the platform needs). */
 export interface AgentLogContext {
-  storage?: "browser" | "desktop" | "direct";
+  storage?: "browser" | "desktop";
   server?: string;
-  rootHandle?: FileSystemDirectoryHandle;
-  sqlWriteBack?: boolean;
 }
 
 /** Live hooks so a backend can re-emit events as they arrive (SSE). */
@@ -33,7 +31,7 @@ export interface AgentRunOptions {
   env?: Record<string, string>;
   pattern?: string;
   remote?: string;
-  storage?: "browser" | "desktop" | "direct";
+  storage?: "browser" | "desktop";
   server?: string;
   /** The chat session this run belongs to (per-session continuation state). */
   chatKey?: string;
@@ -46,10 +44,6 @@ export interface AgentRunOptions {
   serverModels?: boolean;
   /** Per-conversation role→slot overrides from the chat model picker. */
   modelOverrides?: Record<string, string>;
-  /** Direct mode: the real folder chosen with the File System Access API. */
-  rootHandle?: FileSystemDirectoryHandle;
-  /** Direct mode: allow SQL writes to the real .db files. */
-  sqlWriteBack?: boolean;
 }
 
 interface Pending {

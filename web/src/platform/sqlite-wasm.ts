@@ -43,16 +43,13 @@ function call<T = unknown>(op: string, payload: Record<string, unknown> = {}): P
 }
 
 /**
- * Boot the sqlite worker and point it at a database root. Idempotent.
+ * Boot the sqlite worker. Idempotent.
  *
- * `rootHandle` is the folder picked with the File System Access API in direct
- * mode; omit it for OPFS. `writeBack: false` makes direct mode read-only.
+ * All databases live under the origin-private file system; the worker loads a
+ * file into its in-memory engine on open and writes it back after mutations.
  */
-export async function initSqlite(
-  rootHandle?: FileSystemDirectoryHandle,
-  opts?: { writeBack?: boolean },
-): Promise<void> {
-  await call("init", { rootHandle: rootHandle ?? null, writeBack: opts?.writeBack });
+export async function initSqlite(): Promise<void> {
+  await call("init", {});
 }
 
 export function createSqliteWasm(): SqliteFactory {

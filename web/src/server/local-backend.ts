@@ -34,7 +34,7 @@ export interface BackendResponse {
 export interface BackendOptions {
   agent: AgentClient;
   platform: Platform;
-  storage: "browser" | "desktop" | "direct";
+  storage: "browser" | "desktop";
   server: string;
   env: Record<string, string>;
   remote: string;
@@ -46,10 +46,6 @@ export interface BackendOptions {
    * so the models endpoints fall through to it and the chat proxy is used.
    */
   serverModels?: boolean;
-  /** Direct mode: the folder picked with the File System Access API. */
-  rootHandle?: FileSystemDirectoryHandle;
-  /** Direct mode: write SQL changes back to the real .db files. */
-  sqlWriteBack?: boolean;
 }
 
 interface TurnRecord {
@@ -171,8 +167,6 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   const logCtx = () => ({
     storage: opts.storage,
     server: opts.server,
-    rootHandle: opts.rootHandle,
-    sqlWriteBack: opts.sqlWriteBack,
   });
 
   const readActive = (): string | null => {
@@ -420,8 +414,6 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         modelsJson,
         serverModels: opts.serverModels,
         modelOverrides: sessionModels.get(key),
-        rootHandle: opts.rootHandle,
-        sqlWriteBack: opts.sqlWriteBack,
       },
       {
         onEvent: (event) => {

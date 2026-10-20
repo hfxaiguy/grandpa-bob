@@ -2,6 +2,22 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — drop the File System Access ("direct folder") storage mode
+
+The browser header offered three storage backends; the third read a real
+folder picked with `showDirectoryPicker()`. It was Chromium-only and the one
+mode with no page-level SQLite path: the picked folder has no sync access
+handle, so every mutation had to export the whole database file. That made it
+the only place where the run log could be clobbered by the Node server writing
+the same file, and it could never be made disk-truth without routing the log
+through the bridge anyway.
+
+Two backends remain: **Browser (OPFS)** and **Desktop (local server)**. The
+FSA adapter, its git client, the folder gate, the "SQL writes" opt-in and the
+`test:fsaccess` / direct smoke are gone; a stored `bob:storage=direct` falls
+back to OPFS. Nothing else used the API — the upload button already writes
+through `/api/files/upload`, not a directory picker.
+
 ## 2026-10-19 — browser workspaces get their app databases
 
 The OPFS seed ships `db/*.db.sql` dumps, but the browser's SQLite adapter

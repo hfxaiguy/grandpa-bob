@@ -8,34 +8,22 @@
  *
  * Storage modes:
  *   browser  — OPFS sandbox (offline, seeded from web/public/seed)
- *   direct   — a real folder picked with the File System Access API (Chromium;
- *              no server process, reads/writes the workspace in place)
- *   desktop  — the existing loopback storage bridge (any browser, incl. Firefox)
+ *   desktop  — the loopback storage bridge (any browser, incl. Firefox)
  */
 import "./shims/process";
 import { setActiveFs, setFsIndex } from "./shims/node-fs-promises";
 import { createBrowserPlatform, initSqlite } from "./platform/browser";
 import { createDesktopPlatform } from "./platform/desktop";
-import {
-  createFsAccessPlatform,
-  directoryPermission,
-  loadDirectoryHandle,
-  pickWorkspaceDirectory,
-  requestDirectoryPermission,
-  supportsFsAccess,
-} from "./platform/fsaccess";
 import { AgentClient } from "./agent/agent-client";
 import { createLocalBackend } from "./server/local-backend";
 import { hostUi } from "./ui-host";
 import {
   loadEnv,
   loadRemote,
-  loadSqlWriteBack,
   loadStorage,
   loadStorageServer,
   loadModelsJson,
   normalizeStorageServer,
-  saveSqlWriteBack,
   saveStorage,
   saveStorageServer,
   type StorageMode,
@@ -53,14 +41,9 @@ const params = new URLSearchParams(location.search);
 const requestedStorage = params.get("storage");
 const storedStorage = loadStorage();
 const storageMode: StorageMode =
-  requestedStorage === "direct" || requestedStorage === "desktop" || requestedStorage === "browser"
-    ? requestedStorage
-    : storedStorage === "direct" && !supportsFsAccess()
-      ? "browser"
-      : storedStorage;
+  requestedStorage === "desktop" || requestedStorage === "browser" ? requestedStorage : storedStorage;
 const storageServer = normalizeStorageServer(params.get("server") ?? loadStorageServer());
 let configuredRemote = params.get("remote") ?? loadRemote();
-const sqlWriteBack = loadSqlWriteBack();
 
 const statusEl = document.getElementById("status")!;
 const setStatus = (text: string): void => {
@@ -90,7 +73,7 @@ function seedStatus(): string {
     : `browser · snapshot ${date}`;
 }
 
-/** `direct · grandma-workspace · trunk` — pattern switches update this live. */
+/** `desktop: /path · trunk` — pattern switches update this live. */
 function showStatus(pattern: string): void {
   setStatus(`${statusBase} · ${patternLabel(pattern)}`);
 }
@@ -103,29 +86,13 @@ window.addEventListener("bob:pattern", (event) => {
 const appEl = document.getElementById("app")!;
 const storageSelect = document.getElementById("storage-mode") as HTMLSelectElement | null;
 const storageServerInput = document.getElementById("storage-server") as HTMLInputElement | null;
-const pickFolderButton = document.getElementById("pick-folder") as HTMLButtonElement | null;
-const writeBackInput = document.getElementById("sql-writeback") as HTMLInputElement | null;
 
 if (storageSelect) storageSelect.value = storageMode;
 if (storageServerInput) storageServerInput.value = storageServer;
-if (writeBackInput) writeBackInput.checked = sqlWriteBack;
 
 /** Show only the controls that matter for the selected storage backend. */
 function configureToolbar(): void {
-  const direct = storageMode === "direct";
-  const bridge = storageMode === "desktop";
-  if (pickFolderButton) pickFolderButton.style.display = direct ? "" : "none";
-  if (writeBackInput?.parentElement) writeBackInput.parentElement.style.display = direct ? "" : "none";
-  if (storageServerInput) storageServerInput.style.display = bridge ? "" : "none";
-  const directOption = storageSelect?.querySelector('option[value="direct"]') as HTMLOptionElement | null;
-  if (directOption) {
-    if (!supportsFsAccess()) {
-      directOption.disabled = true;
-      directOption.textContent = "Desktop (direct folder) — Chrome/Edge only";
-    } else {
-      directOption.disabled = false;
-    }
-  }
+  if (storageServerInput) storageServerInput.style.display = storageMode === "desktop" ? "" : "none";
 }
 configureToolbar();
 
@@ -136,56 +103,6 @@ const applyStorage = (): void => {
 };
 storageSelect?.addEventListener("change", applyStorage);
 storageServerInput?.addEventListener("change", applyStorage);
-
-writeBackInput?.addEventListener("change", () => {
-  saveSqlWriteBack(writeBackInput.checked);
-  location.reload();
-});
-
-/**
- * Direct mode needs one click to pick (or re-grant) the folder — browsers only
- * allow `showDirectoryPicker`/`requestPermission` from a user gesture.
- */
-function showFolderGate(handle: FileSystemDirectoryHandle | null, reason: string): void {
-  const box = document.createElement("div");
-  box.style.cssText = "max-width:32rem;margin:4rem auto;font:15px system-ui;line-height:1.5;padding:0 1rem";
-  const title = document.createElement("h2");
-  title.textContent = "Choose BOB's workspace";
-  const text = document.createElement("p");
-  text.textContent = reason;
-  const button = document.createElement("button");
-  button.type = "button";
-  button.textContent = handle ? `Grant access to “${handle.name}”` : "Choose folder…";
-  button.style.cssText = "font:inherit;padding:0.4rem 0.9rem;cursor:pointer";
-  button.addEventListener("click", async () => {
-    button.disabled = true;
-    try {
-      const picked = handle ?? (await pickWorkspaceDirectory());
-      if (handle) {
-        if (!(await requestDirectoryPermission(picked))) {
-          throw new Error("access was not granted");
-        }
-      }
-      location.reload();
-    } catch (err) {
-      button.disabled = false;
-      text.textContent = `Could not open the folder: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  });
-  box.append(title, text, button);
-  appEl.replaceChildren(box);
-}
-
-pickFolderButton?.addEventListener("click", async () => {
-  pickFolderButton.disabled = true;
-  try {
-    await pickWorkspaceDirectory();
-    location.reload();
-  } catch (err) {
-    pickFolderButton.disabled = false;
-    setStatus(`folder: ${err instanceof Error ? err.message : String(err)}`);
-  }
-});
 
 let platform: Platform;
 
@@ -334,50 +251,9 @@ async function detectPattern(target: Platform): Promise<string> {
   return "trunk";
 }
 
-/** Resolve the direct-mode folder, or show the gate and stop booting. */
-async function resolveDirectHandle(): Promise<FileSystemDirectoryHandle | null> {
-  const handle = await loadDirectoryHandle();
-  if (!handle) {
-    showFolderGate(null, "Pick the folder on your hard drive that holds your workspace.");
-    return null;
-  }
-  const permission = await directoryPermission(handle);
-  if (permission !== "granted") {
-    showFolderGate(
-      handle,
-      `The browser needs permission to read and write “${handle.name}”.`,
-    );
-    return null;
-  }
-  return handle;
-}
-
 // ── boot ─────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
-  let rootHandle: FileSystemDirectoryHandle | undefined;
-
-  if (storageMode === "direct") {
-    if (!supportsFsAccess()) {
-      setStatus("direct folder access needs Chrome/Edge (use Desktop local server on Firefox)");
-      showFolderGate(
-        null,
-        "This browser does not support the File System Access API. " +
-          "Use “Desktop (local server)” instead, or open BOB in Chrome/Edge.",
-      );
-      return;
-    }
-    const handle = await resolveDirectHandle();
-    if (!handle) {
-      setStatus("waiting for folder access");
-      return;
-    }
-    rootHandle = handle;
-    await initSqlite(handle, { writeBack: sqlWriteBack });
-    platform = createFsAccessPlatform(handle);
-    setActiveFs(platform.fs);
-    await buildFsIndex(platform);
-    statusBase = `direct · ${handle.name}${sqlWriteBack ? "" : " · sql read-only"}`;
-  } else if (storageMode === "desktop") {
+  if (storageMode === "desktop") {
     await initSqlite();
     platform = createDesktopPlatform("/", storageServer);
     setActiveFs(platform.fs);
@@ -426,8 +302,6 @@ async function main(): Promise<void> {
     initialPattern: pattern,
     modelsJson: loadModelsJson(),
     serverModels,
-    rootHandle,
-    sqlWriteBack,
   });
 
   hostUi(backend, appEl, { page: "chat", port: 8080 });

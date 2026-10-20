@@ -46,7 +46,6 @@
     "test:secrets": "tsx scripts/secrets-test.ts",
     "test:shell": "tsx scripts/shell-sandbox-test.ts",
     "test:paths": "tsx scripts/path-shim-test.ts",
-    "test:fsaccess": "tsx scripts/fsaccess-test.ts",
     "test:pattern-path": "tsx scripts/pattern-path-test.ts",
     "test:platform": "tsx scripts/platform-fs-test.ts",
     "test:models": "tsx scripts/model-config-test.ts",

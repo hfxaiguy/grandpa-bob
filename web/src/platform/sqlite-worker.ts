@@ -1,13 +1,9 @@
 /**
  * SQLite Web Worker: owns an in-memory sqlite-wasm engine and persists each
- * database to a `FileSystemDirectoryHandle` with the async API.
+ * database to the origin-private file system with the async API.
  *
- * The same code serves both browser storage modes: the root is OPFS by default,
- * or the real folder picked with the File System Access API (the handle is
- * posted in with the `init` op). The engine runs in memory and we
- * import/export the whole database: load on open, write back after every
- * mutation and on close. Direct-mode writes can be disabled (`writeBack:
- * false`) so the real .db files stay untouched unless the user opts in.
+ * The engine runs in memory and we import/export the whole database: load on
+ * open, write back after every mutation and on close.
  *
  * The main thread talks to it over postMessage; see sqlite-wasm.ts.
  */
@@ -20,7 +16,7 @@ interface DbRecord {
   db: Any;
   /** Absolute workspace path, e.g. `/workspace/email.db`. */
   path: string;
-  /** Open without writing the file back (direct mode read-only queries). */
+  /** Open without writing the file back (read-only queries). */
   readOnly: boolean;
 }
 
@@ -31,16 +27,8 @@ const stmts = new Map<number, { stmt: Any; dbId: number }>();
 let nextDbId = 1;
 let nextStmtId = 1;
 
-/** Where database files live: OPFS by default, or the picked real folder. */
-let rootHandle: FileSystemDirectoryHandle | null = null;
-/**
- * Direct mode is read-only by default; the user can opt in to writing the real
- * `.db` files back. OPFS/seed databases always persist.
- */
-let writeBack = true;
-
 function root(): Promise<FileSystemDirectoryHandle> {
-  return rootHandle ? Promise.resolve(rootHandle) : navigator.storage.getDirectory();
+  return navigator.storage.getDirectory();
 }
 
 /**
@@ -87,15 +75,9 @@ async function loadInto(db: Any, path: string): Promise<void> {
   sqlite3.capi.sqlite3_deserialize(db.pointer, "main", ptr, bytes.length, bytes.length, flags);
 }
 
-function isInternalDb(path: string): boolean {
-  // BOB's own run log stays writable in direct mode: it is not user data.
-  return /^\/?logs\//.test(path);
-}
-
-/** A database may be persisted when direct-mode writes are enabled. */
+/** A database may be persisted unless it was opened read-only. */
 function writeAllowed(rec: DbRecord): boolean {
-  if (rec.readOnly) return false;
-  return writeBack || isInternalDb(rec.path);
+  return !rec.readOnly;
 }
 
 async function persist(rec: DbRecord): Promise<void> {
@@ -135,8 +117,6 @@ async function handle(op: string, msg: Any): Promise<unknown> {
   await ensureInit();
   switch (op) {
     case "init":
-      if (msg.rootHandle) rootHandle = msg.rootHandle as FileSystemDirectoryHandle;
-      if (typeof msg.writeBack === "boolean") writeBack = msg.writeBack;
       return true;
     case "open": {
       const path = String(msg.path);

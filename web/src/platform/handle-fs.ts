@@ -1,14 +1,11 @@
 /**
  * `FileSystem` adapter over a `FileSystemDirectoryHandle`.
  *
- * The same code backs both browser storage modes:
- *
- *   - OPFS:             root = `navigator.storage.getDirectory()`
- *   - Desktop (direct): root = the directory picked with `showDirectoryPicker()`
+ * The root is the origin-private file system (`navigator.storage.getDirectory()`).
  *
  * Keeping one implementation means tree sources, file tools, patterns, git and
- * the workspace file browser all behave identically over a private browser
- * sandbox and a real folder on disk.
+ * the workspace file browser all behave identically over the private browser
+ * sandbox.
  *
  * Known gaps handled here:
  *   - no `rename`/`move`  -> copy + delete

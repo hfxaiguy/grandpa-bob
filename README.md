@@ -13,11 +13,8 @@ every change it makes is **git-committed automatically**.
   sync, logs, patterns, files) and the tree view. It operates on storage chosen
   in the header:
   - **Browser (OPFS)** — a private sandbox in the tab, seeded from the workspace;
-  - **Desktop (direct folder)** — a folder picked with the File System Access
-    API (Chrome/Edge): reads and writes the real workspace in place with **no
-    server process**;
-  - **Desktop (local server)** — the loopback storage bridge, for Firefox and
-    other browsers.
+  - **Desktop (local server)** — the loopback storage bridge, for the real
+    workspace on disk (and the only mode Firefox can use).
   The header's **upload** button puts files from a normal OS picker into any
   workspace folder (asked per upload, remembered next time).
 - **Voice → text**: Telegram voice notes use the local Vulkan whisper-server;

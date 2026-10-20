@@ -1060,8 +1060,8 @@ export function SessionPanel(props: { onClose: () => void }) {
  * suggested from folders already in the workspace.
  *
  * The request goes to `/api/files/upload`, which both targets implement, so the
- * same button uploads into the picked real folder (direct mode), the OPFS
- * sandbox, the storage bridge, or the Node workspace.
+ * same button uploads into the OPFS sandbox, the storage bridge, or the Node
+ * workspace.
  */
 export function WorkspaceUpload() {
   let fileInput: HTMLInputElement | undefined;

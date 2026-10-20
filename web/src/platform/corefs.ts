@@ -5,8 +5,8 @@
  * of the Origin Private File System. OPFS is origin-scoped, so this is a real
  * sandbox: the host filesystem is not reachable.
  *
- * The handle-based implementation lives in ./handle-fs.ts and is shared with
- * the File System Access ("Desktop direct") adapter.
+ * The handle-based implementation lives in ./handle-fs.ts and backs the OPFS
+ * adapter.
  */
 import { posixPath as path } from "../../../src/platform/paths";
 import { createHandleFs, type HandleFileSystem } from "./handle-fs";
