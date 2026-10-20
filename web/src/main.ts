@@ -227,7 +227,14 @@ async function seedWorkspace(root: string): Promise<void> {
     const res = await fetch("/seed/workspace.json");
     if (!res.ok) return;
     const archive = (await res.json()) as Parameters<typeof importWorkspace>[0];
-    await importWorkspace(archive);
+    // The archive carries an EMPTY run log (schema only). Never let a reseed
+    // overwrite the workspace's real log: it now holds the chat sessions.
+    const logDb = platform.path.join(root, "logs", "grandma-kat.db");
+    const hasLog = await isFile(logDb);
+    const files = hasLog
+      ? archive.files.filter((f) => !f.path.startsWith("workspace/logs/"))
+      : archive.files;
+    await importWorkspace({ ...archive, files });
     const stamp = new Date().toISOString();
     await platform.fs.writeFile(marker, stamp);
     seedStamp = stamp;

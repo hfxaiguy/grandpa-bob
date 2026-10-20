@@ -17,6 +17,9 @@ Two related fixes:
   workspace ships `trunk.prod.mjs`, so with the fresh archive that guard
   would have re-imported the whole 27 MB seed on every boot. It now resolves
   the trunk through the version catalog.
+- `?reseed` no longer imports the archive's empty `logs/grandma-kat.db` when
+  the workspace already has one: the log now holds the browser's chat
+  sessions, and reseeding a sandbox must not wipe them.
 - The browser status line shows the snapshot date (`browser · snapshot Oct 3`)
   and calls the seed stale after 14 days, so an old sandbox is visible instead
   of silently changing how the bot behaves.
