@@ -10,6 +10,9 @@ for the active session, ready to paste into an agent/debug chat. Copy falls
 back to a JSON download when the clipboard is unavailable (insecure origin or
 headless browser).
 
+Note: `/api/turns` exposes the latest 20 turns; the dump covers those with
+every event per turn. Older history remains in the run log.
+
 ## 2026-10-20 — Telegram command sync retries; IPv4-first startup
 
 `setMyCommands` at startup could hit a transient `ETIMEDOUT` (IPv6 to

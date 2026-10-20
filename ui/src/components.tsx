@@ -951,6 +951,7 @@ export function GlobalStream() {
         </span>
       </div>
       <Show when={open()}>
+        <div class="stream-note">copy/download: latest 20 turns · all events per turn</div>
         <div class="stream-body" ref={ref}>
           <For each={lines().slice(-400)}>{(l) => <LogRow line={l} showApp />}</For>
         </div>

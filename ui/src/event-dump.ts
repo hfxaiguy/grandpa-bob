@@ -4,6 +4,9 @@
  * renders a shorter window. The turn log on disk is complete, so this fetches
  * `/api/turns` again and dumps what the API returns — every event of every
  * turn it exposes — ready to paste into a debug/agent session.
+ *
+ * Note: `/api/turns` exposes the latest MAX_TURNS (20) turns; the dump covers
+ * those, with every event per turn. Older history stays in the run log.
  */
 import { state, toast } from "./store";
 import type { Turn } from "./types";
