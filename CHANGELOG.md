@@ -2,6 +2,16 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — `inspect_memory` in the client-only web UI
+
+The browser target now registers grandma-kat's `inspect_memory` host tool, so a
+turn running entirely in the tab can resolve a `ref://` handle or read a live
+memory slot instead of falling through to the "not available in the browser
+target" stub. The worker's plain tool map already receives the engine's
+`view`/`readRef`/`scopeInfo` ctx in `execute`, so it needs no special dispatch
+like the Node registry. Also fixed in KAT: a direct
+`Call('…', 'inspect_memory', …)` now gets the same ctx as the auto tool loop.
+
 ## 2026-10-20 — inspect exact LLM prompt/output in the event stream
 
 `llm_call` rows now preview the model's output when collapsed. Expanding one

@@ -22,6 +22,13 @@ declare module "grandma-kat" {
     parameters: { type: "object"; properties?: Record<string, unknown>; required?: string[] };
     execute(args: Record<string, unknown>): Promise<unknown>;
   }
+  export interface InspectMemoryTool {
+    name: string;
+    description: string;
+    parameters: { type: "object"; properties?: Record<string, unknown>; required?: string[] };
+    execute(args: Record<string, unknown>, ctx?: Record<string, unknown>): unknown;
+  }
+  export function inspectMemoryTool(opts?: { sample?: number; maxChars?: number }): InspectMemoryTool;
   export function runLogToolFromQuery(
     query: (sql: string, params?: unknown[]) => Promise<unknown[]> | unknown[],
     opts?: { defaultLimit?: number },

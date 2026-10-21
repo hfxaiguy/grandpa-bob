@@ -6,7 +6,7 @@
  * trees with `Human(...)` — like the real trunk — can pause and resume across
  * chat messages.
  */
-import { Tree, name, Call, Return, Tools, knit, resume } from "grandma-kat";
+import { Tree, name, Call, Return, Tools, knit, resume, inspectMemoryTool } from "grandma-kat";
 import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { createDesktopPlatform } from "../platform/desktop";
 import type { Platform } from "../../../src/platform/types";
@@ -401,6 +401,10 @@ async function handleRun(opts: RunOptions): Promise<void> {
   const onEmit = (value: unknown): void => post({ id: opts.id, type: "emit", value });
   const toolsMap: Record<string, unknown> = {
     ...browserTools(platform, { remote: opts.remote ?? "", flushLog: () => session.logger.flush() }),
+    // KAT's memory inspector. Unlike the Node target, the browser registry is
+    // the plain engine tool map, so `execute` receives the engine's per-call
+    // ctx (`view`/`readRef`/`scopeInfo`) directly — no special dispatch.
+    inspect_memory: inspectMemoryTool(),
   };
   const appTools = await buildAppTools(platform);
   Object.assign(toolsMap, appTools.tools);
