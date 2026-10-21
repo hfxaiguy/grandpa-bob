@@ -1,7 +1,7 @@
 /** App shell: toolbar + tiled grid + global stream + session drawer. */
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import { GlobalStream, RefModal, SessionPanel, Tiles, WorkspaceUpload } from "./components";
-import { init, orderedApps, state, toggleHidden, toggleMachine, dismissError, retryLast } from "./store";
+import { init, orderedApps, state, stop, toggleHidden, toggleMachine, dismissError, retryLast } from "./store";
 
 function TilesMenu() {
   const [open, setOpen] = createSignal(false);
@@ -53,6 +53,13 @@ export function App() {
         <span class="session-label" title={state.active ?? ""}>
           {state.label || state.active || "no session"}
         </span>
+        {/* The composer lives on the parked tile only, so the stop lives here:
+            always reachable while a turn runs, wherever the tiles are parked. */}
+        <Show when={state.turns.some((t) => t.status === "running")}>
+          <button class="danger" title="stop the running tree now" onClick={() => void stop()}>
+            Stop
+          </button>
+        </Show>
         <span class="spacer" />
         <button
           classList={{ active: state.showMachine }}

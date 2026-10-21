@@ -5,7 +5,6 @@ import { copyEventStream, copyText, downloadEventStream } from "./event-dump";
 import {
   state,
   send,
-  stop,
   selectSession,
   newSession,
   deleteSession,
@@ -402,13 +401,6 @@ function Composer(props: { app: string }) {
   const [text, setText] = createSignal("");
   let ta: HTMLTextAreaElement | undefined;
   let fileInput: HTMLInputElement | undefined;
-  const runningTurn = createMemo(() => state.turns.find((t) => t.status === "running"));
-  // The trunk composer is always mounted, so it can always host a global stop;
-  // an app composer shows one while that app owns the running turn.
-  const canStop = createMemo(() => {
-    const t = runningTurn();
-    return !!t && (props.app === "trunk" || (t.inputApp ?? "trunk") === props.app);
-  });
   // Grow the textarea with its content (up to a cap); reset when emptied.
   const autosize = () => {
     if (!ta) return;
@@ -558,7 +550,7 @@ function Composer(props: { app: string }) {
         <textarea
           ref={(el) => (ta = el)}
           rows="1"
-          placeholder="reply…"
+          placeholder={props.app === "trunk" ? "reply…" : `reply to ${props.app}…`}
           value={text()}
           onInput={(e) => setText(e.currentTarget.value)}
           onKeyDown={(e) => {
@@ -568,15 +560,6 @@ function Composer(props: { app: string }) {
             }
           }}
         />
-        <Show when={canStop()}>
-          <button
-            class="danger"
-            title="stop the running tree now"
-            onClick={() => void stop()}
-          >
-            Stop
-          </button>
-        </Show>
         <button onClick={submit}>Send</button>
       </div>
     </div>
@@ -836,15 +819,22 @@ function Tile(props: { app: AppInfo }) {
     if (el) el.scrollTop = el.scrollHeight;
   });
 
-  // The trunk tile always has a composer (start a conversation, reply, or
-  // queue while a turn runs); an app tile shows one only when its tree is the
-  // one paused at .human() — or when the last turn failed and was headed there
-  // (so a retry is possible).
+  // One composer in the whole UI: the tile whose tree the session is parked on
+  // (the current Human). A fresh session has no pause yet, so the composer
+  // starts on the trunk (matching the server's `inputApp ?? "trunk"`); while a
+  // turn runs the store nulls `awaiting`, so nothing is shown — a message sent
+  // mid-run would land on the trunk anyway. A failed turn keeps a retry
+  // composer on the app it was headed to.
   const retryApp = createMemo(() => {
     const last = state.turns[state.turns.length - 1];
     return last && last.status === "error" ? (last.inputApp ?? "trunk") : null;
   });
-  const showInput = () => name() === "trunk" || state.awaiting === name() || retryApp() === name();
+  const parkedApp = createMemo(() => {
+    if (state.awaiting != null) return state.awaiting;
+    if (state.turns.some((t) => t.status === "running")) return null;
+    return "trunk";
+  });
+  const showInput = () => parkedApp() === name() || retryApp() === name();
 
   const errored = createMemo(() => {
     const last = state.turns[state.turns.length - 1];

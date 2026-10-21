@@ -440,10 +440,12 @@ The admin server (port `ADMIN_PORT`, default 8080) serves:
   other pieces it read** (each with the row that wrote it: a tool result, your
   message, an earlier prompt), a **trace deeper** walk of the read-graph, the
   ground facts, any **ref://** handles, and a **view-prompt** expander with the
-  exact messages sent. The
-  **human-input box appears only on the tile whose tree is paused at
-  `.human()`**, and the **trunk tile always has one** (start a conversation,
-  reply, or queue while a turn runs). The composer also takes **🎙 voice** and
+  exact messages sent. There is
+  **one composer in the whole UI**, on the tile whose tree is paused at
+  `.human()` — the trunk when nothing is parked yet (it starts the
+  conversation); while a turn runs no composer is shown, and a failed turn
+  keeps a retry composer on the app it was headed to. The **Stop** button sits
+  in the top toolbar while a turn runs. The composer also takes **🎙 voice** and
   **📎 files**: a voice note is recorded in the browser (MediaRecorder),
   transcribed locally, and sent; an **audio file** streams a live transcript
   (a progress card shows `12s / 47s` plus the growing text) that lands in the
