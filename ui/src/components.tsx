@@ -1,5 +1,5 @@
 /** Tile, memory, per-tile event log, global stream, session panel. */
-import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { describeEvent, streamLines, type EventLine } from "./describe";
 import { copyEventStream, copyText, downloadEventStream } from "./event-dump";
 import {
@@ -82,6 +82,21 @@ function bubblesFor(app: string): Bubble[] {
 }
 
 /** Compact token count: 987, 1.2k, 12k, 1.3M. */
+/** Marks a control that only works when the page talks to the admin server
+ *  (BOB_WEB=1): Telegram push/follow, audio transcription. */
+function ServerIcon() {
+  return (
+    <span class="srv" title="Needs the admin server (BOB_WEB=1)">
+      <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true">
+        <rect x="1.5" y="1.2" width="9" height="3.7" rx="1" fill="none" stroke="currentColor" stroke-width="1.2" />
+        <rect x="1.5" y="7.1" width="9" height="3.7" rx="1" fill="none" stroke="currentColor" stroke-width="1.2" />
+        <circle cx="3.6" cy="3.05" r=".8" fill="currentColor" />
+        <circle cx="3.6" cy="8.95" r=".8" fill="currentColor" />
+      </svg>
+    </span>
+  );
+}
+
 function fmtTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1).replace(/\.0$/, "")}k`;
@@ -480,6 +495,17 @@ function Composer(props: { app: string }) {
       } catch {
         /* toasted in the store */
       }
+      return;
+    }
+    // Audio streams a transcript from the admin's STT backend; it is not part
+    // of the in-browser backend. Keep the composer honest when no server is up.
+    if (!state.adminOnline) {
+      setCard({
+        name: file.name,
+        status: "needs the admin server",
+        text: "Audio transcription needs the admin server — start BOB with BOB_WEB=1. Any other file still attaches.",
+        state: "err",
+      });
       return;
     }
     let duration = 0;
@@ -1063,16 +1089,6 @@ export function GlobalStream() {
 
 export function SessionPanel(props: { onClose: () => void }) {
   const activeSession = createMemo(() => state.sessions.find((s) => s.key === state.active));
-  // Pushing a transcript to Telegram is an admin-server feature. In the
-  // browser target (no admin behind the page) keep the control visible but
-  // disabled instead of letting the click fail with a 501.
-  const [adminOnline, setAdminOnline] = createSignal(true);
-  onMount(() => {
-    fetch("/api/capabilities")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => setAdminOnline(!!d && d.admin === true))
-      .catch(() => setAdminOnline(false));
-  });
   // A local draft while editing the active session's name; null = show the
   // stored label.
   const [labelDraft, setLabelDraft] = createSignal<string | null>(null);
@@ -1091,8 +1107,14 @@ export function SessionPanel(props: { onClose: () => void }) {
         </div>
 
         <label class="row">
-          <input type="checkbox" checked={state.follow} onChange={(e) => void setFollow(e.currentTarget.checked)} />
+          <input
+            type="checkbox"
+            checked={state.follow}
+            disabled={!state.adminOnline}
+            onChange={(e) => void setFollow(e.currentTarget.checked)}
+          />
           follow the live Telegram conversation
+          <ServerIcon />
         </label>
 
         <label class="row">
@@ -1144,15 +1166,16 @@ export function SessionPanel(props: { onClose: () => void }) {
             </button>
             <button
               class="secondary"
-              disabled={!adminOnline()}
+              disabled={!state.adminOnline}
               title={
-                adminOnline()
+                state.adminOnline
                   ? "push this transcript to your linked Telegram chat"
                   : "needs the admin server (BOB_WEB=1)"
               }
               onClick={() => void sendToTelegram()}
             >
               ✈ telegram
+              <ServerIcon />
             </button>
           </div>
         </Show>

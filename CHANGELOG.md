@@ -2,6 +2,27 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — server-only controls carry a server glyph
+
+The controls that only work when the page is talking to the admin server are
+now labelled with a little server icon (an inline SVG, `title="Needs the admin
+server (BOB_WEB=1)"`), so the boundary is visible even while the admin is up:
+settings — service health, the *webui follows telegram* toggle, *Restart bot*,
+and the `bot.log`/`sherpa.log` buttons; the chat drawer — the *follow the live
+Telegram conversation* toggle and the *✈ telegram* push. With no admin the same
+icon explains why the control is disabled, and the composer's audio path says
+so directly instead of failing on `/api/transcribe-stream` (audio transcription
+is admin-only; every other attach still works in-tab).
+
+The icon is declarative: settings elements carry `data-srv` and
+`markServerFeatures()` appends the glyph at load; the chat UI renders a
+`ServerIcon` next to the two Telegram controls, gated by `state.adminOnline`
+from the `/api/capabilities` probe.
+
+Everything else stays unlabelled on purpose: env, secrets, sync, commit, model
+slots and tree patterns are all served by the in-browser backend and do not
+need the server.
+
 ## 2026-10-21 — the admin server is optional; the web UI always loads
 
 The server on `ADMIN_PORT` (default :8080) used to start the whole admin — chat

@@ -51,6 +51,10 @@ export interface UiState {
    *  freshly minted chat. Display only. */
   sessionResumed: boolean;
   connected: boolean;
+  /** An admin server is behind this page (probed at boot via
+   *  /api/capabilities). Server-only controls — Telegram push/follow, audio
+   *  transcription — stay visible but disabled when false. */
+  adminOnline: boolean;
   toast: string;
   toastErr: boolean;
   /** The most recent failure (a failed turn or a failed model call), shown
@@ -111,6 +115,7 @@ export const [state, setState] = createStore<UiState>({
   memorySession: null,
   sessionResumed: false,
   connected: false,
+  adminOnline: true,
   toast: "",
   toastErr: false,
   lastError: null,
@@ -810,6 +815,17 @@ export function handleSSE(msg: any): void {
 /** Boot the UI: load catalogs, resume the chat named in the URL (else open a
  *  fresh one), then follow the live stream. */
 export async function init(): Promise<void> {
+  // Which host is this page on? The admin answers {admin:true}; the in-browser
+  // backend mirrors the boot-time servedByAdmin() signal and the static-only
+  // listener answers 503 — either way, false means "no server": the Telegram
+  // controls and audio transcription stay visible but disabled.
+  try {
+    const r = await fetch("/api/capabilities");
+    const caps = r.ok ? await r.json() : null;
+    setState("adminOnline", !!caps && caps.admin === true);
+  } catch {
+    setState("adminOnline", false);
+  }
   await Promise.all([refreshApps(), refreshPatterns(), refreshModels()]);
   // The URL carries the open chat. A reload is an explicit pick, so
   // `?session=<key>` resumes that conversation — restoring its turns, memory

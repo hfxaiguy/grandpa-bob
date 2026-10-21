@@ -21,6 +21,7 @@ import os from "node:os";
 import path from "node:path";
 import events from "node:events";
 import { startAdmin } from "../src/admin.js";
+import { buildSettingsHtml } from "../src/ui/pages.js";
 
 function freePort(): Promise<number> {
   return new Promise((resolve) => {
@@ -134,6 +135,16 @@ const mockAgent = () =>
   assert.equal(body.admin, true, "…and says the server-only controls are live");
   server.close();
   console.log("api. /api/capabilities → {admin:true}");
+}
+
+// ── server-only controls carry the little server glyph ──
+{
+  const html = buildSettingsHtml({ port: 8080 });
+  assert.match(html, /data-srv/, "server-only controls are marked");
+  assert.match(html, /SERVER_SVG/, "…and decorated with the server glyph");
+  assert.match(html, /id="restart-btn"[^>]*data-srv/, "restart is marked");
+  assert.match(html, /class="secondary log-btn" data-srv/, "bot logs are marked");
+  assert.match(html, /id="follow-chk"/, "the follow toggle is present");
 }
 
 console.log("static-web-test: all assertions passed");

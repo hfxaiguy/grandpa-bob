@@ -25,6 +25,9 @@ export function buildSettingsHtml(config: UiConfig): string {
   .card { background: var(--card); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+  /* Marks a control that needs the admin server (BOB_WEB=1). */
+  .srv { display: inline-flex; align-items: center; margin-left: 5px; color: var(--muted); vertical-align: middle; }
+  .srv svg { display: block; }
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
   .dot.on { background: var(--green); }
   .dot.off { background: var(--red); }
@@ -57,19 +60,19 @@ export function buildSettingsHtml(config: UiConfig): string {
 
 <div class="card">
   <div class="row">
-    <span id="service-dots" class="row" style="gap:14px"></span>
+    <span id="service-dots" class="row" style="gap:14px" data-srv></span>
     <span class="status" id="server-mode"><span class="dot on"></span> admin (this)</span>
     <span style="margin-left:auto"><small id="uptime"></small></span>
   </div>
   <div class="row" style="margin-top:8px">
-    <label class="status" title="The webui automatically continues whichever conversation is live on Telegram. Telegram never picks up web chats.">
+    <label class="status" data-srv title="The webui automatically continues whichever conversation is live on Telegram. Telegram never picks up web chats.">
       <input type="checkbox" id="follow-chk" style="margin:0 6px 0 0"> webui follows telegram
     </label>
     <small style="color:var(--muted)">one-way: telegram never follows the webui</small>
   </div>
   <div id="server-note" style="display:none; margin-top:8px; color:#f59e0b; font-size:12px"></div>
   <div class="actions">
-    <button id="restart-btn" onclick="restartBot()">Restart bot</button>
+    <button id="restart-btn" data-srv onclick="restartBot()">Restart bot</button>
     <button class="secondary" onclick="refreshAll()">Refresh</button>
   </div>
 </div>
@@ -156,8 +159,8 @@ export function buildSettingsHtml(config: UiConfig): string {
 <div class="card">
   <h2 style="margin-top:0">Logs</h2>
   <div class="row" style="margin-bottom:8px">
-    <button class="secondary log-btn" onclick="loadLog('bot')">bot.log</button>
-    <button class="secondary log-btn" onclick="loadLog('sherpa')">sherpa.log</button>
+    <button class="secondary log-btn" data-srv onclick="loadLog('bot')">bot.log</button>
+    <button class="secondary log-btn" data-srv onclick="loadLog('sherpa')">sherpa.log</button>
     <span style="margin-left:auto"><small>last 60 lines</small></span>
   </div>
   <pre id="log">(click a log button)</pre>
@@ -241,6 +244,26 @@ async function api(path, opts) {
 // its pages; reload when ours no longer matches.
 function checkUiVersion(v) {
   if (v && window.__UI_VERSION__ && v !== window.__UI_VERSION__) location.reload();
+}
+
+// A little server glyph on every control that only works when this page is
+// talking to the admin (BOB_WEB=1): service health, Telegram follow, restart,
+// bot logs. Disabled controls keep the glyph — it is the reason they are off.
+var SERVER_SVG =
+  '<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true">' +
+  '<rect x="1.5" y="1.2" width="9" height="3.7" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>' +
+  '<rect x="1.5" y="7.1" width="9" height="3.7" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>' +
+  '<circle cx="3.6" cy="3.05" r=".8" fill="currentColor"/>' +
+  '<circle cx="3.6" cy="8.95" r=".8" fill="currentColor"/></svg>';
+
+function markServerFeatures() {
+  document.querySelectorAll("[data-srv]").forEach(function (el) {
+    var icon = document.createElement("span");
+    icon.className = "srv";
+    icon.title = "Needs the admin server (BOB_WEB=1)";
+    icon.innerHTML = SERVER_SVG;
+    el.appendChild(icon);
+  });
 }
 
 // The settings page runs in two hosts: the admin server (real .env, secrets,
@@ -1050,6 +1073,7 @@ $("follow-chk").onchange = async (e) => {
 };
 syncFollowChk();
 
+markServerFeatures();
 loadCapabilities();
 refreshStatus();
 refreshPatterns();
