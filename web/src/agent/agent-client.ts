@@ -3,6 +3,8 @@
  * request/stream split: `run()` resolves with the final result and collects
  * streamed events and emits.
  */
+import { AgentStoppedError } from "../../../src/stop-error";
+
 export interface AgentRunResult {
   result: unknown;
   events: unknown[];
@@ -44,6 +46,8 @@ export interface AgentRunOptions {
   serverModels?: boolean;
   /** Per-conversation role→slot overrides from the chat model picker. */
   modelOverrides?: Record<string, string>;
+  /** Browser-level CDP socket passed by `npm run chrome` (?cdp=…). */
+  cdp?: string;
 }
 
 interface Pending {
@@ -71,6 +75,7 @@ export class AgentClient {
         value?: unknown;
         error?: string;
         ok?: boolean;
+        stopped?: boolean;
       };
       if (msg.type === "log-result") {
         const lp = this.logPending.get(msg.id);
@@ -93,7 +98,11 @@ export class AgentClient {
         p.resolve({ result: msg.result, events: p.events, emits: p.emits });
       } else if (msg.type === "error") {
         this.pending.delete(msg.id);
-        p.reject(new Error(msg.error ?? "agent error"));
+        p.reject(
+          msg.stopped
+            ? new AgentStoppedError(msg.error)
+            : new Error(msg.error ?? "agent error"),
+        );
       }
     };
     this.worker.onerror = (ev) => {
@@ -130,6 +139,14 @@ export class AgentClient {
       });
       this.worker.postMessage({ id, type: "log", op, payload, ...ctx });
     });
+  }
+
+  /**
+   * Stop the in-flight run. The worker aborts model/tool work and unwinds the
+   * tree; the previous checkpoint stays available for the next message.
+   */
+  stop(runId?: number): void {
+    this.worker.postMessage({ type: "stop", id: runId });
   }
 
   close(): void {

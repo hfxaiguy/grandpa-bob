@@ -11,12 +11,13 @@ import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { createDesktopPlatform } from "../platform/desktop";
 import type { Platform } from "../../../src/platform/types";
 import { browserTools, STUB_TOOL_NAMES } from "./browser-tools";
+import { browserCdpTools } from "./browser-cdp";
 import { createAppStore } from "../../../src/app-store";
 import { setActiveFs, setFsIndex } from "../shims/node-fs-promises";
 import { listAppTrees } from "../../../src/tree-sources";
 import { resolveTreeEntry } from "../../../src/tree-versions";
 import { assembleGuides, HOST_GUIDES } from "../../../src/tool-guides";
-import { createWorkspaceLogger, type MemoryLogger, type WorkspaceLogger } from "./logger";
+import { createWorkspaceLogger, type MemoryLogger, type WorkspaceLogger, type KatEvent } from "./logger";
 import {
   getTurns,
   hasLabelPin,
@@ -32,12 +33,39 @@ import {
 } from "./log-store";
 import type { TurnMarker } from "../../../src/web-log-types";
 import { createModuleLoader } from "./module-loader";
+import {
+  AgentStoppedError,
+  isAgentStopped,
+  mergeSignals,
+  raceWithStop,
+  throwIfStopped,
+} from "../../../src/stop-error";
 import { resolvePatternPath } from "./pattern-path";
 import { loadBrowserModels } from "./models";
 import { parseModels, type ModelRegistry } from "../../../src/model-config";
 
 const ready = initSqlite();
 const platforms = new Map<string, Platform>();
+
+/**
+ * The worker runs one turn at a time. The stop message aborts this controller;
+ * a fetch wrapper adds its signal to every model/tool request, and the engine
+ * logger throws on the next step. The worker is never terminated, so the
+ * session's previous checkpoint survives the stop.
+ */
+let activeStop: { id: number; ctrl: AbortController } | null = null;
+const nativeFetch = globalThis.fetch.bind(globalThis);
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const signal = activeStop?.ctrl.signal;
+  if (!signal) return nativeFetch(input, init);
+  if (signal.aborted) return Promise.reject(new AgentStoppedError());
+  const requestSignal =
+    typeof Request !== "undefined" && input instanceof Request ? input.signal : undefined;
+  return nativeFetch(input, {
+    ...(init ?? {}),
+    signal: mergeSignals(requestSignal, init?.signal, signal),
+  });
+}) as typeof fetch;
 
 async function getPlatform(storage: string, server: string): Promise<Platform> {
   const key = `${storage}|${server}`;
@@ -162,6 +190,53 @@ function withStubs(tools: Record<string, unknown>): Record<string, unknown> {
   });
 }
 
+/** Reject a tool call as soon as the turn is stopped, even if its work continues. */
+function withStopTools(tools: Record<string, unknown>, signal: AbortSignal): Record<string, unknown> {
+  const wrapped = new Map<string, unknown>();
+  return new Proxy(tools, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (
+        typeof prop !== "string" ||
+        !value ||
+        typeof value !== "object" ||
+        typeof (value as { execute?: unknown }).execute !== "function"
+      ) {
+        return value;
+      }
+      const hit = wrapped.get(prop);
+      if (hit) return hit;
+      const tool = value as { execute: (...args: unknown[]) => unknown };
+      const execute = tool.execute.bind(tool);
+      const out = {
+        ...tool,
+        execute: (...args: unknown[]) => {
+          throwIfStopped(signal);
+          return raceWithStop(Promise.resolve(execute(...args)), signal);
+        },
+      };
+      wrapped.set(prop, out);
+      return out;
+    },
+  });
+}
+
+/** Every engine step logs; throwing here makes a stop unwind the tree. */
+function withStopLogger(logger: WorkspaceLogger, signal: AbortSignal): WorkspaceLogger {
+  return new Proxy(logger, {
+    get(target, prop, receiver) {
+      if (prop === "log") {
+        return (event: KatEvent) => {
+          throwIfStopped(signal);
+          return target.log(event);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 interface RunOptions {
   id: number;
   task?: string;
@@ -177,6 +252,8 @@ interface RunOptions {
   serverModels?: boolean;
   /** Per-conversation role→slot overrides (e.g. strong → "v4.1"). */
   modelOverrides?: Record<string, string>;
+  /** Browser-level CDP socket the launcher passed in as ?cdp=… */
+  cdp?: string;
 }
 
 interface Session {
@@ -240,6 +317,30 @@ async function ensureIndex(platform: Platform, key: string): Promise<void> {
 
 const treeCache = new Map<string, Promise<unknown>>();
 
+/**
+ * A tree load failure with the fix the model can relay. The usual cause in
+ * the browser is a workspace copy that predates the host-owned store (a
+ * Node-only import such as `node:sqlite`), so say what to do about it.
+ */
+function treeLoadError(name: string, err: unknown): Error {
+  const detail = err instanceof Error ? err.message : String(err);
+  return new Error(
+    `could not load app '${name}': ${detail}. The workspace copy on this device ` +
+      `may be stale — sync it (reload the page, or open with ?reclone) and retry.`,
+  );
+}
+
+const warnedTreeFailures = new Set<string>();
+
+/** Report a tree that cannot load once per reason, so probes don't spam. */
+function warnTreeFailure(platform: Platform, name: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  const key = `${platform.workspaceRoot}|${name}|${message}`;
+  if (warnedTreeFailures.has(key)) return;
+  warnedTreeFailures.add(key);
+  console.warn(`[app-trees] ${message}`);
+}
+
 /** Resolve + load a tree by logical name (or `name@ref`) from the workspace. */
 async function loadTreeRef(platform: Platform, name: string): Promise<unknown> {
   const key = `${platform.workspaceRoot}|${name}`;
@@ -256,9 +357,20 @@ async function loadTreeRef(platform: Platform, name: string): Promise<unknown> {
       const mod = await createModuleLoader(platform).load(file);
       return (mod as { default?: unknown }).default ?? mod;
     })();
-    treeCache.set(key, pending);
+    const p = pending;
+    // A failed load must not be cached for the worker's lifetime: after the
+    // workspace syncs, the next attempt has to evaluate the new files instead
+    // of replaying the old failure.
+    p.catch(() => {
+      if (treeCache.get(key) === p) treeCache.delete(key);
+    });
+    treeCache.set(key, p);
   }
-  return pending;
+  try {
+    return await pending;
+  } catch (err) {
+    throw treeLoadError(name, err);
+  }
 }
 
 /** Every runnable app tree (`app/<name>/tree.mjs`) as a callable tree tool, plus its guide. */
@@ -280,6 +392,14 @@ async function buildAppTreeTools(
       tree: app.name,
       guide: app.guide ?? "",
     };
+  }
+  // Probe-load each tree in the background so an app that cannot run in this
+  // environment (e.g. a Node-only import from a stale workspace copy) is
+  // reported at registration time instead of only when the model calls it.
+  // Successful loads are cached in `treeCache`; failures evict themselves, so
+  // the next run after a sync retries. This never blocks the turn.
+  for (const app of apps) {
+    void loadTreeRef(platform, app.name).catch((err) => warnTreeFailure(platform, app.name, err));
   }
   return { tools, guides };
 }
@@ -344,13 +464,15 @@ async function buildAppTools(
   return { tools, guides };
 }
 
-async function handleRun(opts: RunOptions): Promise<void> {
+async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
+  throwIfStopped(signal);
   const task = opts.task ?? "";
   const storage = opts.storage ?? "browser";
   const server = opts.server ?? "";
   const platform = await getPlatform(storage, server);
   globalThis.__BOB_STORE__ = createAppStore(platform);
   await ready;
+  throwIfStopped(signal);
 
   // The tree catalog (resolveTreeEntry) reads through the node:fs shim, so the
   // shim must follow the selected backend *before* a pattern name is resolved.
@@ -358,7 +480,7 @@ async function handleRun(opts: RunOptions): Promise<void> {
   // after a reload look for `patterns/context_manager.mjs` in the wrong place.
   setActiveFs(platform.fs);
 
-  // The picker sends a logical name ("context_manager", "name@v3"); boot sends
+  // The picker sends a logical name ("trunk", "name@v3"); boot sends
   // a path ("patterns/trunk.mjs"). Session identity uses the resolved file so
   // both shapes share one conversation.
   const patternPath = await resolvePatternPath(platform, opts.pattern);
@@ -375,6 +497,7 @@ async function handleRun(opts: RunOptions): Promise<void> {
   // The logger allocates on-disk seqs synchronously (refs are addresses), so
   // its cursor must be seeded from the log DB before the first event.
   await session.logger.ready;
+  throwIfStopped(signal);
 
   const registry = await (async (): Promise<ModelRegistry> => {
     // Served by the admin: its models.json is the single source (and the
@@ -408,9 +531,14 @@ async function handleRun(opts: RunOptions): Promise<void> {
   };
   const appTools = await buildAppTools(platform);
   Object.assign(toolsMap, appTools.tools);
-  const tools = withStubs(toolsMap);
+  // app/browser's tools spawn Chrome from Node, which a worker cannot do.
+  // Replace them with the native CDP implementations (or, without a ?cdp=
+  // endpoint, a stub that says how to start the local Chrome).
+  Object.assign(toolsMap, await browserCdpTools(platform, { cdp: opts.cdp }));
+  const tools = withStopTools(withStubs(toolsMap), signal);
   const appTree = await buildAppTreeTools(platform);
   Object.assign(toolsMap, appTree.tools);
+  throwIfStopped(signal);
 
   // Host + app guidance comes from the shared module, so the browser and Node
   // targets teach the model the same tool etiquette. Stubs are excluded so a
@@ -425,13 +553,14 @@ async function handleRun(opts: RunOptions): Promise<void> {
   const runtime = {
     models,
     tools,
-    logger: session.logger,
+    logger: withStopLogger(session.logger, signal),
     loadTree: (name: string) => loadTreeRef(platform, name),
     onEmit,
   };
 
   let res: { result?: unknown; status?: string; continuation?: string; humanSlot?: unknown };
   if (session.continuation) {
+    throwIfStopped(signal);
     res = (await withModelContext(models, () =>
       resume(session.continuation, {
         ...runtime,
@@ -440,16 +569,19 @@ async function handleRun(opts: RunOptions): Promise<void> {
       }),
     )) as typeof res;
   } else {
+    throwIfStopped(signal);
     const pattern = await loadPattern(platform, patternPath);
     res = (await withModelContext(models, () =>
       knit(pattern, { ...runtime, memory: { guide } }),
     )) as typeof res;
     if (res.status === "waiting") {
       if (task) {
+        throwIfStopped(signal);
         res = (await withModelContext(models, () =>
           resume(res.continuation!, { ...runtime, humanInput: task }),
         )) as typeof res;
       } else {
+        throwIfStopped(signal);
         session.continuation = res.continuation!;
         runs.delete(opts.id);
         post({ id: opts.id, type: "result", result: { status: "waiting", humanSlot: res.humanSlot }, eventCount: 0 });
@@ -459,6 +591,7 @@ async function handleRun(opts: RunOptions): Promise<void> {
     }
   }
 
+  throwIfStopped(signal);
   session.continuation = res.status === "waiting" ? (res.continuation ?? "") : "";
   post({
     id: opts.id,
@@ -470,20 +603,37 @@ async function handleRun(opts: RunOptions): Promise<void> {
 }
 
 self.onmessage = async (ev: MessageEvent) => {
-  const msg = ev.data as (RunOptions & { type: string }) | LogMessage;
+  const msg = ev.data as (RunOptions & { type: string }) | LogMessage | { type: "stop"; id?: number };
+  if (msg.type === "stop") {
+    if (
+      activeStop &&
+      (typeof (msg as { id?: unknown }).id !== "number" ||
+        (msg as { id: number }).id === activeStop.id)
+    ) {
+      activeStop.ctrl.abort();
+    }
+    return;
+  }
   if (msg.type === "log") {
     await handleLog(msg as LogMessage);
     return;
   }
   if (msg.type !== "run") return;
+  const run = msg as RunOptions;
+  const ctrl = new AbortController();
+  activeStop = { id: run.id, ctrl };
   try {
-    await handleRun(msg as RunOptions);
+    await handleRun(run, ctrl.signal);
   } catch (err) {
+    const stopped = ctrl.signal.aborted || isAgentStopped(err);
     post({
-      id: msg.id,
+      id: run.id,
       type: "error",
-      error: `agent run failed: ${err instanceof Error ? err.message : String(err)}`,
+      error: stopped ? "stopped by user" : `agent run failed: ${err instanceof Error ? err.message : String(err)}`,
+      ...(stopped ? { stopped: true } : {}),
     });
+  } finally {
+    if (activeStop?.ctrl === ctrl) activeStop = null;
   }
 };
 

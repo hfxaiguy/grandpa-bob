@@ -416,7 +416,7 @@ export async function getTurns(
         inputApp: m.inputApp,
         startedAt: m.startedAt,
         endedAt: m.endedAt,
-        status: m.status === "error" ? "error" : "done",
+        status: m.status === "error" ? "error" : m.status === "stopped" ? "stopped" : "done",
         error: m.error ?? null,
         output: m.output ?? null,
         emits: m.emits ?? null,

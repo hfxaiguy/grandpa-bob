@@ -22,7 +22,7 @@ import { loadEnv, saveEnv, saveModelsJson } from "../settings";
 import { parseModels, type ModelRegistry } from "../../../src/model-config";
 import { refTargetFromRow } from "../../../src/ref-target";
 import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "../../../src/db-sync";
-import { transcribeBlob } from "../stt/browser-whisper";
+import { AgentStoppedError, isAgentStopped } from "../../../src/stop-error";
 import type { SessionSummary } from "../agent/log-store";
 
 export interface BackendResponse {
@@ -46,6 +46,8 @@ export interface BackendOptions {
    * so the models endpoints fall through to it and the chat proxy is used.
    */
   serverModels?: boolean;
+  /** Browser-level CDP socket for the browser_* tools (?cdp=…). */
+  cdp?: string;
 }
 
 interface TurnRecord {
@@ -54,7 +56,7 @@ interface TurnRecord {
   inputApp?: string | null;
   startedAt: number;
   endedAt: number | null;
-  status: "running" | "done" | "error";
+  status: "running" | "done" | "error" | "stopped";
   error: string | null;
   output: string | null;
   emits: string[];
@@ -89,6 +91,8 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
    * marker lands the persisted copy is the source of truth.
    */
   const liveTurns = new Map<string, TurnRecord[]>();
+  /** The run currently executing in the worker, by session key. */
+  const activeRuns = new Map<string, { turnId: string; runId: number }>();
   const subscribers = new Set<(msg: EventMessage) => void>();
   let activePattern = opts.initialPattern || "trunk";
   let modelsJson = opts.modelsJson ?? "";
@@ -134,7 +138,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     // fetch shim, which would otherwise route this back into this backend.
     if (opts.serverModels) {
       const data = await adminGet("/api/models");
-      return typeof data?.json === "string" ? data.json : "";
+      if (typeof data?.json === "string") return data.json;
+      // The admin went away after this page loaded. Fall through to the same
+      // browser-local registry the agent worker falls back to, rather than
+      // reporting "no models" for a tab that can still run.
     }
     if (modelsJson.trim()) return modelsJson;
     try {
@@ -157,6 +164,56 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       return {};
     }
   }
+
+  /**
+   * Probe one (possibly unsaved) model entry from the page: reachability plus
+   * the ids the endpoint advertises. Mirrors the admin's `/api/models/test`
+   * (`checkLlmEntry` + `listEndpointModels`) but runs in the tab, so a
+   * standalone page can test a slot without any server.
+   */
+  async function probeModelEntry(
+    raw: unknown,
+  ): Promise<{ ok: boolean; models: string[]; error?: string }> {
+    let entry;
+    try {
+      entry = parseModels(JSON.stringify({ test: raw }), opts.env).test;
+    } catch (err) {
+      return { ok: false, models: [], error: err instanceof Error ? err.message : String(err) };
+    }
+    const base = entry.baseURL.replace(/\/$/, "");
+    const endpoint = entry.protocol === "ollama" ? "/api/tags" : "/models";
+    const headers: Record<string, string> = { accept: "application/json" };
+    if (entry.apiKey && entry.apiKey !== "no-key") headers.authorization = `Bearer ${entry.apiKey}`;
+    try {
+      const res = await fetch(`${base}${endpoint}`, {
+        headers,
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) return { ok: false, models: [], error: `HTTP ${res.status}` };
+      const data = (await res.json().catch(() => null)) as
+        | { data?: { id?: unknown }[]; models?: { name?: unknown; id?: unknown }[] }
+        | null;
+      const rows = (data?.data ?? data?.models ?? []) as { id?: unknown; name?: unknown }[];
+      const models = rows
+        .map((m) => (typeof m.id === "string" ? m.id : typeof m.name === "string" ? m.name : ""))
+        .filter((id): id is string => !!id)
+        .sort();
+      return { ok: true, models };
+    } catch (err) {
+      // A browser CORS rejection surfaces here as a bare TypeError; name the
+      // likely cause so a standalone user is not left guessing.
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        models: [],
+        error: `${message} (unreachable, or the endpoint does not allow browser CORS)`,
+      };
+    }
+  }
+
+  /** The old auto-generated mock registry (mock-llm on :8787). */
+  const isMockSlot = (s: { model: string; baseURL: string }): boolean =>
+    s.model === "mock-model" || /\/\/(127\.0\.0\.1|localhost):8787(?:\/|$)/.test(s.baseURL);
 
   // ── sessions (KAT log marker rows) ────────────────────────────────────
   // The worker owns the platform and the run log; these calls share its
@@ -307,7 +364,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
             runId,
             input: record.input,
             inputApp: record.inputApp ?? "trunk",
-            status: record.status === "error" ? "error" : "done",
+            status: record.status === "error" ? "error" : record.status === "stopped" ? "stopped" : "done",
             error: record.error,
             output: record.output,
             emits: record.emits,
@@ -401,7 +458,6 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     if (list.length > 20) list.shift();
     liveTurns.set(key, list);
     const apps = newTurnApps();
-    broadcast({ type: "turn_start", turnId, session: key, input: text, inputApp: record.inputApp ?? "trunk", ts: record.startedAt, awaiting: null });
     const running = agent.run(
       {
         task: text,
@@ -414,6 +470,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         modelsJson,
         serverModels: opts.serverModels,
         modelOverrides: sessionModels.get(key),
+        cdp: opts.cdp,
       },
       {
         onEvent: (event) => {
@@ -438,6 +495,8 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         },
       },
     );
+    activeRuns.set(key, { turnId, runId: running.runId });
+    broadcast({ type: "turn_start", turnId, session: key, input: text, inputApp: record.inputApp ?? "trunk", ts: record.startedAt, awaiting: null });
     try {
       const { result, emits } = await running;
       record.status = "done";
@@ -458,11 +517,28 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         awaiting: record.awaiting, ts: record.endedAt,
       });
     } catch (err) {
-      record.status = "error";
-      record.error = err instanceof Error ? err.message : String(err);
-      record.endedAt = Date.now();
-      await persistTurn(key, record, running.runId);
-      broadcast({ type: "turn_end", turnId, status: "error", error: record.error, output: "", buttons: [], emits: [], awaiting: null, ts: record.endedAt });
+      if (err instanceof AgentStoppedError || isAgentStopped(err)) {
+        record.status = "stopped";
+        record.error = null;
+        // The previous checkpoint is still the resume point; keep the input
+        // box on the app the message was headed for.
+        record.awaiting = record.inputApp ?? "trunk";
+        record.endedAt = Date.now();
+        await persistTurn(key, record, running.runId);
+        broadcast({
+          type: "turn_end", turnId, status: "stopped", error: null, output: record.output,
+          buttons: record.buttons, emits: record.emits, levels: record.levels, emitApps: record.emitApps,
+          awaiting: record.awaiting, ts: record.endedAt,
+        });
+      } else {
+        record.status = "error";
+        record.error = err instanceof Error ? err.message : String(err);
+        record.endedAt = Date.now();
+        await persistTurn(key, record, running.runId);
+        broadcast({ type: "turn_end", turnId, status: "error", error: record.error, output: "", buttons: [], emits: [], awaiting: null, ts: record.endedAt });
+      }
+    } finally {
+      if (activeRuns.get(key)?.turnId === turnId) activeRuns.delete(key);
     }
   }
 
@@ -715,6 +791,12 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         },
       };
     }
+    if (pathname === "/api/chat/stop" && method === "POST") {
+      const key = await ensureSession();
+      const active = activeRuns.get(key);
+      if (active) agent.stop(active.runId);
+      return { status: 200, body: { ok: true, stopped: Boolean(active) } };
+    }
     if (pathname === "/api/chat" && method === "POST") {
       const text = (parseBody(body) as { text?: string }).text ?? "";
       const turnId = crypto.randomUUID();
@@ -762,6 +844,9 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
           pid: null,
           workspace: platform.workspaceRoot,
           storage: opts.storage,
+          // Same shape as the admin's status: the Settings page populates the
+          // credentials shortcuts and the all-keys editor from this.
+          env: loadEnv(),
         },
       };
     }
@@ -786,6 +871,14 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       // /api/models/slots would return the admin session's overrides instead,
       // resetting the browser picker to "default" after every choice.
       let slots: { name: string; model: string; baseURL: string }[] = [];
+      const localSlots = async () => {
+        const reg = await effectiveModelRegistry();
+        return Object.entries(reg).map(([name, m]) => ({
+          name,
+          model: m.model,
+          baseURL: m.baseURL,
+        }));
+      };
       if (opts.serverModels) {
         const data = await adminGet("/api/models/slots");
         if (Array.isArray(data?.slots)) {
@@ -796,18 +889,24 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
               model: typeof s.model === "string" ? s.model : "",
               baseURL: typeof s.baseURL === "string" ? s.baseURL : "",
             }));
+        } else {
+          // The admin stopped after this page loaded: show what a run would
+          // fall back to, instead of an empty picker.
+          slots = await localSlots();
         }
       } else {
-        const reg = await effectiveModelRegistry();
-        slots = Object.entries(reg).map(([name, m]) => ({
-          name,
-          model: m.model,
-          baseURL: m.baseURL,
-        }));
+        slots = await localSlots();
       }
       return {
         status: 200,
-        body: { slots, active: await ensureSession(), models: sessionModels.get(await ensureSession()) ?? {} },
+        body: {
+          slots,
+          active: await ensureSession(),
+          models: sessionModels.get(await ensureSession()) ?? {},
+          // Lets the picker say "mock only" instead of pretending the old
+          // auto-generated :8787 entries are real models.
+          mockOnly: slots.length > 0 && slots.every(isMockSlot),
+        },
       };
     }
     if (pathname === "/api/chat/model" && method === "POST") {
@@ -921,23 +1020,8 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       }
     }
 
-    // ── voice (browser-local whisper) ─────────────────────────────────────
-    if (pathname === "/api/transcribe" && method === "POST") {
-      if (!(body instanceof FormData)) return { status: 400, body: { error: "multipart required" } };
-      const file = body.get("file");
-      if (!(file instanceof Blob) || file.size === 0) {
-        return { status: 400, body: { error: "no audio file" } };
-      }
-      try {
-        const text = await transcribeBlob(file);
-        return { status: 200, body: { text } };
-      } catch (err) {
-        return {
-          status: 502,
-          body: { error: `transcription failed: ${err instanceof Error ? err.message : String(err)}` },
-        };
-      }
-    }
+    // ── voice: transcription is Telegram-only; no in-browser STT model ────
+    // (falls through to the /api/ 501 below, so the UI degrades cleanly)
 
     if (pathname === "/api/files/upload" && method === "POST") {
       if (!(body instanceof FormData)) return { status: 400, body: { error: "multipart required" } };
@@ -991,6 +1075,11 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       // models.json. An empty editor here is why aliases could not be added.
       return { status: 200, body: { json: await effectiveModelJson() } };
     }
+    if (pathname === "/api/models/test" && method === "POST") {
+      // Standalone: probe the endpoint from the tab. Served by the admin, the
+      // gate above forwards this to the admin's own implementation.
+      return { status: 200, body: await probeModelEntry(parseBody<unknown>(body)) };
+    }
     if (pathname === "/api/models" && method === "POST") {
       const json = parseBody<{ json?: string }>(body).json ?? "";
       modelsJson = json;
@@ -1000,9 +1089,20 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
 
     // ── env (browser settings) ────────────────────────────────────────────
     if (pathname === "/api/env" && method === "POST") {
-      const vars = parseBody(body) as Record<string, string>;
+      // Same shape as the admin: a value sets the key, `null` removes it.
+      // Mirror updates into opts.env so runs/probes see them without a reload
+      // (the Node target needs a restart; the tab does not).
+      const vars = parseBody(body) as Record<string, string | null>;
       const env = loadEnv();
-      for (const [k, v] of Object.entries(vars)) if (v) env[k] = String(v);
+      for (const [k, v] of Object.entries(vars)) {
+        if (v === null) {
+          delete env[k];
+          delete opts.env[k];
+        } else if (typeof v === "string") {
+          env[k] = v;
+          opts.env[k] = v;
+        }
+      }
       saveEnv(env);
       return { status: 200, body: { ok: true } };
     }

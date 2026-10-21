@@ -15,6 +15,17 @@ waiting, or a hand-off. The toolbar **machine** button or the session-drawer
 checkbox hides/shows them, persisted in `localStorage`. `app/knit`'s spec
 prompt and the workspace guides describe `<<!` as this input note.
 
+## 2026-10-21 — browser tools share the workspace app's verbs
+
+The worker no longer carries a hand-copied set of `browser_*` tool definitions.
+`web/src/agent/browser-cdp.ts` now loads `app/browser/src/verbs.js` from the
+workspace through the module loader and supplies only the browser-level CDP
+transport; names, descriptions, schemas, bodies and the cursor-listener
+confirmation come from that one file (also used by the app's Node target). The
+worker-level hint (`npm run chrome`) is the only added wording. A load failure
+still yields per-tool stubs instead of breaking the worker. Tests:
+`npm run test:browser-tools` (fake socket; skipped without a workspace copy).
+
 ## 2026-10-21 — Emit flags and a machine-note toggle
 
 `grandma-kat` emits now accept a channel flag:
@@ -31,6 +42,56 @@ the normal reply stream. `app/knit`'s generated prelude can now import `flag`;
 `node --test tests/emit-flag.test.mjs` in `grandma-kat`; BOB's UI typecheck and
 web build cover the toggle.
 
+## 2026-10-21 — `npm run chrome` opens BOB in FireDragon
+
+The launcher now opens the app in **FireDragon** (falling back to an installed
+Firefox, then the OS opener) instead of whatever `xdg-open` points at. Chrome is
+still launched/reused for the CDP endpoint the `browser_*` tools drive, but it
+stays a background automation process — FireDragon is Firefox-based and has no
+CDP server, so it is only the display browser. `BOB_BROWSER_BIN` chooses a
+different display browser, `BOB_NO_CDP=1` skips Chrome entirely (the four
+browser tools report no endpoint) and clears a persisted `?cdp=` socket, and
+`BOB_NO_OPEN=1` keeps printing the URL without launching anything. Docs:
+`web/README.md` → "Browser tools (local Chrome)". `web/scripts/chrome.mjs`,
+`web/src/main.ts` (empty `?cdp=` clears the saved value).
+
+## 2026-10-21 — standalone web target (no admin)
+
+The browser target can now run with grandpa-bob's admin stopped:
+`npm run web:standalone` serves `web/dist` from a zero-dependency loopback
+static server (`web/scripts/serve.mjs`, default `:8080`, `PORT`/`HOST`
+overrides) and answers `/api/*` with 404 because there is no admin API. The
+check also fails fast when `web/dist` is missing, and names the admin when the
+port is already taken.
+
+The seed now packs `workspace/models.json` from
+`web/public/models.standalone.json` — neuralwatt `v4`/`v4.1` plus
+`cheap`/`strong` aliases, with `${NEURALWATT_API_KEY}` substituted from
+Settings → Credentials & .env, so no key is committed and the workspace's real
+`models.json` (desktop endpoints/keys) is still never seeded. The credentials
+card gained a Neuralwatt key shortcut, and the browser `/api/status` now reports
+the env map so the all-keys editor works without a server. Older browser
+profiles whose `models.json` is still the auto-generated `:8787` mock are
+upgraded to the template; a hand-edited registry is left alone.
+
+Standalone additions:
+- `POST /api/models/test` in the browser backend: reachability + model ids from
+  the tab, same shape as the admin, so Settings → **Test** works with no
+  server. A browser CORS rejection is named in the error instead of looking
+  like a dead endpoint.
+- the picker flags a mock-only registry (`mockOnly`) instead of presenting
+  `:8787` entries as real models.
+- a tab loaded from the admin no longer goes model-less when the admin stops
+  mid-session: `/api/models` and `/api/models/slots` fall back to the
+  browser-local registry, matching the agent worker's existing fallback.
+- the status line appends `standalone` when the admin is not serving the page.
+
+Ollama Cloud stays server-mode only: it sends no CORS headers (the preflight
+answers `405` on both `/api/chat` and `/v1/chat/completions`), while neuralwatt
+answers `access-control-allow-origin: *` — verified with preflight and GET, so
+the standalone template uses neuralwatt only. Docs:
+`web/README.md` → "Standalone (no admin)".
+
 ## 2026-10-21 — `inspect_memory` in the client-only web UI
 
 The browser target now registers grandma-kat's `inspect_memory` host tool, so a
@@ -40,6 +101,38 @@ target" stub. The worker's plain tool map already receives the engine's
 `view`/`readRef`/`scopeInfo` ctx in `execute`, so it needs no special dispatch
 like the Node registry. Also fixed in KAT: a direct
 `Call('…', 'inspect_memory', …)` now gets the same ctx as the auto tool loop.
+
+## 2026-10-20 — stop a running tree
+
+The chat composer now shows **Stop** while a turn is running. It calls
+`/api/chat/stop`; both targets abort the in-flight model request, reject the
+current tool call, and make the engine's next logged step throw, so the tree
+cannot advance. A stopped turn is recorded as `stopped` (not an error) and the
+previous checkpoint remains the resume point, so the conversation keeps
+working. Browser mode keeps the worker alive; Node mode aborts only the
+signalled turn via `AsyncLocalStorage`, and the admin's `/api/llm` proxy also
+aborts its upstream request on client disconnect. Regression test:
+`npm run test:stop`.
+
+## 2026-10-20 — workspace spec lint moves into BOB
+
+`patterns/spec-lint.mjs` is now `scripts/spec-lint.ts` here. It lints the
+workspace's `patterns/*.spec.md` and `app/*/tree.spec.md`, defaults to
+`$WORKSPACE_DIR` or `~/grandma-workspace`, and is available as
+`npm run lint:specs` (with `npm run test:spec-lint` for its unit tests). It no
+longer appears in the pattern picker, and `lib/` stays runtime-only.
+
+## 2026-10-20 — the open session lives in the URL
+
+The chat page now mirrors the active session into `?session=<key>` and resumes
+it on load, so a reload (or a bookmark) returns to the conversation that was on
+screen instead of opening a new chat. The first visit still opens a fresh chat;
+`new chat`, opening/renaming/deleting a session and the Telegram follow all keep
+the address bar in step (`replaceState`, so other query params survive and Back
+does not walk session history). A key that no longer exists falls back to a
+fresh chat and rewrites the URL. Re-selecting the already-active session is now
+a no-op on the admin API too — a freshly minted chat has no log markers, and a
+reload arrives as exactly that request.
 
 ## 2026-10-20 — inspect exact LLM prompt/output in the event stream
 
@@ -150,6 +243,30 @@ stub (a pre-existing web typecheck failure).
 
 The browser smoke now reloads, then resolves a logged seq through `/api/ref`
 and checks the row kind, proving the address survived the in-memory session.
+
+## 2026-10-19 — transcription is Telegram-only; voice input removed from the web UI
+
+The composer's 🎙 mic button (record → `/api/transcribe` → send) is gone from
+the web UI, and the browser target no longer runs whisper in-tab: the
+Transformers.js pipeline (`web/src/stt/browser-whisper.ts`) was pulling the
+entire STT model into the browser tab on first use. Audio transcription stays
+where it belongs for now — Telegram voice messages on the Node target, via the
+GPU whisper backend.
+
+- `ui/src/components.tsx`: mic button and all MediaRecorder state removed; the
+  composer is text + file attachment only.
+- `ui/src/store.ts`: `transcribeAudio` (voice-blob helper) removed.
+  `transcribeFileStream` stays: attaching an audio *file* still streams a
+  transcript from the Node server's whisper backend (server-side, nothing
+  downloaded into the browser).
+- `web/src/server/local-backend.ts`: the in-tab `/api/transcribe` route is
+  deleted; `/api/transcribe*` now falls through to the standard 501
+  "not available in browser mode", like restart-bot and telegram.
+- `web/src/stt/` directory removed from the browser bundle.
+- Node target unchanged: `src/stt.ts`, `src/bot.ts` (Telegram), and
+  `src/admin.ts`'s `/api/transcribe*` routes are untouched.
+
+Revisit browser voice input later via a remote STT API — never an in-tab model.
 
 ## 2026-10-19 — drop the File System Access ("direct folder") storage mode
 

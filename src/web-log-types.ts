@@ -18,7 +18,7 @@ export interface TurnMarker {
   toSeq: number | null;
   input: string;
   inputApp?: string | null;
-  status: "done" | "error";
+  status: "done" | "error" | "stopped";
   error?: string | null;
   output?: string | null;
   emits?: string[] | null;
@@ -39,7 +39,7 @@ export interface DerivedTurn {
   inputApp?: string | null;
   startedAt: number;
   endedAt: number | null;
-  status: "done" | "error";
+  status: "done" | "error" | "stopped";
   error: string | null;
   output: string | null;
   emits?: string[] | null;

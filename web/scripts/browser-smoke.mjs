@@ -1,5 +1,5 @@
 // Minimal headless check that the OPFS storage mode still boots and writes.
-// Requires a dev server (`npx vite --port 5173`) and a Chromium binary.
+// Requires the admin (npm run dev at the repo root) and a Chromium binary.
 //   node scripts/browser-smoke.mjs
 import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
@@ -8,7 +8,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const PORT = Number(process.env.CDP_PORT ?? 9224);
-const TARGET = process.argv[2] ?? process.env.WEB_URL ?? "http://localhost:5173/?storage=browser";
+const TARGET = process.argv[2] ?? process.env.WEB_URL ?? "http://localhost:8080/?storage=browser";
 const CHROME = process.env.CHROME_BIN ?? "chromium";
 const PROFILE = path.join(os.tmpdir(), `bob-browser-smoke-${PORT}-${process.pid}`);
 
@@ -132,6 +132,28 @@ if (!picked.names?.length || picked.set !== 200 || picked.overrides?.[picked.rol
   cleanup(5);
 }
 console.log("✓ model picker lists slots and stores a role→slot override");
+
+// Settings → Test talks to /api/models/test. Standalone must answer it in the
+// tab (the admin path forwards the 501 to the real server); shape is
+// { ok, models } either way.
+const modelProbe = await evaluate(`(async () => {
+  const backend = window.__bobBackend;
+  await backend.ready;
+  const r = await backend.request("POST", "/api/models/test", new URLSearchParams(),
+    JSON.stringify({ baseURL: location.origin, model: "smoke-probe" }));
+  return JSON.stringify({
+    status: r.status,
+    hasOk: typeof r.body?.ok === "boolean",
+    models: Array.isArray(r.body?.models),
+  });
+})()`);
+const probed = JSON.parse(modelProbe);
+if (probed.status !== 200 || !probed.hasOk || !probed.models) {
+  console.error("model test endpoint failed", probed);
+  console.log(exceptions.join("\n"));
+  cleanup(5);
+}
+console.log("✓ model endpoint test answers from the page");
 
 // Header upload button: picker → folder prompt → file lands in the workspace.
 const upload = await evaluate(`(async () => {

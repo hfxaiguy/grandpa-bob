@@ -7,7 +7,8 @@
  *
  *   - `grandma-kat` (any specifier containing it) -> the statically bundled
  *     grandma-kat namespace, injected as `__gk`;
- *   - `node:*` builtins -> the shims already used by the worker bundle;
+ *   - `node:*` builtins -> the shims already used by the worker bundle
+ *     (`node:sqlite` resolves to the host-owned stub, which throws on use);
  *   - relative specifiers -> resolved and loaded recursively from OPFS;
  *   - `import.meta.url` -> a `file://` URL for the module;
  *   - `export default` / `export const` / `export {}` -> module.exports.
@@ -20,8 +21,15 @@ import pathShim from "../shims/node-path";
 import cryptoShim from "../shims/node-crypto";
 import urlShim from "../shims/node-url";
 import osShim from "../shims/node-os";
+import utilShim from "../shims/node-util";
+import childProcessShim from "../shims/node-child-process";
+import sqliteShim from "../shims/node-sqlite";
 import type { Platform } from "../../../src/platform/types";
 
+// Mirrors the Vite alias set, so a module behaves the same whether it is
+// bundled (shared code) or evaluated from the workspace at runtime. A missing
+// entry here shows up as the cryptic "cannot resolve module specifier" when a
+// tree loads — see scripts/module-loader-test.ts.
 const BUILTINS: Record<string, unknown> = {
   "node:fs": fsShim,
   "node:fs/promises": fsShim,
@@ -29,6 +37,9 @@ const BUILTINS: Record<string, unknown> = {
   "node:crypto": cryptoShim,
   "node:url": urlShim,
   "node:os": osShim,
+  "node:util": utilShim,
+  "node:child_process": childProcessShim,
+  "node:sqlite": sqliteShim,
 };
 
 export interface ModuleLoader {

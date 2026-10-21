@@ -8,6 +8,8 @@ import type { ModelRegistry } from "./models.js";
 import { loadPattern } from "./pattern-loader.js";
 import { listTreeSources } from "./tree-sources.js";
 import { parseTreeBase, resolveTreeEntry } from "./tree-versions.js";
+import { raceWithStop, isAgentStopped, AgentStoppedError, throwIfStopped } from "./stop-error.js";
+import { runWithStop } from "./stop.js";
 
 /**
  * Whether a resume error means the saved position is dead and the turn should
@@ -100,6 +102,12 @@ export interface AgentRunOptions {
    * AgentDeps (a string db path can't be intercepted).
    */
   onEvent?: (event: unknown) => void;
+  /**
+   * Abort this turn. In-flight model calls are cancelled, tool calls stop
+   * being awaited, and the engine's next logged step throws, so the tree
+   * cannot advance. The previous checkpoint remains the resume point.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -130,6 +138,34 @@ export async function checkLlmEntry(
   } catch {
     return false;
   }
+}
+
+/**
+ * Wrap every tool's `execute` so a stop rejects it immediately. Tree tools
+ * (`tree: name`) have no execute and are stopped by the logger/fetch checks.
+ */
+function withStopTools(
+  tools: Record<string, unknown>,
+  signal?: AbortSignal,
+): Record<string, unknown> {
+  if (!signal) return tools;
+  const out: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(tools)) {
+    const tool = value as { execute?: (...args: unknown[]) => unknown } | null;
+    if (!tool || typeof tool !== "object" || typeof tool.execute !== "function") {
+      out[name] = value;
+      continue;
+    }
+    const execute = tool.execute.bind(tool);
+    out[name] = {
+      ...tool,
+      execute: (...args: unknown[]) => {
+        throwIfStopped(signal);
+        return raceWithStop(Promise.resolve(execute(...args)), signal);
+      },
+    };
+  }
+  return out;
 }
 
 export class Agent {
@@ -316,7 +352,7 @@ export class Agent {
    *
    * Hashing the FULL definition made volatile, resume-irrelevant churn drop a
    * live conversation's whole saved position: the trunk's Tools() list is
-   * built from a filesystem scan of app/ (trunk_step's appTreeNames()), so
+   * built from a filesystem scan of app/ (the trunk's appTreeNames()), so
    * creating or editing an app dir while a session was paused changed the
    * hash and nuked its context. The skeleton ignores all of that.
    */
@@ -387,13 +423,18 @@ export class Agent {
     const prev = this.runChains.get(key);
     const work = (prev ?? Promise.resolve())
       .catch(() => {})
-      .then(() => this.runExclusive(key, humanInput, onEmit, opts));
+      .then(() =>
+        runWithStop(opts?.signal, () => this.runExclusive(key, humanInput, onEmit, opts)),
+      );
     // Void mirror for the queue: settles on success AND failure so a
     // crashed turn never blocks the next one.
     const gate = work.then(() => {}, () => {});
     this.runChains.set(key, gate);
     try {
       return await work;
+    } catch (err) {
+      if (opts?.signal?.aborted || isAgentStopped(err)) throw new AgentStoppedError();
+      throw err;
     } finally {
       if (this.runChains.get(key) === gate) this.runChains.delete(key);
     }
@@ -425,6 +466,7 @@ export class Agent {
     onEmit?: (value: unknown) => void | Promise<void>,
     opts?: AgentRunOptions,
   ): Promise<AgentRunResult> {
+    throwIfStopped(opts?.signal);
     let cont = this.continuations.get(key);
     let droppedContinuation = false;
     const katTools = this.deps.tools.toKatTools();
@@ -524,8 +566,10 @@ export class Agent {
     }
 
     // Function tools win name collisions; tree tools fill in the rest, so a
-    // pattern can offer any workspace tree to the model by name.
-    const allTools = { ...treeTools, ...katTools };
+    // pattern can offer any workspace tree to the model by name. The stop
+    // signal rejects a tool the user stopped instead of awaiting its side
+    // effect to finish.
+    const allTools = withStopTools({ ...treeTools, ...katTools }, opts?.signal);
 
     const runtime: Record<string, unknown> = {
       models: this.modelsFor(key),
@@ -539,7 +583,7 @@ export class Agent {
       // The conversation key is that id, so an app that yields to the trunk
       // (e.g. email's hand_off) can resume its own state on re-entry.
       sessionId: key,
-      logger: this.wrapLogger(opts?.onEvent),
+      logger: this.wrapLogger(opts?.onEvent, opts?.signal),
       onEmit,
       // Bound what the model sees for a tool result (grandma-kat caps and
       // rows-trims before the prompt's thread). Full results stay for tree
@@ -560,8 +604,9 @@ export class Agent {
       ?? (pattern as { needs?: string[] } | null);
     const needsInput = (patternDef?.needs ?? []).includes("input");
 
-    const freshRun = () =>
-      grandma.knit(pattern, {
+    const freshRun = () => {
+      throwIfStopped(opts?.signal);
+      return grandma.knit(pattern, {
         ...runtime,
         // First run: inject system prompt and start the tree.
         // A tree that opens with `.human()` pauses immediately — no LLM call
@@ -575,6 +620,7 @@ export class Agent {
           ...(needsInput ? { input: humanInput } : {}),
         },
       });
+    };
 
     let outcome: { status?: string; continuation?: string; result?: unknown; treePath?: string };
 
@@ -585,6 +631,7 @@ export class Agent {
       // caller never names the slot. See injectHumanInput in
       // grandma-kat/src/knit.mjs.
       try {
+        throwIfStopped(opts?.signal);
         outcome = await grandma.knit(pattern, {
           ...runtime,
           _continuation: cont,
@@ -626,6 +673,7 @@ export class Agent {
     // just the tree's startup output. Input-driven trees already consumed
     // the message in freshRun above.
     if (droppedContinuation && !needsInput && outcome.status === "waiting" && outcome.continuation) {
+      throwIfStopped(opts?.signal);
       outcome = await grandma.knit(pattern, {
         ...runtime,
         _continuation: outcome.continuation,
@@ -633,6 +681,10 @@ export class Agent {
         memory: { workspace: this.deps.workspace, guide },
       });
     }
+
+    // A stop that lands after the engine pauses but before the host records
+    // the new checkpoint must not be mistaken for a completed turn.
+    throwIfStopped(opts?.signal);
 
     if (outcome.status === "waiting" && outcome.continuation) {
       this.continuations.set(key, outcome.continuation);
@@ -668,24 +720,26 @@ export class Agent {
 
   /**
    * Wrap the configured logger so each logged event also reaches
-   * `onEvent` (per-run telemetry for the web UI). Read methods —
-   * checkpoints, events, and `readRow` (the engine's run-log reader behind
-   * `ref://` handles) — and `startRun` (the conversation key on the run
-   * row) are delegated to the base logger untouched; the shared logger is
-   * never closed by the wrapper. Without `onEvent` (or with a plain db-path
-   * string logger) the original logger is returned as-is.
+   * `onEvent` (per-run telemetry for the web UI) and so a stopped turn throws
+   * before the engine can run its next step. Read methods — checkpoints,
+   * events, and `readRow` (the engine's run-log reader behind `ref://`
+   * handles) — and `startRun` (the conversation key on the run row) are
+   * delegated to the base logger untouched; the shared logger is never
+   * closed by the wrapper. Without `onEvent`/`signal` (or with a plain
+   * db-path string logger) the original logger is returned as-is.
    */
-  private wrapLogger(onEvent?: (event: unknown) => void): unknown {
+  private wrapLogger(onEvent?: (event: unknown) => void, signal?: AbortSignal): unknown {
     const base = this.deps.logger as
       | { log?: (e: unknown) => number | void; [k: string]: unknown }
       | undefined;
-    if (!onEvent || !base || typeof base.log !== "function") {
+    if ((!onEvent && !signal) || !base || typeof base.log !== "function") {
       return this.deps.logger ?? this.logDb;
     }
     return {
       log(event: unknown): number | void {
+        throwIfStopped(signal);
         try {
-          onEvent(event);
+          onEvent?.(event);
         } catch {
           // telemetry must never break a run
         }

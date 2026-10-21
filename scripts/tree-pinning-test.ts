@@ -127,7 +127,7 @@ let relay = mkAgent("relay");
 // ── 6. resume-irrelevant churn does NOT drop a session ──
 //
 // The trunk's Tools() list is built from a filesystem scan of app/ (the
-// trunk_step appTreeNames() scan), so creating or editing an app dir while a
+// trunk's appTreeNames() scan), so creating or editing an app dir while a
 // session is paused used to change the tree's definition hash and nuke its
 // whole saved context. Only the CHILD STRUCTURE matters for resume, so a
 // Tools-only change must keep the session.

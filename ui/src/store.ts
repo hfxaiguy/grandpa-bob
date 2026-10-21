@@ -38,6 +38,8 @@ export interface UiState {
   ref: string;
   slots: Slot[];
   models: Record<string, string>;
+  /** The in-tab registry is still the auto-generated mock one (standalone). */
+  mockOnly: boolean;
   turns: Turn[];
   awaiting: string | null;
   memory: Record<string, Record<string, unknown>>;
@@ -95,6 +97,7 @@ export const [state, setState] = createStore<UiState>({
   ref: "",
   slots: [],
   models: {},
+  mockOnly: false,
   turns: [],
   awaiting: null,
   memory: {},
@@ -173,9 +176,10 @@ export async function refreshVersions(name?: string): Promise<void> {
 
 export async function refreshModels(): Promise<void> {
   try {
-    const d = await getJSON<{ slots: Slot[]; models: Record<string, string> }>("/api/models/slots");
+    const d = await getJSON<{ slots: Slot[]; models: Record<string, string>; mockOnly?: boolean }>("/api/models/slots");
     setState("slots", d.slots || []);
     setState("models", reconcile(d.models || {}));
+    setState("mockOnly", !!d.mockOnly);
   } catch (e) {
     console.warn("models:", e);
   }
@@ -188,6 +192,31 @@ export async function refreshMemory(): Promise<void> {
     setState("memory", d.apps || {});
   } catch {
     setState("memory", {});
+  }
+}
+
+/** The URL carries the open chat (`?session=<key>`), so a reload — or a
+ *  bookmark — resumes it instead of dropping into a fresh one. Kept as a
+ *  mirror of `state.active`: every path that changes the visible session goes
+ *  through `refreshSession` (drawer pick, new chat, delete, telegram-follow,
+ *  SSE "cleared"/"sessions"), so one call site keeps the address bar honest.
+ *  `replaceState`, not `pushState`: the screen still follows one session, and
+ *  back/forward should not walk a session history. Other query params
+ *  (`storage`, `server`, `remote` on the browser target) are preserved. */
+function updateSessionUrl(key: string | null): void {
+  try {
+    const url = new URL(location.href);
+    const current = url.searchParams.get("session");
+    if (key) {
+      if (current === key) return;
+      url.searchParams.set("session", key);
+    } else {
+      if (current === null) return;
+      url.searchParams.delete("session");
+    }
+    history.replaceState(history.state, "", url);
+  } catch {
+    /* no history (sandboxed frame) — the chat still works, only the URL lags */
   }
 }
 
@@ -209,6 +238,9 @@ export async function refreshSession(): Promise<void> {
     sessions: d.sessions || [],
     turns: d.turns || [],
   });
+  // The address bar follows the screen (and loses the param when the active
+  // session is deleted and nothing is selected).
+  updateSessionUrl(d.active);
   setState("models", reconcile(d.models || {}));
   syncLastError(d.turns || []);
   await Promise.all([refreshMemory(), refreshModels()]);
@@ -243,6 +275,10 @@ function syncLastError(turns: Turn[]): void {
     });
     return;
   }
+  if (last.status === "stopped") {
+    setState("lastError", null);
+    return;
+  }
   const llmErr = last.events.find((e) => e.kind === "llm_error");
   if (llmErr) {
     const text = String((llmErr.content as Record<string, unknown> | null)?.error ?? "a model call failed");
@@ -262,6 +298,19 @@ export async function send(text: string): Promise<void> {
     setState("awaiting", null); // a turn is now running; hide the input
   } catch (e) {
     toast(e instanceof Error ? e.message : "send failed", true);
+  }
+}
+
+/**
+ * Stop the running tree. The server aborts model/tool work and unwinds the
+ * engine; the turn ends as "stopped" and the previous checkpoint remains.
+ */
+export async function stop(): Promise<void> {
+  try {
+    const d = await postJSON<{ stopped?: boolean }>("/api/chat/stop", {});
+    if (!d.stopped) toast("nothing is running");
+  } catch (e) {
+    toast(e instanceof Error ? e.message : "stop failed", true);
   }
 }
 
@@ -295,14 +344,6 @@ export async function sendFile(file: File, caption: string): Promise<void> {
     toast(e instanceof Error ? e.message : "upload failed", true);
     throw e;
   }
-}
-
-/** Transcribe a recorded voice blob via /api/transcribe; returns the text. */
-export async function transcribeAudio(blob: Blob, filename: string): Promise<string> {
-  const fd = new FormData();
-  fd.append("file", blob, filename);
-  const d = await postForm<{ text: string }>("/api/transcribe", fd);
-  return d.text;
 }
 
 /**
@@ -679,6 +720,8 @@ function handleSSE(msg: any): void {
       );
       if (msg.status === "error") {
         toast(`turn failed: ${msg.error || "the turn failed"}`, true);
+      } else if (msg.status === "stopped") {
+        toast("turn stopped");
       }
       // Re-derive from the turn: a completed turn with a swallowed model
       // failure still warns; a clean turn clears the banner.
@@ -717,19 +760,44 @@ function handleSSE(msg: any): void {
   }
 }
 
-/** Boot the UI: load catalogs, open a fresh chat, then follow the live stream. */
+/** Boot the UI: load catalogs, resume the chat named in the URL (else open a
+ *  fresh one), then follow the live stream. */
 export async function init(): Promise<void> {
   await Promise.all([refreshApps(), refreshPatterns(), refreshModels()]);
-  // A page load always opens a NEW chat. The server's active session (and the
-  // Telegram-follow) survive a browser refresh, so without this a reload drops
-  // you back into whatever was last on screen. Older sessions stay in the
-  // picker for an explicit pick. Mint-or-reuse, so reloading an untouched chat
-  // never piles up empty shells. `new: true` also ends the Telegram-follow
-  // (same as clicking "new chat"); re-enable it in settings when wanted.
+  // The URL carries the open chat. A reload is an explicit pick, so
+  // `?session=<key>` resumes that conversation — restoring its turns, memory
+  // and tree continuation, and surviving a server restart (the server starts
+  // with nothing active until a session is chosen). A stale bookmark (a key
+  // that no longer exists) falls through to a fresh chat; `refreshSession`
+  // then rewrites the URL to whatever we actually landed on, so it self-heals.
+  let wanted: string | null = null;
   try {
-    await postJSON("/api/session", { new: true });
-  } catch (e) {
-    console.warn("session:", e);
+    wanted = new URLSearchParams(location.search).get("session");
+  } catch {
+    /* no location (test harness) — behave as a plain first load */
+  }
+  let resumed = false;
+  if (wanted) {
+    try {
+      await postJSON("/api/session", { key: wanted });
+      resumed = true;
+    } catch (e) {
+      console.warn("session: could not resume", wanted, e);
+    }
+  }
+  // No usable session in the URL: a page load opens a NEW chat. The server's
+  // active session (and the Telegram-follow) survive a browser refresh, so
+  // without this a plain first visit drops you back into whatever was last on
+  // screen. Older sessions stay in the picker for an explicit pick.
+  // Mint-or-reuse, so reloading an untouched chat never piles up empty shells.
+  // `new: true` also ends the Telegram-follow (same as clicking "new chat");
+  // re-enable it in settings when wanted.
+  if (!resumed) {
+    try {
+      await postJSON("/api/session", { new: true });
+    } catch (e) {
+      console.warn("session:", e);
+    }
   }
   try {
     await refreshSession();

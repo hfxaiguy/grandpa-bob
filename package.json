@@ -6,13 +6,16 @@
   "type": "module",
   "scripts": {
     "dev": "BOB_DEV=1 NODE_OPTIONS=--dns-result-order=ipv4first tsx src/index.ts",
+    "chrome": "node web/scripts/chrome.mjs",
     "build": "tsc && npm run build:web",
     "build:web": "npm --prefix web run build",
+    "web:standalone": "node web/scripts/serve.mjs",
     "build:ui": "node scripts/build-ui.mjs",
     "make-seed": "WORKSPACE_DIR=\"${WORKSPACE_DIR:-$HOME/grandma-workspace}\" npm --prefix web run make-seed",
     "start": "node --dns-result-order=ipv4first dist/index.js",
     "storage-server": "WORKSPACE_DIR=\"${WORKSPACE_DIR:-$HOME/grandma-workspace}\" node web/scripts/storage-server.mjs",
     "typecheck": "tsc --noEmit",
+    "lint:specs": "tsx scripts/spec-lint.ts",
     "smoke": "tsx scripts/smoke.ts",
     "test:model-switch": "tsx scripts/model-switch-test.ts",
     "test:admin-models": "tsx scripts/admin-models-test.ts",
@@ -20,6 +23,8 @@
     "test:ui-serve": "tsx scripts/ui-serve-test.ts",
     "test:ui": "npm --prefix ui run typecheck && npm --prefix ui run build",
     "test:patterns": "tsx scripts/patterns-test.ts",
+    "test:spec-lint": "tsx scripts/spec-lint-test.ts",
+    "test:stop": "tsx scripts/stop-test.ts",
     "test:trees": "tsx scripts/tree-tools-test.ts",
     "test:tree": "tsx scripts/tree-serialize-test.ts",
     "test:tree-versions": "tsx scripts/tree-versions-test.ts",
@@ -60,7 +65,10 @@
     "whisper:up": "sh -c 'set -a; . ./.env 2>/dev/null; set +a; exec vendor/whisper.cpp/build/bin/whisper-server --host 127.0.0.1 --port 8178 -m vendor/whisper.cpp/models/${WHISPER_MODEL:-ggml-base.bin}'",
     "ollama:up": "sh -c 'curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && echo \"ollama already running at :11434\" || exec ollama serve'",
     "repl": "tsx src/debug/repl.ts",
-    "test:module-loader": "tsx scripts/module-loader-test.ts"
+    "test:module-loader": "tsx scripts/module-loader-test.ts",
+    "test:cdp": "tsx scripts/cdp-test.ts",
+    "test:browser-tools": "tsx scripts/browser-tools-test.ts",
+    "test:ui-describe": "tsx scripts/ui-describe-test.ts"
   },
   "dependencies": {
     "@duckdb/node-api": "^1.5.5-r.5",

@@ -55,6 +55,7 @@ import { sanitizeEvent, type SanitizedEvent } from "./sanitize.js";
 const MAX_SECRET_BYTES = 1024 * 1024;
 import { emitValue, type EmitButton } from "./util/emit-text.js";
 import { isQuotaError, quotaRole } from "./util/quota-error.js";
+import { isAgentStopped } from "./stop-error.js";
 import { buildSettingsHtml } from "./ui/pages.js";
 
 const execFileAsync = promisify(execFile);
@@ -603,7 +604,7 @@ interface TurnRecord {
   inputApp?: string | null;
   startedAt: number;
   endedAt: number | null;
-  status: "running" | "done" | "error";
+  status: "running" | "done" | "error" | "stopped";
   error: string | null;
   output: string | null;
   /** Chat-facing text of each emit, in order — one bubble per entry. */
@@ -970,7 +971,7 @@ function persistTurn(key: string, t: TurnRecord): void {
     toSeq: t.toSeq ?? null,
     input: t.input,
     inputApp: t.inputApp ?? "trunk",
-    status: t.status === "error" ? "error" : "done",
+    status: t.status === "error" ? "error" : t.status === "stopped" ? "stopped" : "done",
     error: t.error,
     output: t.output,
     emits: t.emits ?? null,
@@ -1041,6 +1042,8 @@ const sseClients = new Set<http.ServerResponse>();
 let webQueue: Promise<void> = Promise.resolve();
 let activeTurns = 0;
 let pendingTurns = 0;
+/** The current web turn's stop handle, by session key. */
+const turnStops = new Map<string, AbortController>();
 
 /** True while a web turn is running; the auto-sync timer waits for a quiet moment. */
 export function isAdminBusy(): boolean {
@@ -1115,6 +1118,8 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     activeTurns--;
     return;
   }
+  const stop = new AbortController();
+  turnStops.set(key, stop);
   // A new turn supersedes any pending quota-fallback prompt for this session
   // (the fallback re-run goes through here too, but confirm already consumed it).
   if (typeof agent.clearPendingFallback === "function") agent.clearPendingFallback(key);
@@ -1179,7 +1184,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     // selection guarantees this only ever runs for a session the user chose
     // — never automatically after a restart.
     if (!agent.hasContinuation(key) && !(await agent.consumesInputDirectly())) {
-      await agent.run(key, "", () => {}, { onEvent });
+      await agent.run(key, "", () => {}, { onEvent, signal: stop.signal });
     }
     const res = await agent.run(
       key,
@@ -1203,7 +1208,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
           broadcast({ type: "emit", turnId, text, buttons, level, app });
         }
       },
-      { onEvent },
+      { onEvent, signal: stop.signal },
     );
     // Non-looping trees complete instead of pausing at .human() — show
     // their final result as the reply when nothing was emitted.
@@ -1218,23 +1223,32 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     }
     record.status = "done";
   } catch (err) {
-    record.status = "error";
-    record.error = err instanceof Error ? err.message : String(err);
-    // The turn failed before the tree advanced, so keep the pause where the
-    // input was headed — the app's tile keeps its input for a retry.
-    awaiting = record.inputApp ?? null;
-    console.error("[web-chat]", err);
-    if (isQuotaError(err) && typeof agent.setPendingFallback === "function") {
-      // A quota wall needs a decision, not a stack trace: remember the turn
-      // and offer the model slots. The tile renders them as fallback buttons;
-      // a tap POSTs /api/fallback, which retargets the role and re-runs.
-      const role = quotaRole(err);
-      agent.setPendingFallback(key, role, content);
-      record.fallback = agent.modelSlots().map((s) => ({ label: s.name, value: s.name }));
-      record.error = `The ${role} model hit its plan limit (402 — out of credit or quota). Pick a fallback model.`;
+    if (stop.signal.aborted || isAgentStopped(err)) {
+      record.status = "stopped";
+      record.error = null;
+      // The tree is still at (or before) the pause that fed this turn; keep
+      // the input box on the app the message was headed for.
+      awaiting = record.inputApp ?? "trunk";
+    } else {
+      record.status = "error";
+      record.error = err instanceof Error ? err.message : String(err);
+      // The turn failed before the tree advanced, so keep the pause where the
+      // input was headed — the app's tile keeps its input for a retry.
+      awaiting = record.inputApp ?? null;
+      console.error("[web-chat]", err);
+      if (isQuotaError(err) && typeof agent.setPendingFallback === "function") {
+        // A quota wall needs a decision, not a stack trace: remember the turn
+        // and offer the model slots. The tile renders them as fallback buttons;
+        // a tap POSTs /api/fallback, which retargets the role and re-runs.
+        const role = quotaRole(err);
+        agent.setPendingFallback(key, role, content);
+        record.fallback = agent.modelSlots().map((s) => ({ label: s.name, value: s.name }));
+        record.error = `The ${role} model hit its plan limit (402 — out of credit or quota). Pick a fallback model.`;
+      }
     }
   } finally {
     activeTurns--;
+    if (turnStops.get(key) === stop) turnStops.delete(key);
     record.endedAt = Date.now();
     record.awaiting = awaiting;
     record.toSeq = webLog.nextSeq();
@@ -1263,6 +1277,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     // non-looping tree, or the error line — then flush the chain.
     if (mirrorTarget) {
       if (record.status === "error") mirror(`\u26a0\ufe0f ${record.error ?? "error"}`);
+      else if (record.status === "stopped") mirror("\u23f9 stopped");
       else if (!record.emits?.length && record.output) mirror(record.output);
       await mirrorChain;
     }
@@ -1580,6 +1595,11 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         }
         if (typeof sel.key === "string") {
           let known = webLog?.hasSession(sel.key) ?? false;
+          // The active shell may have no markers yet (a freshly minted chat),
+          // and a reload arrives here with `?session=<that key>` in the URL.
+          // Selecting the session that is already active is a no-op, not a
+          // 404 — same tolerance as the browser target's local backend.
+          if (!known && sel.key === activeSession) known = true;
           if (!known && agent?.hasContinuation(sel.key)) {
             // FOLLOW a conversation owned by another transport (a Telegram
             // topic): adopt its key. Messages here run the very same tree;
@@ -1600,6 +1620,19 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         }
         res.writeHead(400, { "content-type": "application/json" });
         res.end('{"error":"key, new, or delete required"}');
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/chat/stop") {
+        if (!activeSession) {
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end('{"error":"no session selected"}');
+          return;
+        }
+        const stop = turnStops.get(activeSession);
+        if (stop) stop.abort();
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, stopped: Boolean(stop) }));
         return;
       }
 
@@ -2150,21 +2183,34 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         payload.model = entry.model;
         const headers: Record<string, string> = { "content-type": "application/json" };
         if (entry.apiKey && entry.apiKey !== "no-key") headers.authorization = `Bearer ${entry.apiKey}`;
+        // A browser stop aborts its `/api/llm` fetch. Abort the upstream
+        // provider request too, or the model would keep generating after the
+        // tree is stopped.
+        const upstreamStop = new AbortController();
+        const onClose = () => {
+          if (!res.writableEnded && !res.destroyed) upstreamStop.abort();
+        };
+        res.once("close", onClose);
         try {
           const upstream = await fetch(`${entry.baseURL.replace(/\/$/, "")}${tail}`, {
             method: "POST",
             headers,
             body: JSON.stringify(payload),
+            signal: upstreamStop.signal,
           });
           const buf = Buffer.from(await upstream.arrayBuffer());
+          if (res.destroyed || res.writableEnded) return;
           res.writeHead(upstream.status, {
             "content-type": upstream.headers.get("content-type") ?? "application/json",
             "cache-control": "no-store",
           });
           res.end(buf);
         } catch (e) {
+          if (res.destroyed || res.writableEnded) return;
           res.writeHead(502, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: e instanceof Error ? e.message : "upstream request failed" }));
+        } finally {
+          res.off("close", onClose);
         }
         return;
       }

@@ -32,7 +32,7 @@ export interface Turn {
   inputApp?: string | null;
   startedAt: number;
   endedAt: number | null;
-  status: "running" | "done" | "error";
+  status: "running" | "done" | "error" | "stopped";
   error: string | null;
   output: string | null;
   /** The engine run this turn belongs to; null/absent when the turn never ran

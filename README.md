@@ -16,7 +16,9 @@ every change it makes is **git-committed automatically**.
   - **Desktop (local server)** — the loopback storage bridge, for the real
     workspace on disk (and the only mode Firefox can use).
   The header's **upload** button puts files from a normal OS picker into any
-  workspace folder (asked per upload, remembered next time).
+  workspace folder (asked per upload, remembered next time). To run the same UI
+  with the admin stopped, use `npm run web:standalone` (loopback static server
+  on `:8080`; see `web/README.md` → "Standalone").
 - **Voice → text**: Telegram voice notes use the local Vulkan whisper-server;
   the web UI transcribes in the tab with whisper (Transformers.js, WebGPU/WASM),
   so no server is needed there.

@@ -1,10 +1,14 @@
 /**
- * Browser module loader: ESM re-exports.
+ * Browser module loader: ESM re-exports and the host-owned builtins.
  *
  * The loader evaluates workspace modules in a CommonJS-style scope. App
  * barrels use `export { x } from "./x.js"` (contacts, caller-list), which the
  * old transform rewrote as `module.exports.x = x;from "./x.js";` — a syntax
  * error that made the whole tree fail to load in OPFS mode.
+ *
+ * `node:sqlite` must *resolve* (a stale app's static import should not fail
+ * with "cannot resolve module specifier") but throw the actionable
+ * host-owned-store message when used.
  *
  * Run: `npm run test:module-loader`.
  */
@@ -58,6 +62,23 @@ try {
   assert.equal(locals.one, 1);
   assert.equal(locals.deuce, 2);
   assert.equal(await locals.load(), 9, "export async function works");
+
+  // A stale app may statically import node:sqlite. That must not fail the
+  // tree load with a resolution error; opening a database throws the fix.
+  await writeFile(
+    path.join(workspace, "sqlite-app.js"),
+    [
+      'import { DatabaseSync } from "node:sqlite";',
+      'export function open() { return new DatabaseSync("/tmp/x.db"); }',
+    ].join("\n"),
+  );
+  const sqliteApp = await loader.load("sqlite-app.js");
+  assert.throws(
+    () => sqliteApp.open(),
+    /host-owned[\s\S]*sync the workspace/,
+    "node:sqlite resolves to a host-owned stub that throws with the fix",
+  );
+
   // The injected grandma-kat namespace must expose Emit flags to workspace
   // modules too (the same package the worker bundles).
   await writeFile(
@@ -67,7 +88,20 @@ try {
   const flagApp = await loader.load("flag.js");
   assert.deepEqual(flagApp.el.record.flags, ["machine"], "Emit flags survive the browser loader");
 
-  console.log("module-loader: named, default, star and namespace re-exports OK");
+  // Unknown bare specifiers still fail loudly, with the specifier named.
+  await writeFile(
+    path.join(workspace, "bad.js"),
+    'import x from "not-a-package";\nexport default x;\n',
+  );
+  await assert.rejects(
+    () => loader.load("bad.js"),
+    /cannot resolve module specifier: not-a-package/,
+    "unknown bare specifiers still fail",
+  );
+
+  console.log(
+    "module-loader: re-exports, host-owned node:sqlite stub and unknown-specifier errors OK",
+  );
 } finally {
   await rm(workspace, { recursive: true, force: true });
 }

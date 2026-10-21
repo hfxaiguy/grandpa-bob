@@ -59,6 +59,26 @@ export function loadBranch(): string {
   }
 }
 
+const CDP_KEY = "bob:cdp";
+
+/** Browser-level CDP socket handed over by `npm run chrome` (?cdp=…). */
+export function loadCdp(): string {
+  try {
+    return localStorage.getItem(CDP_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveCdp(url: string): void {
+  try {
+    if (url) localStorage.setItem(CDP_KEY, url);
+    else localStorage.removeItem(CDP_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 export function saveBranch(branch: string): void {
   try {
     localStorage.setItem(BRANCH_KEY, branch);

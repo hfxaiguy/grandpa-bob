@@ -55,7 +55,7 @@ notes and hand-offs visible without mixing them into the normal reply stream.
 | isomorphic-git over a real folder (`web/src/platform/git-handle.ts`) | done — `test:fsaccess` |
 | SQLite over the real `.db` files (`initSqlite(handle, {writeBack})`) | done — read-only by default, `SQL writes` toggle |
 | Served at `:8080` by the admin server (chat = front page) | done — falls back to `ui/dist` when `web/dist` is missing |
-| Browser-local whisper (`web/src/stt/browser-whisper.ts`) | done — `/api/transcribe` runs in-tab via Transformers.js |
+| Voice input (mic button) | **removed** — transcription is Telegram-only; the web UI ships no STT, no in-browser model (`/api/transcribe*` answers 501 in browser mode) |
 
 ### Direct folder mode (Chromium)
 
@@ -98,13 +98,15 @@ The demo (`src/main.ts`) runs the real `listTreeSources`, `snapshotTree`, and
 
 ## Run
 
+The browser target is normally served by grandpa-bob's admin (`npm run dev` in
+the repo root → `http://localhost:8080`, or `ADMIN_PORT`). To run it with the
+admin stopped, see [Standalone](#standalone-no-admin).
+
 ```sh
 cd web
 npm install
 npm run make-seed /path/to/grandma-workspace   # pack workspace -> public/seed
-npm run mock-llm   # terminal 1 (LLM demo)
-npm run dev        # terminal 2 -> http://localhost:5173
-npm run smoke      # headless end-to-end check
+npm run smoke      # headless end-to-end check against :8080
 ```
 
 `npm run make-seed` turns a real grandpa-bob workspace (default
@@ -124,14 +126,44 @@ npm run git-server /home/love        # -> http://127.0.0.1:8790/grandma-workspac
 Then point the app at it (persisted in localStorage) or per load:
 
 ```
-http://localhost:5173/?remote=http://127.0.0.1:8790/grandma-workspace.git
-http://localhost:5173/?remote=...&reclone=1   # clear OPFS and clone fresh
+http://localhost:8080/?remote=http://127.0.0.1:8790/grandma-workspace.git
+http://localhost:8080/?remote=...&reclone=1   # clear OPFS and clone fresh
 ```
 
 The app clones into `/workspace` when it has no `.git`. To also **push** back
 (copy browser → desktop), enable receive-pack on the bare repo:
 `git -C <repo>.git config http.receivepack true` (loopback only; add auth before
 exposing it).
+
+### Browser tools (local Chrome)
+
+`browser_exec`, `browser_clickables`, `browser_body` and `browser_click` run
+in the agent worker and drive a local Chrome over CDP. The verbs themselves
+(names, descriptions, schemas, bodies, cursor-listener confirmation) are the
+workspace app's `app/browser/src/verbs.js`, evaluated through the module loader;
+the worker supplies only the transport. A worker cannot
+launch Chrome, and the `/json/*` discovery endpoints are CORS-gated, so one
+script does both: it starts Chrome with a debug port and
+`--remote-allow-origins` (and no startup window — the automation window appears
+when a tool first opens a page), then opens the app in **FireDragon** (or the
+first installed FireDragon/Firefox, or `BOB_BROWSER_BIN`) with the browser-level
+WebSocket URL in `?cdp=…` (persisted in localStorage).
+
+FireDragon is Firefox-based and has no CDP endpoint, so it is only the display
+browser — the automation Chrome stays in the background. The four tools drive
+Chrome, not FireDragon.
+
+```sh
+npm run chrome                                  # FireDragon + background Chrome
+BOB_BROWSER_BIN=/usr/bin/firefox npm run chrome # choose the display browser
+BOB_NO_CDP=1 npm run chrome                     # no Chrome; browser_* tools off
+BOB_NO_OPEN=1 npm run chrome                    # print the URL only
+BOB_APP_URL=http://127.0.0.1:8080 npm run chrome  # explicit app URL (e.g. standalone)
+```
+
+It reuses a Chrome already listening on the port, prints the URL, and runs
+headless with `BROWSER_HEADLESS=1`. Without a `?cdp=` endpoint the four tools
+return a "run `npm run chrome`" error instead of dying on `node:child_process`.
 
 ### Storage backend selector (browser OPFS vs desktop)
 
@@ -174,15 +206,60 @@ path (e.g. `/home/love/grandma-workspace.git`); in browser mode it must be a
 CORS http url. `?gitremote=…&gitbranch=…` preconfigures it.
 
 `npm run smoke` needs a Chromium/Chrome binary (override with `CHROME_BIN`) and
-a running dev server. It exercises OPFS writes/rename, `tree-versions`
+the admin running. It exercises OPFS writes/rename, `tree-versions`
 snapshot/promote, `grandma-kat knit()`, WASM SQLite persistence, and a real LLM
 round-trip — this is the older demo runner (`#out`). The storage-mode checks are
-`npm run smoke:browser` and `npm run smoke:direct` (both need the dev server
-and Chromium; `smoke:direct` fakes the folder picker to a real OPFS directory
+`npm run smoke:browser` and `npm run smoke:direct` (both need the admin and
+Chromium; `smoke:direct` fakes the folder picker to a real OPFS directory
 and asserts file writes plus the sqlite read-only/write-back behavior).
 
 The LLM smoke also needs the mock endpoint: `npm run mock-llm` (port 8787) in a
-second terminal.
+second terminal, plus a registry that points at it. On the standalone server
+paste the three `:8787` mock slots into Settings → Models JSON (Settings
+overrides the seeded template); when the admin serves the page, its
+`models.json` is authoritative.
+
+## Standalone (no admin)
+
+The browser target can run with grandpa-bob's admin completely stopped:
+
+```sh
+npm run build:web          # or: npm --prefix web run build
+npm run web:standalone     # http://localhost:8080
+```
+
+`web/scripts/serve.mjs` is a zero-dependency loopback static server for
+`web/dist`; it answers `/api/*` with 404 because there is no admin API. Use
+Browser (OPFS) storage — or Desktop (direct folder) — neither needs a server
+for files, SQL, git or patterns. Telegram, transcription, the storage bridge
+and the `/api/llm` proxy are server-only and stay unavailable by design.
+
+If port 8080 is taken (usually by the admin), stop it or choose another origin:
+`PORT=8090 npm run web:standalone`.
+
+### Models in standalone
+
+The seed carries `models.json` from `web/public/models.standalone.json`: the
+neuralwatt slots (`v4`, `v4.1`) with `cheap → v4` and `strong → v4.1`. Keys are
+`${NEURALWATT_API_KEY}` — paste the key into **Settings → Credentials &
+.env → Neuralwatt API key**; it is stored in this browser profile
+(localStorage), never in the workspace or the seed. The Settings **Models JSON**
+editor overrides the seed file, and the **Test** button probes an endpoint from
+the tab.
+
+The picker marks the auto-generated `:8787` registry ("mock models only") when
+no real registry is configured. Profiles seeded before this change are upgraded
+automatically while their `models.json` is still that old mock file; a
+hand-edited registry is never overwritten. `?reseed=1` re-imports the whole
+seed. A tab that was loaded from the admin also falls back to this browser
+registry if the admin stops mid-session.
+
+Ollama Cloud (`ollama.com`) is intentionally not in the standalone registry: it
+sends no `access-control-allow-origin` header (the preflight answers `405` on
+both `/api/chat` and `/v1/chat/completions`), so a browser cannot call it
+directly. The `gemma` slot remains available when the admin serves the page.
+neuralwatt answers `access-control-allow-origin: *`, so direct browser calls
+work.
 
 ## Architecture
 

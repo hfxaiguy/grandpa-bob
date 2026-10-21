@@ -15,6 +15,13 @@
 // The run log (logs/) is not copied: it is the desktop's history, and it is
 // large. Instead we seed an EMPTY logs/grandma-kat.db with the logger's schema,
 // so the browser's own read_runs / logs_review have a working log to write to.
+//
+// models.json is likewise never read from the workspace (it holds desktop
+// endpoints and real keys). The seed instead carries the standalone template
+// (web/public/models.standalone.json): neuralwatt slots with `${ENV}` keys, so
+// a fresh browser profile has real slot names and only needs the key pasted
+// into Settings. Ollama Cloud is intentionally absent — it sends no CORS
+// headers, so a browser cannot call it directly; that slot stays server-mode.
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -95,6 +102,21 @@ try {
 
 // The browser gets a fresh, empty run log it can write to.
 files.push({ path: "workspace/logs/grandma-kat.db", base64: await emptyRunLogBase64() });
+
+// A standalone model registry with no secrets: slot names + `${ENV}` keys.
+// The browser fills the env values from Settings (localStorage), so the seed
+// can be committed. Never pack the workspace's root models.json — it is
+// desktop-only and carries real endpoints/keys.
+const modelsTemplate = path.resolve(here, "..", "public", "models.standalone.json");
+try {
+  const template = await fs.readFile(modelsTemplate, "utf8");
+  files.push({
+    path: "workspace/models.json",
+    base64: Buffer.from(template, "utf8").toString("base64"),
+  });
+} catch (err) {
+  console.warn(`seed: no standalone models template at ${modelsTemplate}: ${err.message}`);
+}
 
 await fs.mkdir(path.dirname(out), { recursive: true });
 const archive = { version: 1, createdAt: new Date().toISOString(), files };

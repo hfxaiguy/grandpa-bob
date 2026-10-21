@@ -23,6 +23,8 @@ import {
   loadStorage,
   loadStorageServer,
   loadModelsJson,
+  loadCdp,
+  saveCdp,
   normalizeStorageServer,
   saveStorage,
   saveStorageServer,
@@ -44,6 +46,11 @@ const storageMode: StorageMode =
   requestedStorage === "desktop" || requestedStorage === "browser" ? requestedStorage : storedStorage;
 const storageServer = normalizeStorageServer(params.get("server") ?? loadStorageServer());
 let configuredRemote = params.get("remote") ?? loadRemote();
+// The launcher (`npm run chrome`) opens the app with ?cdp=<browser ws url>;
+// persist it so a plain reload keeps the browser tools connected. An explicit
+// empty value (BOB_NO_CDP=1) clears a previously persisted socket instead.
+const configuredCdp = params.get("cdp") ?? loadCdp();
+if (params.has("cdp")) saveCdp(configuredCdp);
 
 const statusEl = document.getElementById("status")!;
 const setStatus = (text: string): void => {
@@ -185,18 +192,59 @@ async function prepareBrowserWorkspace(): Promise<void> {
   setStatus("workspace ready");
 }
 
-/** Make sure models.json exists (a mock entry) so the agent can run in OPFS. */
+/** The auto-generated mock registry older browser profiles booted with. */
+const LEGACY_MOCK_MODELS = {
+  default: { baseURL: "http://127.0.0.1:8787/v1", apiKey: "test-key", model: "mock-model" },
+  strong: { baseURL: "http://127.0.0.1:8787/v1", apiKey: "test-key", model: "mock-model" },
+  cheap: { baseURL: "http://127.0.0.1:8787/v1", apiKey: "test-key", model: "mock-model" },
+};
+
+/** True only for the old auto-written mock file (never a hand-edited one). */
+function isLegacyMockModels(raw: string): boolean {
+  try {
+    const entries = Object.values(JSON.parse(raw) as Record<string, unknown>);
+    return (
+      entries.length > 0 &&
+      entries.every((value) => {
+        if (!value || typeof value !== "object") return false;
+        const entry = value as { baseURL?: unknown; model?: unknown };
+        return (
+          entry.model === "mock-model" &&
+          typeof entry.baseURL === "string" &&
+          /\/\/(127\.0\.0\.1|localhost):8787(?:\/|$)/.test(entry.baseURL)
+        );
+      })
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Make sure the browser workspace has a model registry.
+ *
+ * A freshly seeded profile already has the standalone template (seed packs
+ * `web/public/models.standalone.json` as `models.json`). Older profiles only
+ * have the auto-generated mock entries; upgrade those — and only those, never
+ * a file the user edited — to the template. If the template is missing (an old
+ * dist), keep the mock fallback so `npm run mock-llm` still works.
+ */
 async function ensureModels(target: Platform): Promise<void> {
   const file = target.path.join(target.workspaceRoot, "models.json");
-  if (await isFile(file)) return;
-  await target.fs.writeFile(
-    file,
-    JSON.stringify({
-      default: { baseURL: "http://127.0.0.1:8787/v1", apiKey: "test-key", model: "mock-model" },
-      strong: { baseURL: "http://127.0.0.1:8787/v1", apiKey: "test-key", model: "mock-model" },
-      cheap: { baseURL: "http://127.0.0.1:8787/v1", apiKey: "test-key", model: "mock-model" },
-    }),
-  );
+  const existing = await target.fs.readFile(file, "utf8").catch(() => null);
+  if (existing !== null && !isLegacyMockModels(existing)) return;
+  let template = "";
+  try {
+    const res = await fetch("/models.standalone.json", { headers: { accept: "application/json" } });
+    if (res.ok) template = (await res.text()).trim();
+  } catch {
+    /* stale dist or offline: fall back below */
+  }
+  if (!template) {
+    if (existing !== null) return;
+    template = JSON.stringify(LEGACY_MOCK_MODELS);
+  }
+  await target.fs.writeFile(file, template);
 }
 
 /**
@@ -292,6 +340,7 @@ async function main(): Promise<void> {
   // When the admin serves this page, use ITS models.json (and /api/llm proxy)
   // so the browser, the chat UI and Telegram all share one model config.
   const serverModels = await servedByAdmin();
+  if (!serverModels) statusBase += " · standalone";
   const backend = createLocalBackend({
     agent,
     platform,
@@ -302,6 +351,7 @@ async function main(): Promise<void> {
     initialPattern: pattern,
     modelsJson: loadModelsJson(),
     serverModels,
+    cdp: configuredCdp,
   });
 
   hostUi(backend, appEl, { page: "chat", port: 8080 });

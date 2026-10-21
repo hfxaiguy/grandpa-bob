@@ -27,8 +27,27 @@ export interface EventLine {
   seq?: number;
 }
 
-/** One log line for an event, plus its app attribution. */
+/**
+ * One line per event object. The store pushes an event once and never mutates
+ * it, so deriving a line is a pure function of that object. Caching by object
+ * identity keeps those lines referentially stable across memo recomputes — the
+ * `<For>` in EventLog/GlobalStream only mounts new rows, instead of tearing
+ * down and remounting the whole window on every incoming event. That churn was
+ * what closed an opened `<details>` row (and dropped its fetched payload) the
+ * moment the next event arrived.
+ */
+const lineCache = new WeakMap<SanitizedEvent, EventLine>();
+
+/** One log line for an event, plus its app attribution (stable per event). */
 export function describeEvent(ev: SanitizedEvent): EventLine {
+  const hit = lineCache.get(ev);
+  if (hit) return hit;
+  const line = describeEventUncached(ev);
+  lineCache.set(ev, line);
+  return line;
+}
+
+function describeEventUncached(ev: SanitizedEvent): EventLine {
   const c = ev.content || {};
   const app = ev.app ?? "trunk";
   // The raw prompt history is huge; summarize it in the detail rather than

@@ -2,9 +2,9 @@
 //
 // Loads the app in a real Chromium, waits for the page's `#out` element to
 // report OK/ERROR, and prints the output plus any console errors. Requires a
-// Chromium/Chrome binary and the dev server (npm run dev).
+// Chromium/Chrome binary and the admin (npm run dev at the repo root).
 //
-//   node smoke.mjs [url]        # default http://localhost:5173/
+//   node smoke.mjs [url]        # default http://localhost:8080/
 //   CHROME_BIN=/path/to/chrome node smoke.mjs
 //
 // Zero dependencies (global fetch + WebSocket on Node 22+).
@@ -15,7 +15,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const PORT = Number(process.env.CDP_PORT ?? 9222);
-const TARGET = process.argv[2] ?? process.env.WEB_URL ?? "http://localhost:5173/";
+const TARGET = process.argv[2] ?? process.env.WEB_URL ?? "http://localhost:8080/";
 const CHROME = process.env.CHROME_BIN ?? "chromium";
 const PROFILE = path.join(os.tmpdir(), `bob-web-smoke-${PORT}-${process.pid}`);
 

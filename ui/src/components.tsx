@@ -5,6 +5,7 @@ import { copyEventStream, copyText, downloadEventStream } from "./event-dump";
 import {
   state,
   send,
+  stop,
   selectSession,
   newSession,
   deleteSession,
@@ -28,7 +29,6 @@ import {
   moveTile,
   toast,
   sendFile,
-  transcribeAudio,
   transcribeFileStream,
 } from "./store";
 import type { AppInfo, ProvPiece, ProvWriter, Provenance, RefTarget, Turn } from "./types";
@@ -53,7 +53,7 @@ function bubblesFor(app: string): { turn: Turn; text: string; kind: "user" | "bo
       // the provenance endpoint resolves back to the log's emit row.
       out.push({ turn: t, text: emits[i], kind: "bot", emitIndex: i });
     }
-    if (app === "trunk" && t.status === "done" && !emits.length && t.output) {
+    if (app === "trunk" && (t.status === "done" || t.status === "stopped") && !emits.length && t.output) {
       out.push({ turn: t, text: t.output, kind: "bot" });
     }
     if ((t.inputApp ?? "trunk") === app && t.status === "error" && t.error) {
@@ -371,6 +371,13 @@ function Composer(props: { app: string }) {
   const [text, setText] = createSignal("");
   let ta: HTMLTextAreaElement | undefined;
   let fileInput: HTMLInputElement | undefined;
+  const runningTurn = createMemo(() => state.turns.find((t) => t.status === "running"));
+  // The trunk composer is always mounted, so it can always host a global stop;
+  // an app composer shows one while that app owns the running turn.
+  const canStop = createMemo(() => {
+    const t = runningTurn();
+    return !!t && (props.app === "trunk" || (t.inputApp ?? "trunk") === props.app);
+  });
   // Grow the textarea with its content (up to a cap); reset when emptied.
   const autosize = () => {
     if (!ta) return;
@@ -401,86 +408,6 @@ function Composer(props: { app: string }) {
     if ((last.inputApp ?? "trunk") !== props.app) return [];
     return last.fallback ?? [];
   });
-  // ── voice input (MediaRecorder → /api/transcribe → send) ──
-  const canMic =
-    typeof navigator.mediaDevices?.getUserMedia === "function" &&
-    typeof window.MediaRecorder !== "undefined";
-  const [recording, setRecording] = createSignal(false);
-  const [recSecs, setRecSecs] = createSignal(0);
-  let rec: MediaRecorder | null = null;
-  let recStream: MediaStream | null = null;
-  let recChunks: Blob[] = [];
-  let recTimer: ReturnType<typeof setInterval> | undefined;
-
-  const finishRecording = async () => {
-    clearInterval(recTimer);
-    setRecording(false);
-    recStream?.getTracks().forEach((t) => t.stop());
-    recStream = null;
-    const mimeType = rec?.mimeType || "audio/webm";
-    const blob = new Blob(recChunks, { type: mimeType });
-    const secs = recSecs();
-    rec = null;
-    recChunks = [];
-    if (!blob.size) return;
-    if (secs < 1) {
-      toast("recording too short", true);
-      return;
-    }
-    toast("transcribing…");
-    try {
-      const heard = (
-        await transcribeAudio(blob, `voice${mimeType.includes("mp4") ? ".mp4" : ".webm"}`)
-      ).trim();
-      if (!heard) {
-        toast("heard nothing", true);
-        return;
-      }
-      toast(`heard: "${heard}"`);
-      await send(heard);
-    } catch (e) {
-      toast(`transcription failed: ${e instanceof Error ? e.message : e}`, true);
-    }
-  };
-
-  const toggleMic = async () => {
-    if (recording()) {
-      rec?.stop();
-      return;
-    }
-    try {
-      recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (e) {
-      toast(`microphone unavailable: ${e instanceof Error ? e.message : e}`, true);
-      return;
-    }
-    const mime =
-      ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((t) =>
-        MediaRecorder.isTypeSupported(t),
-      ) || "";
-    rec = new MediaRecorder(recStream, mime ? { mimeType: mime } : undefined);
-    recChunks = [];
-    rec.ondataavailable = (e) => {
-      if (e.data?.size) recChunks.push(e.data);
-    };
-    rec.onstop = () => void finishRecording();
-    rec.start();
-    setRecSecs(0);
-    setRecording(true);
-    recTimer = setInterval(() => setRecSecs((s) => s + 1), 1000);
-  };
-
-  // If the composer unmounts (the tile hides) mid-recording, release the mic
-  // without trying to transcribe a partial clip.
-  onCleanup(() => {
-    clearInterval(recTimer);
-    if (rec) {
-      rec.onstop = null;
-      if (rec.state === "recording") rec.stop();
-    }
-    recStream?.getTracks().forEach((t) => t.stop());
-  });
-
   // ── file upload: audio streams a transcript; anything else attaches ──
   const AUDIO_RE = /\.(ogg|oga|opus|webm|mp3|m4a|mp4|wav|flac)$/i;
   const [card, setCard] = createSignal<{
@@ -584,15 +511,6 @@ function Composer(props: { app: string }) {
         </div>
       </Show>
       <div class="composer-row">
-        <button
-          class="icon-btn"
-          classList={{ recording: recording() }}
-          disabled={!canMic}
-          title={canMic ? "record a voice message" : "voice input needs a secure context (localhost or https)"}
-          onClick={() => void toggleMic()}
-        >
-          {recording() ? `${recSecs()}s` : "🎙"}
-        </button>
         <button class="icon-btn" title="attach a file" onClick={() => fileInput?.click()}>
           📎
         </button>
@@ -619,6 +537,15 @@ function Composer(props: { app: string }) {
             }
           }}
         />
+        <Show when={canStop()}>
+          <button
+            class="danger"
+            title="stop the running tree now"
+            onClick={() => void stop()}
+          >
+            Stop
+          </button>
+        </Show>
         <button onClick={submit}>Send</button>
       </div>
     </div>
@@ -1165,6 +1092,11 @@ export function SessionPanel(props: { onClose: () => void }) {
             </select>
           </label>
         </div>
+        <Show when={state.mockOnly}>
+          <div class="muted small">
+            mock models only — add real slots in Settings → Models JSON
+          </div>
+        </Show>
       </div>
     </div>
   );

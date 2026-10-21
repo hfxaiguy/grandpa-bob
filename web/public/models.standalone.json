@@ -1,0 +1,16 @@
+{
+  "v4": {
+    "baseURL": "https://api.neuralwatt.com/v1",
+    "model": "deepseek-v4-flash",
+    "apiKey": "${NEURALWATT_API_KEY}",
+    "transform": "gemma4Thinking"
+  },
+  "v4.1": {
+    "baseURL": "https://api.neuralwatt.com/v1",
+    "model": "deepseek-v4.1-flash",
+    "apiKey": "${NEURALWATT_API_KEY}",
+    "transform": "gemma4Thinking"
+  },
+  "cheap": "v4",
+  "strong": "v4.1"
+}
