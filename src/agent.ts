@@ -430,6 +430,17 @@ export class Agent {
     const katTools = this.deps.tools.toKatTools();
     let dropReason: string | null = null;
 
+    // BOB owns app-tree discovery: refresh the env the trunk reads at import.
+    // loadPattern re-imports fresh on every call (?t= cache bust), so the env
+    // and the module always agree at load time.
+    try {
+      const sources = await listTreeSources(this.deps.workspace);
+      const apps = sources.filter((s) => s.group === "app").map((s) => s.name);
+      if (apps.length) process.env.BOB_APP_TREES = JSON.stringify(apps);
+    } catch {
+      // A scan failure leaves the previous env (or the trunk's own scan) in place.
+    }
+
     // Pin-on-open: the root pattern AND the tree-tool registry are loaded once,
     // on the session's first turn, and frozen for its lifetime. A later edit or
     // promote of a `.prod` file therefore never changes a live session's shape
