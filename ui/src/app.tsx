@@ -1,7 +1,7 @@
 /** App shell: toolbar + tiled grid + global stream + session drawer. */
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import { GlobalStream, RefModal, SessionPanel, Tiles, WorkspaceUpload } from "./components";
-import { init, orderedApps, state, toggleHidden, dismissError, retryLast } from "./store";
+import { init, orderedApps, state, toggleHidden, toggleMachine, dismissError, retryLast } from "./store";
 
 function TilesMenu() {
   const [open, setOpen] = createSignal(false);
@@ -54,6 +54,13 @@ export function App() {
           {state.label || state.active || "no session"}
         </span>
         <span class="spacer" />
+        <button
+          classList={{ active: state.showMachine }}
+          title="show machine-tagged emits in the app chats"
+          onClick={toggleMachine}
+        >
+          machine
+        </button>
         <WorkspaceUpload />
         <TilesMenu />
         <button onClick={() => setShowSession(true)}>session</button>

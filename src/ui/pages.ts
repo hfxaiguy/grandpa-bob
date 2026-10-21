@@ -875,7 +875,7 @@ function showNewPattern() {
   $("p-code").value = \`// my-pattern.mjs — description of what this pattern does
 //
 // The function receives the Tree element surface as arguments.
-// Available: { Tree, name, Model, Tools, Human, Prompt, Memory, Emit, Return, Until, when, max }
+// Available: { Tree, name, Model, Tools, Human, Prompt, Memory, Emit, Return, Until, when, max, flag }
 //
 // Must return a Tree definition — the result of Tree(element, ...).
 //
@@ -888,7 +888,7 @@ function showNewPattern() {
 //   m.raw.prev[i] — full record: { content, reasoning, toolCalls, toolResults }
 //   m.error       — feedback from last failed check
 
-export default function({ Tree, name, Human, Prompt, Emit, Until, max }) {
+export default function({ Tree, name, Human, Prompt, Emit, Until, max, flag }) {
   return Tree(
     name("my-pattern"),
     Human("main_input"),

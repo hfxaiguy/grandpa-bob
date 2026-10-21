@@ -10,7 +10,7 @@
 import { pathToFileURL } from "node:url";
 import { resolveTreeEntry } from "./tree-versions.js";
 // @ts-ignore — grandma-kat ships no .d.ts files.
-import { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, runAfterTool, onEmit, onHuman, toolBefore, toolAfter, name as elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, Hook, From, memory, version, description, optional } from "grandma-kat";
+import { Tree, when, flag, goback, goto, max, update, calls, parameters, disableAuto, runAfterTool, onEmit, onHuman, toolBefore, toolAfter, name as elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, Hook, From, memory, version, description, optional } from "grandma-kat";
 
 export const DEFAULT_PATTERN = "trunk";
 
@@ -62,6 +62,8 @@ export interface PatternContext {
   Call: typeof Call;
   Check: typeof Check;
   Emit: typeof Emit;
+  /** Tag an Emit value, e.g. Emit("input: …", flag("machine")). */
+  flag: typeof flag;
   Return: typeof Return;
   Until: typeof Until;
   /** Attach a registered tree as a branch, optionally seeding its scope. */
@@ -119,7 +121,7 @@ export async function loadPattern(
     throw new Error(`pattern '${name}' must export a default tree or a factory function: ${filePath}`);
   }
 
-  const ctx: PatternContext = { Tree, when, goback, goto, max, update, calls, parameters, disableAuto, runAfterTool, onEmit, onHuman, toolBefore, toolAfter, name: elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Hook, Branch, Each, Call, Check, Emit, Return, Until, From, memory, version, description, optional };
+  const ctx: PatternContext = { Tree, when, flag, goback, goto, max, update, calls, parameters, disableAuto, runAfterTool, onEmit, onHuman, toolBefore, toolAfter, name: elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Hook, Branch, Each, Call, Check, Emit, Return, Until, From, memory, version, description, optional };
   const tree = typeof mod.default === "function" ? mod.default(ctx) : mod.default;
 
   if (!tree || typeof tree !== "object") {

@@ -75,6 +75,7 @@ assert.deepEqual(
 );
 
 // ── 9. an explicit level rides along, overriding the machine default ──
+assert.deepEqual(emitValue({ text: "hi", level: "machine" }), { text: "hi", level: "machine" });
 assert.deepEqual(emitValue({ text: "hi", level: "debug" }), { text: "hi", level: "debug" });
 assert.deepEqual(
   emitValue({ machine: { doing: "idle" }, level: "trace" }),

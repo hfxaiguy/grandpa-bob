@@ -10,6 +10,7 @@ import {
   deleteSession,
   renameSession,
   setFollow,
+  toggleMachine,
   setPattern,
   setRef,
   setModel,
@@ -43,6 +44,11 @@ function bubblesFor(app: string): { turn: Turn; text: string; kind: "user" | "bo
     const apps = t.emitApps ?? [];
     for (let i = 0; i < emits.length; i++) {
       if (trunkOf(apps[i]) !== app) continue;
+      // Machine notes are tree narration (input, waiting, hand-offs), not
+      // replies. The session drawer/toolbar toggles `showMachine` globally;
+      // emitIndex stays the original position so provenance/levels still line
+      // up when the note is visible.
+      if (t.levels?.[i] === "machine" && !state.showMachine) continue;
       // emitIndex: the bubble's position in the turn's emit list — the anchor
       // the provenance endpoint resolves back to the log's emit row.
       out.push({ turn: t, text: emits[i], kind: "bot", emitIndex: i });
@@ -931,6 +937,10 @@ function Tile(props: { app: AppInfo }) {
                   user: b.kind === "user",
                   bot: b.kind === "bot",
                   err: b.kind === "err",
+                  machine:
+                    b.kind === "bot" &&
+                    b.emitIndex != null &&
+                    b.turn.levels?.[b.emitIndex] === "machine",
                   "has-info":
                     b.kind === "bot" &&
                     b.emitIndex != null &&
@@ -1057,6 +1067,11 @@ export function SessionPanel(props: { onClose: () => void }) {
         <label class="row">
           <input type="checkbox" checked={state.follow} onChange={(e) => void setFollow(e.currentTarget.checked)} />
           follow the live Telegram conversation
+        </label>
+
+        <label class="row">
+          <input type="checkbox" checked={state.showMachine} onChange={() => toggleMachine()} />
+          show machine notes (tree input, waiting and hand-offs)
         </label>
 
         <div class="row">

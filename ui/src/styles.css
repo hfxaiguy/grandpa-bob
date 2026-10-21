@@ -61,6 +61,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .conn { width: 9px; height: 9px; border-radius: 50%; background: #475569; }
 .conn.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .session-label { color: var(--muted); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toolbar button.active { border-color: var(--accent); color: var(--accent); background: #17243f; }
 
 .body { display: flex; flex: 1; min-height: 0; }
 .tiles { flex: 1; overflow: auto; padding: 12px; }
@@ -124,6 +125,14 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 }
 .bubble.user { align-self: flex-end; background: #1d2f52; border-color: #2c4370; }
 .bubble.bot { align-self: flex-start; }
+.bubble.machine {
+  align-self: flex-start;
+  background: transparent;
+  border-style: dashed;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
 .bubble.err { align-self: flex-start; background: #3a1f24; border-color: #5b2b2b; color: #ffd7d7; }
 .empty { color: var(--muted); font-size: 12px; padding: 4px 0; }
 

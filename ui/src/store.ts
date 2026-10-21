@@ -48,9 +48,13 @@ export interface UiState {
    *  as a dismissible banner. */
   lastError: { title: string; text: string } | null;
   layout: Layout;
+  /** Show emits tagged `machine` in the app chat bubbles. Off by default:
+   *  they are tree narration (input, waiting, hand-offs), not replies. */
+  showMachine: boolean;
 }
 
 const LAYOUT_KEY = "gpb.tiled.layout";
+const MACHINE_KEY = "gpb.showMachine";
 
 function loadLayout(): Layout {
   try {
@@ -67,6 +71,14 @@ function loadLayout(): Layout {
     /* private mode / bad json */
   }
   return { order: [], hidden: [], expanded: [], wide: [] };
+}
+
+function loadShowMachine(): boolean {
+  try {
+    return localStorage.getItem(MACHINE_KEY) === "1";
+  } catch {
+    return false;
+  }
 }
 
 export const [state, setState] = createStore<UiState>({
@@ -90,6 +102,7 @@ export const [state, setState] = createStore<UiState>({
   toastErr: false,
   lastError: null,
   layout: loadLayout(),
+  showMachine: loadShowMachine(),
 });
 
 function saveLayout() {
@@ -494,6 +507,19 @@ export async function fetchRef(seq: number, path?: string | null): Promise<RefTa
   const d = (await r.json().catch(() => ({}))) as Partial<RefTarget> & { error?: string };
   if (!r.ok) throw new Error(d.error || `/api/ref: ${r.status}`);
   return d as RefTarget;
+}
+
+// ── display settings ────────────────────────────────────────────────────
+
+/** Show/hide machine-tagged emits across every app chat, and persist it. */
+export function toggleMachine(): void {
+  const next = !state.showMachine;
+  setState("showMachine", next);
+  try {
+    localStorage.setItem(MACHINE_KEY, next ? "1" : "0");
+  } catch {
+    /* private mode */
+  }
 }
 
 // ── layout tweaks ───────────────────────────────────────────────────────

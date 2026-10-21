@@ -2,6 +2,22 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — Emit flags and a machine-note toggle
+
+`grandma-kat` emits now accept a channel flag:
+`Emit("input: …", flag("machine"))` or
+`Emit((m) => ({ text: … }), flag("machine"))`. The emitted value gains
+`level: "machine"`; strings are wrapped as `{ text, level }`. Literals are
+allowed only with a flag so a missing function is still caught at build time.
+
+The web UI hides `level: "machine"` bubbles by default and persists a
+**machine** toggle in the toolbar and session drawer. Turn on the toggle to see
+tree narration — app inputs, waiting notes, hand-offs — without mixing it into
+the normal reply stream. `app/knit`'s generated prelude can now import `flag`;
+`<<!` in a spec maps to `Emit(..., flag("machine"))`. Tests:
+`node --test tests/emit-flag.test.mjs` in `grandma-kat`; BOB's UI typecheck and
+web build cover the toggle.
+
 ## 2026-10-21 — `inspect_memory` in the client-only web UI
 
 The browser target now registers grandma-kat's `inspect_memory` host tool, so a

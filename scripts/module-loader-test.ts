@@ -58,6 +58,15 @@ try {
   assert.equal(locals.one, 1);
   assert.equal(locals.deuce, 2);
   assert.equal(await locals.load(), 9, "export async function works");
+  // The injected grandma-kat namespace must expose Emit flags to workspace
+  // modules too (the same package the worker bundles).
+  await writeFile(
+    path.join(workspace, "flag.js"),
+    'import { Emit, flag } from "grandma-kat";\nexport const el = Emit("input: hi", flag("machine"));\n',
+  );
+  const flagApp = await loader.load("flag.js");
+  assert.deepEqual(flagApp.el.record.flags, ["machine"], "Emit flags survive the browser loader");
+
   console.log("module-loader: named, default, star and namespace re-exports OK");
 } finally {
   await rm(workspace, { recursive: true, force: true });

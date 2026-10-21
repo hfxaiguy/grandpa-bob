@@ -24,8 +24,8 @@ export interface EmitValue {
   buttons?: EmitButton[];
   /**
    * Optional channel tag. `"machine"` marks engine narration (the `{ machine }`
-   * emit shape); unset means user-facing. Surfaces may style or filter by it —
-   * the value always reaches onEmit.
+   * emit shape or `Emit(..., flag("machine"))`); unset means user-facing.
+   * Surfaces may style or filter by it — the value always reaches onEmit.
    */
   level?: string;
 }
