@@ -58,7 +58,7 @@ export function buildSettingsHtml(config: UiConfig): string {
 <div class="card">
   <div class="row">
     <span id="service-dots" class="row" style="gap:14px"></span>
-    <span class="status"><span class="dot on"></span> admin (this)</span>
+    <span class="status" id="server-mode"><span class="dot on"></span> admin (this)</span>
     <span style="margin-left:auto"><small id="uptime"></small></span>
   </div>
   <div class="row" style="margin-top:8px">
@@ -67,8 +67,9 @@ export function buildSettingsHtml(config: UiConfig): string {
     </label>
     <small style="color:var(--muted)">one-way: telegram never follows the webui</small>
   </div>
+  <div id="server-note" style="display:none; margin-top:8px; color:#f59e0b; font-size:12px"></div>
   <div class="actions">
-    <button onclick="restartBot()">Restart bot</button>
+    <button id="restart-btn" onclick="restartBot()">Restart bot</button>
     <button class="secondary" onclick="refreshAll()">Refresh</button>
   </div>
 </div>
@@ -155,8 +156,8 @@ export function buildSettingsHtml(config: UiConfig): string {
 <div class="card">
   <h2 style="margin-top:0">Logs</h2>
   <div class="row" style="margin-bottom:8px">
-    <button class="secondary" onclick="loadLog('bot')">bot.log</button>
-    <button class="secondary" onclick="loadLog('sherpa')">sherpa.log</button>
+    <button class="secondary log-btn" onclick="loadLog('bot')">bot.log</button>
+    <button class="secondary log-btn" onclick="loadLog('sherpa')">sherpa.log</button>
     <span style="margin-left:auto"><small>last 60 lines</small></span>
   </div>
   <pre id="log">(click a log button)</pre>
@@ -240,6 +241,37 @@ async function api(path, opts) {
 // its pages; reload when ours no longer matches.
 function checkUiVersion(v) {
   if (v && window.__UI_VERSION__ && v !== window.__UI_VERSION__) location.reload();
+}
+
+// The settings page runs in two hosts: the admin server (real .env, secrets,
+// logs, restart) and the browser target, where the page is shimmed onto the
+// in-browser backend. Ask which host this is, once, and keep server-only
+// controls visible but disabled when no admin is behind the page.
+let serverAdmin = true;
+async function loadCapabilities() {
+  try {
+    const r = await fetch("/api/capabilities");
+    const d = r.ok ? await r.json() : null;
+    serverAdmin = d ? d.admin === true : false;
+  } catch { serverAdmin = false; }
+  if (serverAdmin) return;
+  const mode = $("server-mode");
+  if (mode) {
+    mode.innerHTML = '<span class="dot" style="background:#f59e0b"></span> browser only';
+    mode.title = "No admin server behind this page — settings run in this tab.";
+  }
+  const note = $("server-note");
+  if (note) {
+    note.style.display = "";
+    note.textContent = "No admin server (BOB_WEB=1) — the Telegram bridge, service health, bot logs and restart are unavailable. Everything below applies to this browser workspace.";
+  }
+  const why = "Needs the admin server — run the bot with BOB_WEB=1";
+  const off = (el) => { el.disabled = true; el.title = why; };
+  const restart = $("restart-btn");
+  if (restart) off(restart);
+  const follow = $("follow-chk");
+  if (follow) off(follow);
+  document.querySelectorAll(".log-btn").forEach(off);
 }
 
 async function refreshStatus() {
@@ -1018,6 +1050,7 @@ $("follow-chk").onchange = async (e) => {
 };
 syncFollowChk();
 
+loadCapabilities();
 refreshStatus();
 refreshPatterns();
 filesBrowse();

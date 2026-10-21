@@ -17,9 +17,14 @@ every change it makes is **git-committed automatically**.
   - **Desktop (local server)** — the loopback storage bridge, for the real
     workspace on disk (and the only mode Firefox can use).
   The header's **upload** button puts files from a normal OS picker into any
-  workspace folder (asked per upload, remembered next time). To run the same UI
-  with the admin stopped, use `npm run web:standalone` (loopback static server
-  on `:8080`; see `web/README.md` → "Standalone").
+  workspace folder (asked per upload, remembered next time). The server on
+  `:8080` **always** serves the UI; the admin API is opt-in with `BOB_WEB=1`.
+  Without it the same port is a static-only listener, every `/api/*` answers
+  `503 {"admin": false}`, and the page runs its in-browser backend — settings
+  included. The server-only controls (Telegram bridge, service health, restart,
+  bot logs) stay visible but disabled, with a **browser only** chip. To run the
+  UI with no BOB process at all, use `npm run web:standalone` (loopback static
+  server on `:8080`; see `web/README.md` → "Standalone").
 - **Voice → text**: Telegram voice notes use the local Vulkan whisper-server;
   the web UI transcribes in the tab with whisper (Transformers.js, WebGPU/WASM),
   so no server is needed there.
@@ -427,7 +432,14 @@ Useful checks: `npm run typecheck`, `npm run smoke` (offline tool/git tests),
 
 ## Web UI
 
-The admin server (port `ADMIN_PORT`, default 8080) serves:
+The server on `ADMIN_PORT` (default 8080) **always** serves the browser UI. The
+admin API is opt-in — start the bot with `BOB_WEB=1`. Without it the same port
+is a static-only listener: the page boots its in-browser backend, the settings
+page runs entirely client-side, every `/api/*` answers `503 {"admin": false}`,
+and the server-only controls (restart, Telegram follow, bot logs, service
+health) render disabled with a **browser only** chip.
+
+With `BOB_WEB=1` the admin server additionally serves:
 
 - **`/` — tiled app UI.** A tiling "mission control": one tile per app (the
   trunk plus every `app/<name>/tree.draft.mjs` in the workspace). Each tile shows

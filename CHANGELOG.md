@@ -2,6 +2,31 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — the admin server is optional; the web UI always loads
+
+The server on `ADMIN_PORT` (default :8080) used to start the whole admin — chat
+SSE, settings API, Telegram bridge, monitors — unconditionally. `BOB_WEB` now
+gates it: unset/`0` (the default) starts a **static-only** listener that serves
+the built browser UI and answers every `/api/*` with `503 {"admin": false}`;
+`BOB_WEB=1` (or `BOB_DEV=1`) restores the admin. `startAdmin` keeps the full
+admin as its default (`mode: "api"`), so direct callers and tests are unchanged.
+
+The browser target already serves the settings endpoints in-tab
+(`local-backend.ts`: env, secrets, sync, commit, models), so with the admin off
+the settings page is answered entirely client-side. A new `/api/capabilities`
+probe tells the shared settings page which host it is on (the admin answers
+`{admin:true}`, the in-browser backend mirrors the boot-time
+`servedByAdmin()` signal, the static listener answers 503); without an admin
+the page shows a **browser only** chip and keeps the server-only controls —
+restart, Telegram follow, bot logs, service health — visible but disabled. The
+chat drawer's *✈ telegram* button disables the same way. The static listener
+redirects a direct `/settings` hit to `/` (the settings page is an in-page
+iframe there).
+
+Tests: `npm run test:web-static` (UI served at `/`, `/api/*` 503 with
+`admin:false`, `/settings` → `/`, traversal refused, API mode still answers
+`{admin:true}`); `test:ui-serve` unchanged and green.
+
 ## 2026-10-21 — tile drag works in FireDragon (Firefox)
 
 Tile reordering used HTML5 drag-and-drop on the whole tile, which Chromium

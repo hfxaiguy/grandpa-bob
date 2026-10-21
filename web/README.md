@@ -10,6 +10,25 @@ in browser storage.
 
 See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 
+## Serving modes (`BOB_WEB`)
+
+`npm start` serves this build at `:8080` in one of two modes:
+
+- **static — default** (`BOB_WEB` unset or `0`): the port serves only
+  `web/dist`, and every `/api/*` answers `503 {"admin": false}`. The tab boots
+  the in-browser backend (`web/src/server/local-backend.ts`), so chat **and the
+  settings page** run client-side. The settings page probes
+  `/api/capabilities` once and keeps server-only controls (restart, Telegram
+  follow, bot logs, service health) visible but disabled, with a *browser only*
+  chip. A direct `/settings` hit redirects to `/` — the settings page is an
+  in-page iframe there.
+- **api** (`BOB_WEB=1`, or `BOB_DEV=1`): the full admin server on the same
+  port — chat SSE, the settings API against the real `.env`/secrets, the
+  Telegram bridge and the monitors.
+
+To run the UI with no BOB process at all, use `npm run web:standalone`
+(`web/scripts/serve.mjs`; `PORT`/`HOST` overridable).
+
 ## Status — milestone 1 (virtual FS / platform seam)
 
 | Piece | State |

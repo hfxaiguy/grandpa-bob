@@ -843,6 +843,13 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       broadcast({ type: "cleared" });
       return { status: 200, body: { ok: true, active: activeSession } };
     }
+    // Capability probe shared with the admin's settings page. `serverModels`
+    // is true exactly when this tab was served by the admin server (it is what
+    // servedByAdmin() found at boot), so the page can tell "admin behind me"
+    // from "nothing but a file server" even though both use this backend.
+    if (pathname === "/api/capabilities" && method === "GET") {
+      return { status: 200, body: { admin: !!opts.serverModels, mode: "browser" } };
+    }
     if (pathname === "/api/status" && method === "GET") {
       return {
         status: 200,

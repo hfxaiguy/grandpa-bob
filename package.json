@@ -22,6 +22,7 @@
     "test:app-attribution": "tsx scripts/app-attribution-test.ts",
     "test:tokens": "tsx scripts/tokens-test.ts",
     "test:ui-serve": "tsx scripts/ui-serve-test.ts",
+    "test:web-static": "tsx scripts/static-web-test.ts",
     "test:ui": "npm --prefix ui run typecheck && npm --prefix ui run build",
     "test:patterns": "tsx scripts/patterns-test.ts",
     "test:spec-lint": "tsx scripts/spec-lint-test.ts",

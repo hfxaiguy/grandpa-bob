@@ -122,17 +122,23 @@ async function main(): Promise<void> {
     );
   }
 
-  // Start the web UI: chat front page (/) + settings page (/settings).
+  // Serve the browser UI on ADMIN_PORT. The admin API — chat, settings API,
+  // Telegram bridge, monitors — is opt-in via BOB_WEB=1; the default is a
+  // static-only listener, so the page boots its in-browser backend and the
+  // settings page is answered entirely client-side. BOB_DEV implies the API
+  // (the Vite middleware and the API share this server).
   // projectDir/envPath/workspaceDir must come from the RUNNING config —
   // admin's HOME-based defaults break on hosts where the checkout isn't
   // at ~/grandpa-bob-bot (env editor, models probe and health would read
   // nonexistent files).
   const adminPort = parseInt(process.env.ADMIN_PORT || "8080", 10);
+  const adminMode = process.env.BOB_WEB === "1" || process.env.BOB_DEV === "1" ? "api" : "static";
   const envPath = config.envFile;
   // Late-bound Telegram handle: the admin is constructed before the bot,
   // but a webui-run turn into a Telegram conversation must reach the phone.
   let telegramBot: Bot | undefined;
   startAdmin({
+    mode: adminMode,
     port: adminPort,
     agent,
     telegramNotify: async (key, text) => {

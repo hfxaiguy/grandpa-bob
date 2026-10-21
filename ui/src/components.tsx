@@ -1,5 +1,5 @@
 /** Tile, memory, per-tile event log, global stream, session panel. */
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import { describeEvent, streamLines, type EventLine } from "./describe";
 import { copyEventStream, copyText, downloadEventStream } from "./event-dump";
 import {
@@ -1063,6 +1063,16 @@ export function GlobalStream() {
 
 export function SessionPanel(props: { onClose: () => void }) {
   const activeSession = createMemo(() => state.sessions.find((s) => s.key === state.active));
+  // Pushing a transcript to Telegram is an admin-server feature. In the
+  // browser target (no admin behind the page) keep the control visible but
+  // disabled instead of letting the click fail with a 501.
+  const [adminOnline, setAdminOnline] = createSignal(true);
+  onMount(() => {
+    fetch("/api/capabilities")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setAdminOnline(!!d && d.admin === true))
+      .catch(() => setAdminOnline(false));
+  });
   // A local draft while editing the active session's name; null = show the
   // stored label.
   const [labelDraft, setLabelDraft] = createSignal<string | null>(null);
@@ -1132,7 +1142,16 @@ export function SessionPanel(props: { onClose: () => void }) {
             <button class="secondary" onClick={() => void clearConversation()}>
               clear conversation
             </button>
-            <button class="secondary" title="push this transcript to your linked Telegram chat" onClick={() => void sendToTelegram()}>
+            <button
+              class="secondary"
+              disabled={!adminOnline()}
+              title={
+                adminOnline()
+                  ? "push this transcript to your linked Telegram chat"
+                  : "needs the admin server (BOB_WEB=1)"
+              }
+              onClick={() => void sendToTelegram()}
+            >
               ✈ telegram
             </button>
           </div>

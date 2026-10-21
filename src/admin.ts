@@ -73,6 +73,13 @@ export interface AdminConfig {
   sherpaLog: string;
   botSession: string;
   sherpaSession: string;
+  /**
+   * "api" (default) — the full admin server: chat, settings API, SSE,
+   * monitors. "static" — the same port serves only the built browser UI;
+   * every `/api/*` answers 503 `{ "admin": false }`, which tells the page to
+   * run its in-browser backend instead. index.ts picks this from BOB_WEB.
+   */
+  mode: "api" | "static";
 }
 
 function defaultConfig(): AdminConfig {
@@ -89,6 +96,9 @@ function defaultConfig(): AdminConfig {
     sherpaLog: `${HOME}/sherpa.log`,
     botSession: "bot",
     sherpaSession: "sherpa",
+    // Direct callers (tests, scripts, embedders) keep the full admin unless
+    // they ask for the static-only listener. index.ts derives it from BOB_WEB.
+    mode: "api",
   };
 }
 
@@ -1274,8 +1284,105 @@ export interface AdminOptions extends Partial<AdminConfig> {
   stt?: SttBackendOptions;
 }
 
+// ── static-only listener ──────────────────────────────────────────────
+// BOB_WEB=0: the bot still owns ADMIN_PORT so the page keeps its familiar
+// URL, but only as a file server. No admin state, no API, no monitors: the
+// tab boots its in-browser backend (web/src/server/local-backend.ts) and the
+// settings page is answered entirely client-side. Every `/api/*` request
+// answers 503 `{ "admin": false }` — the page's capability probe uses that
+// to disable the server-only controls (restart, Telegram follow, bot logs).
+function startStaticOnly(config: AdminConfig): http.Server {
+  const WEB_DIST = path.resolve(config.projectDir, "web", "dist");
+  // Read per request: a rebuild while the server runs rewrites index.html to
+  // new content hashes, so a startup snapshot would point at deleted files.
+  const readIndex = (): string | null => {
+    try {
+      return fs.readFileSync(path.join(WEB_DIST, "index.html"), "utf8");
+    } catch {
+      return null;
+    }
+  };
+  const NOT_BUILT_HTML =
+    '<!doctype html><meta charset="utf-8"><title>grandpa-bob</title>' +
+    '<body style="font:15px system-ui;background:#0f172a;color:#e2e8f0;padding:2rem">' +
+    "<h1>UI not built</h1>" +
+    "<p>The browser UI is served from <code>web/dist</code>, which is missing.</p>" +
+    "<p>Run <code>npm --prefix web run build</code> and reload.</p>" +
+    "</body>";
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url!, `http://localhost:${config.port}`);
+
+      if (req.method === "GET" && url.pathname === "/") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        res.end(readIndex() ?? NOT_BUILT_HTML);
+        return;
+      }
+
+      // Same asset contract as the admin: content-hashed bundles cache long,
+      // everything else (the OPFS seed) must revalidate.
+      if (req.method === "GET" && (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/seed/"))) {
+        const rel = path.posix.normalize(url.pathname.slice(1));
+        const roots = [WEB_DIST];
+        // `/seed/` is an authoring input, not a build artifact.
+        if (url.pathname.startsWith("/seed/")) roots.unshift(path.resolve(config.projectDir, "web", "public"));
+        for (const root of roots) {
+          const file = path.resolve(root, rel);
+          if (!file.startsWith(root + path.sep)) continue;
+          try {
+            const buf = await readFile(file);
+            const immutable = url.pathname.startsWith("/assets/");
+            res.writeHead(200, {
+              "content-type": mimeFor(file),
+              "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-store",
+            });
+            res.end(buf);
+            return;
+          } catch {
+            /* try the next root */
+          }
+        }
+        res.writeHead(404);
+        res.end("not found");
+        return;
+      }
+
+      // The settings page is an iframe inside the app; a direct hit has no
+      // admin API behind it, so send the browser to the app instead.
+      if (req.method === "GET" && url.pathname === "/settings") {
+        res.writeHead(302, { location: "/" });
+        res.end();
+        return;
+      }
+
+      if (url.pathname.startsWith("/api/")) {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          admin: false,
+          error: "admin API is off — run the bot with BOB_WEB=1 to enable it",
+        }));
+        return;
+      }
+
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not found");
+    } catch (e: any) {
+      res.writeHead(500, { "content-type": "text/plain" });
+      res.end("error: " + e.message);
+    }
+  });
+
+  server.listen(config.port, "0.0.0.0", () => {
+    console.log(`[web] UI only : http://0.0.0.0:${config.port} (admin API off — BOB_WEB=1 to enable)`);
+  });
+
+  return server;
+}
+
 export function startAdmin(cfg?: AdminOptions): http.Server {
   const config: AdminConfig = { ...defaultConfig(), ...cfg };
+  if (config.mode === "static") return startStaticOnly(config);
   const platform = createNodePlatform(config.workspaceDir);
   const agent = cfg?.agent;
   telegramNotify = cfg?.telegramNotify;
@@ -1987,6 +2094,16 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           res.writeHead(502, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
         }
+        return;
+      }
+
+      // What this server can do. The settings page asks once at load: the
+      // admin answers { admin: true }; a static-only listener answers 503
+      // { admin: false }, and the in-browser backend answers { admin: false }
+      // too — either way the page knows to keep server-only controls disabled.
+      if (req.method === "GET" && url.pathname === "/api/capabilities") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ admin: true, restart: true, follow: true }));
         return;
       }
 
