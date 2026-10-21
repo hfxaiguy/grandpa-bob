@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { SqliteTools } from "../src/tools/sqlite.js";
 import { createNodePlatform } from "../src/platform/node.js";
+import { createAppStore } from "../src/app-store.js";
 
 const workspace = await mkdtemp(path.join(os.tmpdir(), "grandpa-bob-sqlite-"));
 const platform = createNodePlatform(workspace);
@@ -48,7 +49,42 @@ try {
   const viaLock = await locked.query("SELECT COUNT(*) AS n FROM people", "/somewhere/else.db");
   assert.equal((viaLock.rows as Array<{ n: number }>)[0].n, 2);
 
-  console.log("sqlite-tools: query/write/guard/sandbox/lock OK");
+  // ── one writer per file per worker ───────────────────────────────────
+  // The worker hands its app store to the SQL tools; sql_write must reuse the
+  // store's cached writable handle instead of opening a second connection.
+  // Two connections over the browser's OPFS seam can hold different snapshots
+  // of sqlite_sequence and mint the same row id twice.
+  let writableOpens = 0;
+  const counted = {
+    ...platform,
+    sqlite: {
+      ...platform.sqlite,
+      open: (p: string, o: { readOnly: boolean; scratch?: boolean }) => {
+        if (!o.readOnly) writableOpens += 1;
+        return platform.sqlite.open(p, o);
+      },
+    },
+  };
+  const store = createAppStore(counted);
+  const shared = new SqliteTools(counted, undefined, store);
+  await shared.write(
+    "CREATE TABLE shared (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)",
+    "shared.db",
+  );
+  await shared.write("INSERT INTO shared (v) VALUES ('tool')", "shared.db");
+  const sharedApp = await store.open("shared.db");
+  const appInsert = await (await sharedApp.prepare("INSERT INTO shared (v) VALUES ('app')")).run();
+  assert.equal(
+    Number(appInsert.lastInsertRowid),
+    2,
+    "the app writer sees the sql_write insert — one sequence, one handle",
+  );
+  assert.equal(writableOpens, 1, "sql_write reused the app store's writable handle");
+  const sharedRows = await shared.query("SELECT COUNT(*) AS n FROM shared", "shared.db");
+  assert.equal((sharedRows.rows as Array<{ n: number }>)[0].n, 2, "both writes are visible to sql_query");
+  await store.close("shared.db");
+
+  console.log("sqlite-tools: query/write/guard/sandbox/lock/shared-writer OK");
 } finally {
   await rm(workspace, { recursive: true, force: true });
 }

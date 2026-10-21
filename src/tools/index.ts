@@ -5,6 +5,8 @@ import { FileTools } from "./files.js";
 import { ShellTools } from "./shell.js";
 import { ExaSearchTools } from "./websearch.js";
 import { SqliteTools } from "./sqlite.js";
+import { ownedDbApp, ownedDbError } from "./app-dbs.js";
+import type { AppStore } from "../app-store.js";
 import { OpencodeTools } from "./opencode.js";
 import { CsvTools, CSV_QUERY_DEFINITION } from "./csv.js";
 import { GitTools, GIT_DEFINITIONS } from "./git-tools.js";
@@ -29,49 +31,6 @@ export interface ToolCallContext {
   readRef?: (ref: string) => unknown;
   /** The slots visible from the call site, with their write seqs. */
   scopeInfo?: () => unknown;
-}
-
-/**
- * Databases owned by an app tree. The top-level agent may not reach these
- * directly with sql_query / sql_write — it must go through the owning tree,
- * which carries the schema and the write rules. A call from inside an app tree
- * (`ctx.boundary`) is exempt: the app owns the store. Databases no app owns
- * (ad-hoc .db files) stay freely reachable.
- */
-const APP_OWNED_DBS: Record<string, string> = {
-  "contacts.db": "contacts",
-  "comms.db": "contacts",
-  "email.db": "email",
-};
-
-/**
- * What an app-owned store actually holds, when the topic is a poor guide to its
- * contents. A refusal must route the top-level agent to the RIGHT tree, not
- * merely name the file's owner: email.db is sender profiles with no message
- * log, so "who was emailed" is a contacts-tree question. Keys match
- * APP_OWNED_DBS; the hint is appended to the refusal.
- */
-const OWNED_DB_HINTS: Record<string, string> = {
-  "email.db":
-    "email.db holds sender profiles (writing contexts and From addresses), not a message log; " +
-    "sent/received history is a contact `message` attribute — ask the contacts tree",
-};
-
-/** The app that owns a database path (basename match), or null. */
-function ownedDbApp(pathArg: unknown): { db: string; app: string } | null {
-  if (typeof pathArg !== "string") return null;
-  const db = pathArg.trim().replace(/^.*[/\\]/, "");
-  const app = APP_OWNED_DBS[db];
-  return app ? { db, app } : null;
-}
-
-/** The refusal an app-owned store returns to the top-level agent. */
-function ownedDbError(owned: { db: string; app: string }): string {
-  const hint = OWNED_DB_HINTS[owned.db];
-  return (
-    `error: "${owned.db}" is owned by the ${owned.app} tree — call the ${owned.app} tree instead of querying it directly.` +
-    (hint ? ` ${hint}.` : "")
-  );
 }
 
 function toOpenAiDefinition(tool: AppTool): OpenAI.Chat.Completions.ChatCompletionTool {
@@ -117,6 +76,10 @@ export class ToolRegistry {
    * @param sqliteLockedPath Optional absolute path to a single SQLite database
    *                         the sql_query tool is locked to. When set, the agent
    *                         can only query that file (the `path` arg is ignored).
+   * @param appStore         The host's app-database store (see app-store.ts).
+   *                         When given, sql_write reuses its cached writable
+   *                         handle so SQL tools and app code share ONE
+   *                         connection per file instead of racing two.
    */
   constructor(
     workspace: string,
@@ -124,12 +87,13 @@ export class ToolRegistry {
     exaApiKey: string = "",
     sqliteLockedPath?: string,
     appTools: AppTool[] = [],
+    appStore?: Pick<AppStore, "open">,
   ) {
     const platform = createNodePlatform(workspace, allowedCommands);
     this.files = new FileTools(platform);
     this.shell = new ShellTools(workspace, allowedCommands);
     this.exa = new ExaSearchTools(exaApiKey);
-    this.sqlite = new SqliteTools(platform, sqliteLockedPath);
+    this.sqlite = new SqliteTools(platform, sqliteLockedPath, appStore);
     this.opencode = new OpencodeTools();
     this.csv = new CsvTools(platform);
     this.gitTools = new GitTools(workspace);

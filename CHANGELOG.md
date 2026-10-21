@@ -91,23 +91,36 @@ and SSE session gating; it fails against the previous store), `npm run
 test:web-memory`, `npm run typecheck`, `npm --prefix ui run typecheck`,
 `npm --prefix ui run build`.
 
-## 2026-10-21 — markdown in the tiled app UI
+## 2026-10-21 — one writer per database, and the app-DB guard reaches bob-web
 
-Message text rendered through `RefText` was plain text, so `**bold**` showed
-literally. A new `ui/src/markdown.tsx` lexes with `marked` and renders the token
-tree as Solid nodes for every `RefText` surface: app-tile bubbles, event-log
-rows, the memory modal, and provenance message bodies (including "the message").
-No `innerHTML` is used — text leaves stay escaped nodes and raw HTML in a
-message is shown literally; link/image targets are restricted to http(s)/mailto.
-`ref://…` handles are split out of running text by the renderer, so they stay
-clickable inside bold, list items, and table cells. Log rows use an inline mode
-that flattens block syntax onto their single line; the memory and provenance
-`<pre>` bodies became `<div>`s so headings, lists, and code blocks nest legally.
+`sql_write` opened its own SQLite connection per call while app code held a
+long-lived cached writer. In the browser that is two connections over the OPFS
+seam, which can each keep a different snapshot of `sqlite_sequence`: a raw
+insert minted profiles 7–12 and the app store then handed **id 7** to a new
+person, because its snapshot still said 6. `SqliteTools` now takes the host's
+app store (`src/tools/sqlite.ts`) and routes a write to a root-level `<name>.db`
+through its cached writable handle — one writer per file per worker. The
+registry accepts the store (`ToolRegistry(..., appStore)`), and `src/index.ts`,
+`src/debug/repl.ts` and the browser worker all create it once and pass the same
+instance to app tools and SQL tools. `markDatabaseDirty` still runs for every
+write (the store's wrapper does not treat a row-returning write as a write),
+and the tool closes only handles it opened itself.
 
-Tests: `npm run test:ui` (typecheck + build) and the browser target
-(`npm --prefix web run typecheck` / `run build`, which reuses `ui/src`);
-renderer behaviour checked with a temporary Solid SSR harness (emphasis,
-lists, tables, fences, raw-HTML escaping, unsafe links, refs inside emphasis).
+The app-owned-database guard was Node-only: bob-web's tool map exposed
+`sql_query` / `sql_write` with no ownership check, so the trunk could raw-write
+`contacts.db` / `comms.db` / `email.db`. The guard's constants and refusal moved
+to `src/tools/app-dbs.ts` and both targets now use them; the browser tools take
+the engine's per-call context and refuse the owning stores unless the call is
+inside an app tree (`ctx.boundary`), exactly like the Node registry. With the
+raw path closed, the contacts app's gate needed its other half — a relation that
+names an existing contact id is a link, not a company creation, so a hand-off
+can attach a person to an existing company without falling back to `sql_write`
+(see the contacts app's CHANGELOG).
+
+Tests: `npm run test:sqlite` (counts writable opens — SQL tools and app code
+share one handle, and the app insert sees the raw insert's sequence),
+`npm run test:browser-sql-guard` (trunk refused, basename match, app exempt,
+unowned reachable), `npm run test:app-db-guard` unchanged.
 
 ## 2026-10-21 — a nested app call is its own tile (app attribution)
 

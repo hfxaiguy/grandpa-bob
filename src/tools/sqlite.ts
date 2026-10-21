@@ -13,7 +13,8 @@
 // The engine comes from the injected `Platform.sqlite` (Node: node:sqlite;
 // browser: sqlite-wasm), so this module has no Node dependency.
 
-import type { Platform } from "../platform/types.js";
+import type { Platform, SqliteDatabase } from "../platform/types.js";
+import type { AppStore } from "../app-store.js";
 import { resolveInWorkspace } from "../util/paths.js";
 import { markDatabaseDirty } from "../db-sync.js";
 
@@ -38,10 +39,20 @@ function truncateCell(value: unknown): unknown {
 export class SqliteTools {
   private platform: Platform;
   private lockedPath?: string;
+  private writers?: Pick<AppStore, "open">;
 
-  constructor(platform: Platform, lockedPath?: string) {
+  /**
+   * @param writers The host's app-database store (app-store.ts). When given,
+   *   a write to a root-level `<name>.db` reuses its cached writable handle
+   *   instead of opening a second connection: one writer per file per worker.
+   *   Two connections over the browser's OPFS seam can each hold a different
+   *   snapshot of `sqlite_sequence`, so a raw insert and an app insert could
+   *   otherwise be handed the SAME row id.
+   */
+  constructor(platform: Platform, lockedPath?: string, writers?: Pick<AppStore, "open">) {
     this.platform = platform;
     this.lockedPath = lockedPath;
+    this.writers = writers;
   }
 
   private resolveDatabase(pathArg?: string): string {
@@ -106,8 +117,21 @@ export class SqliteTools {
     const database = this.resolveDatabase(pathArg);
     // A write makes the app DB dirty, so a later cheap commit dumps only it.
     const rel = this.platform.path.relative(this.platform.workspaceRoot, database);
+    // One writer per file per worker: a root-level `.db` goes through the
+    // host's app store, which caches ONE writable handle for app code and SQL
+    // tools alike. Nested/foreign paths keep their own short-lived handle.
+    const sharedName =
+      this.writers && rel && !rel.startsWith("..") && !rel.includes("/") && !rel.includes("\\") && rel.endsWith(".db")
+        ? rel
+        : null;
+    // Mark even when the store also marks it: a row-returning write goes
+    // through `stmt.all()`, which the store's wrapper does not treat as a
+    // write. markDatabaseDirty is idempotent and ignores nested paths.
     if (rel && rel !== database) await markDatabaseDirty(this.platform, rel).catch(() => {});
-    const db = await this.platform.sqlite.open(database, { readOnly: false });
+    const db: SqliteDatabase = sharedName
+      ? await this.writers!.open(sharedName)
+      : await this.platform.sqlite.open(database, { readOnly: false });
+    const ownsHandle = sharedName == null;
     try {
       const stmt = await db.prepare(statement);
       const columnNames = (await stmt.columns()).map((c) => c.name);
@@ -142,7 +166,9 @@ export class SqliteTools {
         lastInsertRowid: info.lastInsertRowid === undefined ? null : Number(info.lastInsertRowid),
       };
     } finally {
-      await db.close();
+      // The store owns its cached handle — closing it here would drop the
+      // shared writer mid-run.
+      if (ownsHandle) await db.close();
     }
   }
 }

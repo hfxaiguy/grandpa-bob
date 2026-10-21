@@ -37,8 +37,11 @@ async function main(): Promise<void> {
 
   const secrets = new SecretsStore(config.secretsDb);
   // App code asks the host for its database; it must be in place before the
-  // app tool modules are imported (their DB handles are lazy).
-  globalThis.__BOB_STORE__ = createAppStore(createNodePlatform(config.workspaceDir));
+  // app tool modules are imported (their DB handles are lazy). The same store
+  // is handed to the SQL tools below so sql_write and app code share one
+  // writable connection per file (see SqliteTools.write).
+  const appStore = createAppStore(createNodePlatform(config.workspaceDir));
+  globalThis.__BOB_STORE__ = appStore;
   const appTools = [
     ...(await loadAppTools(config.workspaceDir, secrets)),
     // KAT's own run-log reader, so a tree can recall what happened in past
@@ -52,6 +55,7 @@ async function main(): Promise<void> {
     config.exaApiKey,
     config.sqliteLockPath || undefined,
     appTools,
+    appStore,
   );
   const models = await loadModels();
   // Shared SQLite + console logger. Passing a logger object (instead of the

@@ -61,6 +61,7 @@
     "test:sqlite": "tsx scripts/sqlite-tools-test.ts",
     "test:db-sync": "tsx scripts/db-sync-test.ts",
     "test:app-db-guard": "tsx scripts/app-db-guard-test.ts",
+    "test:browser-sql-guard": "tsx scripts/browser-sql-guard-test.ts",
     "test:coreutils": "tsx scripts/coreutils-test.ts",
     "test:env": "tsx scripts/env-file-test.ts",
     "test:attachments": "tsx scripts/attachments-test.ts",

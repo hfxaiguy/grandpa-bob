@@ -471,7 +471,11 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   const storage = opts.storage ?? "browser";
   const server = opts.server ?? "";
   const platform = await getPlatform(storage, server);
-  globalThis.__BOB_STORE__ = createAppStore(platform);
+  // One store for app code and the SQL tools below: they must share the same
+  // cached writable handle per file or two connections can allocate the same
+  // row id over the browser's OPFS seam (sqlite_sequence snapshots diverge).
+  const appStore = createAppStore(platform);
+  globalThis.__BOB_STORE__ = appStore;
   await ready;
   throwIfStopped(signal);
 
@@ -524,7 +528,11 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
 
   const onEmit = (value: unknown): void => post({ id: opts.id, type: "emit", value });
   const toolsMap: Record<string, unknown> = {
-    ...browserTools(platform, { remote: opts.remote ?? "", flushLog: () => session.logger.flush() }),
+    ...browserTools(platform, {
+      remote: opts.remote ?? "",
+      flushLog: () => session.logger.flush(),
+      store: appStore,
+    }),
     // KAT's memory inspector. Unlike the Node target, the browser registry is
     // the plain engine tool map, so `execute` receives the engine's per-call
     // ctx (`view`/`readRef`/`scopeInfo`) directly — no special dispatch.

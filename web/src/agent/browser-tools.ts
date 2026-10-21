@@ -4,18 +4,25 @@
  */
 import { FileTools } from "../../../src/tools/files";
 import { SqliteTools } from "../../../src/tools/sqlite";
+import { ownedDbApp, ownedDbError } from "../../../src/tools/app-dbs";
 import { CsvTools, CSV_QUERY_DEFINITION } from "../../../src/tools/csv";
 import { runCommand } from "../../../src/platform/coreutils";
 import { writeDatabaseDumps } from "../../../src/db-sync";
 import { createSqliteWasm } from "../platform/sqlite-wasm";
 import { runLogToolFromQuery } from "grandma-kat";
 import type { Platform } from "../../../src/platform/types";
+import type { AppStore } from "../../../src/app-store";
 
 type Args = Record<string, unknown>;
+/** The engine's per-call context, as far as a host tool needs it. */
+export interface ToolCtx {
+  /** True inside an app tree entered as a tool — the app owns its store. */
+  boundary?: boolean;
+}
 export interface KatTool {
   description: string;
   parameters: { type: "object"; properties?: Record<string, unknown>; required?: string[] };
-  execute: (args: Args) => Promise<unknown>;
+  execute: (args: Args, ctx?: ToolCtx) => Promise<unknown>;
 }
 
 export interface BrowserToolOptions {
@@ -23,11 +30,16 @@ export interface BrowserToolOptions {
   remote?: string;
   /** Flush buffered run-log events before read_runs reads them. */
   flushLog?: () => Promise<void> | void;
+  /**
+   * The worker's app-database store. The SQL tools reuse its cached writable
+   * handle so raw SQL and app code share one connection per file.
+   */
+  store?: Pick<AppStore, "open">;
 }
 
 export function browserTools(platform: Platform, opts: BrowserToolOptions = {}): Record<string, KatTool> {
   const files = new FileTools(platform);
-  const sqlite = new SqliteTools(platform);
+  const sqlite = new SqliteTools(platform, undefined, opts.store);
   // CSV work always uses the tab's own wasm engine — also in desktop-bridge
   // mode, where platform.sqlite is the bridge's per-call handle and could not
   // hold the scratch table between statements.
@@ -102,8 +114,13 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         properties: { query: { type: "string" }, path: { type: "string" } },
         required: ["query"],
       },
-      execute: async (a) =>
-        sqlite.query(String(a.query ?? ""), a.path === undefined ? undefined : String(a.path)),
+      execute: async (a, ctx) => {
+        // The top-level agent may not reach an app's store directly — it must
+        // call the owning tree. Inside an app tree the app owns the store.
+        const owned = ctx?.boundary ? null : ownedDbApp(a.path);
+        if (owned) return ownedDbError(owned);
+        return sqlite.query(String(a.query ?? ""), a.path === undefined ? undefined : String(a.path));
+      },
     },
     sql_write: {
       description: "Run a read-write SQL statement against a workspace .db file.",
@@ -112,8 +129,11 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         properties: { query: { type: "string" }, path: { type: "string" } },
         required: ["query"],
       },
-      execute: async (a) =>
-        sqlite.write(String(a.query ?? ""), a.path === undefined ? undefined : String(a.path)),
+      execute: async (a, ctx) => {
+        const owned = ctx?.boundary ? null : ownedDbApp(a.path);
+        if (owned) return ownedDbError(owned);
+        return sqlite.write(String(a.query ?? ""), a.path === undefined ? undefined : String(a.path));
+      },
     },
     read_runs: {
       description: runLog.description,

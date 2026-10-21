@@ -12,6 +12,8 @@ import { createLogger, runLogTools } from "grandma-kat";
 import { EventLogger, type KatEvent } from "./event-logger.js";
 import { formatEvent, formatAgentOutput } from "./format.js";
 import { loadAppTools } from "../app-tools.js";
+import { createNodePlatform } from "../platform/node.js";
+import { createAppStore } from "../app-store.js";
 import { emitText } from "../util/emit-text.js";
 
 const CONV_KEY = "cli:repl";
@@ -48,11 +50,22 @@ async function main(): Promise<void> {
   await fs.mkdir(path.join(config.workspaceDir, "logs"), { recursive: true });
   await ensureWorkspaceGitignore(config.workspaceDir, ["logs/grandma-kat.db*"]);
 
+  // One app-database store for app code and the SQL tools, so both use the
+  // same cached writer per file.
+  const appStore = createAppStore(createNodePlatform(config.workspaceDir));
+  globalThis.__BOB_STORE__ = appStore;
   const appTools = [
     ...(await loadAppTools(config.workspaceDir)),
     ...runLogTools(path.join(config.workspaceDir, "logs", "grandma-kat.db")),
   ];
-  const tools = new ToolRegistry(config.workspaceDir, config.allowedCommands, config.exaApiKey, undefined, appTools);
+  const tools = new ToolRegistry(
+    config.workspaceDir,
+    config.allowedCommands,
+    config.exaApiKey,
+    undefined,
+    appTools,
+    appStore,
+  );
   const models = await loadModels();
 
   // Grandma-kat handles SQLite persistence. Console output via EventLogger below.
