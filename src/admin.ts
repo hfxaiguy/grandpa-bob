@@ -1293,6 +1293,11 @@ export interface AdminOptions extends Partial<AdminConfig> {
 // to disable the server-only controls (restart, Telegram follow, bot logs).
 function startStaticOnly(config: AdminConfig): http.Server {
   const WEB_DIST = path.resolve(config.projectDir, "web", "dist");
+  // Dev runs here too, with the same Vite HMR as api mode — only the API is
+  // gone. `npm run dev` is `BOB_DEV=1` with BOB_WEB unset, so this is the
+  // normal development path.
+  const DEV = process.env.BOB_DEV === "1";
+  let viteDev: { middlewares: (req: http.IncomingMessage, res: http.ServerResponse, next: () => void) => void } | null = null;
   // Read per request: a rebuild while the server runs rewrites index.html to
   // new content hashes, so a startup snapshot would point at deleted files.
   const readIndex = (): string | null => {
@@ -1313,6 +1318,18 @@ function startStaticOnly(config: AdminConfig): http.Server {
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url!, `http://localhost:${config.port}`);
+
+      // Dev: Vite owns the frontend (source + HMR), exactly as in api mode.
+      // `/api/*` below still answers 503 — no admin, just live source.
+      if (viteDev && (req.method === "GET" || req.method === "HEAD") && !url.pathname.startsWith("/api/")) {
+        viteDev.middlewares(req, res, () => {
+          if (!res.headersSent) {
+            res.writeHead(404);
+            res.end("not found");
+          }
+        });
+        return;
+      }
 
       if (req.method === "GET" && url.pathname === "/") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
@@ -1372,6 +1389,28 @@ function startStaticOnly(config: AdminConfig): http.Server {
       res.end("error: " + e.message);
     }
   });
+
+  if (DEV) {
+    void (async () => {
+      try {
+        const { createRequire } = await import("node:module");
+        const { pathToFileURL } = await import("node:url");
+        const requireFromWeb = createRequire(path.join(config.projectDir, "web", "package.json"));
+        const viteEntry = requireFromWeb.resolve("vite");
+        const { createServer } = (await import(pathToFileURL(viteEntry).href)) as {
+          createServer: (opts: unknown) => Promise<typeof viteDev>;
+        };
+        viteDev = await createServer({
+          root: path.resolve(config.projectDir, "web"),
+          appType: "spa",
+          server: { middlewareMode: true, hmr: { server } },
+        });
+        console.log(`[web] Vite dev middleware on :${config.port} (HMR on, admin API off)`);
+      } catch (err) {
+        console.error("[web] Vite dev middleware failed:", err instanceof Error ? err.message : err);
+      }
+    })();
+  }
 
   server.listen(config.port, "0.0.0.0", () => {
     console.log(`[web] UI only : http://0.0.0.0:${config.port} (admin API off — BOB_WEB=1 to enable)`);
