@@ -47,7 +47,7 @@
     "test:button-store": "tsx scripts/button-store-test.ts",
     "test:quota-error": "tsx scripts/quota-error-test.ts",
     "test:fallback": "tsx scripts/fallback-test.ts",
-    "test:duckdb": "tsx scripts/duckdb-bom-test.ts",
+    "test:csv": "tsx scripts/csv-test.ts",
     "test:secrets": "tsx scripts/secrets-test.ts",
     "test:shell": "tsx scripts/shell-sandbox-test.ts",
     "test:paths": "tsx scripts/path-shim-test.ts",
@@ -71,7 +71,6 @@
     "test:ui-describe": "tsx scripts/ui-describe-test.ts"
   },
   "dependencies": {
-    "@duckdb/node-api": "^1.5.5-r.5",
     "dotenv": "^17.4.2",
     "grammy": "^1.45.1",
     "grandma-kat": "file:../grandma-kat",

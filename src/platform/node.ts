@@ -76,7 +76,7 @@ export const nodeCrypto: CryptoOps = {
 
 /** node:sqlite adapter (synchronous DatabaseSync, exposed through the async seam). */
 export const nodeSqlite: SqliteFactory = {
-  async open(path: string, { readOnly }): Promise<SqliteDatabase> {
+  async open(path: string, { readOnly }: { readOnly: boolean; scratch?: boolean }): Promise<SqliteDatabase> {
     const db = new DatabaseSync(path, { readOnly });
     return {
       async prepare(sql) {

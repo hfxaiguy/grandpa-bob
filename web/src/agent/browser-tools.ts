@@ -4,8 +4,10 @@
  */
 import { FileTools } from "../../../src/tools/files";
 import { SqliteTools } from "../../../src/tools/sqlite";
+import { CsvTools, CSV_QUERY_DEFINITION } from "../../../src/tools/csv";
 import { runCommand } from "../../../src/platform/coreutils";
 import { writeDatabaseDumps } from "../../../src/db-sync";
+import { createSqliteWasm } from "../platform/sqlite-wasm";
 import { runLogToolFromQuery } from "grandma-kat";
 import type { Platform } from "../../../src/platform/types";
 
@@ -26,6 +28,10 @@ export interface BrowserToolOptions {
 export function browserTools(platform: Platform, opts: BrowserToolOptions = {}): Record<string, KatTool> {
   const files = new FileTools(platform);
   const sqlite = new SqliteTools(platform);
+  // CSV work always uses the tab's own wasm engine — also in desktop-bridge
+  // mode, where platform.sqlite is the bridge's per-call handle and could not
+  // hold the scratch table between statements.
+  const csv = new CsvTools(platform, createSqliteWasm());
   const root = platform.workspaceRoot;
 
   // read_runs over the browser's own run log (OPFS-backed WASM SQLite).
@@ -117,6 +123,14 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         return runLog.execute(a);
       },
     },
+    csv_query: {
+      description: CSV_QUERY_DEFINITION.function.description ?? "",
+      parameters: (CSV_QUERY_DEFINITION.function.parameters ?? {
+        type: "object",
+        properties: {},
+      }) as { type: "object"; properties?: Record<string, unknown>; required?: string[] },
+      execute: async (a) => csv.query(String(a.query ?? ""), String(a.path ?? "")),
+    },
     run_command: {
       description: "Run an allowlisted command over the virtual workspace filesystem.",
       parameters: {
@@ -193,7 +207,6 @@ function notAvailable(name: string): KatTool {
 
 /** Names the workspace trunk declares but this target does not implement. */
 export const STUB_TOOL_NAMES = [
-  "duckdb_query",
   "exa_search",
   "upsert_contact",
   "log_message",

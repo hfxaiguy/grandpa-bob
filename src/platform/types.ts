@@ -91,7 +91,11 @@ export interface SqliteDatabase {
 
 /** Opens SQLite databases (Node: node:sqlite; browser: sqlite-wasm in a Worker). */
 export interface SqliteFactory {
-  open(path: string, opts: { readOnly: boolean }): Promise<SqliteDatabase>;
+  /**
+   * `scratch` asks for an in-memory-only database: writes are allowed but
+   * nothing is ever loaded or persisted to the workspace (path is advisory).
+   */
+  open(path: string, opts: { readOnly: boolean; scratch?: boolean }): Promise<SqliteDatabase>;
 }
 
 /** The bundle of adapters a target injects into the shared core. */

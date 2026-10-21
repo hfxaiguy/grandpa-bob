@@ -54,8 +54,12 @@ export async function initSqlite(): Promise<void> {
 
 export function createSqliteWasm(): SqliteFactory {
   return {
-    async open(path: string, opts?: { readOnly?: boolean }): Promise<SqliteDatabase> {
-      const { dbId } = await call<{ dbId: number }>("open", { path, readOnly: opts?.readOnly === true });
+    async open(path: string, opts?: { readOnly?: boolean; scratch?: boolean }): Promise<SqliteDatabase> {
+      const { dbId } = await call<{ dbId: number }>("open", {
+        path,
+        readOnly: opts?.readOnly === true,
+        scratch: opts?.scratch === true,
+      });
       return {
         async prepare(sql: string): Promise<SqliteStatement> {
           const { stmtId, columns } = await call<{ stmtId: number; columns: SqliteColumn[] }>("prepare", {

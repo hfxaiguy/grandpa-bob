@@ -5,7 +5,7 @@ server, sandboxed virtual filesystem (OPFS), WASM SQLite, workspace persisted
 in browser storage.
 
 > **Additive.** The Node target (`src/`, `npm start`) is unchanged and keeps
-> Telegram, the real shell, native SQLite/DuckDB, the git CLI, `opencode`, and
+> Telegram, the real shell, native SQLite, the git CLI, `opencode`, and
 > the HTTP admin server. This directory only *adds* a browser build.
 
 See the design plan: `~/.opencode/plan/bob-in-browser.md`.

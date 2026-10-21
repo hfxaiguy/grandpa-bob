@@ -6,7 +6,7 @@ import { ShellTools } from "./shell.js";
 import { ExaSearchTools } from "./websearch.js";
 import { SqliteTools } from "./sqlite.js";
 import { OpencodeTools } from "./opencode.js";
-import { DuckdbTools } from "./duckdb.js";
+import { CsvTools, CSV_QUERY_DEFINITION } from "./csv.js";
 import { GitTools, GIT_DEFINITIONS } from "./git-tools.js";
 import { createNodePlatform } from "../platform/node.js";
 import type { AppTool } from "../app-tools.js";
@@ -36,7 +36,7 @@ export interface ToolCallContext {
  * directly with sql_query / sql_write — it must go through the owning tree,
  * which carries the schema and the write rules. A call from inside an app tree
  * (`ctx.boundary`) is exempt: the app owns the store. Databases no app owns
- * (duckdb files, ad-hoc .db) stay freely reachable.
+ * (ad-hoc .db files) stay freely reachable.
  */
 const APP_OWNED_DBS: Record<string, string> = {
   "contacts.db": "contacts",
@@ -106,7 +106,7 @@ export class ToolRegistry {
   private exa: ExaSearchTools;
   private sqlite: SqliteTools;
   private opencode: OpencodeTools;
-  private duckdb: DuckdbTools;
+  private csv: CsvTools;
   private gitTools: GitTools;
   private appTools: Map<string, AppTool>;
 
@@ -131,11 +131,12 @@ export class ToolRegistry {
     this.exa = new ExaSearchTools(exaApiKey);
     this.sqlite = new SqliteTools(platform, sqliteLockedPath);
     this.opencode = new OpencodeTools();
-    this.duckdb = new DuckdbTools(workspace);
+    this.csv = new CsvTools(platform);
     this.gitTools = new GitTools(workspace);
     this.appTools = new Map(appTools.map((tool) => [tool.name, tool]));
     this.definitions.push(...appTools.map(toOpenAiDefinition));
     this.definitions.push(...GIT_DEFINITIONS);
+    this.definitions.push(CSV_QUERY_DEFINITION);
     this.definitions.push(INSPECT_MEMORY_DEFINITION);
   }
 
@@ -305,24 +306,6 @@ export class ToolRegistry {
     {
       type: "function",
       function: {
-        name: "duckdb_query",
-        description:
-          "Run a read-only DuckDB SQL query against a CSV or TSV file in the workspace. " +
-          "The file is exposed as the relation `csv`; use DESCRIBE SELECT * FROM csv to inspect columns. " +
-          "Results include columns, rows, rowCount, and truncated. Only one SELECT/WITH/DESCRIBE/EXPLAIN/PRAGMA statement is allowed.",
-        parameters: {
-          type: "object",
-          properties: {
-            query: { type: "string", description: "Read-only SQL using the `csv` relation" },
-            path: { type: "string", description: "Relative .csv or .tsv path in the workspace" },
-          },
-          required: ["query", "path"],
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
         name: "opencode",
         description:
           "Delegate a prompt to an opencode coding-agent session and return its output (workspace files, shell commands, code edits) as text. " +
@@ -407,8 +390,8 @@ export class ToolRegistry {
             args.path !== undefined ? String(args.path) : undefined,
           );
         }
-        case "duckdb_query":
-          return await this.duckdb.query(String(args.query ?? ""), String(args.path ?? ""));
+        case "csv_query":
+          return await this.csv.query(String(args.query ?? ""), String(args.path ?? ""));
         case "exa_search":
           return await this.exa.search({
             query: String(args.query ?? ""),

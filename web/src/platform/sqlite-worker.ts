@@ -18,6 +18,8 @@ interface DbRecord {
   path: string;
   /** Open without writing the file back (read-only queries). */
   readOnly: boolean;
+  /** In-memory only: never loaded from or persisted to OPFS (tool scratch dbs). */
+  scratch: boolean;
 }
 
 let sqlite3: Any = null;
@@ -75,13 +77,13 @@ async function loadInto(db: Any, path: string): Promise<void> {
   sqlite3.capi.sqlite3_deserialize(db.pointer, "main", ptr, bytes.length, bytes.length, flags);
 }
 
-/** A database may be persisted unless it was opened read-only. */
+/** Writes are allowed unless the database was opened read-only. */
 function writeAllowed(rec: DbRecord): boolean {
   return !rec.readOnly;
 }
 
 async function persist(rec: DbRecord): Promise<void> {
-  if (!writeAllowed(rec)) return;
+  if (rec.readOnly || rec.scratch) return;
   const bytes = sqlite3.capi.sqlite3_js_db_export(rec.db.pointer) as Uint8Array;
   const handle = await fileHandleFor(rec.path);
   const writable = await handle.createWritable();
@@ -120,10 +122,11 @@ async function handle(op: string, msg: Any): Promise<unknown> {
       return true;
     case "open": {
       const path = String(msg.path);
+      const scratch = msg.scratch === true;
       const db = new sqlite3.oo1.DB(":memory:");
-      await loadInto(db, path);
+      if (!scratch) await loadInto(db, path);
       const dbId = nextDbId++;
-      dbs.set(dbId, { db, path, readOnly: msg.readOnly === true });
+      dbs.set(dbId, { db, path, readOnly: msg.readOnly === true, scratch });
       return { dbId };
     }
     case "prepare": {

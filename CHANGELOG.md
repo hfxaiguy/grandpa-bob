@@ -2,6 +2,21 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — `csv_query` replaces DuckDB
+
+CSV/TSV querying is now SQLite, shared by both targets: `csv_query` loads one
+`.csv`/`.tsv` as the table `csv` in a scratch `:memory:` database and runs one
+read-only statement (SELECT/WITH/EXPLAIN/PRAGMA) with the same 100-row /
+500-char result shaping as the old tool. The parser is a new zero-dependency
+module (`src/platform/csv.ts`): RFC 4180 quotes, BOM/CRLF, numeric coercion
+that leaves leading-zero ids as text, quoted-empty vs empty. The browser
+worker injects its wasm factory as the scratch engine, so this also works in
+desktop-bridge storage mode. Removed: `src/tools/duckdb.ts`, the
+`@duckdb/node-api` dependency (~70 MB of native bindings), the DuckDB BOM
+test, and `duckdb_query` from the browser stub list. Tests: `npm run test:csv`.
+The `sqlite` factory's `open()` gained an optional `scratch` flag (the tab's
+worker keeps such databases in memory and never persists them).
+
 ## 2026-10-21 — app-entry machine notes, faded by default
 
 Every top-level app now emits a `flag("machine")` note immediately after its

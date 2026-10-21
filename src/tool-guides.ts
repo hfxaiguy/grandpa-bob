@@ -57,7 +57,16 @@ export const HOST_GUIDES: HostGuide[] = [
       "APP-OWNED DATABASES: some stores belong to an app tree — contacts.db / comms.db " +
       "to the contacts tree, email.db to the email tree. Reach them by calling that tree; " +
       "a direct sql_query / sql_write against an app's store is refused with a pointer to " +
-      "the app. Databases no app owns (duckdb files, ad-hoc .db) are yours to query directly.",
+      "the app. Databases no app owns (ad-hoc .db files) are yours to query directly.",
+  },
+  {
+    tools: ["csv_query"],
+    guide:
+      "QUERYING A CSV: csv_query runs read-only SQLite SQL over ONE .csv/.tsv file, loaded as the " +
+      "table `csv`. PRAGMA table_info(csv) lists the columns. Ask for aggregates (COUNT / SUM / " +
+      "GROUP BY) rather than SELECT * — at most 100 rows come back, though rowCount reports the " +
+      "full match count and truncated says whether rows were withheld. Numbers are stored as " +
+      "numbers (leading-zero ids stay text); everything else is text. One statement per call.",
   },
   {
     tools: ["inspect_memory"],
