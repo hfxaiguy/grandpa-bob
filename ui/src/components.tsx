@@ -780,11 +780,17 @@ function ProvenanceModal(props: { turnId: string; bubble: number; text: string; 
   );
 }
 
+// The tile currently being dragged, shared by every Tile so a tile never
+// highlights itself as a drop target. `dragenter` cannot read dragged data
+// (the data store is protected until drop), so the name travels here too.
+const [dragging, setDragging] = createSignal<string | null>(null);
+
 function Tile(props: { app: AppInfo }) {
   const name = () => props.app.name;
   const expanded = () => state.layout.expanded.includes(name());
   const wide = () => state.layout.wide.includes(name());
   const paused = () => state.awaiting === name();
+  const [over, setOver] = createSignal(false);
   // The app currently executing: walk the running turn's events through the
   // same boundary stack the server uses (src/app-attribution.ts). Every app
   // tree opens its own tile, even nested inside another app (enrich-profile
@@ -836,12 +842,36 @@ function Tile(props: { app: AppInfo }) {
   return (
     <section
       class="tile"
-      classList={{ expanded: expanded(), wide: wide(), paused: paused(), errored: errored() }}
+      classList={{ expanded: expanded(), wide: wide(), paused: paused(), errored: errored(), "drop-target": over() }}
       draggable
-      onDragStart={(e) => e.dataTransfer?.setData("text/plain", name())}
-      onDragOver={(e) => e.preventDefault()}
+      onDragStart={(e) => {
+        // Set the data before any reactive work: Firefox cancels a drag whose
+        // source (or start handler) mutates the DOM first.
+        e.dataTransfer?.setData("text/plain", name());
+        if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+        setDragging(name());
+      }}
+      onDragEnd={() => {
+        setDragging(null);
+        setOver(false);
+      }}
+      onDragEnter={() => {
+        const from = dragging();
+        if (from && from !== name()) setOver(true);
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      }}
+      onDragLeave={(e) => {
+        // dragleave fires when moving onto a child too; clear only when the
+        // pointer really left the tile.
+        const to = e.relatedTarget as Node | null;
+        if (!to || !e.currentTarget.contains(to)) setOver(false);
+      }}
       onDrop={(e) => {
         e.preventDefault();
+        setOver(false);
         const from = e.dataTransfer?.getData("text/plain");
         if (from) moveTile(from, name());
       }}

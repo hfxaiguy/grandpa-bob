@@ -87,6 +87,8 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .tile.wide { grid-column: span 2; }
 .tile.expanded { grid-column: 1 / -1; max-height: 82vh; }
 .tile.paused { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn) inset; }
+/* The tile under a dragged tile: where it will land if dropped now. */
+.tile.drop-target { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 
 .tile-head {
   display: flex;
@@ -96,6 +98,10 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
   background: var(--card);
   border-bottom: 1px solid var(--border);
   cursor: grab;
+  /* Firefox starts a text-selection drag on selectable text and never fires
+     dragstart on the ancestor, so the tile would not move in FireDragon.
+     The header is the drag handle: keep its text non-selectable. */
+  user-select: none;
 }
 .tile-head button { padding: 1px 7px; font-size: 12px; }
 .tile-name { font-weight: 650; }
@@ -112,6 +118,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  user-select: none;
 }
 
 .chat { flex: 1; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 60px; }
