@@ -323,6 +323,7 @@ export class WebLog {
         buttons: m.buttons ?? null,
         fallback: m.fallback ?? null,
         awaiting: m.awaiting ?? null,
+        tokens: m.tokens ?? null,
         events: [],
       };
       if (opts.withEvents && m.runId && m.fromSeq != null && m.toSeq != null) {

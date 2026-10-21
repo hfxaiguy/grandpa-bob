@@ -31,14 +31,25 @@ import {
   sendFile,
   transcribeFileStream,
 } from "./store";
-import type { AppInfo, ProvPiece, ProvWriter, Provenance, RefTarget, Turn } from "./types";
+import type { AppInfo, ProvPiece, ProvWriter, Provenance, RefTarget, Turn, TurnTokens } from "./types";
 
 const trunkOf = (a?: string | null) => a || "trunk";
 
+/** One chat bubble; `lastOfTurn` marks the turn's final reply in this tile so
+ *  the turn's token totals can print once, right under it. */
+interface Bubble {
+  turn: Turn;
+  text: string;
+  kind: "user" | "bot" | "err";
+  emitIndex?: number;
+  lastOfTurn?: boolean;
+}
+
 /** Chat bubbles for one app, across every turn. */
-function bubblesFor(app: string): { turn: Turn; text: string; kind: "user" | "bot" | "err"; emitIndex?: number }[] {
-  const out: { turn: Turn; text: string; kind: "user" | "bot" | "err"; emitIndex?: number }[] = [];
+function bubblesFor(app: string): Bubble[] {
+  const out: Bubble[] = [];
   for (const t of state.turns) {
+    const from = out.length;
     if ((t.inputApp ?? "trunk") === app && t.input) out.push({ turn: t, text: t.input, kind: "user" });
     const emits = t.emits ?? [];
     const apps = t.emitApps ?? [];
@@ -59,8 +70,28 @@ function bubblesFor(app: string): { turn: Turn; text: string; kind: "user" | "bo
     if ((t.inputApp ?? "trunk") === app && t.status === "error" && t.error) {
       out.push({ turn: t, text: t.error, kind: "err" });
     }
+    for (let i = out.length - 1; i >= from; i--) {
+      if (out[i].kind === "bot") {
+        out[i].lastOfTurn = true;
+        break;
+      }
+    }
   }
   return out;
+}
+
+/** Compact token count: 987, 1.2k, 12k, 1.3M. */
+function fmtTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1).replace(/\.0$/, "")}k`;
+  return String(n);
+}
+
+/** The per-turn token line, or null when the turn used no model calls. */
+function tokenLine(t: TurnTokens | null | undefined): string | null {
+  if (!t || t.calls < 1) return null;
+  const calls = t.calls === 1 ? "1 call" : `${t.calls} calls`;
+  return `\u21c5 ${fmtTokenCount(t.input)} in \u00b7 ${fmtTokenCount(t.output)} out \u00b7 ${calls}`;
 }
 
 function MemoryPanel(props: { app: string }) {
@@ -858,43 +889,52 @@ function Tile(props: { app: AppInfo }) {
         <Show when={bubbles().length} fallback={<div class="empty">no messages yet</div>}>
           <For each={bubbles()}>
             {(b) => (
-              <div
-                class="bubble"
-                classList={{
-                  user: b.kind === "user",
-                  bot: b.kind === "bot",
-                  err: b.kind === "err",
-                  machine:
-                    b.kind === "bot" &&
-                    b.emitIndex != null &&
-                    b.turn.levels?.[b.emitIndex] === "machine",
-                  "has-info":
-                    b.kind === "bot" &&
-                    b.emitIndex != null &&
-                    b.emitIndex >= 0 &&
-                    !!b.turn.runId &&
-                    b.turn.levels?.[b.emitIndex] !== "machine",
-                }}
-              >
-                <RefText text={b.text} />
-                <Show
-                  when={
-                    b.kind === "bot" &&
-                    b.emitIndex != null &&
-                    b.emitIndex >= 0 &&
-                    !!b.turn.runId &&
-                    b.turn.levels?.[b.emitIndex] !== "machine"
-                  }
+              <>
+                <div
+                  class="bubble"
+                  classList={{
+                    user: b.kind === "user",
+                    bot: b.kind === "bot",
+                    err: b.kind === "err",
+                    machine:
+                      b.kind === "bot" &&
+                      b.emitIndex != null &&
+                      b.turn.levels?.[b.emitIndex] === "machine",
+                    "has-info":
+                      b.kind === "bot" &&
+                      b.emitIndex != null &&
+                      b.emitIndex >= 0 &&
+                      !!b.turn.runId &&
+                      b.turn.levels?.[b.emitIndex] !== "machine",
+                  }}
                 >
-                  <button
-                    class="bubble-info"
-                    title="what was this written from?"
-                    onClick={() => setProv({ turnId: b.turn.turnId, bubble: b.emitIndex!, text: b.text })}
+                  <RefText text={b.text} />
+                  <Show
+                    when={
+                      b.kind === "bot" &&
+                      b.emitIndex != null &&
+                      b.emitIndex >= 0 &&
+                      !!b.turn.runId &&
+                      b.turn.levels?.[b.emitIndex] !== "machine"
+                    }
                   >
-                    ⓘ
-                  </button>
+                    <button
+                      class="bubble-info"
+                      title="what was this written from?"
+                      onClick={() => setProv({ turnId: b.turn.turnId, bubble: b.emitIndex!, text: b.text })}
+                    >
+                      ⓘ
+                    </button>
+                  </Show>
+                </div>
+                <Show when={b.lastOfTurn ? tokenLine(b.turn.tokens) : null}>
+                  {(line) => (
+                    <div class="turn-tokens" title="tokens this turn used (input counts the full prompt on every model call)">
+                      {line()}
+                    </div>
+                  )}
                 </Show>
-              </div>
+              </>
             )}
           </For>
         </Show>

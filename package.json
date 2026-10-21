@@ -20,6 +20,7 @@
     "test:model-switch": "tsx scripts/model-switch-test.ts",
     "test:admin-models": "tsx scripts/admin-models-test.ts",
     "test:app-attribution": "tsx scripts/app-attribution-test.ts",
+    "test:tokens": "tsx scripts/tokens-test.ts",
     "test:ui-serve": "tsx scripts/ui-serve-test.ts",
     "test:ui": "npm --prefix ui run typecheck && npm --prefix ui run build",
     "test:patterns": "tsx scripts/patterns-test.ts",

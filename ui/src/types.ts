@@ -24,6 +24,13 @@ export interface EmitButton {
   value: string;
 }
 
+/** Per-turn model token totals, summed over the turn's `llm_call` events. */
+export interface TurnTokens {
+  input: number;
+  output: number;
+  calls: number;
+}
+
 export interface Turn {
   turnId: string;
   input: string;
@@ -46,6 +53,9 @@ export interface Turn {
   /** Model slots offered after a quota wall (402); a tap retargets the failed
    *  role and re-runs the turn (POST /api/fallback). */
   fallback?: EmitButton[] | null;
+  /** Model tokens this turn used; absent on turns from before metering or
+   *  when the endpoint reported no usage (a mock model). */
+  tokens?: TurnTokens | null;
   events: SanitizedEvent[];
 }
 

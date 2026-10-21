@@ -2,6 +2,21 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — per-turn token totals in the chat tiles
+
+Each finished turn now carries `tokens: { input, output, calls }` — the sum of
+the `llm_call` usage the engine reports (input counts the full prompt on every
+round, i.e. the billed amount). The host folds in every event before the turn's
+500-event window caps, so long turns keep their early rounds; the total rides
+on `turn_end` and is persisted on the turn marker (`web_turn_end`), so a
+reload derives the same numbers. Both hosts count (Node admin and the browser
+worker). A turn the endpoint never reports usage for (a mock model) shows
+nothing. The tile prints it under the turn's final reply, e.g.
+`⇅ 12.3k in · 1.2k out · 3 calls`.
+
+Tests: `npm run test:tokens` (sums skip silent calls, live `turn_end` carries
+the total, `/api/turns` re-derives it from the marker).
+
 ## 2026-10-21 — memory panels rebuild after a restart / reload
 
 The per-app memory panel showed nothing after reloading the browser tab (OPFS

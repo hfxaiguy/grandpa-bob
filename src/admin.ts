@@ -49,6 +49,7 @@ import { createNodePlatform } from "./platform/node.js";
 import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "./db-sync.js";
 import { newTurnApps, tagEventApp as sharedTagEventApp, type TurnApps } from "./app-attribution.js";
 import { WebLog, MAX_TURNS } from "./web-log.js";
+import type { TurnTokens } from "./web-log-types.js";
 import { sanitizeEvent, type SanitizedEvent } from "./sanitize.js";
 import { createMemoryTracker } from "./memory-track.js";
 
@@ -592,7 +593,28 @@ interface TurnRecord {
   /** Event seq bounds of the turn: (fromSeq, toSeq]. */
   fromSeq?: number | null;
   toSeq?: number | null;
+  /** Model tokens this turn used, summed over every `llm_call` (input counts
+   *  the full prompt each round — the billed amount). Absent when the endpoint
+   *  reported no usage (e.g. a mock model). */
+  tokens?: TurnTokens | null;
   events: SanitizedEvent[];
+}
+
+/**
+ * Fold a `llm_call` event's reported usage into the turn's totals. Called for
+ * EVERY event before the turn's event list is capped, so a long turn (>500
+ * events) still counts its early rounds — events alone would undercount.
+ */
+function addTurnTokens(t: { tokens?: TurnTokens | null }, event: unknown): void {
+  const ev = event as { kind?: string; content?: { usage?: { input?: unknown; output?: unknown } } } | null;
+  if (ev?.kind !== "llm_call" || !ev.content?.usage) return;
+  const input = Number(ev.content.usage.input);
+  const output = Number(ev.content.usage.output);
+  if (!Number.isFinite(input) || !Number.isFinite(output)) return;
+  const acc = (t.tokens ??= { input: 0, output: 0, calls: 0 });
+  acc.input += input;
+  acc.output += output;
+  acc.calls += 1;
 }
 
 // Web chat history lives in the log DB as host markers (src/web-log.ts):
@@ -845,6 +867,7 @@ export function remoteTurnEvent(key: string, event: unknown): void {
   }
   const app = tagEventApp(key, event);
   const mem = memoryTracker.track(key, event, app);
+  addTurnTokens(t, event);
   const clean = sanitizeEvent(event as Parameters<typeof sanitizeEvent>[0], app);
   t.events.push(clean);
   capTurnEvents(t);
@@ -881,7 +904,7 @@ export function remoteTurnEnd(key: string, output: string, ok = true, paused = f
   persistTurn(key, t);
   liveTurns.delete(key);
   if (activeSession === key) {
-    broadcast({ type: "turn_end", turnId: t.turnId, status: t.status, error: t.error, output: t.output, awaiting, runId: t.runId ?? null, ts: now });
+    broadcast({ type: "turn_end", turnId: t.turnId, status: t.status, error: t.error, output: t.output, awaiting, runId: t.runId ?? null, tokens: t.tokens ?? null, ts: now });
   }
 }
 
@@ -904,6 +927,7 @@ function persistTurn(key: string, t: TurnRecord): void {
     buttons: t.buttons ?? null,
     fallback: t.fallback ?? null,
     awaiting: t.awaiting ?? null,
+    tokens: t.tokens ?? null,
     startedAt: t.startedAt,
     endedAt: t.endedAt,
   });
@@ -1088,6 +1112,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       const rid = (e as { run_id?: unknown } | null)?.run_id;
       if (typeof rid === "string" && rid) record.runId = rid;
     }
+    addTurnTokens(record, e);
     const app = tagEventApp(key, e);
     const mem = memoryTracker.track(key, e, app);
     const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0], app);
@@ -1194,6 +1219,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       buttons: record.buttons,
       fallback: record.fallback ?? null,
       runId: record.runId ?? null,
+      tokens: record.tokens ?? null,
       ts: record.endedAt,
     });
     // The mirror was live (see `mirror` above): everything streamed already

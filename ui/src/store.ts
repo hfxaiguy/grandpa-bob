@@ -713,6 +713,7 @@ function handleSSE(msg: any): void {
             if (msg.levels) t.levels = msg.levels;
             if (msg.emitApps) t.emitApps = msg.emitApps;
             if (msg.buttons) t.buttons = msg.buttons;
+            if (msg.tokens) t.tokens = msg.tokens;
             t.fallback = msg.fallback ?? null;
           }
           s.awaiting = msg.awaiting ?? null;

@@ -17,6 +17,7 @@ import { serializeTree } from "../../../src/tree-serialize";
 import { newTurnApps, tagEventApp, type TurnApps } from "../../../src/app-attribution";
 import { createMemoryTracker, type MemoryWrite } from "../../../src/memory-track";
 import { emitValue } from "../../../src/util/emit-text";
+import type { TurnTokens } from "../../../src/web-log-types";
 import { createModuleLoader } from "../agent/module-loader";
 import { patternLabel } from "../agent/pattern-path";
 import { loadEnv, saveEnv, saveModelsJson } from "../settings";
@@ -65,7 +66,25 @@ interface TurnRecord {
   emitApps: string[];
   awaiting: string | null;
   buttons: unknown[];
+  /** Summed `llm_call` usage for the turn; absent when the endpoint (or a
+   *  mock) reported none. */
+  tokens?: TurnTokens | null;
   events: { seq?: number; run_id?: string; branch_path?: string | null; kind?: string; app?: string; content?: Record<string, unknown> }[];
+}
+
+/** Fold a `llm_call` event's usage into the turn's totals before the event
+ *  list is capped (long turns would otherwise lose their early rounds). */
+function addTurnTokens(t: TurnRecord, event: { kind?: string; content?: Record<string, unknown> }): void {
+  if (event.kind !== "llm_call") return;
+  const u = (event.content as { usage?: { input?: unknown; output?: unknown } } | undefined)?.usage;
+  if (!u) return;
+  const input = Number(u.input);
+  const output = Number(u.output);
+  if (!Number.isFinite(input) || !Number.isFinite(output)) return;
+  const acc = (t.tokens ??= { input: 0, output: 0, calls: 0 });
+  acc.input += input;
+  acc.output += output;
+  acc.calls += 1;
 }
 
 type EventMessage = Record<string, unknown>;
@@ -398,6 +417,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
             emitApps: record.emitApps,
             buttons: record.buttons,
             awaiting: record.awaiting,
+            tokens: record.tokens ?? null,
             startedAt: record.startedAt,
             endedAt: record.endedAt,
           },
@@ -501,6 +521,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       {
         onEvent: (event) => {
           const ev = event as { kind?: string; content?: Record<string, unknown>; scope_id?: number | null; branch_path?: string };
+          addTurnTokens(record, ev);
           const app = tagEventApp(apps, ev);
           memory.track(key, ev, app);
           const tagged = { ...ev, app };
@@ -540,7 +561,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       broadcast({
         type: "turn_end", turnId, status: "done", error: null, output: record.output,
         buttons: record.buttons, emits: record.emits, levels: record.levels, emitApps: record.emitApps,
-        awaiting: record.awaiting, ts: record.endedAt,
+        awaiting: record.awaiting, tokens: record.tokens ?? null, ts: record.endedAt,
       });
     } catch (err) {
       if (err instanceof AgentStoppedError || isAgentStopped(err)) {
@@ -554,14 +575,14 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         broadcast({
           type: "turn_end", turnId, status: "stopped", error: null, output: record.output,
           buttons: record.buttons, emits: record.emits, levels: record.levels, emitApps: record.emitApps,
-          awaiting: record.awaiting, ts: record.endedAt,
+          awaiting: record.awaiting, tokens: record.tokens ?? null, ts: record.endedAt,
         });
       } else {
         record.status = "error";
         record.error = err instanceof Error ? err.message : String(err);
         record.endedAt = Date.now();
         await persistTurn(key, record, running.runId);
-        broadcast({ type: "turn_end", turnId, status: "error", error: record.error, output: "", buttons: [], emits: [], awaiting: null, ts: record.endedAt });
+        broadcast({ type: "turn_end", turnId, status: "error", error: record.error, output: "", buttons: [], emits: [], awaiting: null, tokens: record.tokens ?? null, ts: record.endedAt });
       }
     } finally {
       if (activeRuns.get(key)?.turnId === turnId) activeRuns.delete(key);
