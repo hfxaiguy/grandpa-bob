@@ -469,7 +469,18 @@ The admin server (port `ADMIN_PORT`, default 8080) serves:
 
 The web UI runs the agent under `web:<id>` conversation keys, serialized
 so turns never interleave; Telegram topics are unaffected. Chat histories
-persist to `<workspace>/logs/web-turns.json` and survive bot restarts.
+persist to `<workspace>/logs/grandma-kat.db` (marker rows over the engine's
+`calls` table) and survive bot restarts.
+
+Memory panels are process state, so both hosts rebuild them from that log on
+first view — the Node admin after a restart, the browser target after a reload
+(one shared tracker: `src/memory-track.ts`). The rebuild reads raw `calls` rows,
+not the sanitized per-turn event window, so values keep their full shape and a
+slot written early in a long turn still restores. That event window itself is
+still tail-capped at 500 events per turn (`turnEvents` in `src/web-log.ts` /
+`web/src/agent/log-store.ts`), so anything else derived from it only sees a
+turn's tail. Details: `web/README.md` → "Session memory panels after reload /
+restart".
 
 **The webui follows Telegram, one-way.** By default the browser page keeps
 itself pinned to whichever conversation is live on Telegram (the freshest

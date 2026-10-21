@@ -25,6 +25,7 @@ import {
   labelOf,
   lastAwaiting,
   listSessions,
+  memoryWrites,
   readRow,
   turnCount,
   writeDelete,
@@ -675,6 +676,9 @@ async function handleLog(msg: LogMessage): Promise<void> {
         break;
       case "turns":
         result = await getTurns(platform, String(p.key ?? ""), { withEvents: p.withEvents === true });
+        break;
+      case "memoryWrites":
+        result = await memoryWrites(platform, String(p.key ?? ""));
         break;
       case "turnEnd": {
         // Flush the engine events first, then write the marker with the run's

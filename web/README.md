@@ -57,6 +57,34 @@ notes and hand-offs visible without mixing them into the normal reply stream.
 | Served at `:8080` by the admin server (chat = front page) | done — falls back to `ui/dist` when `web/dist` is missing |
 | Voice input (mic button) | **removed** — transcription is Telegram-only; the web UI ships no STT, no in-browser model (`/api/transcribe*` answers 501 in browser mode) |
 
+### Session memory panels after reload / restart
+
+The tiled memory panel is process state: the Node admin keeps it in memory, the
+browser target keeps it in the page. Both would come up empty — the admin after
+a process restart, the tab after a reload — so both rebuild it lazily from the
+run log the first time a session is viewed. One tracker serves both hosts
+(`src/memory-track.ts`; wired in `src/admin.ts` and
+`web/src/server/local-backend.ts`), and `?session=` on `/api/tree/memory`
+selects the conversation being rebuilt/served.
+
+The rebuild reads **raw** `calls` rows for each turn's seq bounds
+(`WebLog.memoryWrites` / `log-store.memoryWrites`), not the sanitized per-turn
+event window:
+
+> **Known limitation — event-window tail cap.** The per-turn event window
+> (`turnEvents` in `src/web-log.ts` and `web/src/agent/log-store.ts`, exposed as
+> `getTurns(..., { withEvents: true })`) keeps only the last
+> `MAX_TURN_EVENTS` = 500 events of a turn, and sanitization truncates strings
+> (`MAX_EVENT_STR` = 400) and collapses arrays for streaming. Anything derived
+> from that window only sees the tail of a very long turn: a slot written early
+> in one would be missing, and its value would be lossy. That is why the memory
+> rebuild has its own raw, uncapped read — a slot written at any point in a long
+> turn still restores.
+>
+> Remaining memory-rebuild limits: turns whose markers have no run bounds
+> (legacy/migrated rows) cannot be replayed, and the live map holds at most 32
+> sessions (LRU; an evicted session rebuilds from the log when viewed again).
+
 ### Direct folder mode (Chromium)
 
 ```sh

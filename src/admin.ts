@@ -50,6 +50,7 @@ import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "./db-sync.
 import { newTurnApps, tagEventApp as sharedTagEventApp, type TurnApps } from "./app-attribution.js";
 import { WebLog, MAX_TURNS } from "./web-log.js";
 import { sanitizeEvent, type SanitizedEvent } from "./sanitize.js";
+import { createMemoryTracker } from "./memory-track.js";
 
 /** Secret config files are small (credentials, JSON, keys). */
 const MAX_SECRET_BYTES = 1024 * 1024;
@@ -512,67 +513,32 @@ function readBody(req: http.IncomingMessage) {
 // turns are persisted in the log DB (src/web-log.ts).
 
 // Current memory values, per conversation key and grouped by the app (tree
-// tool) that wrote them — "trunk" for the top-level tree. A slot is identified
-// by (scope_id, name): .memoryUpdate() deep in a branch writes to the slot's
-// *declaring* scope, so keying by scope_id collapses updates onto the
-// .memory() node instead of leaving it stuck at its seed value.
-//
-// Scoping by conversation key is what keeps two live sessions apart: every run
-// re-seeds its trunk slots at scope_id 0, so a concurrent Telegram turn
-// (mirrored into the panel) would otherwise write the very same slot keys and
-// leave the browser showing a chimera of both conversations.
-const webMemoryValues = new Map<string, Map<string, Map<string, unknown>>>(); // session -> app -> slotKey -> value
-const webMemoryPaths = new Map<string, Map<string, Map<string, Set<string>>>>(); // session -> app -> slotKey -> node paths
-// Bound the per-session maps: conversations come and go (clear mints a fresh
-// key), and only the drawer's handful are ever on screen.
-const MAX_MEMORY_SESSIONS = 32;
+// tool) that wrote them — "trunk" for the top-level tree. The tracking logic
+// lives in src/memory-track.ts, shared with the browser backend. The map is
+// process state (it dies on restart), so it is rebuilt lazily from the log —
+// see ensureMemory below.
+const memoryTracker = createMemoryTracker();
+
+/**
+ * Rebuild a session's memory map from the persisted run log, once per process.
+ * A session's turns are loaded on every select (`turnsFor`), so this normally
+ * runs before the first turn does; `/api/tree/memory` also calls it for safety.
+ */
+function ensureMemory(key: string): void {
+  if (!webLog || !memoryTracker.needsRebuild(key)) return;
+  memoryTracker.rebuild(key, webLog.memoryWrites(key));
+}
+
 // Events kept per turn in memory / SSE / responses. The full trace is in
 // grandma-kat.db (`read_runs`) and the log window is read back on demand; this
 // bounds the live turn, the SSE replay, and what a page receives at once.
+// NOTE: this caps only the sanitized event window (`turnEvents`). The memory
+// rebuild reads raw `calls` rows (`WebLog.memoryWrites`) and is not capped.
 const MAX_TURN_EVENTS = 500;
 
 /** Keep only the last MAX_TURN_EVENTS of a turn's events (in place). */
 function capTurnEvents(t: { events: SanitizedEvent[] }): void {
   if (t.events.length > MAX_TURN_EVENTS) t.events.splice(0, t.events.length - MAX_TURN_EVENTS);
-}
-
-/** Drop a conversation's tracked memory; every session when no key is given. */
-function clearWebMemory(key?: string): void {
-  if (key) {
-    webMemoryValues.delete(key);
-    webMemoryPaths.delete(key);
-    return;
-  }
-  webMemoryValues.clear();
-  webMemoryPaths.clear();
-}
-
-/**
- * The tracked memory for one conversation, created on first write. The oldest
- * conversations are dropped once MAX_MEMORY_SESSIONS are held (Map preserves
- * insertion order, so `.keys().next()` is the least recently *created*).
- */
-function sessionMemory(key: string): {
-  values: Map<string, Map<string, unknown>>;
-  paths: Map<string, Map<string, Set<string>>>;
-} {
-  let values = webMemoryValues.get(key);
-  if (!values) {
-    values = new Map();
-    webMemoryValues.set(key, values);
-    while (webMemoryValues.size > MAX_MEMORY_SESSIONS) {
-      const oldest = webMemoryValues.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      webMemoryValues.delete(oldest);
-      webMemoryPaths.delete(oldest);
-    }
-  }
-  let paths = webMemoryPaths.get(key);
-  if (!paths) {
-    paths = new Map();
-    webMemoryPaths.set(key, paths);
-  }
-  return { values, paths };
 }
 
 // Which app a turn's events belong to. The trunk enters tree tools (apps);
@@ -649,6 +615,9 @@ function newSessionKey(): string {
 
 /** A session's turns: persisted markers, plus the live turn if one is running. */
 function turnsFor(key: string, withEvents = true): TurnRecord[] {
+  // Loading a session also restores its memory panel from the log (once per
+  // process — see ensureMemory).
+  ensureMemory(key);
   const turns = (webLog?.getTurns(key, { withEvents }) ?? []) as unknown as TurnRecord[];
   const live = liveTurns.get(key);
   if (live && !turns.some((t) => t.turnId === live.turnId)) turns.push(live);
@@ -845,51 +814,6 @@ let telegramNotify: ((key: string, text: string) => void) | undefined;
 // App secret store (logs/secrets.db); undefined when not wired.
 let secretsStore: SecretsStore | undefined;
 
-/**
- * Track memory-slot writes from a raw agent event, into the writing
- * conversation's own map. Slots are identified by (scope_id, name) — see
- * webMemoryValues above. Shared by web-run turns and mirrored Telegram turns,
- * keyed by conversation so one session's turn can never fill the panel of the
- * session the browser is showing.
- */
-function trackMemoryWrite(
-  key: string,
-  e: unknown,
-  app = "trunk",
-): { session: string; app: string; values: Record<string, unknown> } | null {
-  const raw = e as {
-    scope_id?: number | null; branch_path?: string; kind?: string;
-    content?: { child?: unknown; value?: unknown; op?: unknown };
-  };
-  // Memory writes are record events with op memory/memoryUpdate; older
-  // runs logged them as their own "memory" kind.
-  const memWrite =
-    raw?.kind === "memory" ||
-    (raw?.kind === "record" && (raw.content?.op === "memory" || raw.content?.op === "memoryUpdate"));
-  if (!memWrite || raw.scope_id == null) return null;
-  const child = typeof raw.content?.child === "string" ? raw.content.child : "";
-  const slotKey = `${raw.scope_id}/${child}`;
-  const nodePath = (raw.branch_path ?? "") + (child ? "/" + child : "");
-  const { values: sessionValues, paths: sessionPaths } = sessionMemory(key);
-  let paths: Set<string> | undefined;
-  if (nodePath) {
-    let slots = sessionPaths.get(app);
-    if (!slots) { slots = new Map(); sessionPaths.set(app, slots); }
-    paths = slots.get(slotKey);
-    if (!paths) { paths = new Set(); slots.set(slotKey, paths); }
-    paths.add(nodePath);
-  }
-  if (!(raw.content && "value" in raw.content)) return null;
-  let slots = sessionValues.get(app);
-  if (!slots) { slots = new Map(); sessionValues.set(app, slots); }
-  slots.set(slotKey, raw.content.value);
-  // The concrete node paths this write lands on, so the browser can merge it
-  // in immediately instead of waiting for the next full re-fetch at turn end.
-  const values: Record<string, unknown> = {};
-  for (const p of paths ?? []) values[p] = raw.content.value;
-  return Object.keys(values).length ? { session: key, app, values } : null;
-}
-
 // Live mirror of a turn that runs on another transport (Telegram). bot.ts
 // feeds these three calls while it runs the tree, so a followed browser
 // shows the exchange — bubbles AND tree steps — exactly like a web turn.
@@ -920,7 +844,7 @@ export function remoteTurnEvent(key: string, event: unknown): void {
     if (typeof rid === "string" && rid) t.runId = rid;
   }
   const app = tagEventApp(key, event);
-  const mem = trackMemoryWrite(key, event, app);
+  const mem = memoryTracker.track(key, event, app);
   const clean = sanitizeEvent(event as Parameters<typeof sanitizeEvent>[0], app);
   t.events.push(clean);
   capTurnEvents(t);
@@ -1165,7 +1089,7 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
       if (typeof rid === "string" && rid) record.runId = rid;
     }
     const app = tagEventApp(key, e);
-    const mem = trackMemoryWrite(key, e, app);
+    const mem = memoryTracker.track(key, e, app);
     const s = sanitizeEvent(e as Parameters<typeof sanitizeEvent>[0], app);
     record.events.push(s);
     capTurnEvents(record);
@@ -1584,7 +1508,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
           webLog.writeDelete(sel.delete);
           agent?.clear(sel.delete);
           unbindWebSession(sel.delete);
-          clearWebMemory(sel.delete);
+          memoryTracker.clear(sel.delete);
           if (activeSession === sel.delete) {
             activeSession = null;
             broadcast({ type: "cleared" });
@@ -2360,7 +2284,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         // dropped. Transcripts stay in the log (a record of what actually
         // happened under the old tree) — the next message grows a fresh tree.
         for (const key of agent?.sessionKeys() ?? []) agent?.clear(key);
-        clearWebMemory();
+        memoryTracker.clear();
         broadcast({ type: "cleared" });
         notifyTreesChanged(name);
         res.writeHead(200, { "content-type": "application/json" });
@@ -2727,33 +2651,18 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       // --- current memory values for the tree side panel ---
       // Returns the last-written value for every memory/memoryUpdate node of
       // the session in view, keyed by node path. Memory is scoped per
-      // conversation (see webMemoryValues), so a concurrent turn on another
+      // conversation (see memoryTracker), so a concurrent turn on another
       // transport can never fill this panel; `?session=` overrides the active
-      // one. Because values are resolved by scope (see webMemoryPaths), a
-      // .memoryUpdate() deep in a branch updates the declaring .memory() node's
-      // value too. `?path=` returns one full value (used by the popup).
+      // one. Because values are resolved by scope, a .memoryUpdate() deep in a
+      // branch updates the declaring .memory() node's value too. `?path=`
+      // returns one full value (used by the popup).
       if (req.method === "GET" && url.pathname === "/api/tree/memory") {
         // Flat `values` (path -> value) keeps the old side panel working;
         // `apps` groups the same values by the app that wrote them, which the
         // tiled UI renders per tile (node-path depth gives the indentation).
-        const values: Record<string, unknown> = {};
-        const apps: Record<string, Record<string, unknown>> = {};
         const key = url.searchParams.get("session") || activeSession || "";
-        const sessionValues = webMemoryValues.get(key);
-        const sessionPaths = webMemoryPaths.get(key);
-        if (sessionValues && sessionPaths) {
-          for (const [app, slots] of sessionValues) {
-            const pathMap = sessionPaths.get(app);
-            if (!pathMap) continue;
-            for (const [slotKey, v] of slots) {
-              if (v === undefined) continue;
-              for (const p of pathMap.get(slotKey) ?? []) {
-                values[p] = v;
-                (apps[app] ??= {})[p] = v;
-              }
-            }
-          }
-        }
+        ensureMemory(key);
+        const { values, apps } = memoryTracker.payload(key);
         res.writeHead(200, { "content-type": "application/json" });
         const pathParam = url.searchParams.get("path");
         if (pathParam) {

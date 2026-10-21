@@ -312,6 +312,27 @@ if (!String(restored).startsWith("restored:")) {
 }
 console.log("✓ sessions survive a reload (workspace KAT log)");
 
+// Memory rebuilds from the same log after the reload: the page-local tracker
+// starts empty, so /api/tree/memory must replay the raw memory-slot rows (the
+// sanitized per-turn event window is tail-capped and would lose early writes).
+const memory = await evaluate(`(async () => {
+  const backend = window.__bobBackend;
+  await backend.ready;
+  const d = await backend.request("GET", "/api/session", new URLSearchParams(), null);
+  const key = d.body?.active;
+  const m = await backend.request("GET", "/api/tree/memory",
+    new URLSearchParams(key ? { session: key } : {}), null);
+  return JSON.stringify({ status: m.status, apps: m.body?.apps || {}, key });
+})()`);
+const panel = JSON.parse(String(memory));
+const trunkPaths = Object.keys(panel.apps?.trunk || {});
+if (panel.status !== 200 || !trunkPaths.some((p) => p.endsWith("/conversation"))) {
+  console.error("memory did not rebuild after reload:", memory);
+  console.log(exceptions.join("\n"));
+  cleanup(5);
+}
+console.log("✓ memory panel rebuilds from the log after reload");
+
 // The reloaded page has no streamed events in memory: /api/ref must read the
 // row from the workspace log DB, at the same seq the engine logged.
 const logged = JSON.parse(String(chat));

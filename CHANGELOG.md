@@ -2,6 +2,28 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — memory panels rebuild after a restart / reload
+
+The per-app memory panel showed nothing after reloading the browser tab (OPFS
+target) and after restarting the Node admin: the tracked map is process state,
+and nothing refilled it. Both hosts now share one tracker
+(`src/memory-track.ts`) and rebuild a session's map lazily from the run log the
+first time it is viewed — the browser via a new `memoryWrites` log op, the admin
+via `WebLog.memoryWrites`. `?session=` on `/api/tree/memory` now names the
+conversation in the browser target too (it was ignored, so sessions shared one
+map there).
+
+The rebuild reads raw `calls` rows, not the sanitized per-turn event window:
+that window is tail-capped at `MAX_TURN_EVENTS` = 500 and truncates
+strings/arrays for streaming, which would lose early writes and large values.
+Documented in `web/README.md` → "Session memory panels after reload / restart"
+(the cap still applies to anything else derived from the event window).
+
+Tests: `npm run test:memory-track` (fresh tracker + `memoryWrites` reproduces a
+live panel; 1 000-char value untruncated; a write before 600 trailing rows still
+rebuilds; LRU/clear/session isolation) and the browser smoke's post-reload
+memory check. `npm run test:web-memory` still passes.
+
 ## 2026-10-21 — workspace export/import in the standalone web UI
 
 The browser target's toolbar now has **Export** / **Import** in Browser (OPFS)

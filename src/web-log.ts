@@ -29,6 +29,7 @@ import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { newTurnApps, tagEventApp } from "./app-attribution.js";
 import { sanitizeEvent, type SanitizedEvent } from "./sanitize.js";
+import type { MemoryWrite } from "./memory-track.js";
 import type { EmitButton } from "./util/emit-text.js";
 
 export const MARKER_TURN = "web_turn_end";
@@ -190,8 +191,8 @@ export class WebLog {
     return (last?.awaiting as string | null) ?? null;
   }
 
-  /** Turn markers for a key, oldest first (latest MAX_TURNS). */
-  private turnMarkers(key: string): TurnMarker[] {
+  /** Turn markers for a key, oldest first (latest MAX_TURNS unless `all`). */
+  private turnMarkers(key: string, all = false): TurnMarker[] {
     const rows = this.db
       .prepare("SELECT content FROM calls WHERE run_id = ? AND kind = ? ORDER BY seq")
       .all(key, MARKER_TURN) as { content: string }[];
@@ -203,7 +204,7 @@ export class WebLog {
         // a corrupt marker must not take the UI down
       }
     }
-    return out.slice(-MAX_TURNS);
+    return all ? out : out.slice(-MAX_TURNS);
   }
 
   private latestMarker(key: string, kind: string): Record<string, unknown> | null {
@@ -349,6 +350,55 @@ export class WebLog {
       seq: r.seq,
       content: parseJson(r.content) as Record<string, unknown> | null ?? {},
     }, app(r.seq)));
+  }
+
+  /**
+   * Every memory-slot write of a session's persisted turns, oldest first, with
+   * the engine's own values.
+   *
+   * Deliberately NOT the sanitized per-turn event window `turnEvents` above:
+   * that window is tail-capped (MAX_TURN_EVENTS) and truncates strings/arrays
+   * for streaming, so a slot written early in a very long turn — or one holding
+   * a large value — would rebuild wrong or not at all. This scans the raw
+   * `calls` rows for each turn's seq bounds instead, and is not turn-capped
+   * (memory is derived from the whole session, not just the drawer's window).
+   * Turns without run bounds (migrated legacy markers) are skipped.
+   */
+  memoryWrites(key: string): MemoryWrite[] {
+    const out: MemoryWrite[] = [];
+    for (const m of this.turnMarkers(key, true)) {
+      if (!m.runId || m.fromSeq == null || m.toSeq == null) continue;
+      out.push(...this.memoryRows(m.runId, m.fromSeq, m.toSeq));
+    }
+    return out.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+  }
+
+  /** Raw memory-write rows in one turn's (fromSeq, toSeq], app-tagged. */
+  private memoryRows(runId: string, fromSeq: number, toSeq: number): MemoryWrite[] {
+    const bounds = "run_id = ? AND seq > ? AND seq <= ?";
+    const trees = this.db
+      .prepare(`SELECT seq, kind, content FROM calls WHERE ${bounds} AND kind IN ('tree_enter','tree_exit','tree_suspend') ORDER BY seq`)
+      .all(runId, fromSeq, toSeq) as { seq: number; kind: string; content: string }[];
+    const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })));
+    const rows = this.db
+      .prepare(`SELECT seq, kind, branch_path, scope_id, content FROM calls WHERE ${bounds} AND kind IN ('memory','record') ORDER BY seq`)
+      .all(runId, fromSeq, toSeq) as { seq: number; kind: string; branch_path: string | null; scope_id: number | null; content: string | null }[];
+    const out: MemoryWrite[] = [];
+    for (const r of rows) {
+      const content = parseJson(r.content) as Record<string, unknown> | null;
+      const op = content?.op;
+      const memWrite = r.kind === "memory" || (r.kind === "record" && (op === "memory" || op === "memoryUpdate"));
+      if (!memWrite) continue;
+      out.push({
+        seq: r.seq,
+        kind: r.kind,
+        branch_path: r.branch_path,
+        scope_id: r.scope_id,
+        content,
+        app: app(r.seq),
+      });
+    }
+    return out;
   }
 
   // ── migration ─────────────────────────────────────────────────────────

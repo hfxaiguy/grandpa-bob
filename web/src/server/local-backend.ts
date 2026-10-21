@@ -15,6 +15,7 @@ import { listAppTrees, listPatterns, listTreeSources } from "../../../src/tree-s
 import { promoteDraft, resolveTreeEntry, scanTreeVersions } from "../../../src/tree-versions";
 import { serializeTree } from "../../../src/tree-serialize";
 import { newTurnApps, tagEventApp, type TurnApps } from "../../../src/app-attribution";
+import { createMemoryTracker, type MemoryWrite } from "../../../src/memory-track";
 import { emitValue } from "../../../src/util/emit-text";
 import { createModuleLoader } from "../agent/module-loader";
 import { patternLabel } from "../agent/pattern-path";
@@ -99,6 +100,12 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   const activeRefs = new Map<string, string>();
   /** Per-conversation role→slot overrides (the chat model picker). */
   const sessionModels = new Map<string, Record<string, string>>();
+  /**
+   * Current memory values, per conversation and grouped by the writing app —
+   * the same tracker the Node admin uses. It lives in this page, so a reload
+   * wipes it; `ensureMemory` rebuilds it from the persisted run log below.
+   */
+  const memory = createMemoryTracker();
 
   /**
    * GET a JSON object from the admin, when this page is served by it. XHR is
@@ -286,8 +293,27 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     }
   }
 
+  /**
+   * Rebuild this session's memory panel from the persisted run log, once per
+   * page. A failed read does not seal the session — the next request retries —
+   * while live writes keep filling the map in the meantime.
+   */
+  async function ensureMemory(key: string): Promise<void> {
+    if (!memory.needsRebuild(key)) return;
+    let writes: MemoryWrite[] = [];
+    try {
+      const rows = await agent.log<MemoryWrite[]>("memoryWrites", { key }, logCtx());
+      if (Array.isArray(rows)) writes = rows;
+    } catch {
+      return;
+    }
+    memory.rebuild(key, writes);
+  }
+
   /** Persisted turns plus this page's not-yet-logged ones. */
   async function turnsFor(key: string): Promise<TurnRecord[]> {
+    // Loading a session also restores its memory panel (once per page).
+    await ensureMemory(key);
     const persisted = await persistedTurns(key);
     const live = liveTurns.get(key) ?? [];
     if (!live.length) return persisted;
@@ -476,7 +502,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         onEvent: (event) => {
           const ev = event as { kind?: string; content?: Record<string, unknown>; scope_id?: number | null; branch_path?: string };
           const app = tagEventApp(apps, ev);
-          trackMemory(app, ev);
+          memory.track(key, ev, app);
           const tagged = { ...ev, app };
           record.events.push(tagged);
           broadcast({ type: "event", turnId, event: tagged });
@@ -542,48 +568,6 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     }
   }
 
-  /** Memory writes, grouped by the app that made them (path -> value). */
-  const memValues = new Map<string, Map<string, unknown>>();
-  const memPaths = new Map<string, Map<string, Set<string>>>();
-  function trackMemory(
-    app: string,
-    ev: { kind?: string; content?: { child?: unknown; value?: unknown; op?: unknown }; scope_id?: number | null; branch_path?: string },
-  ): void {
-    const c = ev.content;
-    const memWrite = ev.kind === "memory" || (ev.kind === "record" && (c?.op === "memory" || c?.op === "memoryUpdate"));
-    if (!memWrite || ev.scope_id == null) return;
-    const child = typeof c?.child === "string" ? c.child : "";
-    const slotKey = `${ev.scope_id}/${child}`;
-    if (c && "value" in c) {
-      let m = memValues.get(app);
-      if (!m) { m = new Map(); memValues.set(app, m); }
-      m.set(slotKey, c.value);
-    }
-    const nodePath = (ev.branch_path ?? "") + (child ? "/" + child : "");
-    if (nodePath) {
-      let pm = memPaths.get(app);
-      if (!pm) { pm = new Map(); memPaths.set(app, pm); }
-      let ps = pm.get(slotKey);
-      if (!ps) { ps = new Set(); pm.set(slotKey, ps); }
-      ps.add(nodePath);
-    }
-  }
-  function memoryPayload(): { values: Record<string, unknown>; apps: Record<string, Record<string, unknown>> } {
-    const values: Record<string, unknown> = {};
-    const apps: Record<string, Record<string, unknown>> = {};
-    for (const [app, slots] of memValues) {
-      const pathMap = memPaths.get(app);
-      if (!pathMap) continue;
-      for (const [slotKey, v] of slots) {
-        if (v === undefined) continue;
-        for (const p of pathMap.get(slotKey) ?? []) {
-          values[p] = v;
-          (apps[app] ??= {})[p] = v;
-        }
-      }
-    }
-    return { values, apps };
-  }
   /** The streamed run-log row for a ref seq (newest turn wins on a rewind). */
   function findLoggedRow(seq: number): {
     seq: number;
@@ -731,6 +715,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         }
         liveTurns.delete(sel.delete);
         sessionModels.delete(sel.delete);
+        memory.clear(sel.delete);
         if (activeSession === sel.delete) {
           activeSession = null;
           saveActive();
@@ -855,7 +840,12 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     if (pathname === "/api/pattern" && method === "POST") {
       const want = (parseBody(body) as { name?: string }).name;
       if (want) {
-        activePattern = patternLabel(want) || want;
+        const next = patternLabel(want) || want;
+        // Pause state is pattern-specific: a different tree has different
+        // slots, so the tracked memory is dropped (as the admin does). The
+        // transcripts stay in the log.
+        if (next !== activePattern) memory.clear();
+        activePattern = next;
         // The toolbar above the app shows the active pattern; let it follow
         // switches without polling.
         window.dispatchEvent(
@@ -864,7 +854,13 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       }
       return { status: 200, body: { pattern: activePattern } };
     }
-    if (pathname === "/api/tree/memory") return { status: 200, body: memoryPayload() };
+    if (pathname === "/api/tree/memory") {
+      // `?session=` names the panel's conversation (the drawer may have just
+      // switched); the active one otherwise. Same contract as the admin.
+      const key = search.get("session") || (await ensureSession());
+      await ensureMemory(key);
+      return { status: 200, body: memory.payload(key) };
+    }
     if (pathname === "/api/models/slots" && method === "GET") {
       // Served by the admin: list ITS slots (the real registry), but keep this
       // session's own role→slot overrides. Falling through to the admin's
