@@ -503,7 +503,11 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     list.push(record);
     if (list.length > 20) list.shift();
     liveTurns.set(key, list);
-    const apps = newTurnApps();
+    // The workspace's app trees are the tile boundaries (a nested app call,
+    // e.g. enrich-profile → contacts, lands on its own tile). Refreshed per
+    // turn so a newly knitted app is a boundary without a reload.
+    const appNames = (await listAppTrees(platform.workspaceRoot).catch(() => [])).map((a) => a.name);
+    const apps = newTurnApps(appNames);
     const running = agent.run(
       {
         task: text,

@@ -543,14 +543,28 @@ function capTurnEvents(t: { events: SanitizedEvent[] }): void {
 }
 
 // Which app a turn's events belong to. The trunk enters tree tools (apps);
-// events between an app's enter and exit belong to that app, and a nested tree
-// tool (one of the app's capabilities) stays with it. Kept per
-// conversation key because a web turn and a mirrored Telegram turn can be in
-// flight for different keys at once. The per-event walk lives in
+// events belong to the app whose tree boundary they fall inside; a tree tool
+// nested inside an app is a capability and stays with it, while a nested APP
+// (enrich-profile calling contacts) opens its own boundary and lands on its own
+// tile. Kept per conversation key because a web turn and a mirrored Telegram
+// turn can be in flight for different keys at once. The per-event walk lives in
 // src/app-attribution.ts, shared with the browser backend.
+//
+// Attribution needs the workspace's app-tree names. remoteTurnStart() runs
+// synchronously, so the set is cached (web turns and /api/apps refresh it);
+// until the first scan lands, a turn falls back to the legacy rule.
+let appNamesWorkspaceDir: string | null = null;
+let appNamesCache: string[] | null = null;
+async function appNamesFor(workspaceDir: string): Promise<string[]> {
+  const names = (await listAppTrees(workspaceDir).catch(() => [])).map((a) => a.name);
+  appNamesWorkspaceDir = workspaceDir;
+  appNamesCache = names;
+  return names;
+}
+
 const turnApps = new Map<string, TurnApps>();
-function beginTurnApps(key: string): TurnApps {
-  const st = newTurnApps();
+function beginTurnApps(key: string, appNames?: Iterable<string>): TurnApps {
+  const st = newTurnApps(appNames);
   turnApps.set(key, st);
   return st;
 }
@@ -558,7 +572,7 @@ function endTurnApps(key: string): void {
   turnApps.delete(key);
 }
 function tagEventApp(key: string, e: unknown): string {
-  const st = turnApps.get(key) ?? beginTurnApps(key);
+  const st = turnApps.get(key) ?? beginTurnApps(key, appNamesCache ?? undefined);
   return sharedTagEventApp(st, e);
 }
 
@@ -853,7 +867,10 @@ export function remoteTurnStart(key: string, input: string): void {
     turnId, input, inputApp, startedAt: now, endedAt: null, status: "running",
     error: null, output: null, events: [], runId: null, fromSeq: webLog.nextSeq(), toSeq: null,
   });
-  beginTurnApps(key);
+  beginTurnApps(key, appNamesCache ?? undefined);
+  // Prime the set for this and later remote turns; the first turn after boot
+  // may still tag with the legacy rule if the scan has not landed yet.
+  if (!appNamesCache && appNamesWorkspaceDir) void appNamesFor(appNamesWorkspaceDir);
   if (activeSession === key) broadcast({ type: "turn_start", turnId, session: key, input, inputApp, ts: now, awaiting: null });
 }
 
@@ -1087,7 +1104,9 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
     toSeq: null,
   };
   liveTurns.set(key, record);
-  beginTurnApps(key);
+  // Refresh the registry per turn: a newly knitted app must become a tile
+  // boundary without a restart.
+  beginTurnApps(key, appNamesWorkspaceDir ? await appNamesFor(appNamesWorkspaceDir) : appNamesCache ?? undefined);
   broadcast({ type: "turn_start", turnId, session: key, input: displayText, inputApp: record.inputApp ?? "trunk", ts: record.startedAt, awaiting: null });
 
   // A web-run turn that belongs to (or is followed by) a Telegram chat is
@@ -1307,7 +1326,16 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
   // Web chat history lives in the log DB (host markers, src/web-log.ts) —
   // there is no web-turns.json anymore. A legacy file is imported once, then
   // renamed away; nothing reads it again.
-  webLog = new WebLog(path.resolve(config.workspaceDir, "logs", "grandma-kat.db"), describeForeignKey);
+  webLog = new WebLog(
+    path.resolve(config.workspaceDir, "logs", "grandma-kat.db"),
+    describeForeignKey,
+    // Attribution for replayed turns: the same app-tree registry the live
+    // tagging uses, so a nested app run lands on the tile it landed on live.
+    () => appNamesCache,
+  );
+  // Prime the registry for sync (Telegram) turn starts and stored-turn replay.
+  appNamesWorkspaceDir = config.workspaceDir;
+  void appNamesFor(config.workspaceDir);
   webSettingsPath = path.resolve(config.workspaceDir, "logs", "web-settings.json");
   loadFollowSetting();
   const legacyTurns = path.resolve(config.workspaceDir, "logs", "web-turns.json");
@@ -2801,6 +2829,10 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         let appTrees: { name: string; description: string; guide?: string }[] = [];
         try {
           appTrees = await listAppTrees(config.workspaceDir);
+          // Keep live attribution in step: an app knitted while the server runs
+          // is a tile boundary on the next turn.
+          appNamesWorkspaceDir = config.workspaceDir;
+          appNamesCache = appTrees.map((a) => a.name);
         } catch { /* no app dir — trunk only */ }
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({

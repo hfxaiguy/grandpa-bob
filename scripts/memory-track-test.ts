@@ -145,6 +145,10 @@ assert.equal(lru.needsRebuild("web:3"), false);
 // node:sqlite here): raw values, app attribution, no MAX_TURN_EVENTS cap.
 const webWs = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-browser-log-"));
 const webPlatform = createNodePlatform(webWs);
+// The replay attributes app names against the workspace's app trees; the
+// fixture's `email` boundary must exist there to be a tile (nested-app rule).
+await fs.mkdir(path.join(webWs, "app", "email"), { recursive: true });
+await fs.writeFile(path.join(webWs, "app", "email", "tree.mjs"), "export default {};\n");
 const BROWSER_KEY = "web:browser";
 const BROWSER_RUN = "run-browser";
 const browserEvents = [

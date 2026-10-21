@@ -8,11 +8,14 @@
  *
  *   1. GET /api/apps lists the trunk plus every app/ tree in the workspace.
  *   2. A turn's events carry an `app` tag ("trunk" at top level; the app the
- *      trunk entered). A nested tree tool is one of that app's capabilities
- *      (email's `answer`, contacts' `contacts_query`) and stays with its app.
+ *      trunk entered). A nested tree tool that is not an app is one of that
+ *      app's capabilities (email's `answer`, contacts' `contacts_query`) and
+ *      stays with its app; a nested APP (enrich-profile calling contacts) opens
+ *      its own boundary and lands on its own tile.
  *   3. Emits carry the app that produced them (parallel to the text).
  *   4. A turn that ends paused reports `awaiting` = the app it paused in — the
- *      app, even when the pause is inside one of its capabilities.
+ *      topmost app boundary, even when the pause is inside one of its
+ *      capabilities.
  *   5. Memory values are grouped per app; node paths give the indentation.
  *   6. SSE broadcasts the same tags live (turn_start/turn_end carry awaiting;
  *      event carries app).
@@ -69,7 +72,85 @@ import { newTurnApps, tagEventApp, retagEvents } from "../src/app-attribution.js
   const r = retagEvents(evs);
   assert.deepEqual(evs.map((e) => e.app), ["trunk", "trunk", "contacts", "contacts", "contacts"], "retag walks the stored stream");
   assert.deepEqual(r.emitApps, ["trunk", "contacts"], "emitApps recovered in order");
-  console.log("0. unit: app stack walk (enter/exit/suspend + retag)");
+
+  // Registry mode — a nested APP is its own boundary (enrich-profile calling
+  // contacts), while a tree tool inside it that is not an app stays with it.
+  const apps = ["enrich-profile", "contacts", "email"];
+  const st3 = newTurnApps(apps);
+  assert.equal(tagEventApp(st3, { kind: "tree_enter", content: { tool: "enrich-profile" } }), "enrich-profile");
+  assert.equal(tagEventApp(st3, { kind: "tree_enter", content: { tool: "contacts" } }), "contacts", "a nested app opens its own tile");
+  assert.equal(tagEventApp(st3, { kind: "record", content: { op: "memoryUpdate" } }), "contacts", "its events stay on its tile");
+  assert.equal(
+    tagEventApp(st3, { kind: "tree_enter", content: { tool: "contacts_query" } }),
+    "contacts",
+    "a capability inside the nested app stays with it",
+  );
+  assert.equal(tagEventApp(st3, { kind: "llm_call" }), "contacts", "a capability's event stays with the nested app");
+  assert.equal(
+    tagEventApp(st3, { kind: "tree_exit", content: { tool: "contacts_query" } }),
+    "contacts",
+    "the capability's exit is the nested app's event",
+  );
+  assert.equal(
+    tagEventApp(st3, { kind: "tree_exit", content: { tool: "contacts" } }),
+    "contacts",
+    "the nested app's exit is its own completion event",
+  );
+  assert.equal(tagEventApp(st3, { kind: "llm_call" }), "enrich-profile", "back to the calling app after the nested app exits");
+  assert.equal(tagEventApp(st3, { kind: "tree_exit", content: { tool: "enrich-profile" } }), "enrich-profile");
+  assert.equal(tagEventApp(st3, { kind: "llm_call" }), "trunk", "back to trunk");
+
+  // A pause inside a nested app belongs to the nested app (its own input box).
+  const st4 = newTurnApps(apps);
+  tagEventApp(st4, { kind: "tree_enter", content: { tool: "enrich-profile" } });
+  tagEventApp(st4, { kind: "tree_enter", content: { tool: "contacts" } });
+  assert.equal(
+    tagEventApp(st4, { kind: "tree_suspend", content: { tool: "contacts" } }),
+    "contacts",
+    "a nested app owns its own human-input pause",
+  );
+  assert.equal(st4.suspended, "contacts", "suspend records the nested app");
+
+  // A tree marked `ownTile` is a boundary even when the registry does not know
+  // it (the engine's future marker) — and even in legacy mode.
+  const st5 = newTurnApps();
+  tagEventApp(st5, { kind: "tree_enter", content: { tool: "email" } });
+  assert.equal(
+    tagEventApp(st5, { kind: "tree_enter", content: { tool: "chatty", ownTile: true } }),
+    "chatty",
+    "an ownTile tree opens its own tile",
+  );
+  assert.equal(tagEventApp(st5, { kind: "tree_exit", content: { tool: "chatty", ownTile: true } }), "chatty");
+  assert.equal(tagEventApp(st5, { kind: "llm_call" }), "email", "back to the app after a marked tree exits");
+
+  // Legacy mode still folds a nested app into the outermost tree.
+  const st6 = newTurnApps();
+  tagEventApp(st6, { kind: "tree_enter", content: { tool: "enrich-profile" } });
+  assert.equal(
+    tagEventApp(st6, { kind: "tree_enter", content: { tool: "contacts" } }),
+    "enrich-profile",
+    "without the registry, a nested app stays with the first tree",
+  );
+
+  // retagEvents with the registry recovers the nested app's tile.
+  const evs2: { kind?: string; content?: unknown; app?: string }[] = [
+    { kind: "tree_enter", content: { tool: "enrich-profile" } },
+    { kind: "emit" },
+    { kind: "tree_enter", content: { tool: "contacts" } },
+    { kind: "emit" },
+    { kind: "tree_exit", content: { tool: "contacts" } },
+    { kind: "emit" },
+    { kind: "tree_exit", content: { tool: "enrich-profile" } },
+  ];
+  const r2 = retagEvents(evs2, undefined, apps);
+  assert.deepEqual(
+    evs2.map((e) => e.app),
+    ["enrich-profile", "enrich-profile", "contacts", "contacts", "contacts", "enrich-profile", "enrich-profile"],
+    "retag puts the nested app's run on the nested app's tile",
+  );
+  assert.deepEqual(r2.emitApps, ["enrich-profile", "contacts", "enrich-profile"], "emitApps carries the nested app");
+
+  console.log("0. unit: app stack walk (enter/exit/suspend + nested apps + retag)");
 }
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-app-attr-"));
@@ -92,15 +173,21 @@ function freePort(): Promise<number> {
   });
 }
 
-// Scripted turn: trunk emit → enter contacts (emit + memory) → enter a contacts
-// capability `lookup` (memory + suspend). The turn ends paused; the pause is
-// inside the capability but belongs to contacts.
+// Scripted turn: trunk emit → enter contacts (emit + memory) → enter the
+// nested app `enrich` (memory + emit + exit) → enter a contacts capability
+// `lookup` (memory + suspend). The turn ends paused; the pause is inside the
+// capability but belongs to contacts. `enrich` is a nested APP, so its run
+// must land on the enrich tile, not on contacts'.
 const script = [
   { kind: "llm_call", branch_path: "0", scope_id: 1, content: { child: "trunk-prompt" } },
   { emit: "trunk says hi" },
   { kind: "tree_enter", branch_path: "0/1", scope_id: 5, content: { tool: "contacts", tree: "contacts" } },
   { kind: "record", branch_path: "0/1", scope_id: 5, content: { op: "memoryUpdate", child: "name", value: "Ada" } },
   { emit: "contacts says hi" },
+  { kind: "tree_enter", branch_path: "0/1/2", scope_id: 7, content: { tool: "enrich", tree: "enrich" } },
+  { kind: "record", branch_path: "0/1/2", scope_id: 7, content: { op: "memoryUpdate", child: "domain", value: "acme.com" } },
+  { emit: "enrich says hi" },
+  { kind: "tree_exit", branch_path: "0/1/2", scope_id: 7, content: { tool: "enrich", tree: "enrich" } },
   { kind: "tree_enter", branch_path: "0/1/0", scope_id: 9, content: { tool: "lookup", tree: "lookup" } },
   { kind: "record", branch_path: "0/1/0", scope_id: 9, content: { op: "memoryUpdate", child: "company", value: "Acme" } },
   { emit: "lookup needs input" },
@@ -140,6 +227,10 @@ const mockAgent = () =>
       const runId = `run-attr-${++runSeq}`;
       for (const step of script) {
         if ("emit" in step) {
+          // The engine logs an emit row AND streams the value to the host, so
+          // a replay can re-derive the turn's emit tags from the log.
+          const content = { child: "emit", value: { text: step.emit } };
+          engStmt.run(runId, "0", 1, null, "emit", JSON.stringify(content));
           onEmit?.({ text: step.emit });
         } else {
           const e = { run_id: runId, ...step } as Record<string, unknown>;
@@ -213,20 +304,31 @@ await new Promise((r) => setTimeout(r, 150));
   assert.equal(turns.length, 1, "one turn recorded");
   const turn = turns[0];
 
-  // 2. event app tags — the app is the outermost tree tool; `lookup` is a
-  //    contacts capability and stays with contacts.
+  // 2. event app tags — every app tree opens its own boundary; `lookup` is a
+  //    contacts capability (not an app) and stays with contacts.
   const appOfKind = (kind: string) => turn.events.filter((e: any) => e.kind === kind).map((e: any) => e.app);
   assert.deepEqual(appOfKind("llm_call"), ["trunk"], "trunk prompt belongs to trunk");
-  assert.deepEqual(appOfKind("tree_enter"), ["contacts", "contacts"], "a capability stays with its app");
+  assert.deepEqual(
+    appOfKind("tree_enter"),
+    ["contacts", "enrich", "contacts"],
+    "nested apps open their own tile; a capability stays with its app",
+  );
+  assert.deepEqual(appOfKind("tree_exit"), ["enrich"], "a nested app's exit is its own event");
   assert.deepEqual(appOfKind("tree_suspend"), ["contacts"], "suspend tags the app, not the capability");
   const memEvent = turn.events.find((e: any) => e.kind === "record" && e.content?.child === "name");
   assert.equal(memEvent.app, "contacts", "a memory write inside contacts tags contacts");
   const capEvent = turn.events.find((e: any) => e.kind === "record" && e.content?.child === "company");
   assert.equal(capEvent.app, "contacts", "a memory write inside a capability tags the app");
+  const nestedEvent = turn.events.find((e: any) => e.kind === "record" && e.content?.child === "domain");
+  assert.equal(nestedEvent.app, "enrich", "a memory write inside a nested app tags the nested app");
 
   // 3. emit apps (parallel to emits)
-  assert.deepEqual(turn.emits, ["trunk says hi", "contacts says hi", "lookup needs input"]);
-  assert.deepEqual(turn.emitApps, ["trunk", "contacts", "contacts"], "an emit from a capability tags the app");
+  assert.deepEqual(turn.emits, ["trunk says hi", "contacts says hi", "enrich says hi", "lookup needs input"]);
+  assert.deepEqual(
+    turn.emitApps,
+    ["trunk", "contacts", "enrich", "contacts"],
+    "a nested app's emit lands on its tile; a capability's on the app's",
+  );
 
   // 4. awaiting = the app that owns the pause
   assert.equal(turn.awaiting, "contacts", "the pause is inside a capability but belongs to contacts");
@@ -234,6 +336,7 @@ await new Promise((r) => setTimeout(r, 150));
   // 5. memory grouped per app
   const mem = await api("GET", "/api/tree/memory");
   assert.deepEqual(mem.json.apps.contacts, { "0/1/name": "Ada", "0/1/0/company": "Acme" }, "contacts memory (incl. its capability) grouped, path kept");
+  assert.deepEqual(mem.json.apps.enrich, { "0/1/2/domain": "acme.com" }, "a nested app's memory groups on its tile");
   assert.equal(mem.json.apps.lookup, undefined, "a capability has no tile of its own");
   assert.equal(mem.json.values["0/1/name"], "Ada", "flat values preserved for the old panel");
 
@@ -275,6 +378,28 @@ await new Promise((r) => setTimeout(r, 150));
   console.log("2-5. events, emits, memory, and awaiting all attribute per app");
 }
 
+// ── 2b. a marker written under the old rule heals on load ──
+{
+  // Poison the persisted turn's emit tags to what the old attribution wrote
+  // (a nested app folded into the calling app), then read it back: the run log
+  // is authoritative, so the nested app's bubble must move to its own tile.
+  const row = engDb
+    .prepare("SELECT seq, content FROM calls WHERE kind = 'web_turn_end' ORDER BY seq ASC LIMIT 1")
+    .get() as { seq: number; content: string };
+  const marker = JSON.parse(row.content) as { turnId?: string; emits?: string[]; emitApps?: string[] };
+  assert.equal(marker.emitApps?.length, 4, "the stored marker has the turn's emit tags");
+  marker.emitApps = marker.emitApps.map(() => "contacts");
+  engDb.prepare("UPDATE calls SET content = ? WHERE seq = ?").run(JSON.stringify(marker), row.seq);
+  const healed = (await api("GET", "/api/turns")).json.turns as any[];
+  const first = healed.find((t) => t.turnId === marker.turnId);
+  assert.deepEqual(
+    first?.emitApps,
+    ["trunk", "contacts", "enrich", "contacts"],
+    "a stale marker's emit tags are recomputed from the run log",
+  );
+  console.log("2b. stale emit tags heal from the run log");
+}
+
 // ── 6. the SSE broadcast carries the same tags ──
 {
   const start = sse.find((m) => m.type === "turn_start");
@@ -286,8 +411,12 @@ await new Promise((r) => setTimeout(r, 150));
   assert.equal(starts[1]?.inputApp, "contacts", "second turn_start inputApp = the paused app");
   const evContacts = sse.find((m) => m.type === "event" && m.event?.kind === "tree_enter" && m.event.app === "contacts");
   assert.ok(evContacts, "event broadcast carries the app tag");
+  const evNested = sse.find((m) => m.type === "event" && m.event?.kind === "tree_enter" && m.event.app === "enrich");
+  assert.ok(evNested, "a nested app's enter broadcasts with its own app tag");
   const emitCap = sse.find((m) => m.type === "emit" && m.app === "contacts" && /lookup needs input/.test(m.text ?? ""));
   assert.ok(emitCap, "a capability's emit broadcast carries the app tag");
+  const emitNested = sse.find((m) => m.type === "emit" && m.app === "enrich" && /enrich says hi/.test(m.text ?? ""));
+  assert.ok(emitNested, "a nested app's emit broadcasts with its own app tag");
   console.log("6. SSE broadcasts turn_start/turn_end/event/emit with app tags");
 }
 

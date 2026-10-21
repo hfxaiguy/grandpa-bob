@@ -22,6 +22,7 @@ import type { DerivedTurn, StoredSession, TurnMarker } from "../../../src/web-lo
 import type { MemoryWrite } from "../../../src/memory-track";
 import { sanitizeEvent, type SanitizedEvent } from "../../../src/sanitize";
 import { newTurnApps, tagEventApp } from "../../../src/app-attribution";
+import { listAppTrees } from "../../../src/tree-sources";
 import type { KatEvent } from "./logger";
 
 export const MARKER_TURN = "web_turn_end";
@@ -399,6 +400,9 @@ export async function getTurns(
   opts: { withEvents?: boolean } = {},
 ): Promise<DerivedTurn[]> {
   return withLogDb(platform, async (db) => {
+    // The registry the live host tags with: nested app calls are tile
+    // boundaries in the stored stream too.
+    const appNames = await appNamesOf(platform);
     const rows = (await (
       await db.prepare("SELECT content FROM calls WHERE run_id = ? AND kind = ? ORDER BY seq")
     ).all(key, MARKER_TURN)) as { content: string }[];
@@ -429,7 +433,11 @@ export async function getTurns(
         events: [],
       };
       if (opts.withEvents && m.runId && m.fromSeq != null && m.toSeq != null) {
-        t.events = await turnEvents(db, m.runId, m.fromSeq, m.toSeq);
+        const replayed = await turnEvents(db, m.runId, m.fromSeq, m.toSeq, appNames);
+        t.events = replayed.events;
+        // The marker's emit tags were written under the old attribution rule;
+        // the run log is authoritative when every stored bubble has one emit.
+        if (!t.emits || replayed.emitApps.length === t.emits.length) t.emitApps = replayed.emitApps;
       }
       out.push(t);
     }
@@ -442,14 +450,20 @@ async function turnEvents(
   runId: string,
   fromSeq: number,
   toSeq: number,
-): Promise<SanitizedEvent[]> {
+  appNames: string[],
+): Promise<{ events: SanitizedEvent[]; emitApps: string[] }> {
   const bounds = "run_id = ? AND seq > ? AND seq <= ?";
   const trees = (await (
     await db.prepare(
       `SELECT seq, kind, content FROM calls WHERE ${bounds} AND kind IN ('tree_enter','tree_exit','tree_suspend') ORDER BY seq`,
     )
   ).all(runId, fromSeq, toSeq)) as { seq: number; kind: string; content: string }[];
-  const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })));
+  const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })), appNames);
+  // Emit tags come from the full range, not the capped tail: bubbles must line
+  // up with the marker's stored emits even in a very long turn.
+  const emits = (await (
+    await db.prepare(`SELECT seq FROM calls WHERE ${bounds} AND kind = 'emit' ORDER BY seq`)
+  ).all(runId, fromSeq, toSeq)) as { seq: number }[];
   const tail = (await (
     await db.prepare(`SELECT * FROM calls WHERE ${bounds} ORDER BY seq DESC LIMIT ${MAX_TURN_EVENTS}`)
   ).all(runId, fromSeq, toSeq)) as {
@@ -460,7 +474,7 @@ async function turnEvents(
     scope_id: number | null;
     content: string | null;
   }[];
-  return tail.reverse().map((r) =>
+  const events = tail.reverse().map((r) =>
     sanitizeEvent(
       {
         kind: r.kind,
@@ -473,10 +487,19 @@ async function turnEvents(
       app(r.seq),
     ),
   );
+  return { events, emitApps: emits.map((e) => app(e.seq)) };
 }
 
-function appLookup(treeEvents: { seq: number; kind: string; content: unknown }[]): (seq: number) => string {
-  const st = newTurnApps();
+/** The workspace's runnable app-tree names — the tile boundaries. */
+async function appNamesOf(platform: Platform): Promise<string[]> {
+  return (await listAppTrees(platform.workspaceRoot).catch(() => [])).map((a) => a.name);
+}
+
+function appLookup(
+  treeEvents: { seq: number; kind: string; content: unknown }[],
+  appNames?: Iterable<string>,
+): (seq: number) => string {
+  const st = newTurnApps(appNames);
   const recs: { seq: number; app: string; after: string }[] = [];
   for (const ev of treeEvents) {
     const app = tagEventApp(st, ev);
@@ -512,6 +535,7 @@ function appLookup(treeEvents: { seq: number; kind: string; content: unknown }[]
  */
 export async function memoryWrites(platform: Platform, key: string): Promise<MemoryWrite[]> {
   return withLogDb(platform, async (db) => {
+    const appNames = await appNamesOf(platform);
     const rows = (await (
       await db.prepare("SELECT content FROM calls WHERE run_id = ? AND kind = ? ORDER BY seq")
     ).all(key, MARKER_TURN)) as { content: string }[];
@@ -521,21 +545,27 @@ export async function memoryWrites(platform: Platform, key: string): Promise<Mem
       if (!parsed || typeof parsed !== "object") continue;
       const m = parsed as TurnMarker;
       if (!m.runId || m.fromSeq == null || m.toSeq == null) continue;
-      out.push(...(await memoryRows(db, m.runId, m.fromSeq, m.toSeq)));
+      out.push(...(await memoryRows(db, m.runId, m.fromSeq, m.toSeq, appNames)));
     }
     return out.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
   });
 }
 
 /** Raw memory-write rows in one turn's (fromSeq, toSeq], app-tagged. */
-async function memoryRows(db: Db, runId: string, fromSeq: number, toSeq: number): Promise<MemoryWrite[]> {
+async function memoryRows(
+  db: Db,
+  runId: string,
+  fromSeq: number,
+  toSeq: number,
+  appNames: string[],
+): Promise<MemoryWrite[]> {
   const bounds = "run_id = ? AND seq > ? AND seq <= ?";
   const trees = (await (
     await db.prepare(
       `SELECT seq, kind, content FROM calls WHERE ${bounds} AND kind IN ('tree_enter','tree_exit','tree_suspend') ORDER BY seq`,
     )
   ).all(runId, fromSeq, toSeq)) as { seq: number; kind: string; content: string }[];
-  const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })));
+  const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })), appNames);
   const rows = (await (
     await db.prepare(
       `SELECT seq, kind, branch_path, scope_id, content FROM calls WHERE ${bounds} AND kind IN ('memory','record') ORDER BY seq`,

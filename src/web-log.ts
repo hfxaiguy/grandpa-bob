@@ -52,8 +52,11 @@ export type { DerivedTurn, StoredSession, TurnMarker } from "./web-log-types.js"
  * The walk sees only tree boundary markers (a handful per run), not the full
  * event stream; `app(seq)` then answers for any row by seq.
  */
-function appLookup(treeEvents: { seq: number; kind: string; content: unknown }[]): (seq: number) => string {
-  const st = newTurnApps();
+function appLookup(
+  treeEvents: { seq: number; kind: string; content: unknown }[],
+  appNames?: Iterable<string>,
+): (seq: number) => string {
+  const st = newTurnApps(appNames);
   const recs: { seq: number; app: string; after: string }[] = [];
   for (const ev of treeEvents) {
     const app = tagEventApp(st, ev);
@@ -74,8 +77,13 @@ function appLookup(treeEvents: { seq: number; kind: string; content: unknown }[]
 export class WebLog {
   private db: DatabaseSync;
   private describeKey: (key: string) => string;
+  private appNames: () => string[] | null;
 
-  constructor(dbPath: string, describeKey: (key: string) => string) {
+  constructor(
+    dbPath: string,
+    describeKey: (key: string) => string,
+    appNames: () => string[] | null = () => null,
+  ) {
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA busy_timeout = 5000");
     // The host may boot before the engine ever ran (a fresh workspace), so it
@@ -101,6 +109,7 @@ export class WebLog {
        WHERE kind IN ('${MARKER_KINDS.join("','")}')`,
     );
     this.describeKey = describeKey;
+    this.appNames = appNames;
   }
 
   close(): void {
@@ -327,23 +336,39 @@ export class WebLog {
         events: [],
       };
       if (opts.withEvents && m.runId && m.fromSeq != null && m.toSeq != null) {
-        t.events = this.turnEvents(m.runId, m.fromSeq, m.toSeq);
+        const replayed = this.turnEvents(m.runId, m.fromSeq, m.toSeq);
+        t.events = replayed.events;
+        // The marker's emit tags were written under the old attribution rule.
+        // The run log is authoritative when every stored bubble has one emit
+        // event (a marker without emits keeps whatever it stored).
+        if (!t.emits || replayed.emitApps.length === t.emits.length) t.emitApps = replayed.emitApps;
       }
       return t;
     });
   }
 
-  /** The (fromSeq, toSeq] event tail of one turn, app-tagged and sanitized. */
-  private turnEvents(runId: string, fromSeq: number, toSeq: number): SanitizedEvent[] {
+  /**
+   * The (fromSeq, toSeq] event tail of one turn, app-tagged and sanitized, plus
+   * the app of every emit in the FULL range (the tail is capped, bubbles are
+   * not — so emitTags is queried separately and lines up with the marker's
+   * stored emits one-to-one).
+   */
+  private turnEvents(runId: string, fromSeq: number, toSeq: number): {
+    events: SanitizedEvent[];
+    emitApps: string[];
+  } {
     const bounds = "run_id = ? AND seq > ? AND seq <= ?";
     const trees = this.db
       .prepare(`SELECT seq, kind, content FROM calls WHERE ${bounds} AND kind IN ('tree_enter','tree_exit','tree_suspend') ORDER BY seq`)
       .all(runId, fromSeq, toSeq) as { seq: number; kind: string; content: string }[];
-    const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })));
+    const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })), this.appNames() ?? undefined);
+    const emits = this.db
+      .prepare(`SELECT seq FROM calls WHERE ${bounds} AND kind = 'emit' ORDER BY seq`)
+      .all(runId, fromSeq, toSeq) as { seq: number }[];
     const tail = this.db
       .prepare(`SELECT * FROM calls WHERE ${bounds} ORDER BY seq DESC LIMIT ${MAX_TURN_EVENTS}`)
       .all(runId, fromSeq, toSeq) as { seq: number; kind: string; branch_path: string | null; iteration: number | null; scope_id: number | null; content: string | null }[];
-    return tail.reverse().map((r) => sanitizeEvent({
+    const events = tail.reverse().map((r) => sanitizeEvent({
       kind: r.kind,
       branch_path: r.branch_path ?? "",
       iteration: r.iteration ?? 0,
@@ -351,6 +376,7 @@ export class WebLog {
       seq: r.seq,
       content: parseJson(r.content) as Record<string, unknown> | null ?? {},
     }, app(r.seq)));
+    return { events, emitApps: emits.map((e) => app(e.seq)) };
   }
 
   /**
@@ -380,7 +406,7 @@ export class WebLog {
     const trees = this.db
       .prepare(`SELECT seq, kind, content FROM calls WHERE ${bounds} AND kind IN ('tree_enter','tree_exit','tree_suspend') ORDER BY seq`)
       .all(runId, fromSeq, toSeq) as { seq: number; kind: string; content: string }[];
-    const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })));
+    const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })), this.appNames() ?? undefined);
     const rows = this.db
       .prepare(`SELECT seq, kind, branch_path, scope_id, content FROM calls WHERE ${bounds} AND kind IN ('memory','record') ORDER BY seq`)
       .all(runId, fromSeq, toSeq) as { seq: number; kind: string; branch_path: string | null; scope_id: number | null; content: string | null }[];

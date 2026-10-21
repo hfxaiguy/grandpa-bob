@@ -31,6 +31,7 @@ import {
   transcribeFileStream,
 } from "./store";
 import type { AppInfo, ProvPiece, ProvWriter, Provenance, RefTarget, Turn, TurnTokens } from "./types";
+import { newTurnApps, tagEventApp } from "../../src/app-attribution";
 
 const trunkOf = (a?: string | null) => a || "trunk";
 
@@ -785,27 +786,17 @@ function Tile(props: { app: AppInfo }) {
   const wide = () => state.layout.wide.includes(name());
   const paused = () => state.awaiting === name();
   // The app currently executing: walk the running turn's events through the
-  // same enter/exit stack the server uses. The OUTERMOST tree tool is the app;
-  // tree tools nested inside it are its capabilities (email's `answer`,
-  // contacts' `contacts_query`), which still belong to the app's tile — so the
-  // email tile lights while its `answer` branch runs, not only while the
-  // orchestrator itself is the innermost tree.
+  // same boundary stack the server uses (src/app-attribution.ts). Every app
+  // tree opens its own tile, even nested inside another app (enrich-profile
+  // calling contacts); a non-app tree tool is a capability and stays with the
+  // app around it. Until /api/apps lands, fall back to the legacy outermost
+  // rule instead of tagging a nested run "trunk".
   const currentApp = createMemo(() => {
     const t = state.turns.find((x) => x.status === "running");
     if (!t) return null;
-    const stack: string[] = [];
-    for (const e of t.events) {
-      const nm =
-        typeof e.content?.tool === "string" ? e.content?.tool
-        : typeof e.content?.tree === "string" ? e.content?.tree
-        : "";
-      if (e.kind === "tree_enter" && nm) stack.push(nm);
-      else if (e.kind === "tree_exit" && nm) {
-        const i = stack.lastIndexOf(nm);
-        if (i >= 0) stack.splice(i, 1);
-      }
-    }
-    return stack[0] ?? "trunk";
+    const st = newTurnApps(state.apps.length ? state.apps.map((a) => a.name) : undefined);
+    for (const e of t.events) tagEventApp(st, e);
+    return st.current;
   });
   const running = () => currentApp() === name();
   const bubbles = createMemo(() => bubblesFor(name()));

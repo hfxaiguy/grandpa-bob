@@ -2,6 +2,42 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — a nested app call is its own tile (app attribution)
+
+A turn's events are tagged with the app (tile) they belong to. The rule was
+"the OUTERMOST tree tool is the app; everything nested is a capability of it" —
+written when only the trunk called apps. Apps now call other apps as tools
+(enrich-profile's `resolve_contact` / `save_run` call the contacts app), so that
+rule folded a whole nested app run — its `input:` echo, bubbles, memory writes,
+exits and pauses — onto the calling app's tile.
+
+Attribution now treats the workspace's app trees as **boundaries at any depth**:
+a nested app opens its own boundary and its events land on its own tile, while
+a tree tool that is not an app (email's `answer`, contacts' `contacts_query`)
+still stays with the app around it. The current app is the topmost boundary,
+`tree_exit` tags the leaver (an app's exit is its own completion event), and a
+`tree_suspend` inside a nested app makes that app own the human-input pause.
+`retagEvents` reconstructs the same tags for stored turns, and both replay paths
+(`WebLog.getTurns` / `turnEvents`, the browser `log-store`) re-derive a stored
+turn's `emitApps` from the run log when every stored bubble has one emit event —
+so turns recorded under the old rule heal on load.
+
+The registry comes from `listAppTrees`: the Node admin caches it (primed at
+startup, refreshed per web turn and by `/api/apps`), the browser backend
+refreshes it per turn, and both replay paths (`WebLog.memoryWrites` /
+`turnEvents`, the browser `log-store`) thread the same names through. The UI's
+running-tile walk now reuses `src/app-attribution.ts` instead of mirroring the
+old rule. Without the registry (a host that has not been updated) the walk keeps
+the legacy outermost rule, so nothing breaks.
+
+A tree can already opt into its own chat section independently of the registry:
+an enter event carrying `ownTile: true` is a boundary too. That is the seam for
+the engine's future per-tree marker; today only app-tree roots are boundaries.
+
+Tests: `npm run test:app-attribution` (nested app enter/exit/emit/memory/suspend,
+capability-in-nested-app, legacy mode, `ownTile`, `retagEvents`, SSE tags,
+stale-marker heal).
+
 ## 2026-10-21 — per-turn token totals in the chat tiles
 
 Each finished turn now carries `tokens: { input, output, calls }` — the sum of
