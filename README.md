@@ -441,6 +441,11 @@ health) render disabled with a **browser only** chip.
 
 With `BOB_WEB=1` the admin server additionally serves:
 
+> Shortcuts: `npm run start:with-server` (production `dist/`) and
+> `npm run dev:with-server` (tsx + Vite HMR) set `BOB_WEB=1` for you. Plain
+> `npm run dev` also enables it, because the dev server and the API share the
+> port.
+
 - **`/` — tiled app UI.** A tiling "mission control": one tile per app (the
   trunk plus every `app/<name>/tree.draft.mjs` in the workspace). Each tile shows
   that app's **own chat bubbles**, a read-only **memory panel** (values

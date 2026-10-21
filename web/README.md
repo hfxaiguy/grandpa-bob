@@ -29,6 +29,10 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 To run the UI with no BOB process at all, use `npm run web:standalone`
 (`web/scripts/serve.mjs`; `PORT`/`HOST` overridable).
 
+Shortcuts for the admin mode: `npm run start:with-server` (built `dist/`) and
+`npm run dev:with-server` (tsx + Vite HMR) export `BOB_WEB=1` before starting.
+`npm run dev` alone is already in api mode — `BOB_DEV=1` implies it.
+
 ## Status — milestone 1 (virtual FS / platform seam)
 
 | Piece | State |

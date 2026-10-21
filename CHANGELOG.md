@@ -42,7 +42,9 @@ the page shows a **browser only** chip and keeps the server-only controls —
 restart, Telegram follow, bot logs, service health — visible but disabled. The
 chat drawer's *✈ telegram* button disables the same way. The static listener
 redirects a direct `/settings` hit to `/` (the settings page is an in-page
-iframe there).
+iframe there). Convenience scripts set the flag: `npm run start:with-server`
+(built `dist/`) and `npm run dev:with-server` (tsx + Vite HMR); plain
+`npm run dev` already runs the admin, since `BOB_DEV=1` implies it.
 
 Tests: `npm run test:web-static` (UI served at `/`, `/api/*` 503 with
 `admin:false`, `/settings` → `/`, traversal refused, API mode still answers
