@@ -10,6 +10,7 @@
   --warn: #fbbf24;
   --err: #f87171;
   --pink: #f472b6;
+  --machine: #94c9bf;
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
@@ -127,9 +128,11 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .bubble.bot { align-self: flex-start; }
 .bubble.machine {
   align-self: flex-start;
-  background: transparent;
+  background: rgba(148, 201, 191, 0.06);
   border-style: dashed;
-  color: var(--muted);
+  border-color: #345b57;
+  color: var(--machine);
+  opacity: 0.75;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }

@@ -43,10 +43,10 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 ## Main-and-only UI (2026-10-19)
 
 The web target is now the primary interface. Machine-tagged emits —
-`Emit("input: …", flag("machine"))` in a tree — are hidden from app chats by
-default; the toolbar **machine** button (or the same checkbox in the session
-drawer) reveals tree input, waiting notes and hand-offs without mixing them
-into the normal reply stream.
+`Emit("input: …", flag("machine"))` in a tree — appear in app chats as faded,
+teal-tinted notes by default; the toolbar **machine** button (or the same
+checkbox in the session drawer) hides them. This keeps tree input, waiting
+notes and hand-offs visible without mixing them into the normal reply stream.
 
 | Piece | State |
 |---|---|

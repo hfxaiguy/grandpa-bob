@@ -2,6 +2,19 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — app-entry machine notes, faded by default
+
+Every top-level app now emits a `flag("machine")` note immediately after its
+initial input (`Needs(...)`), naming the request the app received. This covers
+`caller-list`, `contacts`, `email`, `enrich-profile`, `files`, and both `knit`
+tree versions.
+
+Machine bubbles are visible by default and are always rendered faded and
+teal-tinted with a dashed border — whether the tree is showing an input,
+waiting, or a hand-off. The toolbar **machine** button or the session-drawer
+checkbox hides/shows them, persisted in `localStorage`. `app/knit`'s spec
+prompt and the workspace guides describe `<<!` as this input note.
+
 ## 2026-10-21 — Emit flags and a machine-note toggle
 
 `grandma-kat` emits now accept a channel flag:

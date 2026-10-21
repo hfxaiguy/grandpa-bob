@@ -48,8 +48,9 @@ export interface UiState {
    *  as a dismissible banner. */
   lastError: { title: string; text: string } | null;
   layout: Layout;
-  /** Show emits tagged `machine` in the app chat bubbles. Off by default:
-   *  they are tree narration (input, waiting, hand-offs), not replies. */
+  /** Show emits tagged `machine` in the app chat bubbles. On by default
+   *  (faded) so tree input and waiting notes stay discoverable; the toggle
+   *  lets the user hide them. */
   showMachine: boolean;
 }
 
@@ -75,9 +76,9 @@ function loadLayout(): Layout {
 
 function loadShowMachine(): boolean {
   try {
-    return localStorage.getItem(MACHINE_KEY) === "1";
+    return localStorage.getItem(MACHINE_KEY) !== "0";
   } catch {
-    return false;
+    return true;
   }
 }
 
