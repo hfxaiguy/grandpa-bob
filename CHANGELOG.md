@@ -2,6 +2,25 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — tile drag works in FireDragon (Firefox)
+
+Tile reordering used HTML5 drag-and-drop on the whole tile, which Chromium
+starts from anywhere — but Firefox does not: when the mousedown lands on
+selectable text (the header name, the status, the description, a chat bubble),
+Firefox begins a text-selection drag and the ancestor's `draggable` never gets
+its `dragstart`. In FireDragon, grabbing a tile by its text did nothing at all.
+
+- `.tile-head` and `.tile-desc` are now `user-select: none`: the header is the
+  drag handle (`cursor: grab`), and the chat body stays selectable for copying.
+- `dragstart` sets `text/plain` and `effectAllowed = "move"` before touching
+  reactive state — Firefox cancels a drag whose start handler mutates the DOM
+  first; the dragged name also goes to a shared signal because `dragenter`
+  cannot read the data store (protected until drop).
+- `dragenter`/`dragleave` (ignoring child-to-child transitions via
+  `relatedTarget`) toggle a new `.tile.drop-target` accent outline, and
+  `dragend` clears it, so the landing tile is visible.
+- `moveTile()` and the `gpb.tiled.layout` persistence are unchanged.
+
 ## 2026-10-21 — one session store: `sessions.json` is gone
 
 The admin kept conversation state in two places: the log DB (turn history,
@@ -71,25 +90,6 @@ Tests: `npm run test:memory-race` (new: the switch race, the no-session clear,
 and SSE session gating; it fails against the previous store), `npm run
 test:web-memory`, `npm run typecheck`, `npm --prefix ui run typecheck`,
 `npm --prefix ui run build`.
-
-## 2026-10-21 — tile drag works in FireDragon (Firefox)
-
-Tile reordering used HTML5 drag-and-drop on the whole tile, which Chromium
-starts from anywhere — but Firefox does not: when the mousedown lands on
-selectable text (the header name, the status, the description, a chat bubble),
-Firefox begins a text-selection drag and the ancestor's `draggable` never gets
-its `dragstart`. In FireDragon, grabbing a tile by its text did nothing at all.
-
-- `.tile-head` and `.tile-desc` are now `user-select: none`: the header is the
-  drag handle (`cursor: grab`), and the chat body stays selectable for copying.
-- `dragstart` sets `text/plain` and `effectAllowed = "move"` before touching
-  reactive state — Firefox cancels a drag whose start handler mutates the DOM
-  first; the dragged name also goes to a shared signal because `dragenter`
-  cannot read the data store (protected until drop).
-- `dragenter`/`dragleave` (ignoring child-to-child transitions via
-  `relatedTarget`) toggle a new `.tile.drop-target` accent outline, and
-  `dragend` clears it, so the landing tile is visible.
-- `moveTile()` and the `gpb.tiled.layout` persistence are unchanged.
 
 ## 2026-10-21 — a nested app call is its own tile (app attribution)
 
