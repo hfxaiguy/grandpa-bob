@@ -31,12 +31,17 @@ import { newTurnApps, tagEventApp } from "./app-attribution.js";
 import { sanitizeEvent, type SanitizedEvent } from "./sanitize.js";
 import type { MemoryWrite } from "./memory-track.js";
 import type { EmitButton } from "./util/emit-text.js";
+import { MARKER_SESSION_META } from "./web-log-types.js";
+import type { SessionMeta, SessionState } from "./web-log-types.js";
 
 export const MARKER_TURN = "web_turn_end";
 export const MARKER_LABEL = "web_session_label";
 export const MARKER_DELETE = "web_session_delete";
 export const MARKER_OPEN = "web_session_open";
 const MARKER_KINDS = [MARKER_TURN, MARKER_LABEL, MARKER_DELETE, MARKER_OPEN];
+/** Every host-marker kind the partial index must cover (meta included: the
+ *  boot restore scans it). Marker kinds are append-only. */
+const INDEXED_MARKER_KINDS = [...MARKER_KINDS, MARKER_SESSION_META];
 
 /** Events kept per turn in a response (matches the old in-memory cap). */
 export const MAX_TURN_EVENTS = 500;
@@ -104,12 +109,27 @@ export class WebLog {
     // Host-owned partial index over its marker kinds: small, and only touches
     // rows this module writes. (kind IN (...) queries match the index's WHERE
     // exactly, so the planner uses it; per-key reads use idx_calls_run_kind.)
+    // DROP+CREATE because the kind list grows (the meta markers joined it) and
+    // `CREATE INDEX IF NOT EXISTS` would silently keep the old WHERE clause.
+    this.db.exec("DROP INDEX IF EXISTS idx_calls_web_markers");
     this.db.exec(
-      `CREATE INDEX IF NOT EXISTS idx_calls_web_markers ON calls(kind, run_id)
-       WHERE kind IN ('${MARKER_KINDS.join("','")}')`,
+      `CREATE INDEX idx_calls_web_markers ON calls(kind, run_id)
+       WHERE kind IN ('${INDEXED_MARKER_KINDS.join("','")}')`,
     );
+    // Boot restore also joins checkpoints by run. The engine owns that table
+    // and creates it on its first run; index it when it exists (the restore
+    // handles a workspace with no engine runs yet).
+    if (this.hasTable("checkpoints")) {
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_checkpoints_run ON checkpoints(run_id)");
+    }
     this.describeKey = describeKey;
     this.appNames = appNames;
+  }
+
+  private hasTable(name: string): boolean {
+    return !!this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(name);
   }
 
   close(): void {
@@ -149,6 +169,15 @@ export class WebLog {
     this.insertMarker(key, MARKER_OPEN, { key, label: label ?? "", ts: Date.now() });
   }
 
+  /**
+   * Persist conversation state that the engine's trace does not carry (resume
+   * hash, model overrides, pinned ref/tree path). Latest marker per key wins;
+   * `clearedAt` resets everything older on restore.
+   */
+  writeSessionMeta(meta: SessionMeta): void {
+    this.insertMarker(meta.key, MARKER_SESSION_META, meta);
+  }
+
   // ── reads ─────────────────────────────────────────────────────────────
 
   /** True when the key has any marker — a session the UI has ever shown. */
@@ -162,6 +191,107 @@ export class WebLog {
   isDeleted(key: string): boolean {
     const row = this.latestMarker(key, MARKER_DELETE);
     return !!row;
+  }
+
+  /**
+   * Conversation state for a fresh process — the Node agent's boot restore.
+   *
+   * Continuations come from the engine's own registry: the latest `runs` row
+   * per session id, and that run's checkpoint (the engine deletes a checkpoint
+   * as soon as it resumes, so a finished run has none and a paused one has
+   * exactly one). Everything the trace cannot answer — resume hash, model
+   * overrides, pinned ref, paused tree path/signature — is replayed from
+   * `web_session_meta` markers, oldest first, latest wins. A `clearedAt`
+   * marker drops the key's state and any continuation from a run that started
+   * before it.
+   */
+  restoreSessions(): SessionState {
+    const state: SessionState = {
+      continuations: new Map(),
+      patterns: new Map(),
+      times: new Map(),
+      refs: new Map(),
+      treePaths: new Map(),
+      subtreeHashes: new Map(),
+      models: new Map(),
+    };
+    const clearedAt = new Map<string, number>();
+    const drop = (key: string): void => {
+      state.patterns.delete(key);
+      state.refs.delete(key);
+      state.treePaths.delete(key);
+      state.subtreeHashes.delete(key);
+      state.models.delete(key);
+    };
+
+    for (const rec of this.metaMarkers()) {
+      const key = rec.key;
+      if (typeof rec.ts === "number") state.times.set(key, rec.ts);
+      if (typeof rec.clearedAt === "number") {
+        clearedAt.set(key, Math.max(clearedAt.get(key) ?? 0, rec.clearedAt));
+        drop(key);
+        continue;
+      }
+      if (typeof rec.pattern === "string") state.patterns.set(key, rec.pattern);
+      else if (rec.pattern === null) state.patterns.delete(key);
+      const models: Record<string, string> = {};
+      if (rec.models && typeof rec.models === "object") {
+        for (const [role, target] of Object.entries(rec.models)) {
+          if (typeof target === "string") models[role] = target;
+        }
+      }
+      if (Object.keys(models).length) state.models.set(key, models);
+      else state.models.delete(key);
+      if ("ref" in rec) {
+        if (typeof rec.ref === "string" && rec.ref) state.refs.set(key, rec.ref);
+        else state.refs.delete(key);
+      }
+      if ("treePath" in rec) {
+        if (typeof rec.treePath === "string" && rec.treePath) state.treePaths.set(key, rec.treePath);
+        else state.treePaths.delete(key);
+      }
+      if ("subtreeHash" in rec) {
+        if (typeof rec.subtreeHash === "string" && rec.subtreeHash) state.subtreeHashes.set(key, rec.subtreeHash);
+        else state.subtreeHashes.delete(key);
+      }
+    }
+
+    // A workspace the engine never ran in has no runs/checkpoints table yet.
+    if (!this.hasTable("runs") || !this.hasTable("checkpoints")) return state;
+    const runs = this.db
+      .prepare(
+        `SELECT session_id AS key, run_id AS runId, started_at AS startedAt, MAX(rowid) AS lastRow
+         FROM runs WHERE session_id IS NOT NULL GROUP BY session_id`,
+      )
+      .all() as { key: string; runId: string; startedAt: string }[];
+    const checkpointOf = this.db.prepare("SELECT id FROM checkpoints WHERE run_id = ? ORDER BY rowid DESC LIMIT 1");
+    for (const run of runs) {
+      const key = String(run.key);
+      const started = Date.parse(String(run.startedAt)) || 0;
+      if (started && started <= (clearedAt.get(key) ?? 0)) continue;
+      const cp = checkpointOf.get(String(run.runId)) as { id: string } | undefined;
+      if (!cp) continue; // the latest run finished: the session is over
+      state.continuations.set(key, String(cp.id));
+      if (!state.times.has(key)) state.times.set(key, started);
+    }
+    return state;
+  }
+
+  /** Every session meta marker, oldest first. */
+  private metaMarkers(): (SessionMeta & { key: string })[] {
+    const rows = this.db
+      .prepare("SELECT content FROM calls WHERE kind = ? ORDER BY seq")
+      .all(MARKER_SESSION_META) as { content: string }[];
+    const out: (SessionMeta & { key: string })[] = [];
+    for (const r of rows) {
+      try {
+        const rec = JSON.parse(r.content) as SessionMeta & { key?: unknown };
+        if (rec && typeof rec.key === "string") out.push(rec as SessionMeta & { key: string });
+      } catch {
+        // a corrupt marker must not take boot down
+      }
+    }
+    return out;
   }
 
   turnCount(key: string): number {
@@ -433,7 +563,7 @@ export class WebLog {
   /**
    * Import a legacy `web-turns.json` once: labels become override markers,
    * non-web keys become open markers, and every completed turn becomes a
-   * turn marker. Turns are matched to the key's known run (the sessions.json
+   * turn marker. Turns are matched to the key's known run (the restored
    * continuation) by input equality with delivered human events, so the
    * matched ones keep their event tails; the rest replay from the marker
    * alone. The caller renames the file away afterwards.

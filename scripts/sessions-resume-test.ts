@@ -1,19 +1,26 @@
 /**
  * Bot session resume — continuations survive Agent restarts.
  *
- *   1. A waiting conversation persists to <workspace>/logs/sessions.json.
+ * Session state lives in the log DB only (the browser target's design; there
+ * is no sessions.json anymore):
+ *   - continuations derive from the engine's own `runs` + `checkpoints` rows;
+ *   - the host-only bits (resume hash, pin, paused tree path/signature, model
+ *     overrides) travel as `web_session_meta` markers in the same DB.
+ *
+ *   1. A waiting conversation leaves a checkpoint + run row in the log DB.
  *   2. A *new* Agent (simulated restart) resumes mid-tree: the checkpoint
  *      routes the next input into the paused .human() slot, not a fresh tree.
  *   3. Switching the pattern file shape drops the stored session (fresh tree)
  *      and still delivers the message into the new tree.
- *   4. A stale/missing checkpoint falls back to a fresh run instead of
- *      throwing — the message is delivered, never swallowed by the pause.
- *   5. clear() empties sessions.json.
+ *   4. A checkpoint that disappears after restore falls back to a fresh run
+ *      instead of throwing — the message is delivered, never swallowed.
+ *   5. clear() tombstones the key: a restart does not resurrect it.
  *   6. An input-driven tree (declares `input`) consumes the message on its
  *      fresh run — callers skip the grow pass via consumesInputDirectly().
  *   7. Only dead-checkpoint / cannot-resume errors drop the session.
  *   8. Editing a sub-tree attached BY NAME (a runtime-loaded port the root
  *      skeleton cannot see) drops the pause before resume.
+ *   9. Model overrides persist through the same marker rows.
  *
  * Mock model handler, no network. Run: npm run test:sessions
  */
@@ -21,13 +28,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { Agent } from "../src/agent.js";
 import { ToolRegistry } from "../src/tools/index.js";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-sessions-"));
 await fs.mkdir(path.join(ws, "patterns"), { recursive: true });
 await fs.mkdir(path.join(ws, "logs"), { recursive: true });
-const sessionsFile = path.join(ws, "logs", "sessions.json");
+const logDb = path.join(ws, "logs", "grandma-kat.db");
 
 const PATTERN = `export default function ({ Tree, name, Model, Human, Emit }) {
   return Tree(
@@ -43,27 +51,46 @@ await fs.writeFile(path.join(ws, "patterns", "relay.mjs"), PATTERN);
 
 const handler = async () => ({ content: "mock-answer", reasoning: null, tool_calls: [] });
 const models = { cheap: { model: "cheap", handler } } as any;
+// A second entry only where an override is exercised (a bare tree with no
+// Model() rule needs exactly one model to resolve its default).
+const modelsAlt = { cheap: { model: "cheap", handler }, alt: { model: "alt", handler } } as any;
 const tools = new ToolRegistry(ws, ["ls"]);
 const mkAgent = (patternName = "relay") =>
   new Agent({ models, workspace: ws, tools, patternName: () => patternName });
-const readSessions = async () =>
-  JSON.parse(await fs.readFile(sessionsFile, "utf8"));
 
-// ── 1. first turn pauses, continuation persisted ──
+/** Read-only peek into the engine's log (its own connection, like an operator). */
+function logQuery<T = Record<string, unknown>>(sql: string, ...params: unknown[]): T[] {
+  const db = new DatabaseSync(logDb);
+  try {
+    return db.prepare(sql).all(...(params as never[])) as T[];
+  } finally {
+    db.close();
+  }
+}
+
+const latestRun = (key: string) =>
+  logQuery<{ run_id: string }>(
+    "SELECT run_id FROM runs WHERE session_id = ? ORDER BY rowid DESC LIMIT 1",
+    key,
+  )[0];
+
+// ── 1. first turn pauses; the log DB is the only store ──
 {
   const agent = mkAgent();
   const r1 = await agent.run("k", "hello");
   assert.equal(r1.status, "waiting");
-  const s = await readSessions();
-  assert.equal(typeof s.k?.continuation, "string", "continuation persisted");
-  assert.equal(typeof s.k?.pattern, "string", "pattern hash persisted");
-  console.log("1. waiting turn persisted to sessions.json");
+  const run = latestRun("k");
+  assert.ok(run, "the run row records its conversation key");
+  const cp = logQuery<{ id: string }>("SELECT id FROM checkpoints WHERE run_id = ?", run.run_id);
+  assert.equal(cp.length, 1, "the pause left exactly one checkpoint");
+  await assert.rejects(fs.access(path.join(ws, "logs", "sessions.json")), "no sessions.json is written");
+  console.log("1. waiting turn persisted to the log DB (runs + checkpoints), no sessions.json");
 }
 
 // ── 2. restart resumes mid-tree (input lands in the paused .human("a")) ──
 {
   const agent = mkAgent(); // simulated restart: fresh instance, same workspace
-  assert.equal(agent.hasContinuation("k"), true, "continuation loaded from disk");
+  assert.equal(agent.hasContinuation("k"), true, "continuation derived from the log DB");
   const emitted: unknown[] = [];
   const r2 = await agent.run("k", "world", (v) => emitted.push(v));
   assert.equal(r2.status, "waiting", "still paused — now at .human(b)");
@@ -79,7 +106,6 @@ const readSessions = async () =>
   );
   await new Promise((r) => setTimeout(r, 5)); // bust the import cache-buster
   const agent = mkAgent();
-  const before = (await readSessions()).k.pattern;
   const emitted: unknown[] = [];
   const r = await agent.run("k", "again", (v) => emitted.push(v));
   assert.equal(r.status, "waiting");
@@ -88,35 +114,49 @@ const readSessions = async () =>
   assert.equal(emitted.length, 2, "a drop notice precedes the delivery");
   assert.match((emitted[0] as { text: string }).text, /dropped the saved position/);
   assert.deepEqual(emitted[1], { text: "A:again" }, "message delivered into the fresh tree");
-  const after = (await readSessions()).k.pattern;
-  assert.notEqual(after, before, "pattern hash updated after session was dropped");
   console.log("3. edited pattern started a fresh tree, old session dropped");
 }
 
-// ── 4. stale checkpoint in sessions.json falls back to a fresh run ──
+// ── 4. a checkpoint that dies after restore falls back to a fresh run ──
 {
-  const s = await readSessions();
-  s.stale = { continuation: "2099-01-01_00-00-00-9:99", pattern: s.k.pattern };
-  await fs.writeFile(sessionsFile, JSON.stringify(s));
-  const agent = mkAgent();
+  const seed = mkAgent();
+  await seed.run("stale", "seed"); // pause, then let the DB hold the checkpoint
+  const agent = mkAgent(); // restore sees the continuation
   assert.equal(agent.hasContinuation("stale"), true);
+  // The row vanishes between restore and resume (pruned under a live agent).
+  const run = latestRun("stale");
+  const db = new DatabaseSync(logDb);
+  db.prepare("DELETE FROM checkpoints WHERE run_id = ?").run(run!.run_id);
+  db.close();
   const emitted: unknown[] = [];
   const r = await agent.run("stale", "hi", (v) => emitted.push(v));
   assert.equal(r.status, "waiting", "stale checkpoint recovered as fresh tree");
   assert.equal(emitted.length, 2, "a drop notice precedes the delivery");
   assert.match((emitted[0] as { text: string }).text, /dropped the saved position/);
   assert.deepEqual(emitted[1], { text: "A:hi" }, "the message is delivered, not swallowed");
-  assert.notEqual((await readSessions()).stale.continuation, "2099-01-01_00-00-00-9:99");
   console.log("4. missing checkpoint caught, fresh tree started, message delivered");
 }
 
-// ── 5. clear() persists an empty session map ──
+// ── 5. clear() tombstones the key (a restart must not resurrect it) ──
 {
   const agent = mkAgent();
   agent.clear("k");
-  const s = await readSessions();
-  assert.equal(s.k, undefined);
-  console.log("5. clear() emptied sessions.json");
+  assert.equal(agent.hasContinuation("k"), false);
+  const restarted = mkAgent();
+  assert.equal(restarted.hasContinuation("k"), false, "clearedAt outranks the orphaned checkpoint");
+  console.log("5. clear() persisted a tombstone; restart did not resurrect the session");
+}
+
+// ── 5b. model overrides persist through the same marker rows ──
+{
+  const agent = new Agent({ models: modelsAlt as any, workspace: ws, tools, patternName: () => "relay" });
+  assert.equal(agent.setSessionModel("m", "strong", "alt"), true);
+  const restarted = new Agent({ models: modelsAlt as any, workspace: ws, tools, patternName: () => "relay" });
+  assert.equal(restarted.sessionModel("m"), "alt", "the override survived the restart");
+  restarted.clearSessionModel("m");
+  const again = new Agent({ models: modelsAlt as any, workspace: ws, tools, patternName: () => "relay" });
+  assert.equal(again.sessionModel("m"), undefined, "clearing the override persists too");
+  console.log("5b. model overrides persist and clear through session-meta markers");
 }
 
 // ── 6. concurrent turns on ONE key serialize (web following telegram) ──
@@ -155,7 +195,7 @@ const readSessions = async () =>
   console.log("6. concurrent turns on the same key serialized cleanly");
 }
 
-// ── 6. input-driven trees consume the message on the fresh run ──
+// ── 6b. input-driven trees consume the message on the fresh run ──
 {
   assert.equal(await mkAgent().consumesInputDirectly(), false, "relay is trunk-shaped");
   await fs.writeFile(
@@ -175,7 +215,7 @@ const readSessions = async () =>
   const r = await agent.run("ask", "hi", (v) => emitted.push(v));
   assert.equal(r.status, "waiting", "paused at its own .human()");
   assert.deepEqual(emitted, [{ text: "I:hi" }], "the fresh run consumed the message itself");
-  console.log("6. input-driven tree ran the message directly");
+  console.log("6b. input-driven tree ran the message directly");
 }
 
 // ── 7. only dead-checkpoint / cannot-resume errors drop the session ──
@@ -218,9 +258,13 @@ const readSessions = async () =>
   const a1 = mkAgent("deep");
   const r1 = await a1.run("deep", "hi");
   assert.equal(r1.status, "waiting", "paused inside the attached leaf");
-  const s1 = await readSessions();
-  assert.equal(typeof s1.deep?.treePath, "string", "the pause records its treePath");
-  assert.equal(typeof s1.deep?.subtreeHash, "string", "and the subtree signature");
+  // The pause persisted the treePath + subtree signature as marker state.
+  const paused = logQuery<{ content: string }>(
+    "SELECT content FROM calls WHERE kind = 'web_session_meta' AND run_id = 'deep' ORDER BY seq DESC LIMIT 1",
+  )[0];
+  const meta = JSON.parse(paused.content) as { treePath?: string; subtreeHash?: string };
+  assert.equal(typeof meta.treePath, "string", "the pause records its treePath");
+  assert.equal(typeof meta.subtreeHash, "string", "and the subtree signature");
 
   // Change leaf's shape without touching deep.mjs.
   await fs.writeFile(

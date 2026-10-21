@@ -556,6 +556,13 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
     tools,
     logger: withStopLogger(session.logger, signal),
     loadTree: (name: string) => loadTreeRef(platform, name),
+    // Session memory: a tree invoked as a TOOL keeps its slots across calls
+    // within this conversation, keyed (sessionId × tree name) — the same
+    // contract the Node host honours (src/agent.ts). Without it, the browser
+    // target re-seeded every tree tool and diverged from the admin. The chat
+    // key is the conversation identity; it survives pattern switches, as on
+    // the Node side.
+    sessionId: chatKey,
     onEmit,
   };
 

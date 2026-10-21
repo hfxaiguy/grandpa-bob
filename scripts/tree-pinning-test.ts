@@ -1,12 +1,13 @@
 /**
  * Pin-on-open — a live session freezes its tree when it opens.
  *
- *   1. A fresh session pins the active ref ("relay@prod") and persists it.
+ *   1. A fresh session pins the active ref ("relay@prod") and persists it as
+ *      a session-meta marker in the log DB.
  *   2. Overwriting the `.prod` file mid-session does NOT disturb a live
  *      session: it keeps running the tree it opened on (the in-memory freeze).
- *   3. A restart (a fresh Agent, reading sessions.json) re-loads the tree from
- *      disk; if it changed, the session drops with the "tree changed" notice
- *      and restarts on the active ref.
+ *   3. A restart (a fresh Agent, restoring from the log DB) re-loads the tree
+ *      from disk; if it changed, the session drops with the "tree changed"
+ *      notice and restarts on the active ref.
  *   4. A draft-pinned session behaves the same: frozen within the instance,
  *      dropped after a restart if the draft changed.
  *   5. clearSessionsForLogical only drops that logical's sessions.
@@ -17,6 +18,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { Agent } from "../src/agent.js";
 import { ToolRegistry } from "../src/tools/index.js";
 import { promoteDraft } from "../src/tree-versions.js";
@@ -25,7 +27,7 @@ const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-pinning-"));
 const patterns = path.join(ws, "patterns");
 await fs.mkdir(patterns, { recursive: true });
 await fs.mkdir(path.join(ws, "logs"), { recursive: true });
-const sessionsFile = path.join(ws, "logs", "sessions.json");
+const logDb = path.join(ws, "logs", "grandma-kat.db");
 
 /** A two-pause tree factory authored with only the builder surface. */
 const treeSrc = (name: string, extra = "") => `export default function ({ Tree, name, Model, Human, Emit }) {
@@ -52,7 +54,19 @@ const mkAgent = (patternName: string, patternRef?: () => string | undefined) =>
     patternName: () => patternName,
     ...(patternRef ? { patternRef } : {}),
   });
-const readSessions = async () => JSON.parse(await fs.readFile(sessionsFile, "utf8"));
+const readSessions = async () => {
+  const db = new DatabaseSync(logDb);
+  try {
+    const out: Record<string, { ref?: string | null }> = {};
+    const rows = db
+      .prepare("SELECT run_id AS key, content FROM calls WHERE kind = 'web_session_meta' ORDER BY seq")
+      .all() as { key: string; content: string }[];
+    for (const row of rows) out[row.key] = JSON.parse(row.content) as { ref?: string | null };
+    return out;
+  } finally {
+    db.close();
+  }
+};
 const texts = (emitted: unknown[]) => emitted.map((e) => (e as { text: string }).text);
 
 // ── 1. a fresh session pins the active ref ──

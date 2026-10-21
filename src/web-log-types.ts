@@ -74,3 +74,49 @@ export interface StoredSession {
   remote: false;
   awaiting?: string | null;
 }
+
+/** Conversation state that is not derivable from the engine's own trace
+ *  (resume hash, model overrides, pinned refs, edit-detection signatures).
+ *  Written as a host marker row into the log DB, latest per key wins;
+ *  `clearedAt` tombstones everything before it. Defined here so the Node
+ *  agent/log and any future browser writer cannot drift on the string. */
+export const MARKER_SESSION_META = "web_session_meta";
+
+export interface SessionMeta {
+  /** The conversation key — any transport. */
+  key: string;
+  ts: number;
+  /** The root pattern's resume hash at the pause; null clears it. */
+  pattern?: string | null;
+  /** Per-role model overrides ({ strong: "slot" }). Present replaces the map;
+   *  absent or empty clears it. */
+  models?: Record<string, string>;
+  /** The version ref the session is pinned to; null clears it. */
+  ref?: string | null;
+  /** The paused stack's branch_path + subtree signature; null clears. */
+  treePath?: string | null;
+  subtreeHash?: string | null;
+  /** Written by an explicit clear(): restore must not resurrect state, or a
+   *  continuation from a run, that predates it. */
+  clearedAt?: number;
+}
+
+/** Conversation-bound session state restored at boot. Continuations derive
+ *  from the engine's own `runs` + `checkpoints` rows; the rest from
+ *  `MARKER_SESSION_META` markers. */
+export interface SessionState {
+  continuations: Map<string, string>;
+  patterns: Map<string, string>;
+  times: Map<string, number>;
+  refs: Map<string, string>;
+  treePaths: Map<string, string>;
+  subtreeHashes: Map<string, string>;
+  models: Map<string, Record<string, string>>;
+}
+
+/** The store the Node agent restores/persists its conversation state through
+ *  (`WebLog` implements it over the log DB). */
+export interface SessionStateStore {
+  restoreSessions(): SessionState;
+  writeSessionMeta(meta: SessionMeta): void;
+}

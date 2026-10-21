@@ -38,6 +38,7 @@
     "test:runs-table": "tsx scripts/runs-table-test.ts",
     "test:provenance": "tsx scripts/provenance-test.ts",
     "test:web-memory": "tsx scripts/web-memory-test.ts",
+    "test:memory-race": "tsx scripts/memory-race-test.ts",
     "test:memory-track": "tsx scripts/memory-track-test.ts",
     "test:admin-sessions": "tsx scripts/admin-sessions-test.ts",
     "test:pages": "tsx scripts/page-scripts-test.ts",

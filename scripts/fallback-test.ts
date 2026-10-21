@@ -51,11 +51,9 @@ const agent = new Agent({ models, workspace: ws, tools: undefined as never });
   console.log("3. confirming retargets the role, returns the input, clears the pending");
 }
 
-// ── 4. the override persists to sessions.json (survives a restart) ──
+// ── 4. the override persists as a marker (survives a restart) ──
 {
-  const saved = JSON.parse(await fs.readFile(path.join(ws, "logs", "sessions.json"), "utf8"));
-  assert.equal(saved["web:1"].models.cheap, "claude", "override written to disk");
-  const revived = new Agent({ models, workspace: ws, tools: undefined as never });
+  const revived = new Agent({ models: { ...models } as never, workspace: ws, tools: undefined as never });
   assert.equal(revived.sessionModel("web:1", "cheap"), "claude", "a fresh Agent restores it");
   console.log("4. the fallback choice persists across a restart");
 }

@@ -782,9 +782,9 @@ export function webFollowTarget(webKey: string): string | undefined {
  * A Telegram chat linked by an earlier "send to telegram", if any — the
  * freshest binding in `telegramFollow` (Map preserves insertion order, and
  * loadFollowSetting replays the stored file order). Used as a fallback when no
- * Telegram session is live in memory, e.g. right after a bot restart dropped
- * `sessions.json`'s continuations: the binding survives, so ✈ telegram still
- * has somewhere to send.
+ * Telegram session is live in memory, e.g. right after a bot restart when the
+ * log DB restored no continuation for it: the binding survives, so ✈ telegram
+ * still has somewhere to send.
  */
 function lastLinkedTelegramChat(): string | null {
   let last: string | null = null;

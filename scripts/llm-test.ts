@@ -14,6 +14,8 @@ import { ensureRepo, git } from "../src/tools/git.js";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "grandma-llm-test-"));
 await ensureRepo(ws);
+// The Agent's session store lives in the log DB under logs/.
+await fs.mkdir(path.join(ws, "logs"), { recursive: true });
 
 const tools = new ToolRegistry(ws, ["git", "cat", "ls", "echo"]);
 const models = await loadModels();

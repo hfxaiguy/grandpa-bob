@@ -43,6 +43,13 @@ export interface UiState {
   turns: Turn[];
   awaiting: string | null;
   memory: Record<string, Record<string, unknown>>;
+  /** The conversation `memory` was fetched for. The panel names it, so a
+   *  resumed conversation reads as resumed instead of as a value that
+   *  survived a session switch. Null until the first fetch lands / no session. */
+  memorySession: string | null;
+  /** The active conversation had history when it was opened (a resume), not a
+   *  freshly minted chat. Display only. */
+  sessionResumed: boolean;
   connected: boolean;
   toast: string;
   toastErr: boolean;
@@ -101,6 +108,8 @@ export const [state, setState] = createStore<UiState>({
   turns: [],
   awaiting: null,
   memory: {},
+  memorySession: null,
+  sessionResumed: false,
   connected: false,
   toast: "",
   toastErr: false,
@@ -185,13 +194,34 @@ export async function refreshModels(): Promise<void> {
   }
 }
 
+/** Monotonic token for memory reads. A response may only land if no newer
+ *  fetch started and the active conversation is still the one it was asked
+ *  for. Without this, `turn_end`'s fire-and-forget refresh (fired right before
+ *  "new chat" is clicked) could resolve *after* the fresh session's fetch and
+ *  repaint the new panel with the old conversation's values — where they would
+ *  sit until the next turn ended. */
+let memoryFetch = 0;
+
 export async function refreshMemory(): Promise<void> {
+  const forSession = state.active;
+  // No session on screen: the endpoint would answer for whatever the server
+  // considers active, which is exactly the old conversation's map. Show none.
+  if (!forSession) {
+    setState({ memory: {}, memorySession: null });
+    return;
+  }
+  const token = ++memoryFetch;
   try {
-    const q = state.active ? `?session=${encodeURIComponent(state.active)}` : "";
-    const d = await getJSON<{ apps: Record<string, Record<string, unknown>> }>(`/api/tree/memory${q}`);
+    const d = await getJSON<{ apps: Record<string, Record<string, unknown>> }>(
+      `/api/tree/memory?session=${encodeURIComponent(forSession)}`,
+    );
+    if (token !== memoryFetch || state.active !== forSession) return;
     setState("memory", d.apps || {});
+    setState("memorySession", forSession);
   } catch {
+    if (token !== memoryFetch || state.active !== forSession) return;
     setState("memory", {});
+    setState("memorySession", forSession);
   }
 }
 
@@ -230,6 +260,7 @@ export async function refreshSession(): Promise<void> {
     sessions: SessionInfo[];
     turns: Turn[] | null;
   }>("/api/session");
+  const previous = state.active;
   setState({
     active: d.active,
     label: d.label || "",
@@ -237,7 +268,14 @@ export async function refreshSession(): Promise<void> {
     awaiting: d.awaiting ?? null,
     sessions: d.sessions || [],
     turns: d.turns || [],
+    // History on open = a resumed conversation, not a fresh chat. The memory
+    // panel says so, so restored values read as restored.
+    sessionResumed: (d.turns?.length ?? 0) > 0,
   });
+  // The panel shows the conversation it was fetched for — never a previous
+  // one while the new fetch is in flight. Clear it the moment the screen
+  // changes; the guarded fetch below fills it, or the empty state stands.
+  if (d.active !== previous) setState({ memory: {}, memorySession: null });
   // The address bar follows the screen (and loses the param when the active
   // session is deleted and nothing is selected).
   updateSessionUrl(d.active);
@@ -635,7 +673,8 @@ export function closeLiveStream(): void {
   setState("connected", false);
 }
 
-function handleSSE(msg: any): void {
+/** Exported for tests: the live stream routes every frame here. */
+export function handleSSE(msg: any): void {
   switch (msg?.type) {
     case "turn_start": {
       if (msg.session !== state.active) return;
@@ -733,10 +772,17 @@ function handleSSE(msg: any): void {
     case "memory": {
       // Live memory push: the server sends the node paths a write landed on,
       // so the panel updates as the turn runs rather than only at turn end.
-      // Memory is scoped per conversation: ignore a push for a session that is
-      // not the one on screen (a followed/mirrored turn can arrive mid-switch).
+      // Memory is scoped per conversation: a push may merge only when it names
+      // the session on screen AND the panel already reflects that same
+      // session. A push for another session (or one arriving mid-switch while
+      // `active` is still null) would plant foreign values that outlive the
+      // switch — so it is dropped, and a mismatched panel is simply refetched.
       if (!msg.app || !msg.values) break;
-      if (msg.session && state.active && msg.session !== state.active) break;
+      if (!msg.session || msg.session !== state.active) break;
+      if (state.memorySession !== msg.session) {
+        void refreshMemory();
+        break;
+      }
       setState(
         produce((s) => {
           s.memory[msg.app] = { ...(s.memory[msg.app] || {}), ...msg.values };

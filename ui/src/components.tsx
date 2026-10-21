@@ -102,6 +102,15 @@ function MemoryPanel(props: { app: string }) {
       .map(([path, value]) => ({ path, value, depth: (path.match(/\//g) || []).length }))
       .sort((a, b) => a.path.localeCompare(b.path));
   });
+  // Which conversation these values belong to, and whether it was resumed.
+  // A fresh chat shows a fresh key; a pick/reload says "resumed". Never a
+  // value without a session it can be attributed to.
+  const origin = createMemo(() => {
+    const key = state.memorySession;
+    if (!key) return null;
+    const short = key.length > 20 ? `${key.slice(0, 18)}…` : key;
+    return `${state.sessionResumed ? "resumed " : ""}${short}`;
+  });
   const shown = (v: unknown) => {
     const t = typeof v === "string" ? v : JSON.stringify(v);
     return t.length > 200 ? t.slice(0, 200) + "…" : t;
@@ -109,7 +118,17 @@ function MemoryPanel(props: { app: string }) {
   const full = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
   return (
     <div class="mem">
-      <div class="panel-title">memory</div>
+      <div class="panel-title">
+        memory
+        <Show when={origin()}>
+          {(label) => (
+            <span class="prov-dim mem-origin" title={`values belong to ${state.memorySession}`}>
+              {" · "}
+              {label()}
+            </span>
+          )}
+        </Show>
+      </div>
       <Show when={entries().length} fallback={<div class="empty">no memory values yet</div>}>
         <ul class="mem-list">
           <For each={entries()}>

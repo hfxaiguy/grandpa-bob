@@ -8,9 +8,8 @@
  *      base registry are never mutated by modelsFor().
  *   3. An unknown target is rejected; deleting a slot later degrades
  *      gracefully (the tree's own slot wins again, no crash).
- *   4. Overrides persist in sessions.json (as { role: target }) and survive an
- *      Agent restart. The old single-string "model" format is migrated to
- *      { strong }.
+ *   4. Overrides persist as session-meta markers in the log DB (as
+ *      { role: target }) and survive an Agent restart.
  *   5. clear() drops every override; clearSessionModel(key, role) drops one.
  *   6. modelSlots() never exposes the api key.
  *
@@ -25,7 +24,6 @@ import { ToolRegistry } from "../src/tools/index.js";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-models-"));
 await fs.mkdir(path.join(ws, "logs"), { recursive: true });
-const sessionsFile = path.join(ws, "logs", "sessions.json");
 
 const handler = async () => ({ content: "mock", reasoning: null, tool_calls: [] });
 const entry = (model: string, baseURL = "http://localhost:0/v1") => ({ baseURL, apiKey: "k", model, handler });
@@ -85,8 +83,6 @@ const mkAgent = (models: any) => new Agent({ models, workspace: ws, tools, patte
   const a1 = mkAgent(models);
   a1.setSessionModel("tg:123", "strong", "big");
   a1.setSessionModel("tg:123", "cheap", "cheap");
-  const onDisk = JSON.parse(await fs.readFile(sessionsFile, "utf8"));
-  assert.deepEqual(onDisk["tg:123"].models, { strong: "big", cheap: "cheap" }, "per-role overrides written");
   // Simulated restart: fresh Agent, same workspace, registry still has big.
   const a2models: any = mkModels();
   a2models.big = entry("big-model");
@@ -94,19 +90,6 @@ const mkAgent = (models: any) => new Agent({ models, workspace: ws, tools, patte
   assert.deepEqual(a2.sessionModelMap("tg:123"), { strong: "big", cheap: "cheap" }, "overrides restored");
   assert.equal(a2.modelsFor("tg:123").strong.model, "big-model", "restored strong override applied");
   console.log("4. per-role overrides survive an Agent restart");
-}
-
-// ── 4b. legacy single-string "model" migrates to { strong } ──
-{
-  await fs.writeFile(
-    sessionsFile,
-    JSON.stringify({ legacy: { continuation: null, models: null, model: "big" } }),
-  );
-  const models: any = mkModels();
-  models.big = entry("big-model");
-  const agent = mkAgent(models);
-  assert.deepEqual(agent.sessionModelMap("legacy"), { strong: "big" }, "old format migrated");
-  console.log("4b. legacy single-override format migrated to the strong role");
 }
 
 // ── 5. clear() drops all overrides; clearSessionModel(key, role) drops one ──
@@ -120,9 +103,9 @@ const mkAgent = (models: any) => new Agent({ models, workspace: ws, tools, patte
   agent.clearSessionModel("k5", "cheap");
   assert.deepEqual(agent.sessionModelMap("k5"), { strong: "big" }, "only the cheap override was dropped");
   agent.clear("k5");
-  const onDisk = JSON.parse(await fs.readFile(sessionsFile, "utf8"));
-  assert.equal(onDisk.k5, undefined, "clear() emptied the session entry");
   assert.deepEqual(agent.sessionModelMap("k5"), {}, "all overrides dropped");
+  const revived = mkAgent(models);
+  assert.deepEqual(revived.sessionModelMap("k5"), {}, "the clear persisted (restart sees no overrides)");
   console.log("5. clear() drops all overrides; per-role clear drops one");
 }
 

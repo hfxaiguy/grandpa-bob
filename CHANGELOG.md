@@ -2,6 +2,76 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — one session store: `sessions.json` is gone
+
+The admin kept conversation state in two places: the log DB (turn history,
+labels, checkpoints) and `logs/sessions.json` (continuation pointers, model
+overrides, pinned refs, paused tree path/signature) — while the browser target
+had only ever used the log DB. Two designs, two failure modes to debug. The
+Node side now uses the browser's design:
+
+- **Continuations derive from the engine's own trace.** The latest `runs` row
+  per `session_id`, and that run's `checkpoints` row, is the live pause — a
+  finished run has no checkpoint (the engine deletes it on resume), so "latest
+  run with a checkpoint" is exactly the resumable session. On the real 449 MB
+  log this is a 3 ms indexed query, and it derives the same 17 live sessions
+  the file held.
+- **What the trace cannot carry moves to marker rows** —
+  `web_session_meta` (kind shared via `src/web-log-types.ts`, `WebLog` writes
+  it): resume hash, per-role model overrides, pinned version ref, paused
+  tree path + subtree signature. Latest marker per key wins. `clear()` writes
+  a `clearedAt` tombstone so a restart cannot resurrect the key (the engine
+  leaves the orphaned checkpoint behind), and model overrides clear the same
+  way.
+- `Agent` builds its own `WebLog` over `logs/grandma-kat.db` and restores at
+  construction — no injection, no admin coupling, so agent-only scripts and
+  headless runs behave identically. `saveSessions()`/`loadSessions()` and the
+  file are deleted; the partial marker index is rebuilt to include the meta
+  kind (a one-time `DROP`+`CREATE`, since `IF NOT EXISTS` would keep the old
+  `WHERE`), and `checkpoints(run_id)` gets an index when the engine has
+  created the table.
+- No legacy import: pre-upgrade pauses still restore (the meta-less restore
+  skips the resume-hash comparison until the next pause records one); model
+  overrides and pins for sessions from before the change revert once to
+  defaults.
+
+Tests: `test:sessions` reworked for DB-derived state (restart resume, a
+checkpoint deleted after restore, `clear()` tombstone, model-override
+persistence, no `sessions.json` written); `test:model-switch`, `test:fallback`,
+`test:tree-pinning` assert restart persistence through the markers. Also green:
+`test:web-memory`, `test:web-turns`, `test:runs-table`, `test:provenance`,
+`test:admin-models`, `test:telegram-follow-restart`, `test:trees`,
+`test:tree-versions`, `test:tree-nested`, `test:tree-api`, `test:stop`,
+`test:agent-done`, `typecheck`.
+
+## 2026-10-21 — the memory panel can no longer show another session's values
+
+`turn_end` fires `void refreshMemory()`; clicking "new chat" right after started
+a second fetch. Responses carried no session, so when the old (usually larger,
+slower) one resolved last it repainted the fresh chat with the previous
+conversation's values — where they stayed until the next turn ended, which reads
+exactly like "memory values survived switching to another session".
+`refreshMemory()` now captures the session it is for plus a monotonic token and
+drops a response that lost to a newer fetch or a session switch; with no session
+on screen it clears instead of asking the server (whose active session may be
+the old one). `refreshSession()` clears the map the moment the active key
+changes, so a switch never shows the previous values while the new fetch runs.
+The live SSE `memory` push is strict: it merges only when `msg.session` is the
+active one and the panel already reflects that session; otherwise it refetches
+rather than blending maps. The panel header names its source
+(`memory · resumed web:f0e7f63f`), so a resumed conversation reads as resumed
+instead of as values that outlived a switch.
+
+The in-browser agent worker now passes `sessionId: chatKey` to the engine, so a
+tree invoked as a tool keeps its slots per conversation there too — the Node
+host already did (`src/agent.ts`); without it the browser target re-seeded every
+tree tool on each call.
+
+Tests: `npm run test:memory-race` (new: the switch race, the no-session clear,
+and SSE session gating; it fails against the previous store), `npm run
+test:web-memory`, `npm run typecheck`, `npm --prefix ui run typecheck`,
+`npm --prefix ui run build`.
+
 ## 2026-10-21 — tile drag works in FireDragon (Firefox)
 
 Tile reordering used HTML5 drag-and-drop on the whole tile, which Chromium

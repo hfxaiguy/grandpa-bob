@@ -1,5 +1,4 @@
 import path from "node:path";
-import fs from "node:fs";
 import crypto from "node:crypto";
 // @ts-ignore — grandma-kat ships no .d.ts files.
 import grandma, { registerTree } from "grandma-kat";
@@ -10,6 +9,8 @@ import { listTreeSources } from "./tree-sources.js";
 import { parseTreeBase, resolveTreeEntry } from "./tree-versions.js";
 import { raceWithStop, isAgentStopped, AgentStoppedError, throwIfStopped } from "./stop-error.js";
 import { runWithStop } from "./stop.js";
+import { WebLog } from "./web-log.js";
+import type { SessionMeta, SessionStateStore } from "./web-log-types.js";
 
 /**
  * Whether a resume error means the saved position is dead and the turn should
@@ -170,8 +171,9 @@ function withStopTools(
 
 export class Agent {
   private logDb: string;
+  /** Session state store — the log DB, one definition for both targets. */
+  private sessionStore: SessionStateStore;
   private continuations = new Map<string, string>();
-  private sessionsPath: string;
   private sessionPatterns = new Map<string, string>(); // key → pattern definition hash
   private sessionTimes = new Map<string, number>(); // key → last activity (wall clock)
   // key → pinned version ref ("contacts@v1", "contacts@draft"). A session
@@ -183,15 +185,15 @@ export class Agent {
   // retarget any of them independently to another named entry in the registry
   // (e.g. a big model for "strong", a small one for the "cheap" router). The
   // role is the slot NAME the tree references; the target is the registry
-  // entry it resolves to. Persisted in sessions.json so choices survive a
-  // restart.
+  // entry it resolves to. Persisted as a session-meta marker row (the log DB
+  // is the only store; there is no sessions.json anymore).
   private sessionModels = new Map<string, Record<string, string>>();
   // key → the paused stack's branch_path, and a content hash of the subtrees
   // it names. The root pattern's skeleton hash (sessionPatterns) cannot see
   // edits to a tree attached by name (From("contacts"), an app tree tool), so
   // promoting or editing one would otherwise resume into changed code. The
   // signature is recomputed from the CURRENT files on every resume; a change
-  // drops the session before it resumes. Persisted in sessions.json.
+  // drops the session before it resumes. Persisted as a session-meta marker.
   private sessionTreePaths = new Map<string, string>();
   private sessionSubtreeHashes = new Map<string, string>();
   // key → the turn a quota wall killed, awaiting the user's fallback choice.
@@ -219,8 +221,29 @@ export class Agent {
 
   constructor(private deps: AgentDeps) {
     this.logDb = path.resolve(deps.workspace, "logs/grandma-kat.db");
-    this.sessionsPath = path.resolve(deps.workspace, "logs", "sessions.json");
-    this.loadSessions();
+    // The log DB is the single session store, exactly as in the browser
+    // target: continuations come from the engine's runs/checkpoints rows, and
+    // the host-only bits from session-meta marker rows. No sessions.json.
+    this.sessionStore = new WebLog(this.logDb, (key) => key);
+    this.restoreSessions();
+  }
+
+  /** Apply the DB-derived conversation state to the live maps. */
+  private restoreSessions(): void {
+    let state: ReturnType<SessionStateStore["restoreSessions"]>;
+    try {
+      state = this.sessionStore.restoreSessions();
+    } catch (e) {
+      console.warn("[agent] could not restore sessions:", e instanceof Error ? e.message : e);
+      return;
+    }
+    this.continuations = state.continuations;
+    this.sessionPatterns = state.patterns;
+    this.sessionTimes = state.times;
+    this.sessionRefs = state.refs;
+    this.sessionTreePaths = state.treePaths;
+    this.sessionSubtreeHashes = state.subtreeHashes;
+    this.sessionModels = state.models;
   }
 
   /**
@@ -254,92 +277,27 @@ export class Agent {
   }
 
   /**
-   * Restore conversation continuations from `<workspace>/logs/sessions.json`
-   * so chat sessions survive bot restarts. Missing or corrupt files are
-   * ignored (first run starts clean).
+   * Persist the conversation bits the engine's trace cannot carry — resume
+   * hash, model overrides, pinned ref, paused tree path/signature — as one
+   * session-meta marker in the log DB. The latest marker per key wins;
+   * `cleared` also tombstones everything older (an explicit clear).
    */
-  private loadSessions(): void {
+  private persistSessionMeta(key: string, opts: { cleared?: boolean } = {}): void {
+    const models = this.sessionModels.get(key);
+    const meta: SessionMeta = {
+      key,
+      ts: Date.now(),
+      pattern: this.sessionPatterns.get(key) ?? null,
+      models: models && Object.keys(models).length ? models : undefined,
+      ref: this.sessionRefs.get(key) ?? null,
+      treePath: this.sessionTreePaths.get(key) ?? null,
+      subtreeHash: this.sessionSubtreeHashes.get(key) ?? null,
+      ...(opts.cleared ? { clearedAt: Date.now() } : {}),
+    };
     try {
-      const raw = JSON.parse(fs.readFileSync(this.sessionsPath, "utf8")) as Record<
-        string,
-        {
-          continuation?: unknown;
-          pattern?: unknown;
-          updatedAt?: unknown;
-          ref?: unknown;
-          /** The paused stack's branch_path + subtree content signature. */
-          treePath?: unknown;
-          subtreeHash?: unknown;
-          /** Per-role overrides: { strong: "slot", cheap: "slot" }. */
-          models?: unknown;
-          /** Legacy single-override format (pre-per-role): the "strong" target. */
-          model?: unknown;
-        } | null
-      >;
-      if (!raw || typeof raw !== "object") return;
-      for (const [key, val] of Object.entries(raw)) {
-        // A model override can outlive a continuation (set before the first
-        // message, or after a one-shot tree completed), so read it first.
-        if (val?.models && typeof val.models === "object") {
-          const rec: Record<string, string> = {};
-          for (const [role, target] of Object.entries(val.models as Record<string, unknown>)) {
-            if (typeof target === "string") rec[role] = target;
-          }
-          if (Object.keys(rec).length) this.sessionModels.set(key, rec);
-        } else if (typeof val?.model === "string") {
-          // Migrate the old single-"strong" format.
-          this.sessionModels.set(key, { strong: val.model });
-        }
-        if (typeof val?.continuation === "string") {
-          this.continuations.set(key, val.continuation);
-          if (typeof val.pattern === "string") this.sessionPatterns.set(key, val.pattern);
-          if (typeof val.updatedAt === "number") this.sessionTimes.set(key, val.updatedAt);
-          if (typeof val.ref === "string") this.sessionRefs.set(key, val.ref);
-          if (typeof val.treePath === "string") this.sessionTreePaths.set(key, val.treePath);
-          if (typeof val.subtreeHash === "string") this.sessionSubtreeHashes.set(key, val.subtreeHash);
-        }
-      }
-    } catch {
-      // no persisted sessions yet
-    }
-  }
-
-  /** Atomically persist the continuation map (write tmp, rename). */
-  private saveSessions(): void {
-    const out: Record<
-      string,
-      {
-        continuation: string | null;
-        pattern: string | null;
-        updatedAt?: number;
-        ref: string | null;
-        treePath?: string | null;
-        subtreeHash?: string | null;
-        models: Record<string, string> | null;
-      }
-    > = {};
-    // Persist a key when it has a continuation OR a model override (an override
-    // can be set before the conversation's first message).
-    const keys = new Set([...this.continuations.keys(), ...this.sessionModels.keys()]);
-    for (const key of keys) {
-      const models = this.sessionModels.get(key);
-      out[key] = {
-        continuation: this.continuations.get(key) ?? null,
-        pattern: this.sessionPatterns.get(key) ?? null,
-        updatedAt: this.sessionTimes.get(key),
-        ref: this.sessionRefs.get(key) ?? null,
-        treePath: this.sessionTreePaths.get(key) ?? null,
-        subtreeHash: this.sessionSubtreeHashes.get(key) ?? null,
-        models: models && Object.keys(models).length ? models : null,
-      };
-    }
-    try {
-      fs.mkdirSync(path.dirname(this.sessionsPath), { recursive: true });
-      const tmp = this.sessionsPath + ".tmp";
-      fs.writeFileSync(tmp, JSON.stringify(out, null, 2));
-      fs.renameSync(tmp, this.sessionsPath);
+      this.sessionStore.writeSessionMeta(meta);
     } catch (e) {
-      console.warn("[agent] failed to save sessions:", e instanceof Error ? e.message : e);
+      console.warn("[agent] failed to save session state:", e instanceof Error ? e.message : e);
     }
   }
 
@@ -510,7 +468,10 @@ export class Agent {
       // same `.human()` slot — start fresh on the active ref. Resume-irrelevant
       // churn (prompt text, tools, models, options — e.g. the trunk's app-tree
       // scan) does NOT change this hash, so it never drops a live session.
-      if (!droppedContinuation && cont && this.sessionPatterns.get(key) !== defId) {
+      // No stored hash (a pause from before session-meta markers existed) means
+      // no comparison: resume once, and the next pause records the hash.
+      const storedPattern = this.sessionPatterns.get(key);
+      if (!droppedContinuation && cont && storedPattern && storedPattern !== defId) {
         dropReason = "the tree changed since it paused (it was edited or the pattern was switched)";
         pinnedRef = activeRef;
         pattern = await loadPattern(this.deps.workspace, pinnedRef);
@@ -561,7 +522,7 @@ export class Agent {
       this.sessionRefs.delete(key);
       this.sessionTreePaths.delete(key);
       this.sessionSubtreeHashes.delete(key);
-      this.saveSessions();
+      this.persistSessionMeta(key);
       await this.noticeDrop(onEmit, dropReason ?? "the saved position no longer matches");
     }
 
@@ -570,6 +531,16 @@ export class Agent {
     // signal rejects a tool the user stopped instead of awaiting its side
     // effect to finish.
     const allTools = withStopTools({ ...treeTools, ...katTools }, opts?.signal);
+
+    // The same knowledge, structured for trees: { [tool]: { description, guide } }.
+    // Injected as `tool_catalog` so a pattern selects by name — never by
+    // parsing the assembled `guide` text.
+    const toolCatalog = Object.fromEntries(
+      Object.entries(allTools).map(([name, tool]) => {
+        const t = (tool ?? {}) as { description?: unknown; guide?: unknown };
+        return [name, { description: String(t.description ?? ""), guide: String(t.guide ?? "") }];
+      }),
+    );
 
     const runtime: Record<string, unknown> = {
       models: this.modelsFor(key),
@@ -617,6 +588,7 @@ export class Agent {
           workspace: this.deps.workspace,
           main_input: humanInput,
           guide,
+          tool_catalog: toolCatalog,
           ...(needsInput ? { input: humanInput } : {}),
         },
       });
@@ -636,7 +608,7 @@ export class Agent {
           ...runtime,
           _continuation: cont,
           humanInput,
-          memory: { workspace: this.deps.workspace, guide },
+          memory: { workspace: this.deps.workspace, guide, tool_catalog: toolCatalog },
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -652,7 +624,7 @@ export class Agent {
         this.sessionTimes.delete(key);
         this.sessionTreePaths.delete(key);
         this.sessionSubtreeHashes.delete(key);
-        this.saveSessions();
+        this.persistSessionMeta(key);
         droppedContinuation = true;
         await this.noticeDrop(
           onEmit,
@@ -700,7 +672,7 @@ export class Agent {
         if (sig) this.sessionSubtreeHashes.set(key, sig);
         else this.sessionSubtreeHashes.delete(key);
       }
-      this.saveSessions();
+      this.persistSessionMeta(key);
       return { status: "waiting", continuation: outcome.continuation };
     }
 
@@ -714,7 +686,7 @@ export class Agent {
     this.sessionTreePaths.delete(key);
     this.sessionSubtreeHashes.delete(key);
     this.sessionCache.delete(key);
-    this.saveSessions();
+    this.persistSessionMeta(key);
     return { status: "done", result: outcome.result };
   }
 
@@ -923,7 +895,9 @@ export class Agent {
     this.sessionModels.delete(key);
     this.pendingFallbacks.delete(key);
     this.sessionCache.delete(key);
-    this.saveSessions();
+    // The checkpoint row is orphaned, not deleted — the clearedAt tombstone is
+    // what keeps a restart from resurrecting it (or any older state).
+    this.persistSessionMeta(key, { cleared: true });
   }
 
   /**
@@ -969,14 +943,14 @@ export class Agent {
   /**
    * Retarget this conversation's `role` slot (e.g. "strong", "cheap") to
    * `target`. Returns false when the target is unknown (nothing changes).
-   * Persists to sessions.json.
+   * Persisted as a session-meta marker in the log DB.
    */
   setSessionModel(key: string, role: string, target: string): boolean {
     if (!this.deps.models[target]) return false;
     const rec = this.sessionModels.get(key) ?? {};
     rec[role] = target;
     this.sessionModels.set(key, rec);
-    this.saveSessions();
+    this.persistSessionMeta(key);
     return true;
   }
 
@@ -994,7 +968,7 @@ export class Agent {
     } else {
       this.sessionModels.delete(key);
     }
-    this.saveSessions();
+    this.persistSessionMeta(key);
   }
 
   /**
