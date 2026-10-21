@@ -91,6 +91,24 @@ and SSE session gating; it fails against the previous store), `npm run
 test:web-memory`, `npm run typecheck`, `npm --prefix ui run typecheck`,
 `npm --prefix ui run build`.
 
+## 2026-10-21 — markdown in the tiled app UI
+
+Message text rendered through `RefText` was plain text, so `**bold**` showed
+literally. A new `ui/src/markdown.tsx` lexes with `marked` and renders the token
+tree as Solid nodes for every `RefText` surface: app-tile bubbles, event-log
+rows, the memory modal, and provenance message bodies (including "the message").
+No `innerHTML` is used — text leaves stay escaped nodes and raw HTML in a
+message is shown literally; link/image targets are restricted to http(s)/mailto.
+`ref://…` handles are split out of running text by the renderer, so they stay
+clickable inside bold, list items, and table cells. Log rows use an inline mode
+that flattens block syntax onto their single line; the memory and provenance
+`<pre>` bodies became `<div>`s so headings, lists, and code blocks nest legally.
+
+Tests: `npm run test:ui` (typecheck + build) and the browser target
+(`npm --prefix web run typecheck` / `run build`, which reuses `ui/src`);
+renderer behaviour checked with a temporary Solid SSR harness (emphasis,
+lists, tables, fences, raw-HTML escaping, unsafe links, refs inside emphasis).
+
 ## 2026-10-21 — a nested app call is its own tile (app attribution)
 
 A turn's events are tagged with the app (tile) they belong to. The rule was

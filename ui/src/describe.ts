@@ -21,6 +21,9 @@ export interface EventLine {
   emit: boolean;
   /** The raw event kind, so callers can count by category (e.g. tool_call). */
   kind: string;
+  /** Token accounting the model endpoint reported for this call; absent when
+   *  the endpoint (or a mock) reported none — "not reported" is not zero. */
+  usage?: { input: number; output: number };
   /** Pretty-printed event payload for the expandable detail. */
   detail: string;
   /** Run-log row, used to fetch the full (untruncated) payload on demand. */
@@ -97,11 +100,19 @@ function describeEventUncached(ev: SanitizedEvent): EventLine {
       const out = s(c.content);
       const calls = Array.isArray(c.toolCalls) ? (c.toolCalls as unknown[]).length : 0;
       const callLabel = calls ? ` (${calls} tool call${calls === 1 ? "" : "s"})` : "";
+      // The engine logs the provider's normalized usage on every call; keep it
+      // on the line so the event-count headers can sum tokens per app without
+      // walking the raw content again.
+      const u = c.usage as { input?: unknown; output?: unknown } | undefined;
+      const input = Number(u?.input);
+      const output = Number(u?.output);
+      const usage = u && Number.isFinite(input) && Number.isFinite(output) ? { input, output } : undefined;
       return {
         ...base,
         badge: "llm",
         text: `${s(c.child) || "prompt"}${out ? ` → ${out}` : ""}${callLabel}`,
         cls: "llm",
+        ...(usage ? { usage } : {}),
       };
     }
     case "llm_error":
