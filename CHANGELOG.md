@@ -2,6 +2,32 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — the phone bridges to the browser chat (two-way)
+
+Browser-target conversations (OPFS) can now be *bridged* to a Telegram chat
+from the session drawer: messages typed on either end continue the same
+conversation, and that conversation never leaves the tab. The browser is the
+brain — every turn runs against the OPFS continuation and memory. The admin
+only relays text, through four stateless endpoints (`/api/telegram/bridge`,
+`inbox`, `relay`, plus the existing chat stream for display). No session is
+adopted, nothing is written to the server's log, and no follow binding is
+created; `web-settings.json` stays untouched.
+
+Ownership: while the tab heartbeats (4 s visible, 10 s hidden), `bot.ts`
+defers the chat's text messages to the browser instead of running the tree.
+The phone sees `🖥️ bridged — …` once on connect. If the heartbeat stops (tab
+closed, laptop asleep) the sweep hands every deferred message to the bot's own
+session after 15 s and sends `🖥️ the browser went away — …` first, so the
+phone is never left hanging. That fallback is a different thread (the server's
+own continuation), which is why the marker exists. A reply relayed by a
+resumed tab after a fallback (old epoch) is dropped, not duplicated.
+
+The bridge replaces the one-way *✈ telegram* push in the browser target (the
+button remains for server-served sessions); the drawer toggle is *bridge this
+chat to Telegram while the tab is open*. Text only for now: voice notes and
+photos still run server-side. Tests: `npm run test:telegram-bridge` (relay
+protocol, fallback, away marker, epoch drop, chunking, no-write assertion).
+
 ## 2026-10-21 — server-only controls carry a server glyph
 
 The controls that only work when the page is talking to the admin server are

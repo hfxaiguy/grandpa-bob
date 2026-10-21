@@ -113,6 +113,8 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   const liveTurns = new Map<string, TurnRecord[]>();
   /** The run currently executing in the worker, by session key. */
   const activeRuns = new Map<string, { turnId: string; runId: number }>();
+  /** Resolvers waiting for the active run on a session to finish. */
+  const idleWaiters = new Map<string, Array<() => void>>();
   const subscribers = new Set<(msg: EventMessage) => void>();
   let activePattern = opts.initialPattern || "trunk";
   let modelsJson = opts.modelsJson ?? "";
@@ -148,6 +150,35 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         xhr.send();
       } catch {
         resolve(null);
+      }
+    });
+  }
+
+  /** POST JSON to the admin — same XHR bypass of the fetch shim as adminGet. */
+  function adminPost(
+    path: string,
+    body: unknown,
+  ): Promise<{ status: number; data: Record<string, unknown> | null }> {
+    return new Promise((resolve) => {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", path);
+        xhr.setRequestHeader("content-type", "application/json");
+        xhr.setRequestHeader("accept", "application/json");
+        xhr.onload = () => {
+          let data: Record<string, unknown> | null = null;
+          try {
+            const parsed = JSON.parse(xhr.responseText) as unknown;
+            if (parsed && typeof parsed === "object") data = parsed as Record<string, unknown>;
+          } catch {
+            /* non-JSON error body */
+          }
+          resolve({ status: xhr.status, data });
+        };
+        xhr.onerror = () => resolve({ status: 0, data: null });
+        xhr.send(JSON.stringify(body));
+      } catch {
+        resolve({ status: 0, data: null });
       }
     });
   }
@@ -481,8 +512,8 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     }
   };
 
-  async function runTurn(turnId: string, text: string): Promise<void> {
-    const key = await ensureSession();
+  async function runTurn(turnId: string, text: string, keyOverride?: string): Promise<TurnRecord> {
+    const key = keyOverride ?? (await ensureSession());
     const record: TurnRecord = {
       turnId,
       input: text,
@@ -590,7 +621,23 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       }
     } finally {
       if (activeRuns.get(key)?.turnId === turnId) activeRuns.delete(key);
+      const waiters = idleWaiters.get(key);
+      if (waiters?.length) {
+        idleWaiters.delete(key);
+        for (const wake of waiters) wake();
+      }
     }
+    return record;
+  }
+
+  /** Resolve once the session has no running turn. */
+  function whenIdle(key: string): Promise<void> {
+    if (!activeRuns.has(key)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const list = idleWaiters.get(key) ?? [];
+      list.push(resolve);
+      idleWaiters.set(key, list);
+    });
   }
 
   /** The streamed run-log row for a ref seq (newest turn wins on a rewind). */
@@ -741,6 +788,12 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         liveTurns.delete(sel.delete);
         sessionModels.delete(sel.delete);
         memory.clear(sel.delete);
+        // Deleting the bridged chat ends the bridge: the phone would
+        // otherwise keep writing into a conversation that no longer exists.
+        if (lstore.read(BRIDGE_SESSION_KEY) === sel.delete) {
+          lstore.write(BRIDGE_KEY, null);
+          lstore.write(BRIDGE_SESSION_KEY, null);
+        }
         if (activeSession === sel.delete) {
           activeSession = null;
           saveActive();
@@ -1318,7 +1371,104 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     return { status: 404, body: { error: "not found" } };
   }
 
+  // ── two-way Telegram bridge (server half: src/telegram-bridge.ts) ─────
+  // The tab is the conversation's brain: this loop only relays messages to
+  // and from the admin. XHR is used because the fetch shim routes `/api/*`
+  // straight back into this backend. Nothing here touches the server's log,
+  // sessions, or follow bindings — the OPFS session stays in this page.
+  const BRIDGE_KEY = "bob:telegram-bridge";
+  const BRIDGE_SESSION_KEY = "bob:telegram-bridge-session";
+  const BRIDGE_SEEN_KEY = "bob:telegram-bridge-seen";
+  let bridgeWasOn = false;
+  let bridgeChain: Promise<void> = Promise.resolve();
+
+  const lstore = {
+    read(key: string): string {
+      try {
+        return localStorage.getItem(key) ?? "";
+      } catch {
+        return "";
+      }
+    },
+    write(key: string, value: string | null): void {
+      try {
+        if (value === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+      } catch {
+        /* quota / private mode */
+      }
+    },
+  };
+  const bridgeSeen = (): number[] => {
+    try {
+      const raw = JSON.parse(lstore.read(BRIDGE_SEEN_KEY) || "[]") as unknown;
+      return Array.isArray(raw) ? raw.filter((n): n is number => typeof n === "number") : [];
+    } catch {
+      return [];
+    }
+  };
+  const bridgeDelay = (): number =>
+    typeof document !== "undefined" && document.visibilityState === "hidden" ? 10_000 : 4_000;
+
+  /** Answer one phone message in the OPFS session, then relay the reply. */
+  async function runBridgeMessage(msg: { id: number; text: string }, epoch: number): Promise<void> {
+    // Pinned when the bridge was switched on: switching browser chats does
+    // not silently re-target the phone thread.
+    const key = lstore.read(BRIDGE_SESSION_KEY) || (await ensureSession());
+    await whenIdle(key);
+    const record = await runTurn(crypto.randomUUID(), msg.text, key);
+    const text =
+      record.status === "error"
+        ? `Something went wrong: ${record.error ?? "error"}`
+        : record.output || "(no reply)";
+    const sent = await adminPost("/api/telegram/relay", { text, replyTo: msg.id, epoch });
+    if (sent.status !== 200) console.warn("[bridge] relay failed:", sent.status, sent.data);
+  }
+
+  /** Heartbeat → inbox → run → relay. Reschedules itself (visibility-aware). */
+  async function bridgeTick(): Promise<void> {
+    try {
+      if (!opts.serverModels || lstore.read(BRIDGE_KEY) !== "1") {
+        if (bridgeWasOn) {
+          bridgeWasOn = false;
+          await adminPost("/api/telegram/bridge", { enabled: false });
+        }
+        return;
+      }
+      const beat = await adminPost("/api/telegram/bridge", { enabled: true });
+      if (beat.status !== 200) {
+        bridgeWasOn = false;
+        return; // server gone or no linked chat: nothing to relay
+      }
+      bridgeWasOn = true;
+      const inbox = await adminGet("/api/telegram/inbox");
+      if (!inbox || inbox.bridged !== true) return;
+      const pending = Array.isArray(inbox.pending) ? (inbox.pending as Array<Record<string, unknown>>) : [];
+      const answered = new Set(Array.isArray(inbox.answeredIds) ? (inbox.answeredIds as number[]) : []);
+      const seen = new Set(bridgeSeen());
+      const epoch = typeof inbox.epoch === "number" ? inbox.epoch : 0;
+      const fresh = pending
+        .filter((m): m is { id: number; text: string } => typeof m.id === "number" && typeof m.text === "string")
+        .filter((m) => !seen.has(m.id) && !answered.has(m.id));
+      if (!fresh.length) return;
+      // Remember before running: a reload mid-turn must not run the message
+      // twice. If the tab dies before answering, the server's sweep takes over.
+      lstore.write(BRIDGE_SEEN_KEY, JSON.stringify([...seen, ...fresh.map((m) => m.id)].slice(-300)));
+      for (const m of fresh) {
+        bridgeChain = bridgeChain
+          .then(() => runBridgeMessage(m, epoch))
+          .catch((err) => console.warn("[bridge] turn failed:", err));
+      }
+    } finally {
+      const timer = setTimeout(() => void bridgeTick(), bridgeDelay());
+      (timer as { unref?: () => void }).unref?.();
+    }
+  }
+
   const ready = Promise.resolve();
+  // Start polling only after the first paint: the first tick is a no-op unless
+  // the user enabled bridging (localStorage survives reloads).
+  setTimeout(() => void bridgeTick(), bridgeDelay());
 
   return {
     ready,

@@ -49,6 +49,7 @@
     "test:telegram-audio": "tsx scripts/telegram-audio-test.ts",
     "test:telegram-follow": "tsx scripts/telegram-follow-test.ts",
     "test:telegram-follow-restart": "tsx scripts/telegram-follow-restart-test.ts",
+    "test:telegram-bridge": "tsx scripts/telegram-bridge-test.ts",
     "test:emit-value": "tsx scripts/emit-value-test.ts",
     "test:button-store": "tsx scripts/button-store-test.ts",
     "test:quota-error": "tsx scripts/quota-error-test.ts",

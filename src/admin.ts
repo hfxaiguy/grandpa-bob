@@ -36,6 +36,17 @@ import {
 } from "./stt.js";
 import { TreeLogReader, logDbPath } from "./treeLog.js";
 import { ProvenanceReader, pickEmitAnchor } from "./provenance.js";
+import {
+  BRIDGE_LINKED_TEXT,
+  bridgeAnswered,
+  bridgeBeat,
+  bridgeEpoch,
+  bridgeLastTarget,
+  bridgeOff,
+  bridgePending,
+  bridgeReplied,
+  chunkForTelegram,
+} from "./telegram-bridge.js";
 import { DEFAULT_PATTERN, loadPattern, splitTreeRef } from "./pattern-loader.js";
 import { PATTERNS_DIR_NAME, listAppTrees, listPatterns, listTreeSources } from "./tree-sources.js";
 import {
@@ -800,6 +811,27 @@ function lastLinkedTelegramChat(): string | null {
   let last: string | null = null;
   for (const tg of telegramFollow.keys()) last = tg;
   return last;
+}
+
+/**
+ * The chat a browser bridge targets: the last one that beat (so the bridge
+ * follows the tab even when a fresher Telegram topic appears), else the
+ * freshest live Telegram conversation, else a chat linked by an earlier
+ * "send to telegram". Null when the user has never messaged the bot.
+ */
+function bridgeTarget(agent?: Agent): string | null {
+  const live = followTarget(agent);
+  return bridgeLastTarget() ?? (live ? conversationKeyOf(live) : null) ?? lastLinkedTelegramChat();
+}
+
+/**
+ * "chatId:threadId[:sessionId]" → "chatId:threadId". The bridge is keyed by
+ * the transport conversation (bot.ts defers on `convKey`), while `/new`
+ * rotates the session a turn runs under.
+ */
+function conversationKeyOf(key: string): string {
+  const m = key.match(/^(-?\d+):(\d+)(?::[0-9a-f]{1,12})?$/);
+  return m ? `${m[1]}:${m[2]}` : key;
 }
 
 /**
@@ -2047,6 +2079,130 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         broadcast({ type: "cleared" });
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, active: activeSession }));
+        return;
+      }
+
+      // ── two-way browser bridge (see src/telegram-bridge.ts) ────────────
+      // These endpoints relay messages only: no session is adopted, nothing
+      // is written to the log, and the browser never learns the chat key.
+      // The tab runs the OPFS conversation; the server is a dumb pipe.
+      if (req.method === "POST" && url.pathname === "/api/telegram/bridge") {
+        let body: { enabled?: unknown } = {};
+        try {
+          const raw = await readBody(req);
+          if (raw.trim()) body = JSON.parse(raw);
+        } catch {
+          /* empty body is fine */
+        }
+        const target = bridgeTarget(agent);
+        if (!target) {
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end('{"error":"no telegram chat linked yet — message the bot on Telegram first"}');
+          return;
+        }
+        if (body.enabled === false) {
+          bridgeOff(target);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, target, bridged: false }));
+          return;
+        }
+        const { linked } = bridgeBeat(target);
+        if (linked && telegramNotify) {
+          // Announce the identity switch once: the phone now follows a
+          // conversation that lives in a browser tab.
+          try {
+            await telegramNotify(target, BRIDGE_LINKED_TEXT);
+          } catch (err) {
+            console.warn("[bridge] linked marker failed:", err);
+          }
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, target, bridged: true, epoch: bridgeEpoch(target) }));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/telegram/inbox") {
+        const target = bridgeTarget(agent);
+        if (!target) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, target: null, bridged: false, pending: [], turns: [] }));
+          return;
+        }
+        const since = url.searchParams.get("since") ?? "";
+        // Summaries only: the poll runs every few seconds, and a TurnRecord's
+        // event window is far too big to ship each time.
+        let turns = turnsFor(target, false);
+        if (since) {
+          const at = turns.findIndex((t) => t.turnId === since);
+          turns = at >= 0 ? turns.slice(at + 1) : turns.slice(-20);
+        } else {
+          turns = turns.slice(-20);
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            target,
+            bridged: bridgeLastTarget() === target,
+            epoch: bridgeEpoch(target),
+            pending: bridgePending(target),
+            answeredIds: bridgeAnswered(target),
+            turns: turns.map((t) => ({
+              turnId: t.turnId,
+              input: t.input,
+              output: t.output,
+              status: t.status,
+              error: t.error,
+              startedAt: t.startedAt,
+              endedAt: t.endedAt,
+            })),
+          }),
+        );
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/telegram/relay") {
+        const body = JSON.parse((await readBody(req)) || "{}") as {
+          text?: unknown;
+          replyTo?: unknown;
+          epoch?: unknown;
+        };
+        const text = typeof body.text === "string" ? body.text : "";
+        if (!text.trim()) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":"text required"}');
+          return;
+        }
+        const target = bridgeTarget(agent);
+        if (!target) {
+          res.writeHead(409, { "content-type": "application/json" });
+          res.end('{"error":"no telegram chat linked yet"}');
+          return;
+        }
+        // A reply produced before the last fallback would duplicate the
+        // server's own answer (a suspended tab resuming) — drop it.
+        const epoch = typeof body.epoch === "number" ? body.epoch : undefined;
+        if (epoch !== undefined && epoch < bridgeEpoch(target)) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, dropped: true, parts: 0 }));
+          return;
+        }
+        if (!telegramNotify) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end('{"error":"telegram is not wired up (no telegramNotify hook)"}');
+          return;
+        }
+        const replyTo = typeof body.replyTo === "number" ? body.replyTo : undefined;
+        const parts = chunkForTelegram(text);
+        try {
+          for (const part of parts) await telegramNotify(target, part);
+          bridgeReplied(target, replyTo);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, parts: parts.length }));
+        } catch (e: unknown) {
+          res.writeHead(502, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+        }
         return;
       }
 

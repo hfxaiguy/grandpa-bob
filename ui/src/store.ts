@@ -55,6 +55,11 @@ export interface UiState {
    *  /api/capabilities). Server-only controls — Telegram push/follow, audio
    *  transcription — stay visible but disabled when false. */
   adminOnline: boolean;
+  /** This page runs the in-browser backend (OPFS storage), not the admin's
+   *  chat API. The Telegram bridge replaces the one-way transcript push. */
+  browserMode: boolean;
+  /** The two-way bridge is switched on for this tab (localStorage). */
+  bridgeOn: boolean;
   toast: string;
   toastErr: boolean;
   /** The most recent failure (a failed turn or a failed model call), shown
@@ -69,6 +74,15 @@ export interface UiState {
 
 const LAYOUT_KEY = "gpb.tiled.layout";
 const MACHINE_KEY = "gpb.showMachine";
+const BRIDGE_KEY = "bob:telegram-bridge";
+
+function loadBridge(): boolean {
+  try {
+    return localStorage.getItem(BRIDGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 function loadLayout(): Layout {
   try {
@@ -116,6 +130,8 @@ export const [state, setState] = createStore<UiState>({
   sessionResumed: false,
   connected: false,
   adminOnline: true,
+  browserMode: false,
+  bridgeOn: loadBridge(),
   toast: "",
   toastErr: false,
   lastError: null,
@@ -458,6 +474,14 @@ export async function newSession(): Promise<void> {
 export async function deleteSession(key: string): Promise<void> {
   try {
     await postJSON("/api/session", { delete: key });
+    // Deleting the bridged chat ends the bridge (the phone has nowhere to go).
+    try {
+      if (state.bridgeOn && localStorage.getItem(`${BRIDGE_KEY}-session`) === key) {
+        setBridge(false);
+      }
+    } catch {
+      /* private mode */
+    }
     await refreshSession();
   } catch (e) {
     toast(e instanceof Error ? e.message : "could not delete session", true);
@@ -555,6 +579,32 @@ export async function sendToTelegram(): Promise<void> {
   } catch (e) {
     toast(e instanceof Error ? e.message : "send to telegram failed", true);
   }
+}
+
+/**
+ * Enable/disable the two-way bridge from this tab. The in-browser backend
+ * polls localStorage: while on it heartbeats and relays; turning it off makes
+ * the next tick tell the admin, so the bot resumes its own session at once
+ * instead of waiting for the heartbeat to expire.
+ */
+export function setBridge(on: boolean): void {
+  try {
+    if (on) {
+      localStorage.setItem(BRIDGE_KEY, "1");
+      if (state.active) localStorage.setItem(`${BRIDGE_KEY}-session`, state.active);
+    } else {
+      localStorage.removeItem(BRIDGE_KEY);
+      localStorage.removeItem(`${BRIDGE_KEY}-session`);
+    }
+  } catch {
+    /* private mode */
+  }
+  setState("bridgeOn", on);
+  toast(
+    on
+      ? "bridge on — this chat is shared with your phone while the tab is open"
+      : "bridge off",
+  );
 }
 
 // ── message provenance ──────────────────────────────────────────────────
@@ -823,6 +873,9 @@ export async function init(): Promise<void> {
     const r = await fetch("/api/capabilities");
     const caps = r.ok ? await r.json() : null;
     setState("adminOnline", !!caps && caps.admin === true);
+    // `mode: "browser"` comes from the in-tab backend; the admin answers
+    // without it. Only the browser target can bridge to OPFS.
+    setState("browserMode", !!caps && caps.mode === "browser");
   } catch {
     setState("adminOnline", false);
   }

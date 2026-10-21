@@ -81,6 +81,23 @@ notes and hand-offs visible without mixing them into the normal reply stream.
 | Served at `:8080` by the admin server (chat = front page) | done — falls back to `ui/dist` when `web/dist` is missing |
 | Voice input (mic button) | **removed** — transcription is Telegram-only; the web UI ships no STT, no in-browser model (`/api/transcribe*` answers 501 in browser mode) |
 
+### Telegram bridge (browser target)
+
+The session drawer's *bridge this chat to Telegram while the tab is open*
+toggle connects the OPFS conversation to a Telegram chat two ways. The tab is
+the brain: turns run against the OPFS continuation and memory, and the
+`/api/telegram/*` endpoints on the admin only relay text (heartbeat, inbox,
+relay). Nothing is stored server-side — no session adoption, no log writes,
+no follow binding; the OPFS session never exists outside the page.
+
+While the tab heartbeats the bot defers that chat's messages to the browser.
+If the tab goes away (closed, asleep, or the toggle is turned off) the bot
+answers in its own session after 15 s, prefixing the first reply with a
+one-line marker — a fallback identity, not the same conversation. Relays that
+arrive after such a fallback are dropped. Text only for now: voice notes and
+photos still run server-side. The one-way *✈ telegram* push is hidden in this
+target (the bridge replaces it); it remains for server-served sessions.
+
 ### Session memory panels after reload / restart
 
 The tiled memory panel is process state: the Node admin keeps it in memory, the

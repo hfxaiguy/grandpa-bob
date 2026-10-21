@@ -22,6 +22,7 @@ import {
 } from "./admin.js";
 import { loadPattern } from "./pattern-loader.js";
 import { promoteDraft, scanTreeVersions } from "./tree-versions.js";
+import { BRIDGE_AWAY_TEXT, BRIDGE_TEXT_ONLY_TEXT, deferToBridge, isBridgeFresh } from "./telegram-bridge.js";
 
 export interface BotDeps {
   token: string;
@@ -656,11 +657,34 @@ export function createBot(deps: BotDeps): Bot {
   bot.on("message:text", async (ctx) => {
     if (Math.floor(Date.now() / 1000) - ctx.message.date > MAX_MESSAGE_AGE_S) return;
     const key = convKey(ctx);
+    const text = ctx.message.text;
+    // A bridged chat is answered by the browser tab, not here: the message is
+    // held for the browser's next poll. Slash commands stay server-side (they
+    // manage the server's own session). If the tab is gone, the bridge sweep
+    // runs the held text in this session after its heartbeat expires, with an
+    // away marker first — see src/telegram-bridge.ts.
+    if (
+      !text.startsWith("/") &&
+      deferToBridge(
+        key,
+        { id: ctx.message.message_id, text, chatId: ctx.chat!.id, threadId: ctx.msg?.message_thread_id ?? 0 },
+        () => enqueue(key, () => handleUserContent(ctx, text)),
+        async () => {
+          await ctx.api.sendMessage(ctx.chat!.id, BRIDGE_AWAY_TEXT, threadOpts(ctx));
+        },
+      )
+    ) {
+      return;
+    }
     enqueue(key, () => handleUserContent(ctx, ctx.message.text));
   });
 
   bot.on("message:photo", async (ctx) => {
     if (Math.floor(Date.now() / 1000) - ctx.message.date > MAX_MESSAGE_AGE_S) return;
+    if (isBridgeFresh(convKey(ctx))) {
+      await reply(ctx, BRIDGE_TEXT_ONLY_TEXT).catch(() => {});
+      return;
+    }
     const key = convKey(ctx);
     enqueue(key, async () => {
       let dataUrl: string;
@@ -722,6 +746,10 @@ export function createBot(deps: BotDeps): Bot {
     }
     const audio = telegramAudioOf(message);
     if (!audio) return;
+    if (isBridgeFresh(convKey(ctx))) {
+      void reply(ctx, BRIDGE_TEXT_ONLY_TEXT).catch(() => {});
+      return;
+    }
     const key = convKey(ctx);
     enqueue(key, async () => {
       let text: string;
@@ -751,6 +779,10 @@ export function createBot(deps: BotDeps): Bot {
 
   bot.on("message:document", async (ctx) => {
     if (Math.floor(Date.now() / 1000) - ctx.message.date > MAX_MESSAGE_AGE_S) return;
+    if (isBridgeFresh(convKey(ctx))) {
+      await reply(ctx, BRIDGE_TEXT_ONLY_TEXT).catch(() => {});
+      return;
+    }
     const key = convKey(ctx);
     enqueue(key, async () => {
       try {

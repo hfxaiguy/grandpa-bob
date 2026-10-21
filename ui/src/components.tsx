@@ -17,6 +17,7 @@ import {
   chooseFallback,
   clearConversation,
   sendToTelegram,
+  setBridge,
   fetchProvenance,
   fetchRef,
   refView,
@@ -1106,16 +1107,31 @@ export function SessionPanel(props: { onClose: () => void }) {
           <button onClick={props.onClose}>✕</button>
         </div>
 
-        <label class="row">
-          <input
-            type="checkbox"
-            checked={state.follow}
-            disabled={!state.adminOnline}
-            onChange={(e) => void setFollow(e.currentTarget.checked)}
-          />
-          follow the live Telegram conversation
-          <ServerIcon />
-        </label>
+        <Show when={!state.browserMode}>
+          <label class="row">
+            <input
+              type="checkbox"
+              checked={state.follow}
+              disabled={!state.adminOnline}
+              onChange={(e) => void setFollow(e.currentTarget.checked)}
+            />
+            follow the live Telegram conversation
+            <ServerIcon />
+          </label>
+        </Show>
+
+        <Show when={state.browserMode}>
+          <label class="row">
+            <input
+              type="checkbox"
+              checked={state.bridgeOn}
+              disabled={!state.adminOnline}
+              onChange={(e) => setBridge(e.currentTarget.checked)}
+            />
+            bridge this chat to Telegram while the tab is open
+            <ServerIcon />
+          </label>
+        </Show>
 
         <label class="row">
           <input type="checkbox" checked={state.showMachine} onChange={() => toggleMachine()} />
@@ -1164,19 +1180,23 @@ export function SessionPanel(props: { onClose: () => void }) {
             <button class="secondary" onClick={() => void clearConversation()}>
               clear conversation
             </button>
-            <button
-              class="secondary"
-              disabled={!state.adminOnline}
-              title={
-                state.adminOnline
-                  ? "push this transcript to your linked Telegram chat"
-                  : "needs the admin server (BOB_WEB=1)"
-              }
-              onClick={() => void sendToTelegram()}
-            >
-              ✈ telegram
-              <ServerIcon />
-            </button>
+            {/* The in-browser target bridges continuously instead of pushing a
+                one-shot transcript; the bridge checkbox above replaces this. */}
+            <Show when={!state.browserMode}>
+              <button
+                class="secondary"
+                disabled={!state.adminOnline}
+                title={
+                  state.adminOnline
+                    ? "push this transcript to your linked Telegram chat"
+                    : "needs the admin server (BOB_WEB=1)"
+                }
+                onClick={() => void sendToTelegram()}
+              >
+                ✈ telegram
+                <ServerIcon />
+              </button>
+            </Show>
           </div>
         </Show>
 
