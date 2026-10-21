@@ -191,6 +191,74 @@ if (upload !== "uploaded:hello upload") {
 }
 console.log("✓ upload button writes into the chosen workspace folder");
 
+// Workspace export/import: the toolbar controls exist in OPFS mode, Export
+// downloads a valid archive of the live workspace, and Import merges files
+// without dropping what the archive does not carry.
+const transfer = await evaluate(`(async () => {
+  const hook = window.__bobWorkspaceTransfer;
+  if (!hook) return "no workspace-transfer hook";
+  const exportButton = document.getElementById("ws-export");
+  const importButton = document.getElementById("ws-import");
+  const tools = document.getElementById("ws-tools");
+  if (!exportButton || !importButton || !tools) return "toolbar controls missing";
+  if (tools.hidden) return "workspace tools hidden in browser mode";
+
+  // Capture the download the Export button triggers, then read the blob back.
+  const originalClick = HTMLAnchorElement.prototype.click;
+  let captured = null;
+  HTMLAnchorElement.prototype.click = function () {
+    captured = { href: this.href, name: this.download };
+    return originalClick.call(this);
+  };
+  exportButton.click();
+  for (let i = 0; i < 100 && !captured; i++) await new Promise((r) => setTimeout(r, 100));
+  HTMLAnchorElement.prototype.click = originalClick;
+  if (!captured) return "export did not trigger a download";
+
+  const blobText = await (await fetch(captured.href)).text();
+  const archive = JSON.parse(blobText);
+  if (archive.version !== 1 || !Array.isArray(archive.files)) return "exported archive has the wrong shape";
+  const paths = archive.files.map((f) => f.path);
+  if (!paths.includes("workspace/patterns/browser-smoke.mjs")) return "export is missing a live workspace file";
+
+  // Merge import: one new file lands, the existing pattern stays.
+  const restored = await hook.importWorkspace({
+    version: 1,
+    createdAt: new Date().toISOString(),
+    files: [{ path: "workspace/smoke-import.txt", base64: btoa("imported by smoke") }],
+  });
+  const root = await navigator.storage.getDirectory();
+  const ws = await root.getDirectoryHandle("workspace");
+  const imported = await (await (await ws.getFileHandle("smoke-import.txt")).getFile()).text();
+  const kept = await (await (await ws.getDirectoryHandle("patterns")).getFileHandle("browser-smoke.mjs")).getFile();
+
+  let rejected = false;
+  try { hook.validateWorkspaceArchive({ version: 2, createdAt: "", files: [] }); } catch { rejected = true; }
+
+  return JSON.stringify({
+    restored,
+    imported,
+    kept: (await kept.text()).includes("export default"),
+    rejected,
+    name: captured.name,
+    status: document.getElementById("status")?.textContent || "",
+  });
+})()`);
+const moved = JSON.parse(String(transfer));
+if (
+  moved.restored !== 1 ||
+  moved.imported !== "imported by smoke" ||
+  !moved.kept ||
+  !moved.rejected ||
+  !String(moved.name).endsWith(".json") ||
+  !String(moved.status).includes("exported")
+) {
+  console.error("workspace export/import failed", transfer);
+  console.log(exceptions.join("\n"));
+  cleanup(5);
+}
+console.log("✓ workspace export downloads an archive and import merges into OPFS");
+
 // Sessions: a turn lands in the workspace KAT log and survives a reload.
 const chat = await evaluate(`(async () => {
   const backend = window.__bobBackend;
@@ -264,6 +332,57 @@ if (Number.isInteger(logged.seq)) {
   }
   console.log("✓ ref:// resolves against the workspace log after reload");
 }
+
+// The Import button itself: a picked archive is validated, confirmed, merged,
+// and the tab reloads. The hook check above covered only the OPFS half.
+const dispatched = await evaluate(`(() => {
+  const input = document.getElementById("ws-import-file");
+  if (!input) return "no import input";
+  window.confirm = () => true;
+  window.__beforeImport = true;
+  const archive = {
+    version: 1,
+    createdAt: new Date().toISOString(),
+    files: [{ path: "workspace/smoke-import-ui.txt", base64: btoa("ui import") }],
+  };
+  const dt = new DataTransfer();
+  dt.items.add(new File([JSON.stringify(archive)], "bob-workspace-smoke.json", { type: "application/json" }));
+  input.files = dt.files;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  return "dispatched";
+})()`);
+if (dispatched !== "dispatched") {
+  console.error("import button dispatch failed:", dispatched);
+  console.log(exceptions.join("\n"));
+  cleanup(5);
+}
+let rebootedAfterImport = false;
+for (let i = 0; i < 240 && !rebootedAfterImport; i++) {
+  rebootedAfterImport = await evaluate(
+    `window.__beforeImport === undefined &&
+      (document.getElementById("status")?.textContent || "").startsWith("browser ·")`,
+  ).catch(() => false);
+  if (!rebootedAfterImport) await sleep(250);
+}
+const uiImport = await evaluate(`(async () => {
+  const root = await navigator.storage.getDirectory();
+  const ws = await root.getDirectoryHandle("workspace");
+  const text = await (await (await ws.getFileHandle("smoke-import-ui.txt")).getFile()).text();
+  const seeded = await ws.getFileHandle(".seeded").then((h) => h.getFile()).then((f) => f.size > 0).catch(() => false);
+  return JSON.stringify({ text, seeded });
+})()`).catch((err) => String(err));
+let ui = null;
+try {
+  ui = JSON.parse(String(uiImport));
+} catch {
+  /* the check below reports the raw evaluate result */
+}
+if (!rebootedAfterImport || !ui || ui.text !== "ui import" || !ui.seeded) {
+  console.error("import button failed:", { rebootedAfterImport, uiImport });
+  console.log(exceptions.join("\n"));
+  cleanup(5);
+}
+console.log("✓ the Import button merges a picked archive and reloads");
 
 if (exceptions.length) { console.log(exceptions.join("\n")); cleanup(5); }
 console.log("browser smoke: all assertions passed");

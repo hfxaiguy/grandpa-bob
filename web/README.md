@@ -32,7 +32,7 @@ See the design plan: `~/.opencode/plan/bob-in-browser.md`.
 | Agent worker + tool registry + event stream | done — **verified in real Chromium** (streams events, runs file/SQL/shell tools) |
 | Pattern module loader (OPFS + grandma-kat/node injection) | done — **verified in real Chromium** (loads a pattern and runs Prompt+Call) |
 | Remote LLM (`models.json` from OPFS + settings) | done — **verified in real Chromium** against a mock OpenAI-compatible endpoint |
-| Durability (persist request + workspace export/import) | done — **verified in real Chromium** (25 files exported/restored) |
+| Durability (persist request + workspace export/import) | done — toolbar Export/Import; **verified in real Chromium** (export download + merge import) |
 | Chat UI driving the agent worker | done — **verified in real Chromium** (smoke types a message, gets the LLM reply) |
 | Git auto-commit (`isomorphic-git` over OPFS) | done — **verified in real Chromium** (`git: auto-commit 5be3f65`) |
 | Clone from a CORS git remote into OPFS | done — **verified in real Chromium** (`clone: … -> 5 trees (trunk: true)`) |
@@ -218,6 +218,28 @@ second terminal, plus a registry that points at it. On the standalone server
 paste the three `:8787` mock slots into Settings → Models JSON (Settings
 overrides the seeded template); when the admin serves the page, its
 `models.json` is authoritative.
+
+### Workspace backup and restore (Browser OPFS)
+
+The toolbar has **Export** and **Import** in Browser (OPFS) mode; both are
+hidden in Desktop mode, where the workspace is the real folder. OPFS is
+evictable unless the browser grants persistent storage, so this backup is a
+first-class control.
+
+- **Export** downloads the whole tab workspace as `bob-workspace-<date>.json`:
+  every file in OPFS — `app/`, `patterns/`, `lib/`, the app `.db` files and
+  `logs/grandma-kat.db` (which holds the browser chat sessions). The format is
+  the same `WorkspaceArchive` v1 the seed uses, so a `make-seed` file can be
+  imported too.
+- **Import** merges an archive over the current workspace: files with the same
+  path are overwritten, files the archive does not carry are kept. It validates
+  the archive first, asks for confirmation, then reloads the tab so the
+  platform, fs index and sqlite worker re-read the restored files. When the
+  archive has no `.seeded` marker one is written, so the shipped seed cannot
+  re-import over the restored workspace on the next boot.
+
+The archive is base64-in-JSON (binary-safe, dependency-free), so expect it to be
+about a third larger than the workspace and to be built in memory.
 
 ## Standalone (no admin)
 

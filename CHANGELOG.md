@@ -2,6 +2,26 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — workspace export/import in the standalone web UI
+
+The browser target's toolbar now has **Export** / **Import** in Browser (OPFS)
+mode (hidden in Desktop mode, where the workspace is the real folder):
+
+- **Export** downloads the whole tab workspace as `bob-workspace-<date>.json` —
+  the same dependency-free, base64-in-JSON `WorkspaceArchive` v1 the seed uses,
+  covering `app/`, `patterns/`, `lib/`, the app `.db` files and the run log with
+  the browser chat sessions.
+- **Import** validates the archive (`validateWorkspaceArchive`), confirms, merges
+  it over the workspace (same paths are overwritten, files the archive lacks are
+  kept) and reloads so the platform, fs index and sqlite worker re-read the
+  restored files. A `.seeded` marker is written when the archive lacks one, so
+  the shipped seed cannot re-import over the restored workspace.
+
+`exportWorkspace()` had been unused since the shared-UI milestone retired the
+demo page. Tests: `npm run test:workspace-transfer` (base64, shape guard, blob)
+and the browser smoke's export-download/import-merge check.
+Docs: `web/README.md` → "Workspace backup and restore".
+
 ## 2026-10-21 — `csv_query` replaces DuckDB
 
 CSV/TSV querying is now SQLite, shared by both targets: `csv_query` loads one

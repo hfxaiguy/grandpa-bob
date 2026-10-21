@@ -50,6 +50,7 @@
         letter-spacing: 0.01em;
       }
       #status { color: var(--muted); }
+      #toolbar button:disabled { opacity: 0.55; cursor: default; }
       #app { flex: 1; min-height: 0; }
     </style>
   </head>
@@ -62,6 +63,11 @@
         </select>
       </label>
       <input id="storage-server" placeholder="http://127.0.0.1:8795" size="22" />
+      <span id="ws-tools" hidden>
+        <button id="ws-export" type="button" title="Download the browser workspace as a JSON archive">Export</button>
+        <button id="ws-import" type="button" title="Merge a workspace archive into this browser">Import</button>
+        <input id="ws-import-file" type="file" accept="application/json,.json" hidden />
+      </span>
       <span id="status">starting…</span>
     </div>
     <div id="app"></div>

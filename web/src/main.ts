@@ -30,7 +30,8 @@ import {
   saveStorageServer,
   type StorageMode,
 } from "./settings";
-import { importWorkspace } from "./workspace-transfer";
+import { buildWorkspaceArchive, archiveToBlob, importWorkspace, validateWorkspaceArchive } from "./workspace-transfer";
+import type { WorkspaceArchive } from "./workspace-transfer";
 import { cloneWorkspace } from "./platform/git-opfs";
 import { applyDatabaseDumps } from "../../src/db-sync";
 import { createAutoSync, DEFAULT_INTERVAL_MS } from "../../src/auto-sync";
@@ -81,8 +82,22 @@ function seedStatus(): string {
 }
 
 /** `desktop: /path · trunk` — pattern switches update this live. */
+let activePattern = "";
+let statusTimer: ReturnType<typeof setTimeout> | undefined;
+
 function showStatus(pattern: string): void {
+  activePattern = pattern;
+  clearTimeout(statusTimer);
   setStatus(`${statusBase} · ${patternLabel(pattern)}`);
+}
+
+/** Show a one-off message, then go back to the storage · pattern line. */
+function flashStatus(text: string, ms = 5000): void {
+  setStatus(text);
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => {
+    if (activePattern) setStatus(`${statusBase} · ${patternLabel(activePattern)}`);
+  }, ms);
 }
 
 window.addEventListener("bob:pattern", (event) => {
@@ -93,6 +108,7 @@ window.addEventListener("bob:pattern", (event) => {
 const appEl = document.getElementById("app")!;
 const storageSelect = document.getElementById("storage-mode") as HTMLSelectElement | null;
 const storageServerInput = document.getElementById("storage-server") as HTMLInputElement | null;
+const wsTools = document.getElementById("ws-tools");
 
 if (storageSelect) storageSelect.value = storageMode;
 if (storageServerInput) storageServerInput.value = storageServer;
@@ -100,6 +116,8 @@ if (storageServerInput) storageServerInput.value = storageServer;
 /** Show only the controls that matter for the selected storage backend. */
 function configureToolbar(): void {
   if (storageServerInput) storageServerInput.style.display = storageMode === "desktop" ? "" : "none";
+  // Export/Import act on OPFS; in desktop mode the workspace is the real folder.
+  if (wsTools) wsTools.hidden = storageMode !== "browser";
 }
 configureToolbar();
 
@@ -299,6 +317,118 @@ async function detectPattern(target: Platform): Promise<string> {
   return "trunk";
 }
 
+// ── toolbar export/import (OPFS only) ────────────────────────────────────
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Keep the seeder out of an imported workspace. The seeder re-imports
+ * `seed/workspace.json` when `/workspace/.seeded` is missing — an archive from
+ * a cloned/imported workspace has no marker, and would be overlaid on next boot.
+ */
+async function ensureSeedMarker(): Promise<void> {
+  const marker = platform.path.join(platform.workspaceRoot, ".seeded");
+  const exists = await platform.fs.stat(marker).then(() => true).catch(() => false);
+  if (!exists) await platform.fs.writeFile(marker, new Date().toISOString());
+}
+
+function wireWorkspaceTransfer(): void {
+  const exportButton = document.getElementById("ws-export") as HTMLButtonElement | null;
+  const importButton = document.getElementById("ws-import") as HTMLButtonElement | null;
+  const importInput = document.getElementById("ws-import-file") as HTMLInputElement | null;
+  if (!exportButton || !importButton || !importInput) return;
+
+  // Smoke hook: the browser smoke drives export/import without a download dialog
+  // or a reload. Like `__bobBackend`, it is only a test surface.
+  (window as unknown as { __bobWorkspaceTransfer?: unknown }).__bobWorkspaceTransfer = {
+    buildWorkspaceArchive,
+    archiveToBlob,
+    validateWorkspaceArchive,
+    importWorkspace,
+  };
+
+  exportButton.addEventListener("click", () => {
+    void (async () => {
+      exportButton.disabled = true;
+      importButton.disabled = true;
+      const label = exportButton.textContent;
+      exportButton.textContent = "exporting…";
+      try {
+        const archive = await buildWorkspaceArchive();
+        const blob = archiveToBlob(archive);
+        const name = `bob-workspace-${new Date().toISOString().slice(0, 10)}.json`;
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = name;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10_000);
+        flashStatus(`exported ${archive.files.length} files · ${formatBytes(blob.size)}`);
+      } catch (err) {
+        flashStatus(`export failed: ${errorText(err)}`, 10_000);
+      } finally {
+        exportButton.textContent = label;
+        exportButton.disabled = false;
+        importButton.disabled = false;
+      }
+    })();
+  });
+
+  importButton.addEventListener("click", () => importInput.click());
+
+  importInput.addEventListener("change", () => {
+    const file = importInput.files?.[0];
+    importInput.value = "";
+    if (!file) return;
+    void (async () => {
+      let archive: WorkspaceArchive;
+      try {
+        archive = validateWorkspaceArchive(JSON.parse(await file.text()));
+      } catch (err) {
+        flashStatus(`import failed: ${errorText(err)}`, 10_000);
+        return;
+      }
+      const proceed = confirm(
+        `Import ${archive.files.length} files into the browser workspace?\n\n` +
+          "Files with the same path are overwritten; files not in the archive are kept. " +
+          "The page reloads afterwards.",
+      );
+      if (!proceed) return;
+      exportButton.disabled = true;
+      importButton.disabled = true;
+      const label = importButton.textContent;
+      importButton.textContent = "importing…";
+      try {
+        const written = await importWorkspace(archive);
+        await ensureSeedMarker();
+        setStatus(`imported ${written} files — reloading…`);
+        setTimeout(() => location.reload(), 300);
+      } catch (err) {
+        importButton.textContent = label;
+        exportButton.disabled = false;
+        importButton.disabled = false;
+        flashStatus(`import failed: ${errorText(err)}`, 10_000);
+      }
+    })();
+  });
+}
+
 // ── boot ─────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
   if (storageMode === "desktop") {
@@ -355,6 +485,7 @@ async function main(): Promise<void> {
   });
 
   hostUi(backend, appEl, { page: "chat", port: 8080 });
+  if (storageMode === "browser") wireWorkspaceTransfer();
   showStatus(pattern);
 }
 
