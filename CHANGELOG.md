@@ -77,6 +77,22 @@ Tests: `npm run test:web-static` (UI served at `/`, `/api/*` 503 with
 `admin:false`, `/settings` → `/`, traversal refused, API mode still answers
 `{admin:true}`); `test:ui-serve` unchanged and green.
 
+## 2026-10-21 — tile drag is pointer-based; the FireDragon fix above didn't hold
+
+The HTML5 drag-and-drop fix below did not work in FireDragon: with the header
+text `user-select: none`, Firefox 156 starts no drag at all (Chromium walks up
+to the `draggable` ancestor, Firefox does not), so grabbing the handle still
+did nothing.
+
+- Tile reordering no longer uses native drag events. `pointerdown` on a tile —
+  outside buttons, form fields, links, chat bubbles, token lines and the
+  memory/event panels — arms a drag; 5 px of movement starts it: a
+  `.tile-ghost` label follows the cursor, `elementFromPoint` picks the landing
+  tile, and release calls the same `moveTile()`/`gpb.tiled.layout` as before.
+- The chat body stays selectable (bubbles and token lines opt out of the
+  drag), and a `body.dragging-tile` class locks the cursor and the selection
+  while a tile is in flight. Same behavior in Chromium and Firefox.
+
 ## 2026-10-21 — tile drag works in FireDragon (Firefox)
 
 Tile reordering used HTML5 drag-and-drop on the whole tile, which Chromium

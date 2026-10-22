@@ -90,6 +90,25 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 /* The tile under a dragged tile: where it will land if dropped now. */
 .tile.drop-target { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 
+/* Pointer-based tile dragging (see the Tile component): the label that follows
+   the cursor, and the global cursor/selection lock while a tile is in flight. */
+.tile-ghost {
+  position: fixed;
+  z-index: 100;
+  pointer-events: none;
+  transform: translate(12px, 10px);
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--card);
+  border: 1px solid var(--accent);
+  color: var(--fg);
+  font-weight: 650;
+  opacity: 0.9;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+body.dragging-tile, body.dragging-tile * { cursor: grabbing !important; }
+body.dragging-tile { user-select: none !important; }
+
 .tile-head {
   display: flex;
   align-items: center;
@@ -98,9 +117,9 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
   background: var(--card);
   border-bottom: 1px solid var(--border);
   cursor: grab;
-  /* Firefox starts a text-selection drag on selectable text and never fires
-     dragstart on the ancestor, so the tile would not move in FireDragon.
-     The header is the drag handle: keep its text non-selectable. */
+  /* The header is the main drag handle (tile reordering is pointer-based; see
+     the Tile component): keep its text non-selectable so a press here can
+     never start a text selection. */
   user-select: none;
 }
 .tile-head button { padding: 1px 7px; font-size: 12px; }

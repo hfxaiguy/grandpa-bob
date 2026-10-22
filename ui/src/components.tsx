@@ -837,17 +837,27 @@ function ProvenanceModal(props: { turnId: string; bubble: number; text: string; 
   );
 }
 
-// The tile currently being dragged, shared by every Tile so a tile never
-// highlights itself as a drop target. `dragenter` cannot read dragged data
-// (the data store is protected until drop), so the name travels here too.
+// Tile reordering is pointer-based, not HTML5 drag-and-drop: Firefox (and so
+// FireDragon) never starts the native element drag when the press lands on
+// text, and once the text is `user-select: none` it starts no drag at all —
+// Chromium walks up to the `draggable` ancestor, Firefox does not. A
+// pointerdown + movement threshold behaves the same in every engine.
+// `dragging` is the tile being moved; `dropTarget` is the tile under the
+// pointer — where it will land if released now.
 const [dragging, setDragging] = createSignal<string | null>(null);
+const [dropTarget, setDropTarget] = createSignal<string | null>(null);
 
 function Tile(props: { app: AppInfo }) {
   const name = () => props.app.name;
   const expanded = () => state.layout.expanded.includes(name());
   const wide = () => state.layout.wide.includes(name());
   const paused = () => state.awaiting === name();
-  const [over, setOver] = createSignal(false);
+  const over = () => dragging() !== null && dragging() !== name() && dropTarget() === name();
+  // Pointer-drag state for this tile: `arm` is set on pointerdown (before the
+  // movement threshold), `drag` once the tile is actually being dragged.
+  let arm: { id: number; x: number; y: number } | null = null;
+  let drag = false;
+  let ghost: HTMLDivElement | null = null;
   // The app currently executing: walk the running turn's events through the
   // same boundary stack the server uses (src/app-attribution.ts). Every app
   // tree opens its own tile, even nested inside another app (enrich-profile
@@ -896,41 +906,80 @@ function Tile(props: { app: AppInfo }) {
   });
   const statusText = () => (paused() ? "waiting" : running() ? "running" : errored() ? "error" : "idle");
 
+  // Pointer-based drag: press, move past a small threshold, release on the
+  // target tile. A small label follows the cursor; `elementFromPoint` decides
+  // the landing tile (the ghost is pointer-events: none, so it never
+  // hit-tests). Only controls and selectable text opt out (see pointerdown).
+  const ghostAt = (x: number, y: number) => {
+    if (ghost) {
+      ghost.style.left = `${x}px`;
+      ghost.style.top = `${y}px`;
+    }
+  };
+  const beginDrag = (x: number, y: number) => {
+    drag = true;
+    setDragging(name());
+    setDropTarget(null);
+    document.body.classList.add("dragging-tile");
+    window.getSelection()?.removeAllRanges();
+    ghost = document.createElement("div");
+    ghost.className = "tile-ghost";
+    ghost.textContent = name();
+    document.body.appendChild(ghost);
+    ghostAt(x, y);
+  };
+  const finishDrag = () => {
+    arm = null;
+    drag = false;
+    setDragging(null);
+    setDropTarget(null);
+    document.body.classList.remove("dragging-tile");
+    ghost?.remove();
+    ghost = null;
+  };
+
   return (
     <section
       class="tile"
       classList={{ expanded: expanded(), wide: wide(), paused: paused(), errored: errored(), "drop-target": over() }}
-      draggable
-      onDragStart={(e) => {
-        // Set the data before any reactive work: Firefox cancels a drag whose
-        // source (or start handler) mutates the DOM first.
-        e.dataTransfer?.setData("text/plain", name());
-        if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-        setDragging(name());
+      data-tile={name()}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        // Presses on controls and selectable text keep their native behavior
+        // (buttons, the composer, links, chat bubbles, token lines, the
+        // memory/event panels); everything else on the tile arms a drag.
+        const t = e.target as HTMLElement;
+        if (t.closest("button, input, textarea, select, a, label, .bubble, .turn-tokens, .tile-panels, .mem-modal")) return;
+        arm = { id: e.pointerId, x: e.clientX, y: e.clientY };
+        // Keep receiving moves after the pointer leaves the tile. Synthetic
+        // pointers (tests) have nothing to capture; that is fine.
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {}
       }}
-      onDragEnd={() => {
-        setDragging(null);
-        setOver(false);
-      }}
-      onDragEnter={() => {
-        const from = dragging();
-        if (from && from !== name()) setOver(true);
-      }}
-      onDragOver={(e) => {
+      onPointerMove={(e) => {
+        if (!arm || e.pointerId !== arm.id) return;
+        if (!drag) {
+          if (Math.hypot(e.clientX - arm.x, e.clientY - arm.y) < 5) return;
+          beginDrag(e.clientX, e.clientY);
+        }
         e.preventDefault();
-        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        ghostAt(e.clientX, e.clientY);
+        const tile = (document.elementFromPoint(e.clientX, e.clientY) as Element | null)?.closest(".tile");
+        const overName = tile?.getAttribute("data-tile") ?? null;
+        setDropTarget(overName && overName !== name() ? overName : null);
       }}
-      onDragLeave={(e) => {
-        // dragleave fires when moving onto a child too; clear only when the
-        // pointer really left the tile.
-        const to = e.relatedTarget as Node | null;
-        if (!to || !e.currentTarget.contains(to)) setOver(false);
+      onPointerUp={(e) => {
+        if (!arm || e.pointerId !== arm.id) return;
+        const to = drag ? dropTarget() : null;
+        finishDrag();
+        if (to) moveTile(name(), to);
       }}
-      onDrop={(e) => {
-        e.preventDefault();
-        setOver(false);
-        const from = e.dataTransfer?.getData("text/plain");
-        if (from) moveTile(from, name());
+      onPointerCancel={() => finishDrag()}
+      // Capture also ends when the pointer is released outside the window; a
+      // drag that never ended would leave the ghost behind.
+      onLostPointerCapture={() => {
+        if (drag) finishDrag();
       }}
     >
       <header class="tile-head">
