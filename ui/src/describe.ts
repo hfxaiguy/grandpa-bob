@@ -123,8 +123,19 @@ function describeEventUncached(ev: SanitizedEvent): EventLine {
       return { ...base, badge: "↩", text: s(c.result), cls: "tool" };
     case "tool_error":
       return { ...base, badge: "tool!", text: s(c.error ?? c.message), cls: "err" };
-    case "human":
-      return { ...base, badge: "human", text: s(c.child) + (c.delivered ? " (delivered)" : ""), cls: "human" };
+    case "human": {
+      // The delivery event carries what the user actually said in `value`; the
+      // pause event only names the slot awaiting input. Show the message on the
+      // collapsed line so a turn opens with its input, not with a slot name
+      // that reads the same on every turn. The value stays in the detail too.
+      const delivered = c.delivered && c.value != null ? s(c.value) : "";
+      return {
+        ...base,
+        badge: "human",
+        text: delivered || s(c.child) + (c.delivered ? " (delivered)" : ""),
+        cls: "human",
+      };
+    }
     case "emit": {
       const v = c.value as { text?: unknown } | string | undefined;
       const text = typeof v === "string" ? v : v && typeof v === "object" && "text" in v ? s(v.text) : s(v);
@@ -152,9 +163,38 @@ function describeEventUncached(ev: SanitizedEvent): EventLine {
   }
 }
 
-/** The global stream: every event across the session's turns, in order. */
+/**
+ * Turn-boundary rows are synthetic (there is no event behind them), so they
+ * cache per Turn object rather than per event. Turn objects are created once
+ * and mutated in place by the store, so the line stays referentially stable
+ * across recomputes — the same `<For>` stability the event cache above buys.
+ */
+const turnCache = new WeakMap<Turn, EventLine>();
+
+function turnLine(turn: Turn, n: number): EventLine {
+  const hit = turnCache.get(turn);
+  if (hit) return hit;
+  const line: EventLine = {
+    badge: "turn",
+    text: `turn ${n}`,
+    cls: "turn",
+    app: "",
+    ts: turn.startedAt,
+    emit: false,
+    kind: "turn",
+    detail: "",
+  };
+  turnCache.set(turn, line);
+  return line;
+}
+
+/** The global stream: every event across the session's turns, in order, with a
+ *  divider row marking where each turn begins. */
 export function streamLines(turns: Turn[]): EventLine[] {
   const out: EventLine[] = [];
-  for (const t of turns) for (const ev of t.events) out.push(describeEvent(ev));
+  turns.forEach((t, i) => {
+    out.push(turnLine(t, i + 1));
+    for (const ev of t.events) out.push(describeEvent(ev));
+  });
   return out;
 }

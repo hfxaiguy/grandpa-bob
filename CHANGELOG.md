@@ -2,6 +2,27 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-22 — the global event stream marks where each turn begins
+
+The right-hand event stream used to flatten every event of every turn into one
+undivided list. Each turn's block now opens with a hairline *turn N* divider
+(`.log-sep`), so scrolling back shows where a turn begins and which events
+belong to it.
+
+A divider is a synthetic row — no event backs it — so it is cached per `Turn`
+object (`WeakMap`) instead of per event. That keeps its reference stable across
+recomputes, the same `<For>` identity contract the event cache already relies on
+(an unstable row remounts the whole window and closes an opened `<details>`).
+Divider rows are excluded from the header's *event stream* count; prompts,
+tool-call and token totals were already kind-filtered.
+
+The input reads on the row right under the divider: a delivered `human` event
+carries the message in `value`, and the collapsed line now renders that text
+instead of the slot name, which read `main_input (delivered)` on every turn.
+Pause events (nothing delivered yet) keep the slot name, and the full payload
+stays in the expandable detail. Tests: `npm run test:ui-describe` (divider
+stability across arrivals, numbering, delivered text).
+
 ## 2026-10-21 — the phone bridges to the browser chat (two-way)
 
 Browser-target conversations (OPFS) can now be *bridged* to a Telegram chat

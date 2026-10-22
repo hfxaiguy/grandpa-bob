@@ -226,6 +226,11 @@ body.dragging-tile { user-select: none !important; }
 .log-row.err .badge { color: var(--err); }
 .log-row.ok .badge { color: var(--ok); }
 .log-row.enter .badge, .log-row.exit .badge, .log-row.suspend .badge { color: var(--pink); }
+/* Turn boundary in the global stream: a hairline rule with a compact label so
+   each turn's events read as one block while scrolling. */
+.log-sep { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; user-select: none; }
+.log-sep::before, .log-sep::after { content: ""; flex: 1; border-top: 1px dashed var(--border); }
+.log-sep:first-child { margin-top: 2px; }
 .log-detail { margin: 2px 0 6px 44px; padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--fg); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .log-detail.full { max-height: 480px; }
 .log-actions { display: flex; align-items: center; gap: 6px; margin: 0 0 4px 44px; }

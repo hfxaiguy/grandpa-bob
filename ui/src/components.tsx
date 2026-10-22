@@ -185,6 +185,15 @@ function MemoryPanel(props: { app: string }) {
 // sanitized event; "full" fetches the raw run-log row (complete messages, no
 // 400-char caps) for exact prompt/output inspection.
 function LogRow(props: { line: EventLine; showApp?: boolean }) {
+  // Turn boundaries are synthetic rows, not events: a plain divider with no
+  // expand/copy affordances and no app column.
+  if (props.line.kind === "turn") {
+    return (
+      <div class="log-sep" title={`turn started ${new Date(props.line.ts).toLocaleTimeString()}`}>
+        {props.line.text}
+      </div>
+    );
+  }
   const [full, setFull] = createSignal<{ text: string; chars: number; truncated: boolean } | null>(null);
   const [loading, setLoading] = createSignal(false);
 
@@ -1081,6 +1090,8 @@ export function Tiles(props: { apps: AppInfo[] }) {
 export function GlobalStream() {
   const [open, setOpen] = createSignal(true);
   const lines = createMemo(() => streamLines(state.turns));
+  /** Divider rows are not events — keep the header's count about events. */
+  const events = createMemo(() => lines().filter((l) => l.kind !== "turn").length);
   const tools = createMemo(() => toolCallCount(lines()));
   const prompts = createMemo(() => promptCount(lines()));
   const tokens = createMemo(() => tokenSum(lines()));
@@ -1093,7 +1104,7 @@ export function GlobalStream() {
     <aside class="stream" classList={{ collapsed: !open() }}>
       <div class="stream-head">
         <button class="panel-title as-button stream-toggle" onClick={() => setOpen(!open())}>
-          event stream <span class="count">{lines().length}</span>
+          event stream <span class="count">{events()}</span>
           {" · "}prompts <span class="count prompt">{prompts()}</span>
           {" · "}tool calls <span class="count tool">{tools()}</span>
           <Show when={tokens().calls}>

@@ -30,6 +30,13 @@ const ev = (
   app,
 });
 
+// A delivered human event shows what the user said, not the slot name — that
+// is what makes the first row under a turn divider meaningful.
+const said = describeEvent(ev("human", { child: "main_input", delivered: true, value: "call mom" }, 9));
+assert.equal(said.text, "call mom");
+const paused = describeEvent(ev("human", { child: "main_input", context: "waiting" }, 10));
+assert.equal(paused.text, "main_input");
+
 // Same event object → the exact same line object, every call.
 const toolEv = ev("tool_call", { tool: "contacts_query", args: "{}" }, 7, "contacts");
 const first = describeEvent(toolEv);
@@ -64,13 +71,24 @@ const turn: Turn = {
   events: [e1, e2],
 };
 const before = streamLines([turn]);
+// The stream opens with a turn divider, then the turn's events.
+assert.equal(before.length, 3);
+assert.equal(before[0].kind, "turn");
+assert.equal(before[0].text, "turn 1");
 const e3 = ev("tool_result", { result: "ok" }, 3);
 turn.events.push(e3);
 const after = streamLines([turn]);
-assert.equal(after.length, 3);
+assert.equal(after.length, 4);
 for (let i = 0; i < before.length; i++) {
   assert.equal(after[i], before[i], `row ${i} kept its identity across the new event`);
 }
-assert.equal(after[2], describeEvent(e3));
+assert.equal(after[2], describeEvent(e2));
+assert.equal(after[3], describeEvent(e3));
+
+// Turn numbering follows the loaded window.
+const t2: Turn = { ...turn, turnId: "t2", events: [] };
+const numbered = streamLines([turn, t2]);
+assert.equal(numbered[0].text, "turn 1");
+assert.equal(numbered.find((l) => l.kind === "turn" && l.text === "turn 2")?.text, "turn 2");
 
 console.log("ui describe: event lines are stable across arrivals ✔");
