@@ -551,7 +551,7 @@ git init --bare ~/grandma-workspace.git
 
 # Add it as a remote in the live workspace
 git -C ~/grandma-workspace remote add sync ~/grandma-workspace.git
-git -C ~/grandma-workspace push sync master
+git -C ~/grandma-workspace push sync main
 
 # Start the daemon (serves on port 9418, LAN only)
 cp systemd/git-daemon.service ~/.config/systemd/user/
@@ -571,10 +571,10 @@ git -C ~/grandma-workspace remote add sync git://<desktop-ip>/grandma-workspace.
 
 ```sh
 # Pull from desktop
-git -C ~/grandma-workspace pull sync master
+git -C ~/grandma-workspace pull sync main
 
 # Push to desktop
-git -C ~/grandma-workspace push sync master
+git -C ~/grandma-workspace push sync main
 ```
 
 The runtime state under `logs/` (`grandma-kat.db*`, `sessions.json`,

@@ -93,9 +93,9 @@ export function buildSettingsHtml(config: UiConfig): string {
   <p style="margin:4px 0"><small>Push/pull the workspace to/from the desktop's git-daemon (port 9418). The bot auto-commits file changes; use these to sync with the desktop.</small></p>
   <label>Local branch → Remote branch</label>
   <div class="row">
-    <input id="sync-local" type="text" value="master" placeholder="master" style="width:120px">
+    <input id="sync-local" type="text" value="main" placeholder="main" style="width:120px">
     <span style="color:var(--muted)">→</span>
-    <input id="sync-remote" type="text" value="master" placeholder="master" style="width:120px">
+    <input id="sync-remote" type="text" value="main" placeholder="main" style="width:120px">
   </div>
   <div id="sync-status" style="margin:8px 0; font:12px ui-monospace,monospace; color:var(--muted)">(not synced yet)</div>
   <div class="actions">
@@ -868,7 +868,7 @@ async function gitCommit() {
 }
 
 async function gitPull() {
-  const local = $("sync-local").value.trim() || "master";
+  const local = $("sync-local").value.trim() || "main";
   const remote = $("sync-remote").value.trim() || local;
   $("sync-status").textContent = "pulling " + remote + "...";
   $("sync-status").style.color = "var(--muted)";
@@ -879,7 +879,7 @@ async function gitPull() {
 }
 
 async function gitPush() {
-  const local = $("sync-local").value.trim() || "master";
+  const local = $("sync-local").value.trim() || "main";
   const remote = $("sync-remote").value.trim() || local;
   $("sync-status").textContent = "pushing " + local + " → " + remote + "...";
   $("sync-status").style.color = "var(--muted)";

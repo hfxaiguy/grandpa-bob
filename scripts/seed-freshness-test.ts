@@ -1,0 +1,61 @@
+// Unit tests for the browser seed-freshness check (web/src/seed-version.ts):
+// the comparison that decides whether the toolbar offers a workspace update.
+import assert from "node:assert/strict";
+import { parseSeedMeta, seedFreshness, SEED_CLOCK_TOLERANCE_MS } from "../web/src/seed-version.ts";
+
+const seed = (createdAt: unknown) => parseSeedMeta({ version: 1, createdAt, fileCount: 3 });
+
+// ── parseSeedMeta ────────────────────────────────────────────────────────
+assert.equal(parseSeedMeta(null), null, "null payload");
+assert.equal(parseSeedMeta("x"), null, "string payload");
+assert.equal(parseSeedMeta({}), null, "missing createdAt");
+assert.equal(parseSeedMeta({ createdAt: "not-a-date" }), null, "invalid createdAt");
+assert.deepEqual(parseSeedMeta({ version: 1, createdAt: "2026-10-22T00:30:52Z", fileCount: 194 }), {
+  version: 1,
+  createdAt: "2026-10-22T00:30:52Z",
+  fileCount: 194,
+});
+assert.deepEqual(parseSeedMeta({ createdAt: "2026-10-22T00:30:52Z" }), {
+  version: undefined,
+  createdAt: "2026-10-22T00:30:52Z",
+  fileCount: undefined,
+});
+
+// ── seedFreshness ────────────────────────────────────────────────────────
+const built = "2026-10-22T00:30:52.000Z";
+
+assert.equal(seedFreshness(null, seed(built)), "unknown", "no marker: fresh profile");
+assert.equal(seedFreshness("", seed(built)), "unknown", "empty marker");
+assert.equal(seedFreshness("garbage", seed(built)), "unknown", "unreadable marker");
+assert.equal(seedFreshness("2026-10-15T00:00:00Z", null), "unknown", "no seed meta");
+
+// The trap this check exists for: seeded Oct 15, seed rebuilt Oct 22.
+assert.equal(seedFreshness("2026-10-15T12:00:00Z", seed(built)), "newer", "stale workspace");
+
+// Just applied this seed (apply-time stamp after build time): current.
+assert.equal(
+  seedFreshness("2026-10-22T00:31:30Z", seed(built)),
+  "current",
+  "workspace stamped after its seed was built",
+);
+// Clock skew inside the tolerance must not offer an update.
+assert.equal(
+  seedFreshness(new Date(Date.parse(built) + SEED_CLOCK_TOLERANCE_MS - 1000).toISOString(), seed(built)),
+  "current",
+  "within skew tolerance",
+);
+// A manual import newer than the shipped seed stays current.
+assert.equal(seedFreshness("2026-10-23T09:00:00Z", seed(built)), "current", "imported a newer workspace");
+// Exactly one tolerance past the build does count as newer.
+assert.equal(
+  seedFreshness(new Date(Date.parse(built) + SEED_CLOCK_TOLERANCE_MS).toISOString(), seed(built)),
+  "current",
+  "tolerance boundary is inclusive (not newer)",
+);
+assert.equal(
+  seedFreshness(new Date(Date.parse(built) + SEED_CLOCK_TOLERANCE_MS + 1000).toISOString(), seed(built)),
+  "current",
+  "workspace still ahead",
+);
+
+console.log("seed-freshness: all assertions passed");

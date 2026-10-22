@@ -357,7 +357,7 @@ function restartBot(projectDir: string, botSession: string) {
 }
 
 // ── git sync ────────────────────────────────────────────────────────
-async function gitSync(workspaceDir: string, direction: "push" | "pull", local = "master", remote = local) {
+async function gitSync(workspaceDir: string, direction: "push" | "pull", local = "main", remote = local) {
   const args = direction === "pull"
     ? ["-C", workspaceDir, "pull", "--ff-only", "sync", remote]
     : ["-C", workspaceDir, "push", "sync", `${local}:${remote}`];
@@ -2514,7 +2514,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
 
       if (req.method === "POST" && url.pathname === "/api/sync/pull") {
         const body = await readBody(req);
-        const local = JSON.parse(body).local || "master";
+        const local = JSON.parse(body).local || "main";
         const remote = JSON.parse(body).remote || local;
         const result = await gitSync(config.workspaceDir, "pull", local, remote);
         const dbSync = await applyDatabaseDumps(createNodePlatform(config.workspaceDir)).catch(() => null);
@@ -2525,7 +2525,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
 
       if (req.method === "POST" && url.pathname === "/api/sync/push") {
         const body = await readBody(req);
-        const local = JSON.parse(body).local || "master";
+        const local = JSON.parse(body).local || "main";
         const remote = JSON.parse(body).remote || local;
         const platform = createNodePlatform(config.workspaceDir);
         let result: unknown;

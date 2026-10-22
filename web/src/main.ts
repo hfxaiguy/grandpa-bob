@@ -38,6 +38,7 @@ import { createAutoSync, DEFAULT_INTERVAL_MS } from "../../src/auto-sync";
 import { listTreeSources } from "../../src/tree-sources";
 import { resolveTreeEntry, scanTreeVersions } from "../../src/tree-versions";
 import { patternLabel } from "./agent/pattern-path";
+import { parseSeedMeta, seedFreshness, type SeedMeta } from "./seed-version";
 import type { Platform } from "../../src/platform/types";
 
 const params = new URLSearchParams(location.search);
@@ -141,7 +142,7 @@ async function isFile(p: string): Promise<boolean> {
   return platform.fs.stat(p).then(() => true).catch(() => false);
 }
 
-/** When the OPFS workspace was imported from the shipped seed (ISO), if known. */
+/** When the OPFS workspace was seeded/imported (ISO), if known. */
 let seedStamp: string | null = null;
 
 async function readSeedStamp(marker: string): Promise<string | null> {
@@ -151,6 +152,33 @@ async function readSeedStamp(marker: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Record which seed build this workspace carries. The seeder writes the
+ * seed's own `createdAt`; a manual import writes the import time (the profile
+ * is at least as new as anything it imported).
+ */
+async function writeSeedStamp(stamp: string): Promise<void> {
+  await platform.fs.writeFile(platform.path.join("/workspace", ".seeded"), stamp);
+  seedStamp = stamp;
+}
+
+/**
+ * Overlay a seed archive and record its build stamp. The archive ships an
+ * empty run log; never let a reseed overwrite the workspace's real one.
+ */
+async function applySeedArchive(archive: WorkspaceArchive): Promise<string> {
+  const logDb = platform.path.join("/workspace", "logs", "grandma-kat.db");
+  const hasLog = await isFile(logDb);
+  const files = hasLog
+    ? archive.files.filter((f) => !f.path.startsWith("workspace/logs/"))
+    : archive.files;
+  await importWorkspace({ ...archive, files });
+  const raw = typeof archive.createdAt === "string" ? archive.createdAt : "";
+  const stamp = raw && !Number.isNaN(Date.parse(raw)) ? raw : new Date().toISOString();
+  await writeSeedStamp(stamp);
+  return stamp;
 }
 
 async function seedWorkspace(root: string): Promise<void> {
@@ -168,18 +196,8 @@ async function seedWorkspace(root: string): Promise<void> {
   try {
     const res = await fetch("/seed/workspace.json");
     if (!res.ok) return;
-    const archive = (await res.json()) as Parameters<typeof importWorkspace>[0];
-    // The archive carries an EMPTY run log (schema only). Never let a reseed
-    // overwrite the workspace's real log: it now holds the chat sessions.
-    const logDb = platform.path.join(root, "logs", "grandma-kat.db");
-    const hasLog = await isFile(logDb);
-    const files = hasLog
-      ? archive.files.filter((f) => !f.path.startsWith("workspace/logs/"))
-      : archive.files;
-    await importWorkspace({ ...archive, files });
-    const stamp = new Date().toISOString();
-    await platform.fs.writeFile(marker, stamp);
-    seedStamp = stamp;
+    const archive = (await res.json()) as WorkspaceArchive;
+    await applySeedArchive(archive);
   } catch {
     seedStamp = await readSeedStamp(marker);
     /* seed is optional */
@@ -340,12 +358,6 @@ function errorText(err: unknown): string {
  * `seed/workspace.json` when `/workspace/.seeded` is missing — an archive from
  * a cloned/imported workspace has no marker, and would be overlaid on next boot.
  */
-async function ensureSeedMarker(): Promise<void> {
-  const marker = platform.path.join(platform.workspaceRoot, ".seeded");
-  const exists = await platform.fs.stat(marker).then(() => true).catch(() => false);
-  if (!exists) await platform.fs.writeFile(marker, new Date().toISOString());
-}
-
 function wireWorkspaceTransfer(): void {
   const exportButton = document.getElementById("ws-export") as HTMLButtonElement | null;
   const importButton = document.getElementById("ws-import") as HTMLButtonElement | null;
@@ -416,7 +428,9 @@ function wireWorkspaceTransfer(): void {
       importButton.textContent = "importing…";
       try {
         const written = await importWorkspace(archive);
-        await ensureSeedMarker();
+        // The imported workspace is the newest thing this profile carries:
+        // stamp it now so an older shipped seed is not offered for it.
+        await writeSeedStamp(new Date().toISOString());
         setStatus(`imported ${written} files — reloading…`);
         setTimeout(() => location.reload(), 300);
       } catch (err) {
@@ -427,6 +441,80 @@ function wireWorkspaceTransfer(): void {
       }
     })();
   });
+}
+
+// ── seed update offer ────────────────────────────────────────────────────
+
+/** The seed build the user declined, so one build does not nag every boot. */
+const SEED_DISMISSED_KEY = "bob.seedUpdate.dismissed";
+
+/**
+ * Compare this workspace's recorded seed stamp with the seed the server
+ * currently ships. `"newer"` means the browser is running an older workspace
+ * than the files on disk — the seeder only runs on a fresh profile, so a fixed
+ * tree would never arrive on its own. Offer the overlay; never apply silently.
+ */
+async function checkSeedUpdate(): Promise<void> {
+  if (storageMode !== "browser" || configuredRemote) return;
+  let meta: SeedMeta | null = null;
+  try {
+    const res = await fetch("/seed/meta.json", { cache: "no-cache" });
+    if (!res.ok) return;
+    meta = parseSeedMeta(await res.json());
+  } catch {
+    return; /* seed is optional */
+  }
+  if (!meta || seedFreshness(seedStamp, meta) !== "newer") return;
+  let dismissed: string | null = null;
+  try {
+    dismissed = localStorage.getItem(SEED_DISMISSED_KEY);
+  } catch {
+    /* private mode: always offer */
+  }
+  if (dismissed === meta.createdAt) return;
+  wireSeedUpdate(meta);
+}
+
+/** Reveal the toolbar offer and wire its apply/dismiss actions. */
+function wireSeedUpdate(meta: SeedMeta): void {
+  const apply = document.getElementById("ws-reseed") as HTMLButtonElement | null;
+  const dismiss = document.getElementById("ws-reseed-dismiss") as HTMLButtonElement | null;
+  if (!apply) return;
+  const built = new Date(meta.createdAt).toLocaleString();
+  const seeded = seedStamp ? new Date(seedStamp).toLocaleString() : "unknown";
+  apply.title = `Seed built ${built}\nWorkspace seeded ${seeded}`;
+  apply.hidden = false;
+  if (dismiss) dismiss.hidden = false;
+  apply.addEventListener("click", () => void applySeedUpdate(meta));
+  dismiss?.addEventListener("click", () => {
+    try {
+      localStorage.setItem(SEED_DISMISSED_KEY, meta.createdAt);
+    } catch {
+      /* private mode: offer again next boot */
+    }
+    apply.hidden = true;
+    dismiss.hidden = true;
+    flashStatus("workspace update declined");
+  });
+}
+
+async function applySeedUpdate(meta: SeedMeta): Promise<void> {
+  const proceed = confirm(
+    `Update the browser workspace to the seed built ${new Date(meta.createdAt).toLocaleString()}?\n\n` +
+      "Files are overlaid; the run log and chat history are preserved. " +
+      "Saved walk positions reset once. The page reloads afterwards.",
+  );
+  if (!proceed) return;
+  try {
+    setStatus("updating workspace…");
+    const res = await fetch("/seed/workspace.json", { cache: "no-cache" });
+    if (!res.ok) throw new Error(`seed not available (${res.status})`);
+    const archive = (await res.json()) as WorkspaceArchive;
+    await applySeedArchive(archive);
+    setTimeout(() => location.reload(), 300);
+  } catch (err) {
+    flashStatus(`workspace update failed: ${errorText(err)}`, 10_000);
+  }
 }
 
 // ── boot ─────────────────────────────────────────────────────────────────
@@ -485,7 +573,10 @@ async function main(): Promise<void> {
   });
 
   hostUi(backend, appEl, { page: "chat", port: 8080 });
-  if (storageMode === "browser") wireWorkspaceTransfer();
+  if (storageMode === "browser") {
+    wireWorkspaceTransfer();
+    void checkSeedUpdate();
+  }
   showStatus(pattern);
 }
 

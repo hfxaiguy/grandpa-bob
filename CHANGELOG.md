@@ -2,6 +2,35 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-22 — the browser offers a workspace update when the seed is newer
+
+A browser profile imports `seed/workspace.json` once, when OPFS is empty, and
+never again — so a fixed tree could sit in `web/public/seed` while the tab kept
+running the old one, silently. The toolbar now compares the workspace's
+recorded seed stamp with the shipped seed's build time: when the seed is newer,
+a **Workspace update available** button appears next to Export/Import (with
+both dates in its tooltip). It is strictly manual — click, confirm, and the
+seed is overlaid; the run log and chat history are preserved, and saved walk
+positions reset once as the resumed trees re-derive. Declining remembers that
+seed build so it does not prompt again; a newer build re-offers.
+
+- `make-seed` now also writes a tiny `seed/meta.json` (`version`, `createdAt`,
+  `fileCount`) so the boot check costs a few hundred bytes, not the archive.
+- `.seeded` records the seed's own `createdAt` (not the apply time). A manual
+  workspace import now stamps the import time, so an older shipped seed is not
+  offered over a newer imported workspace.
+- Pure `seedFreshness()` in `web/src/seed-version.ts`, unit-tested by
+  `npm run test:seed-freshness` (clock-skew tolerance, legacy stamps, imports).
+
+## 2026-10-22 — git sync defaults to `main`; the `master` branch is gone
+
+The workspace's `master` branch was an Oct-17 snapshot while development lived
+on `main`; the sync repo's `master` was frozen even earlier, and its `HEAD`
+pointed there — so a fresh clone or pull got a weeks-old workspace. `master` is
+removed from the workspace and the bare `sync` repo, whose `HEAD` now points at
+`main`. The admin sync page, its API defaults and the README commands now use
+`main`.
+
 ## 2026-10-22 — the global event stream marks where each turn begins
 
 The right-hand event stream used to flatten every event of every turn into one

@@ -31,6 +31,7 @@
     "test:stop": "tsx scripts/stop-test.ts",
     "test:trees": "tsx scripts/tree-tools-test.ts",
     "test:tree": "tsx scripts/tree-serialize-test.ts",
+    "test:seed-freshness": "tsx scripts/seed-freshness-test.ts",
     "test:tree-versions": "tsx scripts/tree-versions-test.ts",
     "test:tree-pinning": "tsx scripts/tree-pinning-test.ts",
     "test:tree-api": "tsx scripts/tree-versions-api-test.ts",

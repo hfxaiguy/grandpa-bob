@@ -38,8 +38,8 @@ export const HOST_GUIDES: HostGuide[] = [
       "GIT SYNC: the workspace is a git repository (every write_file/edit_file/" +
       "delete_file is committed automatically). When the user asks to sync or push, " +
       "call git_status to see changes, then git_commit with a short message, then " +
-      "git_push — it pushes the branch you are on (pass branch only to override), so a " +
-      "local 'master' is pushed as master, not forced to 'main'. If push reports that no " +
+      "git_push — it pushes the branch you are on (pass branch only to override); the " +
+      "workspace's sync branch is 'main'. If push reports that no " +
       "remote is configured, ask the user for the remote URL (never guess one). Never " +
       "force-push or reset.",
   },

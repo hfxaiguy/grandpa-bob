@@ -122,4 +122,8 @@ await fs.mkdir(path.dirname(out), { recursive: true });
 const archive = { version: 1, createdAt: new Date().toISOString(), files };
 const json = JSON.stringify(archive);
 await fs.writeFile(out, json);
+// A tiny sidecar so the browser can compare seed builds with a few hundred
+// bytes instead of re-downloading the archive on every boot (main.ts).
+const meta = { version: archive.version, createdAt: archive.createdAt, fileCount: files.length };
+await fs.writeFile(path.join(path.dirname(out), "meta.json"), JSON.stringify(meta));
 console.log(`seed: ${files.length} files from ${workspace} -> ${out} (${(json.length / 1024).toFixed(0)} KiB)`);
