@@ -2,6 +2,23 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-22 — refs are minted by the engine; folds no longer write the grammar
+
+`grandma-kat`'s `Each` records now carry `itemRefs` — the finished
+`ref://<name>.<seq>` handle for every item, minted with `refs.mjs` `formatRef`
+beside the `map_item` row it addresses. The workspace's shared tool-policy fold
+reads those handles (`rowRef`) instead of composing `ref://<label>.<seq>` from
+`itemSeqs`, so the grammar has one writer and a label cannot drift from its row.
+`refClause` is now just the `[full value: …]` bracket; `shapeToolResult` /
+`refFor` prefer a provided handle and add only the policy `/list` path. An item
+replayed on resume stays null — its row belongs to the previous run.
+
+`rowRef` keeps a one-cycle fallback for records logged by an older engine; it
+and the engine's `itemSeqs` carry `RETIRE` notes and should be deleted once no
+session can resume across this change. No bot source change: BOB only resolves
+and renders handles. Tests: the `grandma-kat` suite (323) and the workspace's
+`tests/tool-result-refs.test.mjs` (17).
+
 ## 2026-10-22 — the browser offers a workspace update when the seed is newer
 
 A browser profile imports `seed/workspace.json` once, when OPFS is empty, and
