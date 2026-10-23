@@ -3077,10 +3077,11 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         return;
       }
 
-      // The app tiles: the trunk plus every `app/<name>/tree.prod.mjs` in the
-      // workspace. The tiled UI lays one tile out per entry.
+      // The app tiles: the trunk plus every runnable app tree in the
+      // workspace, at any depth (a nested app carries its parent's logical
+      // name and parks inside that tile). The tiled UI lays one tile per entry.
       if (req.method === "GET" && url.pathname === "/api/apps") {
-        let appTrees: { name: string; description: string; guide?: string }[] = [];
+        let appTrees: { name: string; description: string; guide?: string; parent?: string | null }[] = [];
         try {
           appTrees = await listAppTrees(config.workspaceDir);
           // Keep live attribution in step: an app knitted while the server runs
@@ -3092,7 +3093,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         res.end(JSON.stringify({
           apps: [
             { name: "trunk", description: "The main conversation tree.", group: "trunk" },
-            ...appTrees.map((a) => ({ name: a.name, description: a.description, guide: a.guide, group: "app" })),
+            ...appTrees.map((a) => ({ name: a.name, description: a.description, guide: a.guide, group: "app", parent: a.parent ?? null })),
           ],
         }));
         return;

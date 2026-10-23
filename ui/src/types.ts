@@ -5,6 +5,10 @@ export interface AppInfo {
   description: string;
   group?: string;
   guide?: string;
+  /** The enclosing app's logical name (app/containers nest: app/a/app/b is
+   *  `a.b`, parented to `a`). A parented tile parks inside its parent — it
+   *  never appears on the board or in the board's hidden rail. */
+  parent?: string | null;
 }
 
 export interface SanitizedEvent {

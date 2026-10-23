@@ -86,7 +86,7 @@ export async function loadPattern(
   if (!resolved) {
     throw new Error(
       `failed to load pattern '${name}': not found at patterns/${logical}.prod.mjs ` +
-        `or app/${logical}/tree.prod.mjs`,
+        `or app/${logical}/tree.prod.mjs (a dotted name maps to its nested folder, e.g. a.b → app/a/app/b/tree.prod.mjs)`,
     );
   }
   const filePath = resolved.abs;

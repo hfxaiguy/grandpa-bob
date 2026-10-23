@@ -38,5 +38,8 @@ export async function resolvePatternPath(platform: Platform, pattern?: string | 
   const entry = await resolveTreeEntry(platform.workspaceRoot, raw).catch(() => null);
   if (entry) return entry.file;
 
-  throw new Error(`unknown tree '${raw}': no patterns/${raw}.prod.mjs or app/${raw}/tree.prod.mjs`);
+  throw new Error(
+    `unknown tree '${raw}': no patterns/${raw}.prod.mjs or app/${raw}/tree.prod.mjs ` +
+      `(a dotted name maps to its nested folder, e.g. a.b → app/a/app/b/tree.prod.mjs)`,
+  );
 }

@@ -26,6 +26,10 @@ export interface Layout {
   /** Tiles fixed in place (and the only ones whose manual order counts).
    *  Everything else floats to the top with recent activity. */
   pinned: string[];
+  /** Sub-apps opened inside their parent, in the order they were opened —
+   *  the render order of the side-by-side strip, so a running chat never
+   *  jumps. Parks (closing) removes the entry. */
+  subsOpen: string[];
 }
 
 export interface UiState {
@@ -109,12 +113,15 @@ function loadLayout(): Layout {
         // A layout saved before pins existed (or a fresh one) starts with the
         // trunk fixed: the default is "trunk stays put, everything else flows".
         pinned: Array.isArray(raw.pinned) ? raw.pinned : ["trunk"],
+        // Sub-app tiles start parked (the square rail inside their parent), so
+        // an empty list is the right migration for layouts saved before this.
+        subsOpen: Array.isArray(raw.subsOpen) ? raw.subsOpen : [],
       };
     }
   } catch {
     /* private mode / bad json */
   }
-  return { order: [], hidden: [], expanded: [], wide: [], pinned: ["trunk"] };
+  return { order: [], hidden: [], expanded: [], wide: [], pinned: ["trunk"], subsOpen: [] };
 }
 
 /** Stream visibility: an explicit user choice, else open on desktop and closed
@@ -811,15 +818,41 @@ function boardOrder(): AppInfo[] {
   return [...head, ...tail];
 }
 
-/** The visible board: board order minus hidden tiles. */
+/** The visible board: board order minus hidden tiles. Sub-apps never board —
+ *  they park inside their parent's tile rail (`subApps`/`toggleSub`). */
 export function orderedApps(): AppInfo[] {
-  return boardOrder().filter((a) => !state.layout.hidden.includes(a.name));
+  return boardOrder().filter((a) => !state.layout.hidden.includes(a.name) && !a.parent);
 }
 
 /** The hidden tiles, in board order — the rail shows them where they would land
- *  if restored. */
+ *  if restored. Parented apps are excluded: their seat is the parent's rail. */
 export function hiddenApps(): AppInfo[] {
-  return boardOrder().filter((a) => state.layout.hidden.includes(a.name));
+  return boardOrder().filter((a) => state.layout.hidden.includes(a.name) && !a.parent);
+}
+
+/** Every sub-app parked under one parent, in board order — the parent tile's
+ *  rail lists them this way (squares stay listed whether open or parked). */
+export function subApps(parent: string): AppInfo[] {
+  return boardOrder().filter((a) => a.parent === parent);
+}
+
+/** The sub-apps of one parent that are currently opened beside its chat, in
+ *  the order they were opened (layout.subsOpen order, filtered to live ones). */
+export function openSubApps(parent: string): AppInfo[] {
+  const kids = new Map(subApps(parent).map((a) => [a.name, a]));
+  return state.layout.subsOpen
+    .map((n) => kids.get(n))
+    .filter((a): a is AppInfo => !!a);
+}
+
+/** Open a parked sub-app beside its parent's chat, or park it back into the
+ *  parent's rail. The open order is the render order, so docking a chat keeps
+ *  its spot while the others shuffle around it. */
+export function toggleSub(name: string): void {
+  setState("layout", "subsOpen", (list) =>
+    list.includes(name) ? list.filter((x) => x !== name) : [...list, name],
+  );
+  saveLayout();
 }
 
 // ── live stream (SSE) ───────────────────────────────────────────────────

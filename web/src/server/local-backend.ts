@@ -854,7 +854,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         body: {
           apps: [
             { name: "trunk", description: "The main conversation tree.", group: "trunk" },
-            ...appTrees.map((a) => ({ name: a.name, description: a.description, guide: a.guide, group: "app" })),
+            ...appTrees.map((a) => ({ name: a.name, description: a.description, guide: a.guide, group: "app", parent: a.parent ?? null })),
           ],
         },
       };

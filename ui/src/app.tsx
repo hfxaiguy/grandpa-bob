@@ -2,8 +2,8 @@
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import logo from "./assets/logo.webp";
 import logoMark from "./assets/logo-mark.webp";
-import { GlobalStream, HiddenRail, RefModal, SessionPanel, Tiles, WorkspaceUpload } from "./components";
-import { init, orderedApps, state, stop, toggleHidden, toggleMachine, toggleStream, dismissError, retryLast } from "./store";
+import { GlobalStream, HiddenRail, RailCard, RefModal, SessionPanel, Tiles, WorkspaceUpload } from "./components";
+import { init, orderedApps, state, stop, toggleHidden, toggleSub, toggleMachine, toggleStream, dismissError, retryLast } from "./store";
 
 function TilesMenu() {
   const [open, setOpen] = createSignal(false);
@@ -16,13 +16,15 @@ function TilesMenu() {
         <div class="menu" onMouseLeave={() => setOpen(false)}>
           <For each={state.apps}>
             {(a) => (
-              <label class="menu-row">
+              <label class="menu-row" classList={{ submenu: !!a.parent }}>
                 <input
                   type="checkbox"
-                  checked={!state.layout.hidden.includes(a.name)}
-                  onChange={() => toggleHidden(a.name)}
+                  // A top-level tile's box is its board seat; a sub-app's box
+                  // opens it inside its parent (parked = unchecked).
+                  checked={a.parent ? state.layout.subsOpen.includes(a.name) : !state.layout.hidden.includes(a.name)}
+                  onChange={() => (a.parent ? toggleSub(a.name) : toggleHidden(a.name))}
                 />
-                {a.name}
+                {a.parent ? `↳ ${a.name}` : a.name}
               </label>
             )}
           </For>
@@ -34,7 +36,10 @@ function TilesMenu() {
 
 export function App() {
   const [showSession, setShowSession] = createSignal(false);
-  const apps = createMemo(() => orderedApps());
+  // The grid tiles are the apps; the trunk docks along the bottom of the same
+  // grid, spanning every column — it is the board's home conversation.
+  const apps = createMemo(() => orderedApps().filter((a) => a.name !== "trunk"));
+  const trunk = createMemo(() => orderedApps().find((a) => a.group === "trunk"));
   // The toolbar's stream badge. On a phone the stream starts hidden, so this is
   // the only visible entry point; the count matches the header's event count
   // (one line per event — turn dividers are not events).
@@ -126,9 +131,10 @@ export function App() {
         <div class="body">
           <HiddenRail />
           <main class="tiles">
-            <Tiles apps={apps()} />
+            <Tiles apps={apps()} trunk={trunk()} />
           </main>
           <GlobalStream />
+          <RailCard />
         </div>
       </Show>
 

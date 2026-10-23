@@ -119,9 +119,10 @@ export function makeTreeContext(workspaceDir: string): TreeContext {
 
       // A new app tree needs its README: the first paragraph is the tool
       // description and `## Guide` is the caller guidance. Never overwrite a
-      // README the author already wrote.
+      // README the author already wrote. It sits beside the tree file — for a
+      // nested app at its dotted folder path (a.b → app/a/app/b/README.md).
       if (kind === "app" && readme && created) {
-        const readmeAbs = path.join(workspaceDir, "app", name, "README.md");
+        const readmeAbs = path.join(path.dirname(path.join(workspaceDir, treePathFor(name, "app"))), "README.md");
         try {
           await readFile(readmeAbs, "utf8");
         } catch {

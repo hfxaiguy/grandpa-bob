@@ -12,14 +12,14 @@
  */
 import assert from "node:assert/strict";
 
-const { state, setState, orderedApps, hiddenApps, togglePinned, toggleHidden, moveTile, handleSSE } = await import(
+const { state, setState, orderedApps, hiddenApps, togglePinned, toggleHidden, moveTile, handleSSE, toggleSub, subApps, openSubApps } = await import(
   "../ui/src/store.ts"
 );
 
 const apps = ["trunk", "alpha", "beta", "gamma"].map((name) => ({ name, description: "" }));
 setState("apps", apps);
 // What loadLayout() gives a board with no saved layout: trunk pinned.
-setState("layout", { order: [], hidden: [], expanded: [], wide: [], pinned: ["trunk"] });
+setState("layout", { order: [], hidden: [], expanded: [], wide: [], pinned: ["trunk"], subsOpen: [] });
 
 const order = () => orderedApps().map((a) => a.name);
 const rail = () => hiddenApps().map((a) => a.name);
@@ -66,6 +66,22 @@ assert.deepEqual(order(), ["alpha", "gamma", "beta", "trunk"], "unpinned trunk f
 // More recent activity in the unpinned block, pins untouched.
 setState("activity", { beta: 900 });
 assert.deepEqual(order(), ["alpha", "beta", "gamma", "trunk"], "pins do not move with activity");
+
+// ── sub-apps never board ────────────────────────────────────────────────
+// A parented app parks inside its parent's tile rail — never on the board,
+// never on the board's hidden rail, whatever its hidden flag says.
+setState("apps", [...apps, { name: "alpha.sub", description: "", parent: "alpha" }]);
+assert.deepEqual(order(), ["alpha", "beta", "gamma", "trunk"], "a parented app stays off the board");
+assert.deepEqual(rail(), [], "a parented app never parks on the board rail");
+setState("layout", "hidden", ["alpha.sub"]);
+assert.deepEqual(rail(), [], "hidden excludes parented apps from the board rail");
+setState("layout", "hidden", []);
+toggleSub("alpha.sub");
+assert.deepEqual(state.layout.subsOpen, ["alpha.sub"], "opening a sub records it");
+assert.deepEqual(openSubApps("alpha").map((a) => a.name), ["alpha.sub"], "the parent strips its opened subs");
+assert.deepEqual(subApps("alpha").map((a) => a.name), ["alpha.sub"], "the parent's rail lists every sub");
+toggleSub("alpha.sub");
+assert.deepEqual(state.layout.subsOpen, [], "parking a sub removes it again");
 
 // ── live frames ─────────────────────────────────────────────────────────
 setState("active", "web:t");

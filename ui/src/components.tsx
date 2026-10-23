@@ -30,6 +30,9 @@ import {
   moveTile,
   hiddenApps,
   setStreamOpen,
+  subApps,
+  openSubApps,
+  toggleSub,
   toast,
   sendFile,
   transcribeFileStream,
@@ -880,7 +883,7 @@ function erroredApp(): string | null {
   return last && last.status === "error" ? (last.inputApp ?? "trunk") : null;
 }
 
-function Tile(props: { app: AppInfo }) {
+export function Tile(props: { app: AppInfo }) {
   const name = () => props.app.name;
   const expanded = () => state.layout.expanded.includes(name());
   const wide = () => state.layout.wide.includes(name());
@@ -890,6 +893,16 @@ function Tile(props: { app: AppInfo }) {
   const pinned = () => state.layout.pinned.includes(name());
   const paused = () => state.awaiting === name();
   const over = () => dragging() !== null && dragging() !== name() && dropTarget() === name();
+  // The trunk is the board's home tile: docked across the bottom row, so it has
+  // no pin, wide/expand or drag seat of its own — only the park gesture stays.
+  const isTrunk = () => props.app.group === "trunk";
+  // This tile's sub-apps: every child is a rail square (board order); the
+  // opened ones render side-by-side beside this tile's chat (open order).
+  const kids = createMemo(() => subApps(name()));
+  const openKids = createMemo(() => openSubApps(name()));
+  // The ✕ parks the tile: a board tile into the board's left rail, a parented
+  // one into its parent's sub rail — the parent's square list is the seat.
+  const park = () => (props.app.parent ? toggleSub(name()) : toggleHidden(name()));
   // Pointer-drag state for this tile: `arm` is set on pointerdown (before the
   // movement threshold), `drag` once the tile is actually being dragged.
   let arm: { id: number; x: number; y: number } | null = null;
@@ -967,10 +980,14 @@ function Tile(props: { app: AppInfo }) {
         errored: errored(),
         pinned: pinned(),
         "drop-target": over(),
+        // The trunk docks across the grid's bottom row, outside the drag order.
+        "trunk-dock": isTrunk(),
       }}
       data-tile={name()}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
+        // The trunk dock has no seat in the grid's manual order.
+        if (isTrunk()) return;
         // Only pinned tiles are manually ordered (see moveTile): unpinned tiles
         // follow recent activity, so arming a drag on one would promise a move
         // the next event takes back.
@@ -980,6 +997,10 @@ function Tile(props: { app: AppInfo }) {
         // memory/event panels); everything else on the tile arms a drag.
         const t = e.target as HTMLElement;
         if (t.closest("button, input, textarea, select, a, label, .bubble, .turn-tokens, .tile-panels, .mem-modal")) return;
+        // A press inside a nested tile is that tile's business, never this
+        // tile's drag arm.
+        const inner = (t.closest(".tile") as HTMLElement | null) ?? null;
+        if (inner && inner !== e.currentTarget) return;
         arm = { id: e.pointerId, x: e.clientX, y: e.clientY };
         // Keep receiving moves after the pointer leaves the tile. Synthetic
         // pointers (tests) have nothing to capture; that is fine.
@@ -995,11 +1016,23 @@ function Tile(props: { app: AppInfo }) {
         }
         e.preventDefault();
         ghostAt(e.clientX, e.clientY);
-        const tile = (document.elementFromPoint(e.clientX, e.clientY) as Element | null)?.closest(".tile");
-        const overName = tile?.getAttribute("data-tile") ?? null;
+        const selfEl = e.currentTarget as HTMLElement;
+        const overEl = (document.elementFromPoint(e.clientX, e.clientY) as Element | null)?.closest(".tile") as HTMLElement | null;
+        const overName = overEl?.getAttribute("data-tile") ?? null;
         // Land only on another pinned tile: the unpinned block has no manual
-        // order to land in.
-        setDropTarget(overName && overName !== name() && state.layout.pinned.includes(overName) ? overName : null);
+        // order to land in. Not on the trunk dock (it has no grid seat), and
+        // not across the frame edge: into one's own sub-app strip, or onto an
+        // ancestor while dragging a nested tile — those are layout frames, not
+        // board seats.
+        const valid =
+          !!overName &&
+          overName !== name() &&
+          state.layout.pinned.includes(overName) &&
+          !!overEl &&
+          !overEl.classList.contains("trunk-dock") &&
+          !overEl.contains(selfEl) &&
+          !selfEl.contains(overEl);
+        setDropTarget(valid ? overName : null);
       }}
       onPointerUp={(e) => {
         if (!arm || e.pointerId !== arm.id) return;
@@ -1014,100 +1047,192 @@ function Tile(props: { app: AppInfo }) {
         if (drag) finishDrag();
       }}
     >
-      <header class="tile-head">
-        <span class="dot" classList={{ run: running(), wait: paused(), err: errored() }} />
-        <span class="tile-name">{name()}</span>
-        <span class="tile-status">{statusText()}</span>
-        <span class="spacer" />
-        <button
-          class="tile-pin"
-          classList={{ active: pinned() }}
-          aria-pressed={pinned()}
-          title={pinned() ? "unpin — let this tile move with recent activity" : "pin — keep this tile in place"}
-          onClick={() => togglePinned(name())}
-        >
-          📌
-        </button>
-        <button title={wide() ? "stop spanning two columns" : "wide — span two columns"} onClick={() => toggleWide(name())}>
-          ↔
-        </button>
-        <button title={expanded() ? "restore" : "expand"} onClick={() => toggleExpanded(name())}>
-          {expanded() ? "⤡" : "⤢"}
-        </button>
-        <button title="hide — parks it in the left rail" onClick={() => toggleHidden(name())}>
-          ✕
-        </button>
-      </header>
-      <Show when={props.app.description}>
-        <div class="tile-desc" title={props.app.guide || props.app.description}>
-          {props.app.description}
-        </div>
-      </Show>
-      <div class="chat" ref={(el) => (chatRef.el = el)}>
-        <Show when={bubbles().length} fallback={<div class="empty">no messages yet</div>}>
-          <For each={bubbles()}>
-            {(b) => (
-              <>
-                <div
-                  class="bubble"
-                  classList={{
-                    user: b.kind === "user",
-                    bot: b.kind === "bot",
-                    err: b.kind === "err",
-                    machine:
-                      b.kind === "bot" &&
-                      b.emitIndex != null &&
-                      b.turn.levels?.[b.emitIndex] === "machine",
-                    "has-info":
-                      b.kind === "bot" &&
-                      b.emitIndex != null &&
-                      b.emitIndex >= 0 &&
-                      !!b.turn.runId &&
-                      b.turn.levels?.[b.emitIndex] !== "machine",
-                  }}
-                >
-                  <RefText text={b.text} />
-                  <Show
-                    when={
-                      b.kind === "bot" &&
-                      b.emitIndex != null &&
-                      b.emitIndex >= 0 &&
-                      !!b.turn.runId &&
-                      b.turn.levels?.[b.emitIndex] !== "machine"
-                    }
-                  >
-                    <button
-                      class="bubble-info"
-                      title="what was this written from?"
-                      onClick={() => setProv({ turnId: b.turn.turnId, bubble: b.emitIndex!, text: b.text })}
+      {/* The fractal frame: this tile's own rail of parked sub-apps on the left,
+          the tile's chat full height in the middle, opened sub-app tiles
+          side-by-side on the right. A tile without sub-apps renders the main
+          column alone — same look as before. */}
+      <div class="tile-frame">
+        <Show when={kids().length}>
+          <SubRail parent={name()} />
+        </Show>
+        <div class="tile-main">
+          <header class="tile-head">
+            <span class="dot" classList={{ run: running(), wait: paused(), err: errored() }} />
+            <span class="tile-name">{name()}</span>
+            <span class="tile-status">{statusText()}</span>
+            <span class="spacer" />
+            <Show
+              when={!isTrunk()}
+              fallback={
+                <button title="hide — parks it in the board rail" onClick={() => toggleHidden(name())}>
+                  ✕
+                </button>
+              }
+            >
+              <button
+                class="tile-pin"
+                classList={{ active: pinned() }}
+                aria-pressed={pinned()}
+                title={pinned() ? "unpin — let this tile move with recent activity" : "pin — keep this tile in place"}
+                onClick={() => togglePinned(name())}
+              >
+                📌
+              </button>
+              <button title={wide() ? "stop spanning two columns" : "wide — span two columns"} onClick={() => toggleWide(name())}>
+                ↔
+              </button>
+              <button title={expanded() ? "restore" : "expand"} onClick={() => toggleExpanded(name())}>
+                {expanded() ? "⤡" : "⤢"}
+              </button>
+              <button title={props.app.parent ? "park into the parent's rail" : "hide — parks it in the board rail"} onClick={park}>
+                ✕
+              </button>
+            </Show>
+          </header>
+          <Show when={props.app.description}>
+            <div class="tile-desc" title={props.app.guide || props.app.description}>
+              {props.app.description}
+            </div>
+          </Show>
+          <div class="chat" ref={(el) => (chatRef.el = el)}>
+            <Show when={bubbles().length} fallback={<div class="empty">no messages yet</div>}>
+              <For each={bubbles()}>
+                {(b) => (
+                  <>
+                    <div
+                      class="bubble"
+                      classList={{
+                        user: b.kind === "user",
+                        bot: b.kind === "bot",
+                        err: b.kind === "err",
+                        machine:
+                          b.kind === "bot" &&
+                          b.emitIndex != null &&
+                          b.turn.levels?.[b.emitIndex] === "machine",
+                        "has-info":
+                          b.kind === "bot" &&
+                          b.emitIndex != null &&
+                          b.emitIndex >= 0 &&
+                          !!b.turn.runId &&
+                          b.turn.levels?.[b.emitIndex] !== "machine",
+                      }}
                     >
-                      ⓘ
-                    </button>
-                  </Show>
-                </div>
-                <Show when={b.lastOfTurn ? tokenLine(b.turn.tokens) : null}>
-                  {(line) => (
-                    <div class="turn-tokens" title="tokens this turn used (input counts the full prompt on every model call)">
-                      {line()}
+                      <RefText text={b.text} />
+                      <Show
+                        when={
+                          b.kind === "bot" &&
+                          b.emitIndex != null &&
+                          b.emitIndex >= 0 &&
+                          !!b.turn.runId &&
+                          b.turn.levels?.[b.emitIndex] !== "machine"
+                        }
+                      >
+                        <button
+                          class="bubble-info"
+                          title="what was this written from?"
+                          onClick={() => setProv({ turnId: b.turn.turnId, bubble: b.emitIndex!, text: b.text })}
+                        >
+                          ⓘ
+                        </button>
+                      </Show>
                     </div>
-                  )}
-                </Show>
-              </>
-            )}
-          </For>
+                    <Show when={b.lastOfTurn ? tokenLine(b.turn.tokens) : null}>
+                      {(line) => (
+                        <div class="turn-tokens" title="tokens this turn used (input counts the full prompt on every model call)">
+                          {line()}
+                        </div>
+                      )}
+                    </Show>
+                  </>
+                )}
+              </For>
+            </Show>
+          </div>
+          <Show when={showInput()}>
+            <Composer app={name()} />
+          </Show>
+          <div class="tile-panels">
+            <MemoryPanel app={name()} />
+            <EventLog app={name()} />
+          </div>
+          <Show when={prov()}>
+            {(p) => <ProvenanceModal turnId={p().turnId} bubble={p().bubble} text={p().text} onClose={() => setProv(null)} />}
+          </Show>
+        </div>
+        <Show when={openKids().length}>
+          <div class="tile-subs-area">
+            <For each={openKids()}>{(a) => <Tile app={a} />}</For>
+          </div>
         </Show>
       </div>
-      <Show when={showInput()}>
-        <Composer app={name()} />
-      </Show>
-      <div class="tile-panels">
-        <MemoryPanel app={name()} />
-        <EventLog app={name()} />
-      </div>
-      <Show when={prov()}>
-        {(p) => <ProvenanceModal turnId={p().turnId} bubble={p().bubble} text={p().text} onClose={() => setProv(null)} />}
-      </Show>
     </section>
+  );
+}
+
+/** The flyout card a rail square reveals on hover/focus: one shared signal and
+ *  one `<RailCard/>` (mount it once per screen). Two rails can never both
+ *  reveal at once, so a single card cannot collide; fixed-positioned, since a
+ *  rail with many squares scrolls and an absolutely-positioned card would be
+ *  clipped by that scroll box. */
+const [railCard, setRailCard] = createSignal<{ app: AppInfo; top: number; left: number } | null>(null);
+
+function revealRailCard(app: AppInfo, el: HTMLElement): void {
+  const r = el.getBoundingClientRect();
+  setRailCard({ app, top: Math.max(8, Math.min(r.top, window.innerHeight - 150)), left: r.right + 8 });
+}
+
+function hideRailCard(): void {
+  setRailCard(null);
+}
+
+export function RailCard() {
+  const running = createMemo(() => currentRunningApp());
+  const failed = createMemo(() => erroredApp());
+  const statusOf = (name: string): string =>
+    state.awaiting === name ? "waiting" : running() === name ? "running" : failed() === name ? "error" : "idle";
+  return (
+    <Show when={railCard()}>
+      {(cur) => (
+        <Portal>
+          <div class="hidden-info" style={{ top: `${cur().top}px`, left: `${cur().left}px` }} role="tooltip">
+            <div class="hidden-info-head">
+              <span class="hidden-info-name">{cur().app.name}</span>
+              <span class="hidden-info-status">{statusOf(cur().app.name)}</span>
+            </div>
+            <Show when={cur().app.description}>
+              <div class="hidden-info-desc">{cur().app.description}</div>
+            </Show>
+            <div class="hidden-info-hint">click to {state.layout.subsOpen.includes(cur().app.name) ? "park" : "open"}</div>
+          </div>
+        </Portal>
+      )}
+    </Show>
+  );
+}
+
+/** One rail square: status-tinted while its app runs/waits/fails; hover or
+ *  keyboard focus reveals the shared flyout card. Both the board's hidden rail
+ *  and a parent tile's sub-app rail use this. */
+function RailSquare(props: { app: AppInfo; label: string; open?: boolean; onClick: () => void }) {
+  const running = createMemo(() => currentRunningApp() === props.app.name);
+  const failed = createMemo(() => erroredApp() === props.app.name);
+  return (
+    <button
+      type="button"
+      class="hidden-app"
+      classList={{
+        run: running(),
+        wait: state.awaiting === props.app.name,
+        err: failed(),
+        open: !!props.open,
+      }}
+      aria-label={props.label}
+      onMouseEnter={(e) => revealRailCard(props.app, e.currentTarget)}
+      onMouseLeave={hideRailCard}
+      onFocus={(e) => revealRailCard(props.app, e.currentTarget)}
+      onBlur={hideRailCard}
+      onClick={props.onClick}
+    />
   );
 }
 
@@ -1116,70 +1241,56 @@ function Tile(props: { app: AppInfo }) {
  *  reveals what a square is; click/tap puts the tile back on the board. */
 export function HiddenRail() {
   const hidden = createMemo(() => hiddenApps());
-  const running = createMemo(() => currentRunningApp());
-  const failed = createMemo(() => erroredApp());
-  const statusOf = (name: string): string =>
-    state.awaiting === name ? "waiting" : running() === name ? "running" : failed() === name ? "error" : "idle";
-  // One shared flyout, fixed-positioned (a rail with many squares scrolls, and an
-  // absolutely-positioned card would be clipped by that scroll box).
-  const [info, setInfo] = createSignal<{ app: AppInfo; top: number; left: number } | null>(null);
-  const reveal = (app: AppInfo, el: HTMLElement): void => {
-    const r = el.getBoundingClientRect();
-    setInfo({ app, top: Math.max(8, Math.min(r.top, window.innerHeight - 150)), left: r.right + 8 });
-  };
-  const hideInfo = (): void => {
-    setInfo(null);
-  };
-
   return (
-    <>
-      <Show when={hidden().length}>
-        <aside class="hidden-rail" aria-label="hidden tiles" onScroll={hideInfo}>
-          <For each={hidden()}>
-            {(a) => (
-              <button
-                type="button"
-                class="hidden-app"
-                classList={{
-                  run: running() === a.name,
-                  wait: state.awaiting === a.name,
-                  err: failed() === a.name,
-                }}
-                aria-label={`${a.name} (hidden) — show this tile`}
-                onMouseEnter={(e) => reveal(a, e.currentTarget)}
-                onMouseLeave={hideInfo}
-                onFocus={(e) => reveal(a, e.currentTarget)}
-                onBlur={hideInfo}
-                onClick={() => {
-                  hideInfo();
-                  toggleHidden(a.name);
-                }}
-              />
-            )}
-          </For>
-        </aside>
-      </Show>
-      <Show when={info()}>
-        {(cur) => (
-          <Portal>
-            <div class="hidden-info" style={{ top: `${cur().top}px`, left: `${cur().left}px` }} role="tooltip">
-              <div class="hidden-info-head">
-                <span class="hidden-info-name">{cur().app.name}</span>
-                <span class="hidden-info-status">{statusOf(cur().app.name)}</span>
-              </div>
-              <Show when={cur().app.description}>
-                <div class="hidden-info-desc">{cur().app.description}</div>
-              </Show>
-              <div class="hidden-info-hint">click to restore</div>
-            </div>
-          </Portal>
-        )}
-      </Show>
-    </>
+    <Show when={hidden().length}>
+      <aside class="hidden-rail" aria-label="hidden tiles" onScroll={hideRailCard}>
+        <For each={hidden()}>
+          {(a) => (
+            <RailSquare
+              app={a}
+              label={`${a.name} (hidden) — show this tile`}
+              onClick={() => {
+                hideRailCard();
+                toggleHidden(a.name);
+              }}
+            />
+          )}
+        </For>
+      </aside>
+    </Show>
   );
 }
 
-export function Tiles(props: { apps: AppInfo[] }) {
+/** A parent tile's sub-app rail, inside the tile's left edge: one square per
+ *  sub-app (board order), parked by default. Click opens the sub-tile beside
+ *  the parent's chat; the square stays listed and highlighted while open —
+ *  this rail is navigation, not a parking lot the tile leaves. */
+function SubRail(props: { parent: string }) {
+  const kids = createMemo(() => subApps(props.parent));
+  return (
+    <div class="tile-rail" aria-label={`${props.parent} sub-apps`} onScroll={hideRailCard}>
+      <For each={kids()}>
+        {(a) => (
+          <RailSquare
+            app={a}
+            open={state.layout.subsOpen.includes(a.name)}
+            label={
+              state.layout.subsOpen.includes(a.name)
+                ? `${a.name} (open) — park it back into this rail`
+                : `${a.name} (parked) — open beside the parent's chat`
+            }
+            onClick={() => {
+              hideRailCard();
+              toggleSub(a.name);
+            }}
+          />
+        )}
+      </For>
+    </div>
+  );
+}
+
+export function Tiles(props: { apps: AppInfo[]; trunk?: AppInfo }) {
   // A wide tile spans two tracks. The CSS uses this flag to guarantee there are
   // two: a 2-span in a one-column grid invents a thin implicit track and squeezes
   // the other tiles into a strip at the right (see `.grid.has-wide`).
@@ -1187,6 +1298,9 @@ export function Tiles(props: { apps: AppInfo[] }) {
   return (
     <div class="grid" classList={{ "has-wide": hasWide() }}>
       <For each={props.apps}>{(a) => <Tile app={a} />}</For>
+      {/* The trunk is the board's home tile: it spans the whole bottom row and
+          stays docked there (sticky) while the app tiles scroll under it. */}
+      <Show when={props.trunk}>{(t) => <Tile app={t()} />}</Show>
     </div>
   );
 }

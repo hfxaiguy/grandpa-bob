@@ -1,11 +1,12 @@
 // Workspace tree discovery, shared by the admin UI (tree selector) and the
 // agent (tree tools). A runnable tree is exactly one production file:
-// `patterns/<name>.prod.mjs` or `app/<name>/tree.prod.mjs`. The file's leading
-// comment block is its spec; an app's `## Guide` lives in its README.
+// `patterns/<name>.prod.mjs` or `app/<name>/tree.prod.mjs` — the latter at any
+// depth (`app/a/app/b/app/c/tree.prod.mjs` is the app `a.b.c`). The file's
+// leading comment block is its spec; an app's `## Guide` lives in its README.
 
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { parsePatternFileName } from "./tree-files.js";
+import { APP_DIR, LOGICAL_SEGMENT_RE, logicalForAppDir, parsePatternFileName } from "./tree-files.js";
 
 export const PATTERNS_DIR_NAME = "patterns";
 
@@ -15,6 +16,10 @@ export interface TreeSource {
   name: string;
   description: string;
   group: string;
+  /** The enclosing app's logical name, when this tree parks inside one.
+   *  Null/absent on top-level apps (the board shows them as their own tiles;
+   *  nested ones park in their parent). */
+  parent?: string | null;
   /** Agent-facing guidance from the `## Guide` section, when present. */
   guide?: string;
 }
@@ -48,33 +53,78 @@ export async function listPatterns(workspaceDir: string): Promise<TreeSource[]> 
 }
 
 /**
- * App trees: every `app/<dir>/tree.prod.mjs` is runnable as a top-level tree.
- * The directory name is the selector value (loadPattern resolves it).
+ * App trees: every `app/<dir>/tree.prod.mjs` is runnable as a top-level tree,
+ * and every app folder may keep an `app/` folder of its own, so discovery
+ * descends fractally (`app/enrich-profile/app/widget/` is the app
+ * `enrich-profile.widget`). The logical name is the selector value (loadPattern
+ * resolves it); `parent` is the nearest ancestor that bears a tree itself — a
+ * tree-less app folder still hosts its children, they just group under its
+ * nearest runnable ancestor (or none, at the top).
  */
 export async function listAppTrees(workspaceDir: string): Promise<TreeSource[]> {
-  const appDir = path.join(workspaceDir, "app");
+  const out: TreeSource[] = [];
+  const seen = new Set<string>();
+  await scanAppFolders(path.join(workspaceDir, APP_DIR), APP_DIR, null, out, seen);
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * One container of app folders (`app/`, or the nested `app/` inside an app).
+ * Names are deduplicated flat-first: a top-level folder with a literal dotted
+ * name (`app/a.b/`) keeps the logical `a.b`, and a nested `app/a/app/b/`
+ * spelling of the same name yields to it.
+ */
+async function scanAppFolders(
+  containerAbs: string,
+  containerRel: string,
+  parent: string | null,
+  out: TreeSource[],
+  seen: Set<string>,
+): Promise<void> {
+  let entries;
   try {
-    const entries = await readdir(appDir, { withFileTypes: true });
-    const out: TreeSource[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const dir = path.join(appDir, entry.name);
-      try {
-        await readFile(path.join(dir, "tree.prod.mjs"), "utf8");
-      } catch {
-        continue; // apps without a tree are tools-only
-      }
+    entries = await readdir(containerAbs, { withFileTypes: true });
+  } catch {
+    return; // no such container — stop this branch
+  }
+  const topLevel = containerRel === APP_DIR;
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const dirAbs = path.join(containerAbs, entry.name);
+    const dirRel = `${containerRel}/${entry.name}`;
+    // Top-level: the folder name IS the logical name (dotted flat names stay
+    // legal). Nested: dot-free segments only — a dotted folder cannot be
+    // addressed as a nesting step, so its children are not discoverable.
+    const logical = topLevel ? entry.name : logicalForAppDir(dirRel);
+    if (!logical) continue;
+    let hasTree = false;
+    try {
+      await readFile(path.join(dirAbs, "tree.prod.mjs"), "utf8");
+      hasTree = true;
+    } catch {
+      // apps without a tree are tools-only, but may still host sub-apps
+    }
+    if (hasTree && !seen.has(logical)) {
+      seen.add(logical);
       out.push({
-        file: `app/${entry.name}/tree.prod.mjs`,
-        name: entry.name,
-        description: await appTreeDescription(dir),
-        guide: await guideFrom([path.join(dir, "README.md")]),
+        file: `${dirRel}/tree.prod.mjs`,
+        name: logical,
+        description: await appTreeDescription(dirAbs),
+        guide: await guideFrom([path.join(dirAbs, "README.md")]),
         group: "app",
+        parent: parent ?? null,
       });
     }
-    return out.sort((a, b) => a.name.localeCompare(b.name));
-  } catch {
-    return [];
+    // The segment must be a legal nesting step for the descent to make sense.
+    if (LOGICAL_SEGMENT_RE.test(entry.name)) {
+      await scanAppFolders(
+        path.join(dirAbs, APP_DIR),
+        `${dirRel}/${APP_DIR}`,
+        hasTree ? logical : parent,
+        out,
+        seen,
+      );
+    }
   }
 }
 

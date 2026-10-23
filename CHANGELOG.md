@@ -2,6 +2,51 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-23 — apps within apps: fractal app folders and tiles
+
+Every app folder may now keep an `app/` folder of its own. The dotted logical
+name spells the path — `app/contacts/app/organizer/` is the app
+`contacts.organizer` — so nothing else had to change about identity: the same
+name resolves in `From()`/`.tools()`, keys memory, secrets and attribution,
+and engine branch paths stay dot-free (slashes were never an option there —
+they already mean tree segments). Top-level apps keep today's exact files,
+names and secret keys; a flat directory with a literal dotted name still wins
+over the nested spelling of the same name.
+
+Discovery recurses: `listAppTrees` (`src/tree-sources.ts`) walks every app
+folder's `app/` subfolder depth-first and tags each source with `parent` (the
+nearest ancestor that bears a tree itself — a tree-less app folder still hosts
+its children, grouped under its nearest runnable ancestor). `listTreeNames`,
+`loadAppTools` (tools.mjs) and `listSecretRequests` (secrets.json) recurse the
+same way, keyed by the dotted name; `resolveTreeEntry`/`treePathFor` map it
+(`a.b.c` ⇔ `app/a/app/b/app/c`), so knit can save a sub-app — README included
+— and the agent's tree tools expose nested apps under their dotted names.
+A dotted folder segment can never be a nesting step (dots are the separator),
+so such top-level folders stay discoverable but sterile. The browser target
+inherits all of it (shared modules; `buildAppTools` derives a nested app's
+folder from its tree file, not its name), and the workspace trunk's
+`scanAppTreeNames()` fallback now recurses too.
+
+The UI went fractal with the tiles. The trunk is a full-height column on the
+right of the board (left of the event stream drawer) — a seat of its own, not
+a grid tile. A tile whose folder keeps `app/` sub-apps gets the board's zones
+one level down: its parked sub-apps stand as status-tinted squares in a narrow
+rail on the tile's LEFT edge (hidden by default — the same square language the
+board's hidden rail uses, hover reveals the flyout card), the tile's own chat
+stays full height in the middle, and a clicked square opens that sub-app as a
+smaller tile side-by-side on the right (open order is the render order, so a
+running chat never jumps; the square stays listed and highlighted). Sub-tiles
+are full tiles — recursion goes as deep as the folders do. Sub-apps never
+board: `orderedApps`/`hiddenApps` exclude parented apps, and a parented tile's
+✕ parks it into its parent's rail instead of the board's. Drag guards keep the
+frame edges honest: no landing inside one's own sub strip, onto an ancestor,
+or onto the trunk column.
+
+Tests: `npm run test:ui-order` (sub-apps never board; open/park state),
+`npm run typecheck`, `npm run build`, `npm run build:ui` (all fixtures
+verified headless: trunk column, parked rail squares, side-by-side open,
+park/restore).
+
 ## 2026-10-23 — memory panels no longer lose history when a rebuild overlaps a turn
 
 The tiled memory panel's lazy rebuild (`src/memory-track.ts`) no longer skips

@@ -1,6 +1,7 @@
 // Secret config files requested by workspace apps.
 //
-// An app declares what it needs in `app/<name>/secrets.json`:
+// An app declares what it needs in `app/<name>/secrets.json` (nested apps use
+// their dotted folder path: `app/a/app/b/secrets.json` belongs to `a.b`):
 //
 //   [{ "name": "google-service-account.json",
 //      "description": "Service account JSON for the Calendar API",
@@ -17,6 +18,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { LOGICAL_SEGMENT_RE } from "./tree-files.js";
 
 export interface SecretRequest {
   app: string;
@@ -196,44 +198,74 @@ export class SecretsStore {
 
 /**
  * Every secret an app asked for: `app/<dir>/secrets.json`, an array (or
- * `{ "secrets": [...] }`) of `{ name, description?, contentType? }`.
- * Invalid or path-like names are skipped with a warning — a manifest must
- * never be able to steer uploads outside its own app.
+ * `{ "secrets": [...] }`) of `{ name, description?, contentType? }`, at any
+ * depth (`app/a/app/b/secrets.json` belongs to the app `a.b`). Invalid or
+ * path-like names are skipped with a warning — a manifest must never be able
+ * to steer uploads outside its own app. The `app` key is the dotted logical
+ * name, identical to a top-level app's folder name.
  */
 export async function listSecretRequests(workspace: string): Promise<SecretRequest[]> {
-  const appsDir = path.join(workspace, "app");
-  const entries = await fs.promises.readdir(appsDir, { withFileTypes: true }).catch(() => []);
   const out: SecretRequest[] = [];
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (!entry.isDirectory() || entry.name.startsWith(".") || !validSecretName(entry.name)) continue;
-    let raw: unknown;
-    try {
-      raw = JSON.parse(await fs.promises.readFile(path.join(appsDir, entry.name, "secrets.json"), "utf8"));
-    } catch {
-      continue; // no manifest — the app asks for nothing
-    }
-    const list = Array.isArray(raw) ? raw : Array.isArray((raw as { secrets?: unknown })?.secrets) ? (raw as { secrets: unknown[] }).secrets : [];
-    for (const item of list) {
-      const it = item as { name?: unknown; description?: unknown; contentType?: unknown; fields?: unknown };
-      const name = typeof it?.name === "string" ? it.name.trim() : "";
-      if (!validSecretName(name)) {
-        console.warn(`[secrets] ${entry.name}: ignoring invalid secret name ${JSON.stringify(it?.name)}`);
-        continue;
-      }
-      out.push({
-        app: entry.name,
-        name,
-        description: typeof it.description === "string" ? it.description : "",
-        contentType: typeof it.contentType === "string" ? it.contentType : null,
-        ...(it.fields && typeof it.fields === "object" && !Array.isArray(it.fields)
-          ? {
-              fields: Object.fromEntries(
-                Object.entries(it.fields as Record<string, unknown>).map(([k, v]) => [k, typeof v === "string" ? v : ""]),
-              ),
-            }
-          : {}),
-      });
-    }
-  }
+  await collectSecretRequests(
+    path.join(workspace, "app"),
+    "",
+    out,
+  );
   return out;
+}
+
+/** One app folder: its own manifest, then its `app/` children, depth first. */
+async function collectSecretRequests(
+  dirAbs: string,
+  logical: string,
+  out: SecretRequest[],
+): Promise<void> {
+  let entries;
+  try {
+    entries = await fs.promises.readdir(dirAbs, { withFileTypes: true });
+  } catch {
+    return; // no such folder
+  }
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory() || entry.name.startsWith(".") || !LOGICAL_SEGMENT_RE.test(entry.name)) continue;
+    const childLogical = logical ? `${logical}.${entry.name}` : entry.name;
+    const childAbs = path.join(dirAbs, entry.name);
+    if (validSecretName(childLogical)) {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(await fs.promises.readFile(path.join(childAbs, "secrets.json"), "utf8"));
+      } catch {
+        raw = null; // no manifest — the app asks for nothing
+      }
+      if (raw != null) {
+        const list = Array.isArray(raw)
+          ? raw
+          : Array.isArray((raw as { secrets?: unknown })?.secrets)
+            ? (raw as { secrets: unknown[] }).secrets
+            : [];
+        for (const item of list) {
+          const it = item as { name?: unknown; description?: unknown; contentType?: unknown; fields?: unknown };
+          const name = typeof it?.name === "string" ? it.name.trim() : "";
+          if (!validSecretName(name)) {
+            console.warn(`[secrets] ${childLogical}: ignoring invalid secret name ${JSON.stringify(it?.name)}`);
+            continue;
+          }
+          out.push({
+            app: childLogical,
+            name,
+            description: typeof it.description === "string" ? it.description : "",
+            contentType: typeof it.contentType === "string" ? it.contentType : null,
+            ...(it.fields && typeof it.fields === "object" && !Array.isArray(it.fields)
+              ? {
+                  fields: Object.fromEntries(
+                    Object.entries(it.fields as Record<string, unknown>).map(([k, v]) => [k, typeof v === "string" ? v : ""]),
+                  ),
+                }
+              : {}),
+          });
+        }
+      }
+    }
+    await collectSecretRequests(path.join(childAbs, "app"), childLogical, out);
+  }
 }

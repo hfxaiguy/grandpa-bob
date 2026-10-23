@@ -426,9 +426,11 @@ async function buildAppTools(
   const loader = createModuleLoader(platform);
 
   for (const app of apps) {
-    const candidates = ["tools.mjs", "tools.js"].map((name) =>
-      platform.path.join("app", app.name, name),
-    );
+    // The app folder is derived from the tree file, not joined from the name:
+    // a nested app's logical name is dotted (`a.b`) while its folder is
+    // app/a/app/b — the tree file records the real location.
+    const appDir = platform.path.dirname(app.file);
+    const candidates = ["tools.mjs", "tools.js"].map((name) => platform.path.join(appDir, name));
     let file: string | null = null;
     for (const candidate of candidates) {
       const stat = await platform.fs

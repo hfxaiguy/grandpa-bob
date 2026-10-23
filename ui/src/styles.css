@@ -174,6 +174,76 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 /* The tile under a dragged tile: where it will land if dropped now. */
 .tile.drop-target { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 
+/* ── fractal tiles: sub-apps inside a tile ────────────────────────────────
+   A tile that keeps an app/ folder of its own gets a frame: its parked
+   sub-apps stand as squares in a narrow rail on the tile's LEFT edge, the
+   tile's own chat stays full height in the middle (the tile is the trunk of
+   its own little board), and opened sub-app tiles sit side-by-side on the
+   right, smaller — the board's zones, one level down. A tile without
+   sub-apps renders the main column alone: the same look as before. */
+.tile-frame {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: stretch;
+}
+.tile-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+/* The per-tile rail: one square per sub-app, parked by default; an open one
+   keeps its square highlighted. Same square language as the board rail. */
+.tile-rail {
+  flex: none;
+  width: 34px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--card);
+  border-right: 1px solid var(--border);
+}
+.tile-rail .hidden-app { width: 20px; height: 20px; border-radius: 6px; }
+.tile-rail .hidden-app.open { border-color: var(--accent); background: var(--accent); opacity: 0.85; }
+/* Opened sub-apps: smaller tiles side-by-side (open order), sharing the
+   tile's height; the strip scrolls horizontally rather than shrinking the
+   parent's chat to nothing. */
+.tile-subs-area {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 55%;
+  align-items: stretch;
+  border-left: 1px solid var(--border);
+}
+/* Inside the strip the grid's span rules mean nothing — keep sub-tiles compact
+   and let them fill the strip's height instead. */
+.tile-subs-area .tile {
+  flex: none;
+  width: 240px;
+  min-height: 0;
+  max-height: none;
+}
+.tile-subs-area .tile.expanded,
+.tile-subs-area .tile.wide { grid-column: auto; }
+
+/* The trunk column: full board height, its own seat left of the stream. */
+.tile.trunk-col {
+  flex: none;
+  width: min(440px, 36vw);
+  min-height: 0;
+  max-height: none;
+}
+
 /* Pointer-based tile dragging (see the Tile component): the label that follows
    the cursor, and the global cursor/selection lock while a tile is in flight. */
 .tile-ghost {
@@ -527,6 +597,13 @@ body.dragging-tile { user-select: none !important; }
   /* Give the tiles the width; the rail only needs the squares and a little air. */
   .hidden-rail { width: 38px; padding: 8px 0; }
   .hidden-app { width: 24px; height: 24px; }
+
+  /* The trunk becomes the stack's first full-width tile; the app grid and the
+     rail follow it. */
+  .body { flex-direction: column; }
+  .tile.trunk-col { order: -1; width: 100%; max-height: 62vh; }
+  .tile-rail { width: 30px; }
+  .tile-subs-area .tile { width: 200px; }
 
   /* A 2-column span would create an implicit track on a single-column grid. */
   .tile.wide { grid-column: auto; }
