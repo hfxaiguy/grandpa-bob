@@ -14,12 +14,37 @@ assert.deepEqual(parseSeedMeta({ version: 1, createdAt: "2026-10-22T00:30:52Z", 
   version: 1,
   createdAt: "2026-10-22T00:30:52Z",
   fileCount: 194,
+  sha256: undefined,
+  size: undefined,
 });
 assert.deepEqual(parseSeedMeta({ createdAt: "2026-10-22T00:30:52Z" }), {
   version: undefined,
   createdAt: "2026-10-22T00:30:52Z",
   fileCount: undefined,
+  sha256: undefined,
+  size: undefined,
 });
+
+// Packer-recorded content hash + size (lowercased; malformed values dropped).
+const digest = "a1".repeat(32);
+assert.deepEqual(
+  parseSeedMeta({
+    version: 1,
+    createdAt: "2026-10-22T00:30:52Z",
+    fileCount: 194,
+    sha256: digest.toUpperCase(),
+    size: 4096,
+  }),
+  {
+    version: 1,
+    createdAt: "2026-10-22T00:30:52Z",
+    fileCount: 194,
+    sha256: digest,
+    size: 4096,
+  },
+);
+assert.equal(parseSeedMeta({ createdAt: "2026-10-22T00:30:52Z", sha256: "nope" })?.sha256, undefined);
+assert.equal(parseSeedMeta({ createdAt: "2026-10-22T00:30:52Z", size: "big" })?.size, undefined);
 
 // ── seedFreshness ────────────────────────────────────────────────────────
 const built = "2026-10-22T00:30:52.000Z";
@@ -56,6 +81,40 @@ assert.equal(
   seedFreshness(new Date(Date.parse(built) + SEED_CLOCK_TOLERANCE_MS + 1000).toISOString(), seed(built)),
   "current",
   "workspace still ahead",
+);
+
+// ── content-hash freshness (re-packed same-day seeds) ────────────────────
+const hashed = parseSeedMeta({
+  version: 1,
+  createdAt: built,
+  sha256: "b1".repeat(32),
+});
+const otherSha = "c2".repeat(32);
+
+assert.equal(
+  seedFreshness(built, hashed, SEED_CLOCK_TOLERANCE_MS, "b1".repeat(32).toUpperCase()),
+  "current",
+  "matching hash is current even when the timestamps are identical",
+);
+assert.equal(
+  seedFreshness(built, hashed, SEED_CLOCK_TOLERANCE_MS, otherSha),
+  "newer",
+  "a re-packed seed with the same createdAt is still offered (hash differs)",
+);
+assert.equal(
+  seedFreshness("2026-10-30T00:00:00Z", hashed, SEED_CLOCK_TOLERANCE_MS, otherSha),
+  "newer",
+  "hash wins over a workspace stamped later",
+);
+assert.equal(
+  seedFreshness("2026-10-15T12:00:00Z", hashed, SEED_CLOCK_TOLERANCE_MS, null),
+  "newer",
+  "no local hash falls back to the timestamp",
+);
+assert.equal(
+  seedFreshness(built, seed(built), SEED_CLOCK_TOLERANCE_MS, otherSha),
+  "current",
+  "no packer hash falls back to the timestamp",
 );
 
 console.log("seed-freshness: all assertions passed");

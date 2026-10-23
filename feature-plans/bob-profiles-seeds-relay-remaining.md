@@ -86,6 +86,10 @@ another device import it leaks conversation history by default.
 - [ ] Implement the filtering in one place (e.g.
       `buildWorkspaceArchive(root, { exclude })`), reused by publish and,
       optionally, by the relay sender as a “copy without chat history” toggle.
+      `make-seed` already applies exactly this curated subset (`app/`,
+      `patterns/`, `lib/`, empty log, models template) and
+      `npm run seed:publish` now ships its exact bytes, so extracting those
+      rules is the missing half.
 - [ ] Ensure any seed→profile import strips `workspace/logs/` regardless of what
       the publisher sent (peer relay imports keep logs; seed imports do not).
       `applySeedArchive()` already skips logs **when a local log exists**; add

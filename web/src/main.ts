@@ -54,7 +54,7 @@ import { createAutoSync, DEFAULT_INTERVAL_MS } from "../../src/auto-sync";
 import { listTreeSources } from "../../src/tree-sources";
 import { resolveTreeEntry } from "../../src/tree-files";
 import { patternLabel } from "./agent/pattern-path";
-import { parseSeedMeta, seedFreshness, type SeedMeta } from "./seed-version";
+import { parseSeedMeta, seedFreshness, SEED_CLOCK_TOLERANCE_MS, type SeedMeta } from "./seed-version";
 import type { Platform } from "../../src/platform/types";
 
 const params = new URLSearchParams(location.search);
@@ -197,6 +197,8 @@ async function isFile(p: string): Promise<boolean> {
 
 /** When the OPFS workspace was seeded/imported (ISO), if known. */
 let seedStamp: string | null = null;
+/** Content hash of the seed archive this profile was last built from. */
+let seedSha: string | null = null;
 
 async function readSeedStamp(marker: string): Promise<string | null> {
   try {
@@ -205,6 +207,31 @@ async function readSeedStamp(marker: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+const SEED_SHA_MARKER = "/workspace/.seed-sha";
+
+async function readSeedSha(): Promise<string | null> {
+  try {
+    const raw = (await platform.fs.readFile(SEED_SHA_MARKER, "utf8")).trim().toLowerCase();
+    return /^[0-9a-f]{64}$/.test(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Record the applied seed's content hash (null clears it, e.g. after a manual
+ * import that is not a seed build). The hash lets a same-day re-pack be
+ * detected even when `createdAt` is unchanged.
+ */
+async function writeSeedSha(sha256: string | null): Promise<void> {
+  if (sha256) {
+    await platform.fs.writeFile(SEED_SHA_MARKER, sha256.toLowerCase());
+  } else {
+    await platform.fs.rm(SEED_SHA_MARKER).catch(() => undefined);
+  }
+  seedSha = sha256 ? sha256.toLowerCase() : null;
 }
 
 /**
@@ -220,8 +247,10 @@ async function writeSeedStamp(stamp: string): Promise<void> {
 /**
  * Overlay a seed archive and record its build stamp. The archive ships an
  * empty run log; never let a reseed overwrite the workspace's real one.
+ * When the caller knows the archive's content hash, it is recorded too so a
+ * same-day re-pack still reads as a different build.
  */
-async function applySeedArchive(archive: WorkspaceArchive): Promise<string> {
+async function applySeedArchive(archive: WorkspaceArchive, sha256?: string): Promise<string> {
   const logDb = platform.path.join("/workspace", "logs", "grandma-kat.db");
   const hasLog = await isFile(logDb);
   const files = hasLog
@@ -231,6 +260,7 @@ async function applySeedArchive(archive: WorkspaceArchive): Promise<string> {
   const raw = typeof archive.createdAt === "string" ? archive.createdAt : "";
   const stamp = raw && !Number.isNaN(Date.parse(raw)) ? raw : new Date().toISOString();
   await writeSeedStamp(stamp);
+  await writeSeedSha(sha256 ?? null);
   return stamp;
 }
 
@@ -243,15 +273,18 @@ async function seedWorkspace(root: string): Promise<void> {
     .catch(() => false);
   if (!force && (await isFile(marker)) && hasTrunk) {
     seedStamp = await readSeedStamp(marker);
+    seedSha = await readSeedSha();
     return;
   }
   try {
     const res = await fetch("/seed/workspace.json");
     if (!res.ok) return;
-    const archive = (await res.json()) as WorkspaceArchive;
-    await applySeedArchive(archive);
+    const text = await res.text();
+    const archive = JSON.parse(text) as WorkspaceArchive;
+    await applySeedArchive(archive, platform.crypto.sha256hex(text));
   } catch {
     seedStamp = await readSeedStamp(marker);
+    seedSha = await readSeedSha();
     /* seed is optional */
   }
 }
@@ -477,6 +510,7 @@ function wireWorkspaceTransfer(): void {
         // The imported workspace is the newest thing this profile carries:
         // stamp it now so an older shipped seed is not offered for it.
         await writeSeedStamp(new Date().toISOString());
+        await writeSeedSha(null);
         setStatus(`imported ${written} files — reloading…`);
         setTimeout(() => location.reload(), 300);
       } catch (err) {
@@ -531,14 +565,14 @@ async function checkSeedUpdate(): Promise<void> {
   } catch {
     return; /* seed is optional */
   }
-  if (!meta || seedFreshness(seedStamp, meta) !== "newer") return;
+  if (!meta || seedFreshness(seedStamp, meta, SEED_CLOCK_TOLERANCE_MS, seedSha) !== "newer") return;
   let dismissed: string | null = null;
   try {
     dismissed = localStorage.getItem(SEED_DISMISSED_KEY);
   } catch {
     /* private mode: always offer */
   }
-  if (dismissed === meta.createdAt) return;
+  if (dismissed === (meta.sha256 ?? meta.createdAt)) return;
   wireSeedUpdate({
     meta,
     label: "Workspace update available",
@@ -559,15 +593,11 @@ async function checkBoundSeedUpdate(binding: SeedBinding): Promise<void> {
   }
   if (!meta) return;
 
-  const fresh = seedFreshness(seedStamp, meta) === "newer";
-  const shaChanged =
-    !!binding.lastVersion?.sha256 &&
-    !!meta.sha256 &&
-    meta.sha256.toLowerCase() !== binding.lastVersion.sha256.toLowerCase();
-  if (!fresh && !shaChanged) return;
+  const knownSha = binding.lastVersion?.sha256 ?? seedSha;
+  if (seedFreshness(seedStamp, meta, SEED_CLOCK_TOLERANCE_MS, knownSha) !== "newer") return;
 
   const dismissKey = `${SEED_DISMISSED_KEY}:${binding.baseUrl}|${binding.account}/${binding.seedName}`;
-  const stamp = meta.seed_id_and_version ?? meta.createdAt;
+  const stamp = meta.seed_id_and_version ?? meta.sha256 ?? meta.createdAt;
   try {
     if (localStorage.getItem(dismissKey) === stamp) return;
   } catch {
@@ -603,7 +633,7 @@ function wireSeedUpdate(offer: SeedUpdateOffer): void {
     "click",
     () => {
       try {
-        localStorage.setItem(offer.dismissKey, offer.meta.seed_id_and_version ?? offer.meta.createdAt);
+        localStorage.setItem(offer.dismissKey, offer.meta.seed_id_and_version ?? offer.meta.sha256 ?? offer.meta.createdAt);
       } catch {
         /* private mode: offer again next boot */
       }
@@ -626,8 +656,9 @@ async function applySeedUpdate(meta: SeedMeta): Promise<void> {
     setStatus("updating workspace…");
     const res = await fetch("/seed/workspace.json", { cache: "no-cache" });
     if (!res.ok) throw new Error(`seed not available (${res.status})`);
-    const archive = (await res.json()) as WorkspaceArchive;
-    await applySeedArchive(archive);
+    const text = await res.text();
+    const archive = JSON.parse(text) as WorkspaceArchive;
+    await applySeedArchive(archive, platform.crypto.sha256hex(text));
     setTimeout(() => location.reload(), 300);
   } catch (err) {
     flashStatus(`workspace update failed: ${errorText(err)}`, 10_000);
@@ -646,7 +677,7 @@ async function applyBoundSeedUpdate(binding: SeedBinding, version?: string): Pro
   if (!proceed) return;
   setStatus("fetching seed…");
   const fetched = await fetchLatestSeed(service, binding.account, binding.seedName);
-  await applySeedArchive(fetched.archive);
+  await applySeedArchive(fetched.archive, fetched.sha256);
   await recordSeedVersion(activeProfile, {
     version: version ?? fetched.version ?? fetched.sha256.slice(0, 12),
     sha256: fetched.sha256,

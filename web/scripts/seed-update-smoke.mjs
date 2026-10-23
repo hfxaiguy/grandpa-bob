@@ -31,15 +31,37 @@ const archive = {
     },
   ],
 };
-const body = JSON.stringify(archive);
-const sha256 = createHash("sha256").update(body).digest("hex");
-const version = `${sha256.slice(0, 12)}-20270102T030405Z`;
+// Phase 2 re-packs the seed with the SAME createdAt but different bytes: only
+// the content hash can tell the browser this is a new build.
+const archive2 = {
+  ...archive,
+  files: [
+    ...archive.files,
+    {
+      path: "workspace/patterns/updated-again.mjs",
+      base64: Buffer.from("export default { updated: 'again' };").toString("base64"),
+    },
+  ],
+};
+let phase = 1;
+function current() {
+  const value = phase === 1 ? archive : archive2;
+  const body = JSON.stringify(value);
+  const sha256 = createHash("sha256").update(body).digest("hex");
+  return {
+    archive: value,
+    body,
+    sha256,
+    version: `${sha256.slice(0, 12)}-20270102T030405Z`,
+  };
+}
 const requests = [];
 const server = createServer((req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${SERVICE_PORT}`);
   requests.push(url.pathname + url.search);
   res.setHeader("access-control-allow-origin", "*");
   res.setHeader("access-control-expose-headers", "etag, x-seed-version");
+  const now = current();
   if (url.pathname === "/api/v1/personal/trunk/latest/meta") {
     if (url.searchParams.get("key") !== READ_KEY) {
       res.statusCode = 401;
@@ -50,11 +72,11 @@ const server = createServer((req, res) => {
     res.end(
       JSON.stringify({
         version: 1,
-        createdAt: archive.createdAt,
-        fileCount: archive.files.length,
-        size: Buffer.byteLength(body),
-        sha256,
-        seed_id_and_version: version,
+        createdAt: now.archive.createdAt,
+        fileCount: now.archive.files.length,
+        size: Buffer.byteLength(now.body),
+        sha256: now.sha256,
+        seed_id_and_version: now.version,
       }),
     );
     return;
@@ -66,15 +88,16 @@ const server = createServer((req, res) => {
       return;
     }
     res.setHeader("content-type", "application/json");
-    res.setHeader("etag", sha256);
-    res.setHeader("x-seed-version", version);
-    res.end(body);
+    res.setHeader("etag", now.sha256);
+    res.setHeader("x-seed-version", now.version);
+    res.end(now.body);
     return;
   }
   res.statusCode = 404;
   res.end('{"error":"not found"}');
 });
 await new Promise((resolve) => server.listen(SERVICE_PORT, "127.0.0.1", resolve));
+const firstVersion = current().version;
 
 const chrome = spawn(
   "chromium",
@@ -200,6 +223,7 @@ const after = await evaluate(`(async () => {
   const bytes = log ? new Uint8Array(await log.arrayBuffer()) : new Uint8Array();
   let out = ""; for (const b of bytes) out += String.fromCharCode(b);
   const seeded = await (await ws.getFileHandle(".seeded")).getFile().then((f) => f.text()).catch(() => "");
+  const seedSha = await (await ws.getFileHandle(".seed-sha")).getFile().then((f) => f.text()).catch(() => "");
   const registry = JSON.parse(await (await (await root.getFileHandle("profiles.json")).getFile()).text());
   const record = registry.profiles.find((p) => p.name === "default");
   return JSON.stringify({
@@ -207,6 +231,7 @@ const after = await evaluate(`(async () => {
     logSize: bytes.length,
     logText: btoa(out),
     seeded,
+    seedSha,
     lastVersion: record?.seed?.lastVersion,
     bannerHidden: document.getElementById("ws-reseed").hidden,
   });
@@ -216,10 +241,25 @@ assert(a.updated.includes("updated: true"), "the seed's new file was applied");
 assert(a.logSize === logBefore.size && a.logText === logBefore.text, "the local run log was preserved");
 assert(a.logSize !== Buffer.from("SHOULD-NOT-WIN").length || !a.logText.includes(Buffer.from("SHOULD-NOT-WIN").toString("base64").slice(0, 8)), "the seed's log did not overwrite the local one");
 assert(a.seeded.startsWith("2027-01-02"), "the freshness stamp follows the applied archive");
-assert(a.lastVersion?.version === version, "the pulled version is recorded on the binding");
+assert(a.seedSha === current().sha256, "the applied archive's content hash is recorded");
+assert(a.lastVersion?.version === firstVersion, "the pulled version is recorded on the binding");
 assert(a.bannerHidden === true, "the banner is gone after applying");
 assert(requests.some((r) => r.includes("latest/meta") && r.includes("key=")), "meta was fetched with the read key");
 
+// Phase 2: a re-pack with the SAME createdAt but different bytes. Without the
+// content hash this would look current; the hash must still offer an update.
+phase = 2;
+assert(current().archive.createdAt === a.seeded, "phase 2 reuses the applied timestamp");
+await send("Page.navigate", { url: `${BASE}/?storage=browser` });
+await waitFor(
+  `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && !document.getElementById("ws-reseed").hidden`,
+  "same-timestamp seed update banner",
+);
+const label2 = await evaluate(`document.getElementById("ws-reseed").textContent`);
+assert(String(label2).includes("Seed update: trunk"), `hash-only banner names the seed (got: ${label2})`);
+
 if (exceptions.length) cleanup(1, `runtime exceptions:\n${exceptions.join("\n")}`);
-console.log("seed-update smoke: banner, apply, log preservation, version record and re-check all passed");
+console.log(
+  "seed-update smoke: banner, apply, log preservation, version record and hash-only re-pack all passed",
+);
 cleanup(0);

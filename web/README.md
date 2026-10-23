@@ -181,7 +181,25 @@ npm run smoke      # headless end-to-end check against :8080
 `npm run make-seed` turns a real grandpa-bob workspace (default
 `$WORKSPACE_DIR` or `../../workspace`) into `web/public/seed/workspace.json`.
 On first load the app imports it into OPFS (`?reseed=1` forces a re-import);
-after that the browser workspace persists on its own.
+after that the browser workspace persists on its own. The sidecar
+`seed/meta.json` now records `sha256` and `size` beside `createdAt`, so the
+toolbar can offer an update even when a re-pack happens to reuse the same
+timestamp.
+
+To ship that packed seed to a BobSwap shelf without it drifting, publish the
+exact bytes (from the repo root):
+
+```sh
+BOBSWAP_ACCOUNT=personal BOBSWAP_SEED=trunk \
+BOBSWAP_UPLOAD_KEY=bsk_live_… npm run seed:publish
+# or: npm run seed:ship    # make-seed, then publish
+```
+
+`--url` defaults to `https://bobswap.hfxaiguy.com`; `--file`, `--version` and
+`--dry-run` are available (`npm run seed:publish -- --help`). The script
+computes the content-addressed version (`<sha12>-<compact createdAt>`), warns if
+`meta.json` is stale, and reports 200 (identical), 201 (new) or 409 (conflict)
+from the service.
 
 ### Clone from a git remote instead
 

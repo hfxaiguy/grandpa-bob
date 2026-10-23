@@ -16,6 +16,10 @@ export interface SeedMeta {
   /** ISO timestamp of when the seed was packed. */
   createdAt: string;
   fileCount?: number;
+  /** SHA-256 of the exact archive bytes, when the packer recorded one. */
+  sha256?: string;
+  /** Archive size in bytes, when the packer recorded one. */
+  size?: number;
 }
 
 export type SeedFreshness = "newer" | "current" | "unknown";
@@ -33,10 +37,13 @@ export function parseSeedMeta(raw: unknown): SeedMeta | null {
   const record = raw as Record<string, unknown>;
   const createdAt = typeof record.createdAt === "string" ? record.createdAt : "";
   if (!createdAt || Number.isNaN(Date.parse(createdAt))) return null;
+  const sha = typeof record.sha256 === "string" ? record.sha256.trim().toLowerCase() : "";
   return {
     version: typeof record.version === "number" ? record.version : undefined,
     createdAt,
     fileCount: typeof record.fileCount === "number" ? record.fileCount : undefined,
+    sha256: /^[0-9a-f]{64}$/.test(sha) ? sha : undefined,
+    size: typeof record.size === "number" ? record.size : undefined,
   };
 }
 
@@ -44,15 +51,27 @@ export function parseSeedMeta(raw: unknown): SeedMeta | null {
  * `"newer"` — the shipped seed was built after the workspace's recorded stamp;
  * `"current"` — the workspace already carries this seed (or a newer import);
  * `"unknown"` — no marker (fresh profile: the seeder handles it) or no seed.
+ *
+ * When both sides carry a content hash (`meta.sha256` from the packer and the
+ * `.seed-sha` marker written when an archive was applied), the hash decides:
+ * a re-packed seed with the same `createdAt` (same-day rebuild) still differs
+ * and must be offered. Without hashes it falls back to the timestamp compare.
  */
 export function seedFreshness(
   workspaceStamp: string | null,
   seed: SeedMeta | null,
   toleranceMs: number = SEED_CLOCK_TOLERANCE_MS,
+  workspaceSha: string | null = null,
 ): SeedFreshness {
   if (!seed) return "unknown";
   if (!workspaceStamp) return "unknown";
   const workspaceTime = Date.parse(workspaceStamp);
   if (Number.isNaN(workspaceTime)) return "unknown";
+
+  const localSha = workspaceSha?.trim().toLowerCase();
+  if (seed.sha256 && localSha && /^[0-9a-f]{64}$/.test(localSha)) {
+    return seed.sha256 === localSha ? "current" : "newer";
+  }
+
   return Date.parse(seed.createdAt) > workspaceTime + toleranceMs ? "newer" : "current";
 }

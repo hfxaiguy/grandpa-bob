@@ -27,6 +27,23 @@ workspace changelog). Subdomain hops and search-engine redirectors are allowed;
 clicks are exempt because their href may be an opaque redirect. Tests: browser
 22, enrich-profile 143 (3 live skipped).
 
+## 2026-10-23 — packed seeds carry a content hash and can ship to BobSwap
+
+`make-seed` now hashes the archive it wrote and records `sha256` + `size` in
+`seed/meta.json` beside `createdAt`. The toolbar freshness check uses that hash
+when the workspace has a `.seed-sha` marker (written on every seed apply), so a
+re-pack with an unchanged timestamp is still offered as an update; workspaces
+without hashes keep the timestamp comparison. A manual Import clears the hash.
+
+New `npm run seed:publish` (root) uploads the packed
+`web/public/seed/workspace.json` to a BobSwap shelf using the exact bytes, with
+a content-addressed version label (`<sha12>-<compact createdAt>`): configure
+`BOBSWAP_ACCOUNT`, `BOBSWAP_SEED`, `BOBSWAP_UPLOAD_KEY` (and optionally
+`BOBSWAP_URL`/`BOBSWAP_VERSION`), or use `--dry-run`. `npm run seed:ship` runs
+`make-seed` then the publish, so the shipped and published seeds cannot drift.
+The script warns when `meta.json` no longer matches and reports the service's
+200/201/409 result.
+
 ## 2026-10-23 — browser profiles, seed sources and a zero-storage relay
 
 The browser target now keeps **profiles**: independent OPFS workspaces under

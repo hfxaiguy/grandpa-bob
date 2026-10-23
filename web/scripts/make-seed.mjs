@@ -25,6 +25,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
@@ -121,9 +122,21 @@ try {
 await fs.mkdir(path.dirname(out), { recursive: true });
 const archive = { version: 1, createdAt: new Date().toISOString(), files };
 const json = JSON.stringify(archive);
-await fs.writeFile(out, json);
+const bytes = Buffer.from(json, "utf8");
+const sha256 = createHash("sha256").update(bytes).digest("hex");
+await fs.writeFile(out, bytes);
 // A tiny sidecar so the browser can compare seed builds with a few hundred
-// bytes instead of re-downloading the archive on every boot (main.ts).
-const meta = { version: archive.version, createdAt: archive.createdAt, fileCount: files.length };
+// bytes instead of re-downloading the archive on every boot (main.ts). The
+// hash lets it detect a same-day re-pack whose timestamp equals the old one.
+const meta = {
+  version: archive.version,
+  createdAt: archive.createdAt,
+  fileCount: files.length,
+  size: bytes.length,
+  sha256,
+};
 await fs.writeFile(path.join(path.dirname(out), "meta.json"), JSON.stringify(meta));
-console.log(`seed: ${files.length} files from ${workspace} -> ${out} (${(json.length / 1024).toFixed(0)} KiB)`);
+console.log(
+  `seed: ${files.length} files from ${workspace} -> ${out} ` +
+    `(${(bytes.length / 1024).toFixed(0)} KiB, sha256 ${sha256.slice(0, 12)}…)`,
+);
