@@ -83,6 +83,11 @@ assert.equal(calls, 2, "router prompt + mini prompt, then the pause");
 assert.equal(offered[0].length, 1, "the prompt offered exactly the mini tree tool");
 assert.equal(offered[0][0].function.name, "mini");
 assert.deepEqual(offered[0][0].function.parameters.required, ["input"], "the schema requires the tree's needs");
+assert.match(
+  offered[0][0].function.description,
+  /Takes \{input: "…"\}/,
+  "the description spells out the call shape, so a caller cannot send the wrong key",
+);
 assert.ok(!offered[0].some((t) => t.function.name === "broken"), "the broken app tree was skipped");
 
 // ── 2. a fresh Agent (restart) resumes inside the tree tool ──

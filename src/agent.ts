@@ -740,6 +740,19 @@ export class Agent {
   }
 
   /**
+   * The call shape a tree's declared needs expect: `{input: "…"}`, or
+   * `{task: "…"}` for an app that names its need differently. The engine
+   * rejects a call whose keys miss the declared needs outright, so the shape
+   * is spelled out in the description the prompt (and the tool gate) reads.
+   */
+  private treeCallShape(needs: string[], optionalNeeds: Set<string>): string {
+    if (needs.length === 0) return "";
+    const shape = `{${needs.map((need) => `${need}: "…"`).join(", ")}}`;
+    const optional = needs.filter((need) => optionalNeeds.has(need));
+    return `Takes ${shape}${optional.length ? ` (optional: ${optional.join(", ")})` : ""}.`;
+  }
+
+  /**
    * Every runnable workspace tree (patterns/<name>.prod.mjs, app/<name>/tree.prod.mjs)
    * as a callable tool entry. Prompts opt in with `.tools("<name>")` and the
    * model calls them like any other tool; the engine runs the tree in place
@@ -773,6 +786,7 @@ export class Agent {
             : [],
         );
         const required = needs.filter((need) => !optionalNeeds.has(need));
+        const callShape = this.treeCallShape(needs, optionalNeeds);
         if (tools[source.name]) {
           // Both a pattern and an app tree can share a name; listTreeSources
           // sorts apps last, so the app tree wins the tool slot.
@@ -784,7 +798,8 @@ export class Agent {
         tools[source.name] = {
           description:
             `${source.description} Call this to run the "${source.name}" tree; ` +
-            "the tree's result is returned as the tool result.",
+            "the tree's result is returned as the tool result." +
+            (callShape ? ` ${callShape}` : ""),
           parameters: {
             type: "object",
             properties: Object.fromEntries(
