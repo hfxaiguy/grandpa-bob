@@ -2,6 +2,23 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-23 — board layout: no phantom column, equal row heights, ✕ always reachable
+
+Three tile fixes, mostly fallout from the pinned/wide work:
+
+- `↔` (`wide`) spans two grid tracks. When the tiles area only fit one 340px
+  column, CSS Grid invented an implicit second track: following tiles were
+  squeezed into a thin strip on the right (trunk could land there) and the grid
+  no longer lined up. The grid now adds `has-wide` whenever a visible tile is
+  wide and guarantees two real tracks (each at least half the row, capped at
+  340px); phones still ignore `wide` (`grid-column: auto`).
+- Rows stretch (`align-items: stretch` instead of `start`), so a tile with less
+  content — usually trunk — no longer sits short next to a taller neighbour.
+- Only the tile name shrinks (ellipsis) in the header, controls are `flex: none`
+  and the header wraps only as a last resort, so the pin/wide/expand/`✕` buttons
+  stay on screen and clickable at any tile width; below 330px tile width the
+  status word is dropped (container query) instead of pushing `✕` off the tile.
+
 ## 2026-10-23 — seed:publish asks once, remembers, and seed:ship forwards flags
 
 `seed:publish` now prompts on a terminal for the account, seed name and upload
@@ -110,6 +127,46 @@ of every prod tree). Pin-on-open is unchanged: a session still freezes the tree
 file it opened on. Tests: the version suites are deleted; tree discovery,
 pattern paths, pinning, spec-lint and the tree/app-tool tests now use
 `.prod.mjs` fixtures.
+
+## 2026-10-22 — hidden tiles park in a left rail
+
+Hiding a tile (the `✕` in its header, or the `tiles ▾` menu) no longer makes it
+disappear: it becomes a small square in a thin rail on the left of the board.
+Squares are status-tinted while that app is running (accent), waiting (warn) or
+failed (err); hover or keyboard focus opens a fixed-position card with the app
+name, status and description (a Portal, so a scrolling rail cannot clip it);
+click — or tap on a phone — puts the tile straight back in the seat its pin and
+recency rules give it. The rail keeps board order (the new `hiddenApps()` shares
+the board's ordering), only renders while something is hidden, and sits between
+the board and the stream: `[rail] [tiles] [stream]`.
+
+Tests: `test:ui-order` now also asserts the rail order and that a restore empties
+the rail.
+
+## 2026-10-22 — a mobile-first board: hidden stream, pinned tiles, live recency
+
+The tiled UI now leads with the tiles on a phone. The **event stream** starts
+hidden at or below 640px and opens as a bottom sheet, with a `stream <count>`
+button in the toolbar as the entry point; on wider screens it stays a side rail
+and its shown/hidden state persists (`gpb.tiled.stream`) — hiding it removes the
+rail entirely on any screen, and the sheet/panel closes with its own `✕`.
+Auto-hide at the breakpoint is transient, so resizing a desktop window does not
+rewrite the saved preference. The same pass lets the toolbar wrap, gives the grid
+a `minmax(min(340px, 100%), 1fr)` column so a narrow phone gets a full-width tile
+instead of an overflowing 340px track, stops wide tiles from spanning implicit
+columns, and fixes the composer's textarea at 16px so iOS does not zoom on focus.
+
+Tiles are **pinnable** (`📌` in the tile header; persisted in
+`gpb.tiled.layout` as `pinned`, trunk pinned by default, including for layouts
+saved before pins existed). Pinned tiles keep their manual order and remain
+draggable; unpinned tiles **float to the top by most recent activity** and cannot
+be dragged (a drop would be undone by the next event — pin to fix a place).
+Activity is derived client-side from the live SSE frames (turn start, app
+changes, emits) and seeded from the last 20 turns after a load, so the order
+survives a reload without storing timestamps server-side.
+
+Tests: `test:ui` (ui typecheck + build), `test:ui-order` (pinned-first order,
+activity ranking, live bumps), `scripts/memory-race-test.ts`.
 
 ## 2026-10-22 — refs are minted by the engine; folds no longer write the grammar
 

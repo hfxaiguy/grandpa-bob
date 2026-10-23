@@ -1,5 +1,6 @@
 /** Tile, memory, per-tile event log, global stream, session panel. */
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { Portal } from "solid-js/web";
 import { describeEvent, streamLines, type EventLine } from "./describe";
 import { copyEventStream, copyText, downloadEventStream } from "./event-dump";
 import {
@@ -25,7 +26,10 @@ import {
   toggleExpanded,
   toggleWide,
   toggleHidden,
+  togglePinned,
   moveTile,
+  hiddenApps,
+  setStreamOpen,
   toast,
   sendFile,
   transcribeFileStream,
@@ -855,10 +859,35 @@ function ProvenanceModal(props: { turnId: string; bubble: number; text: string; 
 const [dragging, setDragging] = createSignal<string | null>(null);
 const [dropTarget, setDropTarget] = createSignal<string | null>(null);
 
+/** The app currently executing: walk the running turn's events through the same
+ *  boundary stack the server uses (src/app-attribution.ts). Every app tree opens
+ *  its own tile, even nested inside another app (enrich-profile calling
+ *  contacts); a non-app tree tool is a capability and stays with the app around
+ *  it. Until /api/apps lands, fall back to the legacy outermost rule instead of
+ *  tagging a nested run "trunk". */
+function currentRunningApp(): string | null {
+  const t = state.turns.find((x) => x.status === "running");
+  if (!t) return null;
+  const st = newTurnApps(state.apps.length ? state.apps.map((a) => a.name) : undefined);
+  for (const e of t.events) tagEventApp(st, e);
+  return st.current;
+}
+
+/** The app a failed last turn was headed to: its tile shows the error and the
+ *  composer's retry. */
+function erroredApp(): string | null {
+  const last = state.turns[state.turns.length - 1];
+  return last && last.status === "error" ? (last.inputApp ?? "trunk") : null;
+}
+
 function Tile(props: { app: AppInfo }) {
   const name = () => props.app.name;
   const expanded = () => state.layout.expanded.includes(name());
   const wide = () => state.layout.wide.includes(name());
+  // A pinned tile keeps its place and is the only kind that can be dragged; an
+  // unpinned tile follows recent activity, so a manual drop would be undone by
+  // the next event (moveTile refuses it too).
+  const pinned = () => state.layout.pinned.includes(name());
   const paused = () => state.awaiting === name();
   const over = () => dragging() !== null && dragging() !== name() && dropTarget() === name();
   // Pointer-drag state for this tile: `arm` is set on pointerdown (before the
@@ -866,20 +895,8 @@ function Tile(props: { app: AppInfo }) {
   let arm: { id: number; x: number; y: number } | null = null;
   let drag = false;
   let ghost: HTMLDivElement | null = null;
-  // The app currently executing: walk the running turn's events through the
-  // same boundary stack the server uses (src/app-attribution.ts). Every app
-  // tree opens its own tile, even nested inside another app (enrich-profile
-  // calling contacts); a non-app tree tool is a capability and stays with the
-  // app around it. Until /api/apps lands, fall back to the legacy outermost
-  // rule instead of tagging a nested run "trunk".
-  const currentApp = createMemo(() => {
-    const t = state.turns.find((x) => x.status === "running");
-    if (!t) return null;
-    const st = newTurnApps(state.apps.length ? state.apps.map((a) => a.name) : undefined);
-    for (const e of t.events) tagEventApp(st, e);
-    return st.current;
-  });
-  const running = () => currentApp() === name();
+  // The app currently executing (shared with the hidden-tile rail).
+  const running = createMemo(() => currentRunningApp() === name());
   const bubbles = createMemo(() => bubblesFor(name()));
   const chatRef = { el: undefined as HTMLDivElement | undefined };
   // The bubble whose provenance panel is open (null = closed).
@@ -897,10 +914,7 @@ function Tile(props: { app: AppInfo }) {
   // turn runs the store nulls `awaiting`, so nothing is shown — a message sent
   // mid-run would land on the trunk anyway. A failed turn keeps a retry
   // composer on the app it was headed to.
-  const retryApp = createMemo(() => {
-    const last = state.turns[state.turns.length - 1];
-    return last && last.status === "error" ? (last.inputApp ?? "trunk") : null;
-  });
+  const retryApp = createMemo(() => erroredApp());
   const parkedApp = createMemo(() => {
     if (state.awaiting != null) return state.awaiting;
     if (state.turns.some((t) => t.status === "running")) return null;
@@ -908,10 +922,7 @@ function Tile(props: { app: AppInfo }) {
   });
   const showInput = () => parkedApp() === name() || retryApp() === name();
 
-  const errored = createMemo(() => {
-    const last = state.turns[state.turns.length - 1];
-    return !!last && last.status === "error" && (last.inputApp ?? "trunk") === name();
-  });
+  const errored = createMemo(() => erroredApp() === name());
   const statusText = () => (paused() ? "waiting" : running() ? "running" : errored() ? "error" : "idle");
 
   // Pointer-based drag: press, move past a small threshold, release on the
@@ -949,10 +960,21 @@ function Tile(props: { app: AppInfo }) {
   return (
     <section
       class="tile"
-      classList={{ expanded: expanded(), wide: wide(), paused: paused(), errored: errored(), "drop-target": over() }}
+      classList={{
+        expanded: expanded(),
+        wide: wide(),
+        paused: paused(),
+        errored: errored(),
+        pinned: pinned(),
+        "drop-target": over(),
+      }}
       data-tile={name()}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
+        // Only pinned tiles are manually ordered (see moveTile): unpinned tiles
+        // follow recent activity, so arming a drag on one would promise a move
+        // the next event takes back.
+        if (!pinned()) return;
         // Presses on controls and selectable text keep their native behavior
         // (buttons, the composer, links, chat bubbles, token lines, the
         // memory/event panels); everything else on the tile arms a drag.
@@ -975,7 +997,9 @@ function Tile(props: { app: AppInfo }) {
         ghostAt(e.clientX, e.clientY);
         const tile = (document.elementFromPoint(e.clientX, e.clientY) as Element | null)?.closest(".tile");
         const overName = tile?.getAttribute("data-tile") ?? null;
-        setDropTarget(overName && overName !== name() ? overName : null);
+        // Land only on another pinned tile: the unpinned block has no manual
+        // order to land in.
+        setDropTarget(overName && overName !== name() && state.layout.pinned.includes(overName) ? overName : null);
       }}
       onPointerUp={(e) => {
         if (!arm || e.pointerId !== arm.id) return;
@@ -995,13 +1019,22 @@ function Tile(props: { app: AppInfo }) {
         <span class="tile-name">{name()}</span>
         <span class="tile-status">{statusText()}</span>
         <span class="spacer" />
-        <button title="wider" onClick={() => toggleWide(name())}>
+        <button
+          class="tile-pin"
+          classList={{ active: pinned() }}
+          aria-pressed={pinned()}
+          title={pinned() ? "unpin — let this tile move with recent activity" : "pin — keep this tile in place"}
+          onClick={() => togglePinned(name())}
+        >
+          📌
+        </button>
+        <button title={wide() ? "stop spanning two columns" : "wide — span two columns"} onClick={() => toggleWide(name())}>
           ↔
         </button>
         <button title={expanded() ? "restore" : "expand"} onClick={() => toggleExpanded(name())}>
           {expanded() ? "⤡" : "⤢"}
         </button>
-        <button title="hide tile" onClick={() => toggleHidden(name())}>
+        <button title="hide — parks it in the left rail" onClick={() => toggleHidden(name())}>
           ✕
         </button>
       </header>
@@ -1078,16 +1111,87 @@ function Tile(props: { app: AppInfo }) {
   );
 }
 
-export function Tiles(props: { apps: AppInfo[] }) {
+/** Hidden tiles live in a thin rail on the left of the board, one small square
+ *  each (status-tinted while that app runs/waits/fails). Hover or keyboard focus
+ *  reveals what a square is; click/tap puts the tile back on the board. */
+export function HiddenRail() {
+  const hidden = createMemo(() => hiddenApps());
+  const running = createMemo(() => currentRunningApp());
+  const failed = createMemo(() => erroredApp());
+  const statusOf = (name: string): string =>
+    state.awaiting === name ? "waiting" : running() === name ? "running" : failed() === name ? "error" : "idle";
+  // One shared flyout, fixed-positioned (a rail with many squares scrolls, and an
+  // absolutely-positioned card would be clipped by that scroll box).
+  const [info, setInfo] = createSignal<{ app: AppInfo; top: number; left: number } | null>(null);
+  const reveal = (app: AppInfo, el: HTMLElement): void => {
+    const r = el.getBoundingClientRect();
+    setInfo({ app, top: Math.max(8, Math.min(r.top, window.innerHeight - 150)), left: r.right + 8 });
+  };
+  const hideInfo = (): void => {
+    setInfo(null);
+  };
+
   return (
-    <div class="grid">
+    <>
+      <Show when={hidden().length}>
+        <aside class="hidden-rail" aria-label="hidden tiles" onScroll={hideInfo}>
+          <For each={hidden()}>
+            {(a) => (
+              <button
+                type="button"
+                class="hidden-app"
+                classList={{
+                  run: running() === a.name,
+                  wait: state.awaiting === a.name,
+                  err: failed() === a.name,
+                }}
+                aria-label={`${a.name} (hidden) — show this tile`}
+                onMouseEnter={(e) => reveal(a, e.currentTarget)}
+                onMouseLeave={hideInfo}
+                onFocus={(e) => reveal(a, e.currentTarget)}
+                onBlur={hideInfo}
+                onClick={() => {
+                  hideInfo();
+                  toggleHidden(a.name);
+                }}
+              />
+            )}
+          </For>
+        </aside>
+      </Show>
+      <Show when={info()}>
+        {(cur) => (
+          <Portal>
+            <div class="hidden-info" style={{ top: `${cur().top}px`, left: `${cur().left}px` }} role="tooltip">
+              <div class="hidden-info-head">
+                <span class="hidden-info-name">{cur().app.name}</span>
+                <span class="hidden-info-status">{statusOf(cur().app.name)}</span>
+              </div>
+              <Show when={cur().app.description}>
+                <div class="hidden-info-desc">{cur().app.description}</div>
+              </Show>
+              <div class="hidden-info-hint">click to restore</div>
+            </div>
+          </Portal>
+        )}
+      </Show>
+    </>
+  );
+}
+
+export function Tiles(props: { apps: AppInfo[] }) {
+  // A wide tile spans two tracks. The CSS uses this flag to guarantee there are
+  // two: a 2-span in a one-column grid invents a thin implicit track and squeezes
+  // the other tiles into a strip at the right (see `.grid.has-wide`).
+  const hasWide = () => props.apps.some((a) => state.layout.wide.includes(a.name));
+  return (
+    <div class="grid" classList={{ "has-wide": hasWide() }}>
       <For each={props.apps}>{(a) => <Tile app={a} />}</For>
     </div>
   );
 }
 
 export function GlobalStream() {
-  const [open, setOpen] = createSignal(true);
   const lines = createMemo(() => streamLines(state.turns));
   /** Divider rows are not events — keep the header's count about events. */
   const events = createMemo(() => lines().filter((l) => l.kind !== "turn").length);
@@ -1097,12 +1201,12 @@ export function GlobalStream() {
   let ref: HTMLDivElement | undefined;
   createEffect(() => {
     lines();
-    if (ref && open()) ref.scrollTop = ref.scrollHeight;
+    if (ref && state.streamOpen) ref.scrollTop = ref.scrollHeight;
   });
   return (
-    <aside class="stream" classList={{ collapsed: !open() }}>
+    <aside class="stream" classList={{ collapsed: !state.streamOpen }}>
       <div class="stream-head">
-        <button class="panel-title as-button stream-toggle" onClick={() => setOpen(!open())}>
+        <div class="panel-title stream-title">
           event stream <span class="count">{events()}</span>
           {" · "}prompts <span class="count prompt">{prompts()}</span>
           {" · "}tool calls <span class="count tool">{tools()}</span>
@@ -1111,9 +1215,8 @@ export function GlobalStream() {
             <span class="count tok" title={tokenTitle(tokens())}>
               {fmtTokenCount(tokens().input)}/{fmtTokenCount(tokens().output)}
             </span>
-          </Show>{" "}
-          {open() ? "▸" : "◂"}
-        </button>
+          </Show>
+        </div>
         <span class="stream-tools">
           <button
             type="button"
@@ -1136,8 +1239,14 @@ export function GlobalStream() {
             ↓
           </button>
         </span>
+        {/* Hiding the panel is also the toolbar button's job, but a close button
+            inside it is where the eye looks first (and it is the only way out of
+            the phone sheet besides the sticky toolbar). */}
+        <button class="stream-close" title="hide the event stream" onClick={() => setStreamOpen(false)}>
+          ✕
+        </button>
       </div>
-      <Show when={open()}>
+      <Show when={state.streamOpen}>
         <div class="stream-note">copy/download: latest 20 turns · all events per turn</div>
         <div class="stream-body" ref={ref}>
           <For each={lines().slice(-400)}>{(l) => <LogRow line={l} showApp />}</For>

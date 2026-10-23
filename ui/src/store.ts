@@ -23,6 +23,9 @@ export interface Layout {
   hidden: string[];
   expanded: string[];
   wide: string[];
+  /** Tiles fixed in place (and the only ones whose manual order counts).
+   *  Everything else floats to the top with recent activity. */
+  pinned: string[];
 }
 
 export interface UiState {
@@ -64,6 +67,13 @@ export interface UiState {
    *  as a dismissible banner. */
   lastError: { title: string; text: string } | null;
   layout: Layout;
+  /** The event stream is shown. Persisted; on a small screen it starts hidden
+   *  and folds into a bottom sheet when opened. */
+  streamOpen: boolean;
+  /** Last time each app was seen doing something (epoch ms). Drives the
+   *  most-recent-first order of unpinned tiles; derived from the turns, not
+   *  persisted. */
+  activity: Record<string, number>;
   /** Show emits tagged `machine` in the app chat bubbles. On by default
    *  (faded) so tree input and waiting notes stay discoverable; the toggle
    *  lets the user hide them. */
@@ -72,7 +82,12 @@ export interface UiState {
 
 const LAYOUT_KEY = "gpb.tiled.layout";
 const MACHINE_KEY = "gpb.showMachine";
+const STREAM_KEY = "gpb.tiled.stream";
 const BRIDGE_KEY = "bob:telegram-bridge";
+
+/** The mobile breakpoint. styles.css repeats the same width: at or below it
+ *  the stream folds away by default and opens as a bottom sheet. */
+export const SMALL_QUERY = "(max-width: 640px)";
 
 function loadBridge(): boolean {
   try {
@@ -91,12 +106,33 @@ function loadLayout(): Layout {
         hidden: Array.isArray(raw.hidden) ? raw.hidden : [],
         expanded: Array.isArray(raw.expanded) ? raw.expanded : [],
         wide: Array.isArray(raw.wide) ? raw.wide : [],
+        // A layout saved before pins existed (or a fresh one) starts with the
+        // trunk fixed: the default is "trunk stays put, everything else flows".
+        pinned: Array.isArray(raw.pinned) ? raw.pinned : ["trunk"],
       };
     }
   } catch {
     /* private mode / bad json */
   }
-  return { order: [], hidden: [], expanded: [], wide: [] };
+  return { order: [], hidden: [], expanded: [], wide: [], pinned: ["trunk"] };
+}
+
+/** Stream visibility: an explicit user choice, else open on desktop and closed
+ *  on a phone (small screens reclaim the space by default). */
+function loadStreamOpen(): boolean {
+  try {
+    const raw = localStorage.getItem(STREAM_KEY);
+    if (raw === "1") return true;
+    if (raw === "0") return false;
+  } catch {
+    /* private mode */
+  }
+  try {
+    if (typeof window === "undefined") return true;
+    return !window.matchMedia?.(SMALL_QUERY).matches;
+  } catch {
+    return true;
+  }
 }
 
 function loadShowMachine(): boolean {
@@ -132,6 +168,8 @@ export const [state, setState] = createStore<UiState>({
   toastErr: false,
   lastError: null,
   layout: loadLayout(),
+  streamOpen: loadStreamOpen(),
+  activity: {},
   showMachine: loadShowMachine(),
 });
 
@@ -624,6 +662,68 @@ export function toggleMachine(): void {
   }
 }
 
+/** Expand/collapse the event stream. On a small screen "collapsed" means
+ *  hidden entirely and "open" means the bottom sheet. `persist: false` is the
+ *  auto-hide: the breakpoint fold must not overwrite the user's desktop pref. */
+export function setStreamOpen(open: boolean, persist = true): void {
+  setState("streamOpen", open);
+  if (!persist) return;
+  try {
+    localStorage.setItem(STREAM_KEY, open ? "1" : "0");
+  } catch {
+    /* private mode */
+  }
+}
+
+export function toggleStream(): void {
+  setStreamOpen(!state.streamOpen);
+}
+
+/** Record that an app did something, for the most-recent-first tile order.
+ *  `app` is the attributed tree name; trunk is the default attribution. */
+function touchActivity(app: string | null | undefined, at?: number): void {
+  const name = app || "trunk";
+  const when = at && Number.isFinite(at) && at > 0 ? at : Date.now();
+  setState("activity", name, Math.max(state.activity[name] ?? 0, when));
+}
+
+/** The most recent app a live event was attributed to. Turns fire an event per
+ *  step; bumping the owning tile on every one of them would reshuffle the grid
+ *  several times a second, so activity only moves when the run changes app. */
+let lastTouchedApp: string | null = null;
+
+/** Seed recency from turn history (a reload, a session switch, a refresh) so
+ *  the order survives without persisting timestamps. Replayed events all carry
+ *  the read time as their `ts` (sanitize.ts mints it), so the clock here is the
+ *  turn's real `startedAt` plus the event's position as a fraction of a
+ *  millisecond: order inside a turn is preserved and nothing crosses into the
+ *  next turn. Only the tail matters — older activity cannot outrank recent work. */
+const ACTIVITY_TURNS = 20;
+
+function seedActivityFromTurns(turns: Turn[]): void {
+  const latest: Record<string, number> = {};
+  const bump = (app: string | null | undefined, at: number | null | undefined): void => {
+    const name = app || "trunk";
+    if (!at || !Number.isFinite(at) || at <= 0) return;
+    if (at > (latest[name] ?? 0)) latest[name] = at;
+  };
+  for (const t of turns.slice(-ACTIVITY_TURNS)) {
+    bump(t.inputApp, t.startedAt);
+    t.events.forEach((ev, i) => {
+      if (ev.app) bump(ev.app, t.startedAt + (i + 1) / 1000);
+    });
+  }
+  // Merge instead of replacing: a live-touched app outranks anything history
+  // reports (history timestamps are never newer than "just now").
+  setState(
+    produce((s) => {
+      for (const [name, at] of Object.entries(latest)) {
+        if (at > (s.activity[name] ?? 0)) s.activity[name] = at;
+      }
+    }),
+  );
+}
+
 // ── layout tweaks ───────────────────────────────────────────────────────
 
 /** Dismiss the global turn-failure banner. */
@@ -643,8 +743,28 @@ export function toggleWide(name: string): void {
   setState("layout", "wide", (h) => (h.includes(name) ? h.filter((x) => x !== name) : [...h, name]));
   saveLayout();
 }
+
+/** Pin a tile: it keeps its place (and becomes manually draggable) while the
+ *  unpinned tiles follow recent activity. Trunk starts pinned. */
+export function togglePinned(name: string): void {
+  setState("layout", "pinned", (p) => (p.includes(name) ? p.filter((x) => x !== name) : [...p, name]));
+  // A pinned tile needs an anchor in the manual order. On a board that has never
+  // been reordered that list is empty, and base order would then put the new pin
+  // above the other pins (order entries come before unknown names) — so anchor
+  // every pinned tile first, then append the new one at the end of the block.
+  setState("layout", "order", (order) => {
+    const next = [...order];
+    for (const n of state.layout.pinned) if (!next.includes(n)) next.push(n);
+    return next;
+  });
+  saveLayout();
+}
+
 export function moveTile(from: string, to: string): void {
   if (from === to) return;
+  // Only pinned tiles have a manual order: an unpinned tile follows activity, so
+  // a drop involving one would be undone by the next event. Pin it first.
+  if (!state.layout.pinned.includes(from) || !state.layout.pinned.includes(to)) return;
   setState("layout", "order", (order) => {
     const names = order.length ? [...order] : [];
     for (const n of [from, to]) if (!names.includes(n)) names.push(n);
@@ -658,8 +778,8 @@ export function moveTile(from: string, to: string): void {
   saveLayout();
 }
 
-/** Tiles in display order: trunk + apps, minus hidden, per the saved order. */
-export function orderedApps(): AppInfo[] {
+/** Saved order first, then any app the order has never seen (server order). */
+function baseOrderApps(): AppInfo[] {
   const byName = new Map(state.apps.map((a) => [a.name, a]));
   const seen = new Set<string>();
   const out: AppInfo[] = [];
@@ -671,7 +791,35 @@ export function orderedApps(): AppInfo[] {
     }
   }
   for (const a of state.apps) if (!seen.has(a.name)) out.push(a);
-  return out.filter((a) => !state.layout.hidden.includes(a.name));
+  return out;
+}
+
+/** Every app in board order: the pinned block first (manual order), then the
+ *  unpinned apps by most recent activity. Ties — and apps that have never run —
+ *  keep the base order, so nothing moves until something happens. */
+function boardOrder(): AppInfo[] {
+  const base = baseOrderApps();
+  const pinned = new Set(state.layout.pinned);
+  const rank = new Map(base.map((a, i) => [a.name, i]));
+  const head = base.filter((a) => pinned.has(a.name));
+  const tail = base
+    .filter((a) => !pinned.has(a.name))
+    .sort((a, b) => {
+      const delta = (state.activity[b.name] ?? 0) - (state.activity[a.name] ?? 0);
+      return delta !== 0 ? delta : (rank.get(a.name) ?? 0) - (rank.get(b.name) ?? 0);
+    });
+  return [...head, ...tail];
+}
+
+/** The visible board: board order minus hidden tiles. */
+export function orderedApps(): AppInfo[] {
+  return boardOrder().filter((a) => !state.layout.hidden.includes(a.name));
+}
+
+/** The hidden tiles, in board order — the rail shows them where they would land
+ *  if restored. */
+export function hiddenApps(): AppInfo[] {
+  return boardOrder().filter((a) => state.layout.hidden.includes(a.name));
 }
 
 // ── live stream (SSE) ───────────────────────────────────────────────────
@@ -683,6 +831,8 @@ export function orderedApps(): AppInfo[] {
  * twice. Close before re-opening, and close on unmount (mountApp's dispose).
  */
 let stream: EventSource | null = null;
+/** The breakpoint listener is page-lifetime, not mount-lifetime (see init). */
+let watchingSmallScreen = false;
 
 export function openLiveStream(): void {
   stream?.close();
@@ -701,6 +851,8 @@ export function handleSSE(msg: any): void {
     case "turn_start": {
       if (msg.session !== state.active) return;
       if (state.turns.some((t) => t.turnId === msg.turnId)) return;
+      // The app the human just spoke to is the most recently active one.
+      touchActivity(msg.inputApp, msg.ts);
       setState(
         produce((s) => {
           s.turns.push({
@@ -724,6 +876,12 @@ export function handleSSE(msg: any): void {
     }
     case "event": {
       const ev = msg.event;
+      // Recency ordering: only bump when the run moves to a different app, so a
+      // chatty turn does not reshuffle the grid on every step.
+      if (ev?.app && ev.app !== lastTouchedApp) {
+        lastTouchedApp = ev.app;
+        touchActivity(ev.app, typeof ev.ts === "number" ? ev.ts : undefined);
+      }
       setState(
         produce((s) => {
           const t = s.turns.find((x) => x.turnId === msg.turnId);
@@ -744,6 +902,13 @@ export function handleSSE(msg: any): void {
       break;
     }
     case "emit": {
+      // An emitted message is activity for the app that wrote it (the event
+      // handler already moved the tile when the run entered that app; this
+      // keeps the timestamp honest for app-level emits).
+      if (msg.app && msg.app !== lastTouchedApp) {
+        lastTouchedApp = msg.app;
+        touchActivity(msg.app);
+      }
       setState(
         produce((s) => {
           const t = s.turns.find((x) => x.turnId === msg.turnId);
@@ -886,6 +1051,21 @@ export async function init(): Promise<void> {
     await refreshSession();
   } catch (e) {
     console.warn("session:", e);
+  }
+  // Fold the stream away when the window is shrunk to phone width: the auto-hide
+  // is transient (not persisted), so a desktop pref survives a resize. Guarded
+  // because a test harness has no matchMedia, and registered once — `init` runs
+  // again when the browser target remounts the app.
+  if (!watchingSmallScreen) {
+    watchingSmallScreen = true;
+    try {
+      const mq = window.matchMedia?.(SMALL_QUERY);
+      mq?.addEventListener?.("change", (e) => {
+        if (e.matches && state.streamOpen) setStreamOpen(false, false);
+      });
+    } catch {
+      /* no matchMedia */
+    }
   }
   openLiveStream();
   setState("ready", true);

@@ -58,7 +58,18 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
   top: 0;
   z-index: 20;
 }
-.brand { font-weight: 700; letter-spacing: 0.3px; }
+.brand { display: flex; align-items: center; gap: 8px; user-select: none; }
+.brand-mark {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 8px;
+  background: #14171f;
+  box-shadow: 0 0 0 1px var(--border), 0 2px 8px rgba(0, 0, 0, 0.35);
+  object-fit: cover;
+}
+.brand-name { font-weight: 700; letter-spacing: 0.3px; }
+@media (max-width: 560px) { .brand-name { display: none; } }
 .conn { width: 9px; height: 9px; border-radius: 50%; background: #475569; }
 .conn.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .session-label { color: var(--muted); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -69,10 +80,80 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  /* `min(340px, 100%)` so a narrow phone gets one full-width column instead of
+     a 340px track that overflows the viewport. */
+  grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
   gap: 12px;
-  align-items: start;
+  /* Tiles in a row share its height (`max-height` on .tile still caps them), so
+     a short trunk tile does not float above a taller neighbour. */
+  align-items: stretch;
 }
+/* A `wide` tile spans two tracks, so make sure two actually exist: in a layout
+   that only fits one 340px column, `span 2` would create an implicit second
+   track and push the other tiles into a thin strip on the right. The phone
+   breakpoint below turns spanning off instead. */
+@media (min-width: 641px) {
+  .grid.has-wide {
+    grid-template-columns: repeat(auto-fill, minmax(min(340px, calc((100% - 12px) / 2)), 1fr));
+  }
+}
+
+/* ── hidden tiles: the left rail ───────────────────────────────────────── */
+.hidden-rail {
+  flex: none;
+  width: 42px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+/* The little square standing in for a hidden tile: status-tinted while its app
+   runs (accent), waits (warn) or failed (err). */
+.hidden-app {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border-radius: 7px;
+  background: var(--card);
+  border: 1px solid var(--border);
+}
+.hidden-app:hover, .hidden-app:focus-visible { border-color: var(--accent); }
+.hidden-app.run { border-color: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.hidden-app.wait { border-color: var(--warn); box-shadow: 0 0 6px var(--warn); }
+.hidden-app.err { border-color: var(--err); box-shadow: 0 0 6px var(--err); }
+
+/* Hover/focus card (rendered through a Portal into <body>): name, status and the
+   tile's description, so a square is never a mystery. */
+.hidden-info {
+  position: fixed;
+  z-index: 55;
+  width: min(280px, 70vw);
+  padding: 8px 10px;
+  background: var(--card);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+.hidden-info-head { display: flex; align-items: baseline; gap: 8px; }
+.hidden-info-name { font-weight: 650; }
+.hidden-info-status { margin-left: auto; color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px; }
+.hidden-info-desc {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.hidden-info-hint { margin-top: 6px; font-size: 11px; color: var(--accent); }
 
 .tile {
   display: flex;
@@ -83,6 +164,9 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
   overflow: hidden;
   min-height: 260px;
   max-height: 70vh;
+  /* Lets the header respond to the tile's own width (the stream and the wide
+     toggle change it) rather than the viewport. See the @container rule. */
+  container-type: inline-size;
 }
 .tile.wide { grid-column: span 2; }
 .tile.expanded { grid-column: 1 / -1; max-height: 82vh; }
@@ -111,20 +195,47 @@ body.dragging-tile { user-select: none !important; }
 
 .tile-head {
   display: flex;
+  /* Let the controls wrap on a tile too narrow for name + status + buttons:
+     otherwise the name keeps its full width and the ✕ is clipped by .tile's
+     overflow. */
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
   background: var(--card);
   border-bottom: 1px solid var(--border);
-  cursor: grab;
-  /* The header is the main drag handle (tile reordering is pointer-based; see
-     the Tile component): keep its text non-selectable so a press here can
-     never start a text selection. */
+  /* Only pinned tiles can be dragged (see the Tile component): their header is
+     the drag handle, so keep its text non-selectable. Unpinned tiles follow
+     activity and keep the default cursor. */
+  cursor: default;
   user-select: none;
 }
-.tile-head button { padding: 1px 7px; font-size: 12px; }
-.tile-name { font-weight: 650; }
-.tile-status { color: var(--muted); font-size: 12px; }
+.tile.pinned .tile-head { cursor: grab; }
+.tile-head button { padding: 1px 7px; font-size: 12px; flex: none; }
+/* The pin toggle: dimmed while unpinned, accent-ringed while pinned. */
+.tile-pin { opacity: 0.4; }
+.tile-pin.active { opacity: 1; border-color: var(--accent); }
+.tile-pin:hover { opacity: 1; }
+.tile-head .dot { flex: none; }
+/* The name is the only flexible header item: ellipsize it so the buttons (the
+   ✕ in particular) always stay on screen. */
+.tile-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile-status { flex: none; color: var(--muted); font-size: 12px; }
+/* Narrow tile (two columns with the stream open, or a phone): drop the status
+   word and tighten the gaps so name + controls stay on one line. The wrap in
+   .tile-head is only the last-resort fallback. */
+@container (max-width: 330px) {
+  .tile-head { gap: 6px; }
+  .tile-head button { padding: 1px 6px; }
+  .tile-status { display: none; }
+}
 .dot { width: 9px; height: 9px; border-radius: 50%; background: transparent; }
 .dot.run { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 .dot.wait { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
@@ -245,16 +356,29 @@ body.dragging-tile { user-select: none !important; }
   flex-direction: column;
   min-height: 0;
 }
-.stream.collapsed { width: auto; }
+/* Hiding the stream reclaims its width entirely (the toolbar's `stream` button
+   brings it back). */
+.stream.collapsed { display: none; }
 .stream-head { display: flex; align-items: center; gap: 6px; padding: 6px 8px 3px; }
-.stream-head .stream-toggle { flex: 1; width: auto; padding: 4px 2px; }
+.stream-head .stream-title { flex: 1; min-width: 0; padding: 4px 2px; }
 .stream-tools { display: flex; gap: 4px; flex: none; }
 .stream-tools button { padding: 2px 8px; font-size: 11px; line-height: 1.4; }
+.stream-close { padding: 2px 8px; font-size: 11px; line-height: 1.4; flex: none; }
 .stream-note { padding: 0 10px 6px; color: var(--muted); font-size: 10.5px; }
 .stream-body { flex: 1; overflow: auto; padding: 6px 10px 10px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .stream-app { color: var(--pink); min-width: 66px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .empty-state { margin: auto; text-align: center; color: var(--muted); }
+.empty-logo {
+  display: block;
+  width: min(360px, 70vw);
+  height: auto;
+  margin: 0 auto 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+  opacity: 0.96;
+}
 
 .error-banner { display: flex; align-items: center; gap: 14px; padding: 12px 16px; background: #4a1620; border-bottom: 3px solid var(--err); color: #ffd7d7; box-shadow: 0 6px 24px rgba(248, 113, 113, 0.35); animation: err-pulse 1.6s ease-in-out 3; }
 .err-icon { font-size: 30px; line-height: 1; color: var(--err); flex: 0 0 auto; }
@@ -390,4 +514,42 @@ body.dragging-tile { user-select: none !important; }
 .md del { color: var(--muted); }
 .md-raw { white-space: pre-wrap; word-break: break-word; color: var(--muted); }
 .md-img { color: var(--accent); }
+
+/* ── small screens ────────────────────────────────────────────────────────
+   Same 640px breakpoint as SMALL_QUERY in store.ts. The stream starts hidden
+   there and opens as a bottom sheet; the rest is the phone pass over the shell
+   (wrapping toolbar, one full-width tile column, no iOS zoom on focus). */
+@media (max-width: 640px) {
+  .toolbar { flex-wrap: wrap; row-gap: 4px; gap: 6px; padding: 6px 8px; }
+  .session-label { max-width: none; flex: 1 1 40%; min-width: 0; }
+  .toolbar button, .toolbar .link-btn { padding: 6px 10px; }
+  .tile-head button { padding: 4px 9px; }
+  /* Give the tiles the width; the rail only needs the squares and a little air. */
+  .hidden-rail { width: 38px; padding: 8px 0; }
+  .hidden-app { width: 24px; height: 24px; }
+
+  /* A 2-column span would create an implicit track on a single-column grid. */
+  .tile.wide { grid-column: auto; }
+  /* 16px stops iOS Safari from zooming the page when the composer focuses. */
+  .composer-row textarea { font-size: 16px; }
+
+  .stream {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    max-height: 62vh;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 12px 12px 0 0;
+    box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.55);
+    z-index: 45;
+  }
+  /* The sheet header stays compact; the note line was only useful on desktop. */
+  .stream-head { padding: 8px 10px 4px; }
+  .stream-head .stream-title { min-width: 0; }
+  .stream-note { display: none; }
+  .stream-body { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
+}
 

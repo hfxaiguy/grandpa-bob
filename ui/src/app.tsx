@@ -1,7 +1,9 @@
 /** App shell: toolbar + tiled grid + global stream + session drawer. */
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
-import { GlobalStream, RefModal, SessionPanel, Tiles, WorkspaceUpload } from "./components";
-import { init, orderedApps, state, stop, toggleHidden, toggleMachine, dismissError, retryLast } from "./store";
+import logo from "./assets/logo.webp";
+import logoMark from "./assets/logo-mark.webp";
+import { GlobalStream, HiddenRail, RefModal, SessionPanel, Tiles, WorkspaceUpload } from "./components";
+import { init, orderedApps, state, stop, toggleHidden, toggleMachine, toggleStream, dismissError, retryLast } from "./store";
 
 function TilesMenu() {
   const [open, setOpen] = createSignal(false);
@@ -33,6 +35,10 @@ function TilesMenu() {
 export function App() {
   const [showSession, setShowSession] = createSignal(false);
   const apps = createMemo(() => orderedApps());
+  // The toolbar's stream badge. On a phone the stream starts hidden, so this is
+  // the only visible entry point; the count matches the header's event count
+  // (one line per event — turn dividers are not events).
+  const streamEvents = createMemo(() => state.turns.reduce((n, t) => n + (t.events?.length ?? 0), 0));
   // A hard-failed last turn can be resent with one click — unless it hit a
   // quota wall, where the fallback buttons are the right action (a plain retry
   // would just hit the same 402).
@@ -48,7 +54,10 @@ export function App() {
   return (
     <div class="app">
       <header class="toolbar">
-        <span class="brand">grandpa-bob</span>
+        <span class="brand">
+          <img class="brand-mark" src={logoMark} alt="" aria-hidden="true" />
+          <span class="brand-name">grandpa-bob</span>
+        </span>
         <span class="conn" classList={{ on: state.connected }} title={state.connected ? "live" : "disconnected"} />
         <span class="session-label" title={state.active ?? ""}>
           {state.label || state.active || "no session"}
@@ -61,6 +70,14 @@ export function App() {
           </button>
         </Show>
         <span class="spacer" />
+        <button
+          classList={{ active: state.streamOpen }}
+          aria-pressed={state.streamOpen}
+          title={state.streamOpen ? "hide the event stream" : "show the event stream"}
+          onClick={toggleStream}
+        >
+          stream <span class="count">{streamEvents()}</span>
+        </button>
         <button
           classList={{ active: state.showMachine }}
           title="show machine-tagged emits in the app chats"
@@ -100,12 +117,14 @@ export function App() {
         when={state.active}
         fallback={
           <div class="empty-state">
+            <img class="empty-logo" src={logo} alt="grandpa-bob" />
             <p>No session selected.</p>
             <button onClick={() => setShowSession(true)}>open a session</button>
           </div>
         }
       >
         <div class="body">
+          <HiddenRail />
           <main class="tiles">
             <Tiles apps={apps()} />
           </main>
