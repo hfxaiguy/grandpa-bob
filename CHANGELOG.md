@@ -2,6 +2,23 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-23 — ui: tile modals portal out so they cover the viewport
+
+Clicking a memory slot opened the inspector inside the tile instead of over
+the board: `.tile` uses `container-type: inline-size`, and a container (like
+any layout-contained element) becomes the containing block for fixed-position
+descendants, which the tile's `overflow: hidden` then clips — so a modal that
+is "fixed" is laid out relative to the tile, not the viewport. The trunk dock
+made it most visible: a 56 vh bottom strip, additionally transformed on hover.
+The fix is Solid's `<Portal>` (the same trick and rationale as `RailCard`'s
+fixed-position card): the memory-slot inspector wraps its modal markup, and
+the "written from" provenance modal — same `.mem-modal` class, mounted inside
+the chat stream — gets the same wrap at its one call site. Both keep their
+click-outside handling and styling; overlays mounted at the root (RefModal,
+the drawer, toasts) never had the problem.
+
+Tests: `npm run test:ui`.
+
 ## 2026-10-23 — ui: memory panels collapse per tile
 
 A tile's `memory` heading is a toggle now, in the events panel's exact idiom

@@ -175,18 +175,24 @@ function MemoryPanel(props: { app: string }) {
           </ul>
         </Show>
       </Show>
+      {/* The inspector renders through a Portal: `.tile`'s container-type makes it
+          the containing block for fixed-position children (and overflow: hidden
+          clips them), so a plain fixed modal would be confined to the tile — same
+          reason RailCard portals its fixed card. */}
       <Show when={inspect()}>
         {(sel) => (
-          <div class="mem-modal" onClick={(ev) => ev.target === ev.currentTarget && setInspect(null)}>
-            <div class="mem-modal-card">
-              <div class="mem-modal-head">
-                <span class="mem-modal-path">{sel().path}</span>
-                <span class="spacer" />
-                <button onClick={() => setInspect(null)}>✕</button>
+          <Portal>
+            <div class="mem-modal" onClick={(ev) => ev.target === ev.currentTarget && setInspect(null)}>
+              <div class="mem-modal-card">
+                <div class="mem-modal-head">
+                  <span class="mem-modal-path">{sel().path}</span>
+                  <span class="spacer" />
+                  <button onClick={() => setInspect(null)}>✕</button>
+                </div>
+                <div class="mem-modal-body"><RefText text={full(sel().value)} /></div>
               </div>
-              <div class="mem-modal-body"><RefText text={full(sel().value)} /></div>
             </div>
-          </div>
+          </Portal>
         )}
       </Show>
     </div>
@@ -1162,8 +1168,14 @@ export function Tile(props: { app: AppInfo }) {
             <MemoryPanel app={name()} />
             <EventLog app={name()} />
           </div>
+          {/* Portaled like the memory inspector above: fixed positioning must
+              escape `.tile`'s containment or the modal is clipped to the tile. */}
           <Show when={prov()}>
-            {(p) => <ProvenanceModal turnId={p().turnId} bubble={p().bubble} text={p().text} onClose={() => setProv(null)} />}
+            {(p) => (
+              <Portal>
+                <ProvenanceModal turnId={p().turnId} bubble={p().bubble} text={p().text} onClose={() => setProv(null)} />
+              </Portal>
+            )}
           </Show>
         </div>
         <Show when={openKids().length}>
