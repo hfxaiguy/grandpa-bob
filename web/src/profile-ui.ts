@@ -23,6 +23,7 @@ import {
 import {
   activeSwapService,
   DEFAULT_SWAP_SERVICE_URL,
+  defaultSwapService,
   fetchLatestSeed,
   fetchLatestSeedMeta,
   listSwapServices,
@@ -116,7 +117,7 @@ function fillServiceFields(service: SwapService | null): void {
   };
   // A fresh setup defaults to the public BobSwap deployment; saved services
   // and per-profile bindings still win.
-  const value = service ?? { baseUrl: DEFAULT_SWAP_SERVICE_URL };
+  const value = service ?? defaultSwapService();
   set("seed-base-url", value.baseUrl);
   set("seed-realtime-url", value.realtimeUrl);
   set("seed-realtime-key", value.realtimeKey);
@@ -545,12 +546,12 @@ function fillServiceSelect(select: HTMLSelectElement | null, preferred?: string)
   }
 }
 
-/** A saved service, or the built-in default without keys. */
+/** A saved service, or the built-in default without API keys. */
 function resolveService(url: string | undefined): SwapService | null {
   if (!url) return null;
   const saved = listSwapServices().find((service) => service.baseUrl === url);
   if (saved) return saved;
-  return url === DEFAULT_SWAP_SERVICE_URL ? { baseUrl: DEFAULT_SWAP_SERVICE_URL } : null;
+  return url === DEFAULT_SWAP_SERVICE_URL ? defaultSwapService() : null;
 }
 
 function setShareProgress(progress: RelayProgress): void {
@@ -805,21 +806,6 @@ function wireReceiveDialog(): void {
     dialog?.close();
   });
   dialog?.addEventListener("close", () => receiveAbort?.abort());
-
-  // A share link can carry ?recv=<channel_id>&code=<digits>; open the dialog
-  // prefilled so the phone only has to tap the link.
-  const params = new URLSearchParams(location.search);
-  const channel = params.get("recv");
-  const code = params.get("code") ?? "";
-  if (channel && el<HTMLInputElement>("recv-channel")) {
-    const channelInput = el<HTMLInputElement>("recv-channel");
-    if (channelInput) channelInput.value = channel;
-    if (/^\d{6}$/.test(code)) {
-      const codeInput = el<HTMLInputElement>("recv-code");
-      if (codeInput) codeInput.value = code;
-    }
-    open();
-  }
 }
 
 // ── entry point ──────────────────────────────────────────────────────────

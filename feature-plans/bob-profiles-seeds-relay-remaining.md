@@ -34,34 +34,26 @@ running BobSwap instance.
 **Goal:** prove desktop ↔ phone sharing end-to-end against the Lovable-built
 service, and lock the transport contract down.
 
-Deployed service: `https://bobswap.hfxaiguy.com`. As of 2026-10-23 DNS resolves
-(185.158.133.1) but port 443 fails the TLS handshake (no certificate for the
-name) and port 80 answers `409 "error code: 1001"` — the origin is not serving
-yet. First task is to make `/api/health` reachable, then re-run the checks
-below.
+Deployed service: `https://bobswap.hfxaiguy.com` — **live** (health 200,
+`/docs/agents` is the authoritative contract, read 2026-10-23). The client now
+matches it: broadcast event `relay`, exact `realtime_channel`, 192 KiB chunks,
+control plane via role tokens, `complete`-based verification, default Supabase
+realtime endpoint/key, and no pairing codes in URLs.
 
-- [ ] Stand up the BobSwap service. Align these exact details with the generated
-      build (they are the contract `web/src/swap.ts` implements):
-      - channel name `rly:<channel_id>` (or return `realtime_channel`);
-      - **broadcast event name `msg`**;
-      - payloads `{t:"ready"|"check"|"chunk"|"ack"|"finish"|"complete"|"abort"}`;
-      - `Access-Control-Expose-Headers: etag, x-seed-version`, allowed headers
-        `authorization, content-type`, and `?key=` on GETs.
-- [ ] Decide realtime auth. Today the client needs the Supabase
-      URL + publishable key (`realtimeKey`). If the service makes channels
-      private, implement joining with the returned `recipient_join_token` /
-      `owner_join_token`:
-      ```ts
-      await client.realtime.setAuth(joinToken); // before channel.subscribe()
-      ```
-      and fall back cleanly when the service returns no token.
-- [ ] Sender UX: a **Copy link** button next to the pairing code that copies
-      `…/?recv=<channel_id>&code=<six digits>` (the receiver already prefills
-      from those params). Optional: render the same link as a QR code.
+Still open:
+
+- [ ] Obtain an operator-issued `read` key (the docs say the dashboard/key UI is
+      not built yet; there is no public signup). Add it in the BobSwap… dialog.
 - [ ] Verify in two browsers (two Chrome profiles / desktop + phone):
       5 MB workspace, JSON + sqlite files; assert matching visual check, chunk
       progress, sha success, import into current/new profile, abort from either
       side, receiver closed → no stored content.
+- [ ] Confirm control-plane behaviour against the live service: `GET` state
+      shows `recipient_device` + `visual_check` after join; terminal
+      `completed`/`failed`/`aborted` deletes the row; a receiver-cancel DELETE
+      makes the sender fail cleanly.
+- [ ] Sender UX: a **Copy channel id** button only. Pairing codes must never be
+      put in URLs (service policy); do not re-add a `?recv=&code=` link.
 - [ ] Refactor the transport behind an injectable factory
       (`type RealtimeFactory`) so the protocol can be tested without Supabase;
       add `web/scripts/relay-protocol-test.mjs` with a fake in-process bus:
@@ -69,8 +61,9 @@ below.
       - retransmit on a lost ack, abort after 3 attempts;
       - sha mismatch → `complete{sha256_ok:false}`, no import;
       - `abort`/close on both roles.
-- [ ] Keep the client tolerant of both snake_case and camelCase join responses
-      (already done) and add a test for it.
+- [ ] Respect `429 Retry-After` in seed and relay calls with backoff + jitter.
+- [ ] Seed GETs: send `If-None-Match` from the recorded sha (the server exposes
+      a quoted ETag and returns 304) to make repeat pulls cheap.
 
 **Files:** `web/src/swap.ts`, `web/src/profile-ui.ts`, `web/index.html`,
 new `web/scripts/relay-protocol-test.mjs`.

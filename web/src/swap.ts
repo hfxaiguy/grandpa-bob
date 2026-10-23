@@ -1,22 +1,18 @@
 /**
  * BobSwap client: the seed shelf and the zero-storage workspace relay.
  *
- * Server contract (the API built separately):
+ * Server contract (https://bobswap.hfxaiguy.com/docs/agents):
  *   GET  /api/v1/{account}/{seed}/latest/meta?key=…   → tiny freshness record
  *   GET  /api/v1/{account}/{seed}/latest?key=…        → archive JSON (ETag/304)
  *   PUT  /api/v1/{account}/{seed}/{id-and-version}    → upload (Bearer, upload scope)
  *   POST /api/v1/relay/channels                       → pair a share (Bearer, read scope)
  *   POST /api/v1/relay/channels/{id}/join             → join with a pairing code
+ *   GET/POST/DELETE /relay/channels/{id}[/status]     → role-token control plane
  *
- * Relay content travels over an ephemeral realtime broadcast channel; the
- * service stores nothing. Chunks are base64 JSON messages (192 KiB slices →
- * ~256 KiB payloads), acknowledged individually, verified with SHA-256.
- *
- * The realtime transport is Supabase Realtime (`@supabase/supabase-js`,
- * dynamically imported so the default app bundle does not carry it). All
- * protocol messages ride the broadcast event `msg` on channel
- * `rly:{channel_id}`; the service may return another channel name, which is
- * used verbatim.
+ * Relay content travels over an ephemeral Supabase broadcast topic. Broadcast
+ * event: `relay`; payloads: chunk/ack/complete/abort (see RelayMessage).
+ * Chunks are 192 KiB slices → ~256 KiB base64, acknowledged individually,
+ * verified with SHA-256. Pairing codes must never appear in URLs.
  */
 import type { WorkspaceArchive } from "./workspace-transfer";
 import type { SeedMeta } from "./seed-version";
@@ -47,6 +43,23 @@ const STORE_KEY = "bob:swap";
 
 /** Default BobSwap deployment; any saved service overrides it. */
 export const DEFAULT_SWAP_SERVICE_URL = "https://bobswap.hfxaiguy.com";
+
+/**
+ * Public Supabase endpoint used for the ephemeral broadcast topics. The
+ * publishable key is already shipped in the BobSwap dashboard bundle; it
+ * grants only public broadcast access, never API scopes.
+ */
+export const DEFAULT_SWAP_REALTIME_URL = "https://iqrsezxlgcfqxaiytsjj.supabase.co";
+export const DEFAULT_SWAP_REALTIME_KEY = "sb_publishable_Q_TUej1amQlqMTQ7YRJsRA_eo7L_2qs";
+
+/** A keyless default entry: enough to open the dialogs and show what to add. */
+export function defaultSwapService(): SwapService {
+  return {
+    baseUrl: DEFAULT_SWAP_SERVICE_URL,
+    realtimeUrl: DEFAULT_SWAP_REALTIME_URL,
+    realtimeKey: DEFAULT_SWAP_REALTIME_KEY,
+  };
+}
 
 function normalizeBaseUrl(raw: string): string {
   const value = String(raw ?? "").trim().replace(/\/+$/, "");
@@ -292,18 +305,25 @@ export async function publishSeed(
 export interface RelayChannelInfo {
   channelId: string;
   code: string;
+  /** Exact topic returned by the service; never reconstruct it. */
   realtimeChannel: string;
   expiresAt?: string;
   visualCheck?: string;
+  /** Role token for control-plane GET/status/DELETE (never in a URL). */
+  ownerToken?: string;
 }
 
 export interface RelayJoinInfo {
+  channelId: string;
+  /** Exact topic returned by the service; never reconstruct it. */
   realtimeChannel: string;
   mode: string;
   size: number;
   sha256: string;
   ownerDevice: { name?: string; public_key?: string };
   visualCheck?: string;
+  /** Role token for control-plane GET/status/DELETE (never in a URL). */
+  recipientToken?: string;
 }
 
 export async function createRelayChannel(
@@ -327,14 +347,11 @@ export async function createRelayChannel(
     }),
   });
   if (!res.ok) throw await apiError(res);
-  const body = (await res.json()) as {
-    channel_id?: string;
-    pairing_code?: string;
-    realtime_channel?: string;
-    expires_at?: string;
-    visual_check?: string;
-  };
-  if (!body.channel_id || !body.pairing_code) {
+  const body = (await res.json()) as Record<string, unknown>;
+  const channelId = typeof body.channel_id === "string" ? body.channel_id : "";
+  const code = typeof body.pairing_code === "string" ? body.pairing_code : "";
+  const realtimeChannel = typeof body.realtime_channel === "string" ? body.realtime_channel : "";
+  if (!channelId || !code || !realtimeChannel) {
     throw new Error("BobSwap returned an incomplete channel");
   }
   return {
@@ -342,11 +359,12 @@ export async function createRelayChannel(
     sha256,
     size: bytes.length,
     info: {
-      channelId: body.channel_id,
-      code: body.pairing_code,
-      realtimeChannel: body.realtime_channel ?? `rly:${body.channel_id}`,
-      expiresAt: body.expires_at,
-      visualCheck: body.visual_check,
+      channelId,
+      code,
+      realtimeChannel,
+      expiresAt: typeof body.expires_at === "string" ? body.expires_at : undefined,
+      visualCheck: typeof body.visual_check === "string" ? body.visual_check : undefined,
+      ownerToken: typeof body.owner_join_token === "string" ? body.owner_join_token : undefined,
     },
   };
 }
@@ -376,9 +394,11 @@ export async function joinRelayChannel(
       : raw.ownerDevice && typeof raw.ownerDevice === "object"
         ? (raw.ownerDevice as Record<string, unknown>)
         : {};
+  const realtimeChannel = typeof raw.realtime_channel === "string" ? raw.realtime_channel : "";
+  if (!realtimeChannel) throw new Error("BobSwap returned no realtime channel");
   return {
-    realtimeChannel:
-      typeof raw.realtime_channel === "string" ? raw.realtime_channel : `rly:${channelId}`,
+    channelId: typeof raw.channel_id === "string" ? raw.channel_id : channelId,
+    realtimeChannel,
     mode: typeof raw.mode === "string" ? raw.mode : "copy",
     size: typeof raw.size === "number" ? raw.size : 0,
     sha256: typeof raw.sha256 === "string" ? raw.sha256 : "",
@@ -392,17 +412,93 @@ export async function joinRelayChannel(
             : "",
     },
     visualCheck: typeof raw.visual_check === "string" ? raw.visual_check : undefined,
+    recipientToken:
+      typeof raw.recipient_join_token === "string" ? raw.recipient_join_token : undefined,
   };
+}
+
+// ── relay: control plane (role tokens) ───────────────────────────────────
+
+/** Best-effort control-plane call; null means gone/expired/invalid token. */
+async function relayControl(
+  service: SwapService,
+  channelId: string,
+  token: string | undefined,
+  method: "GET" | "POST" | "DELETE",
+  suffix = "",
+  body?: unknown,
+): Promise<Response | null> {
+  if (!token) return null;
+  try {
+    const res = await fetch(
+      `${apiBase(service)}/relay/channels/${encodeURIComponent(channelId)}${suffix}`,
+      {
+        method,
+        headers:
+          body === undefined
+            ? { authorization: `Bearer ${token}` }
+            : { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      },
+    );
+    if (!res.ok) return null;
+    return res;
+  } catch {
+    return null;
+  }
+}
+
+interface RelayChannelState {
+  status?: string;
+  visual_check?: string;
+  recipient_device?: { name?: string; public_key?: string };
+  progress?: { n?: number; of?: number };
+}
+
+async function fetchRelayState(
+  service: SwapService,
+  channelId: string,
+  token: string | undefined,
+): Promise<RelayChannelState | null> {
+  const res = await relayControl(service, channelId, token, "GET");
+  if (!res) return null;
+  try {
+    return (await res.json()) as RelayChannelState;
+  } catch {
+    return null;
+  }
+}
+
+/** Report a lifecycle state; terminal states delete the pairing metadata. */
+async function reportStatus(
+  service: SwapService,
+  channelId: string,
+  token: string | undefined,
+  status: "streaming" | "completed" | "failed" | "aborted",
+  extra: { progress?: { n: number; of: number }; reason?: string } = {},
+): Promise<void> {
+  await relayControl(service, channelId, token, "POST", "/status", { status, ...extra });
+}
+
+/** Abort/delete the pairing (used on cancellation and integrity failures). */
+async function closeRelayChannel(
+  service: SwapService,
+  channelId: string,
+  token: string | undefined,
+): Promise<void> {
+  await relayControl(service, channelId, token, "DELETE");
 }
 
 // ── relay: ephemeral transport ───────────────────────────────────────────
 
+/**
+ * Broadcast payloads documented by the service. The event name is `relay` and
+ * messages are transient: clients must subscribe before streaming and handle
+ * duplicates/retransmits themselves.
+ */
 export type RelayMessage =
-  | { t: "ready" }
-  | { t: "check"; check: string }
   | { t: "chunk"; i: number; of: number; b64: string }
   | { t: "ack"; i: number }
-  | { t: "finish"; sha256: string; of: number }
   | { t: "complete"; sha256_ok: boolean }
   | { t: "abort"; reason?: string };
 
@@ -411,27 +507,42 @@ interface RealtimeLink {
   close(): Promise<void>;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Supabase endpoint for the public broadcast topics (safe to ship publicly). */
+function realtimeConfig(service: SwapService): { url: string; key: string } {
+  const isDefault = service.baseUrl === DEFAULT_SWAP_SERVICE_URL;
+  return {
+    url:
+      service.realtimeUrl ||
+      (isDefault ? DEFAULT_SWAP_REALTIME_URL : service.baseUrl),
+    key: service.realtimeKey || (isDefault ? DEFAULT_SWAP_REALTIME_KEY : ""),
+  };
+}
+
 async function connectRealtime(
   service: SwapService,
   channelName: string,
   onMessage: (message: RelayMessage) => void,
   onStatus: (status: string) => void,
 ): Promise<RealtimeLink> {
-  const url = service.realtimeUrl || service.baseUrl;
-  if (!service.realtimeKey) {
+  const { url, key } = realtimeConfig(service);
+  if (!key) {
     throw new Error(
-      "this BobSwap service has no realtime key configured — add the Supabase " +
-        "publishable key in the share settings",
+      "no realtime key is configured for this BobSwap service — add the Supabase " +
+        "publishable key in the BobSwap… settings",
     );
   }
   const { createClient } = await import("@supabase/supabase-js");
-  const client = createClient(url, service.realtimeKey, {
+  const client = createClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
   const channel = client.channel(channelName, {
     config: { broadcast: { self: false } },
   });
-  channel.on("broadcast", { event: "msg" }, (event) => {
+  channel.on("broadcast", { event: "relay" }, (event) => {
     onMessage(event.payload as RelayMessage);
   });
 
@@ -453,7 +564,7 @@ async function connectRealtime(
     async send(message) {
       const result = await channel.send({
         type: "broadcast",
-        event: "msg",
+        event: "relay",
         payload: message,
       });
       if (result !== "ok") throw new Error(`realtime send failed (${result})`);
@@ -491,6 +602,7 @@ export interface SendWorkspaceOptions {
 }
 
 const CHUNK_INPUT_BYTES = 192 * 1024;
+const ACK_TIMEOUT_MS = 8_000;
 
 /** Reject as soon as `signal` aborts (relay waits must be cancellable). */
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -530,12 +642,9 @@ export async function sendWorkspace(options: SendWorkspaceOptions): Promise<void
   const total = Math.ceil(bytes.length / CHUNK_INPUT_BYTES) || 1;
   let check = info.visualCheck;
   let peer = "";
-  let closed = false;
+  let terminal: "completed" | "failed" | "aborted" = "aborted";
+  let failure = "";
 
-  let ready!: () => void;
-  const readyPromise = new Promise<void>((resolve) => {
-    ready = resolve;
-  });
   let settle!: (ok: boolean) => void;
   let fail!: (err: Error) => void;
   const completion = new Promise<boolean>((resolve, reject) => {
@@ -549,21 +658,6 @@ export async function sendWorkspace(options: SendWorkspaceOptions): Promise<void
     info.realtimeChannel,
     (message) => {
       switch (message.t) {
-        case "ready":
-          ready();
-          break;
-        case "check":
-          check = message.check || check;
-          onProgress({
-            phase: "waiting",
-            sent: 0,
-            total: size,
-            code: info.code,
-            check,
-            peer,
-            message: "devices verified — starting transfer…",
-          });
-          break;
         case "ack":
           ackWaiters.get(message.i)?.();
           break;
@@ -583,38 +677,65 @@ export async function sendWorkspace(options: SendWorkspaceOptions): Promise<void
   );
 
   try {
-    await timeout(
-      abortable(readyPromise, signal),
-      120_000,
-      "the other device did not join in time",
-    );
+    // Wait until the service shows the paired recipient. This doubles as the
+    // subscription race guard: public broadcast has no replay.
+    if (info.ownerToken) {
+      const deadline = Date.now() + 120_000;
+      while (Date.now() < deadline) {
+        if (signal?.aborted) throw new Error("cancelled");
+        const state = await fetchRelayState(service, info.channelId, info.ownerToken);
+        if (!state) throw new Error("the pairing expired or was cancelled");
+        if (state.visual_check) check = state.visual_check;
+        if (state.recipient_device) {
+          peer = state.recipient_device.name || "recipient";
+          if (!check && state.recipient_device.public_key) {
+            const digest = await sha256HexText(
+              `rv|${device.publicKeyB64}|${state.recipient_device.public_key}|${size}`,
+            );
+            check = digest.slice(0, 4).toUpperCase();
+          }
+        }
+        if (check && state.recipient_device) break;
+        await sleep(1_000);
+      }
+      if (!check || !peer) throw new Error("the other device did not join in time");
+    }
     onProgress({
-      phase: "sending",
+      phase: "waiting",
       sent: 0,
       total: size,
       code: info.code,
       check,
       peer,
-      message: `streaming ${total} chunks…`,
+      message: "devices verified — starting transfer…",
+    });
+
+    // Let the recipient finish subscribing; chunks are not replayed.
+    await sleep(750);
+    terminal = "failed";
+    await reportStatus(service, info.channelId, info.ownerToken, "streaming", {
+      progress: { n: 0, of: total },
     });
 
     for (let i = 0; i < total; i++) {
       if (signal?.aborted) throw new Error("cancelled");
       const slice = bytes.subarray(i * CHUNK_INPUT_BYTES, (i + 1) * CHUNK_INPUT_BYTES);
-      await link.send({ t: "chunk", i, of: total, b64: base64FromBytes(slice) });
+      const frame: RelayMessage = { t: "chunk", i, of: total, b64: base64FromBytes(slice) };
 
       let attempts = 0;
-      while (attempts < 3) {
+      for (;;) {
         const acked = new Promise<void>((resolve) => ackWaiters.set(i, resolve));
+        await link.send(frame);
         try {
-          await timeout(abortable(acked, signal), 20_000, `chunk ${i + 1} was not acknowledged`);
+          await timeout(abortable(acked, signal), ACK_TIMEOUT_MS, `chunk ${i + 1} was not acknowledged`);
           break;
         } catch (err) {
           attempts++;
-          if (attempts >= 3) throw err;
+          if (attempts >= 3) throw err; // initial send + two retries
+        } finally {
+          ackWaiters.delete(i);
         }
       }
-      ackWaiters.delete(i);
 
       onProgress({
         phase: "sending",
@@ -627,6 +748,7 @@ export async function sendWorkspace(options: SendWorkspaceOptions): Promise<void
       });
     }
 
+    terminal = "aborted";
     onProgress({
       phase: "verifying",
       sent: size,
@@ -636,13 +758,14 @@ export async function sendWorkspace(options: SendWorkspaceOptions): Promise<void
       peer,
       message: "waiting for the checksum…",
     });
-    await link.send({ t: "finish", sha256, of: total });
     const ok = await timeout(
       abortable(completion, signal),
       60_000,
       "the other device did not confirm the checksum",
     );
     if (!ok) throw new Error("the receiving device reported a checksum mismatch");
+
+    terminal = "completed";
     onProgress({
       phase: "done",
       sent: size,
@@ -653,6 +776,7 @@ export async function sendWorkspace(options: SendWorkspaceOptions): Promise<void
       message: "workspace delivered",
     });
   } catch (err) {
+    failure = err instanceof Error ? err.message : String(err);
     onProgress({
       phase: "error",
       sent: 0,
@@ -660,14 +784,17 @@ export async function sendWorkspace(options: SendWorkspaceOptions): Promise<void
       code: info.code,
       check,
       peer,
-      message: err instanceof Error ? err.message : String(err),
+      message: failure,
     });
     throw err;
   } finally {
-    if (!closed) {
-      closed = true;
-      await link.close();
-    }
+    // Terminal status deletes the pairing metadata; 404 is fine if the
+    // receiver already closed it.
+    await reportStatus(service, info.channelId, info.ownerToken, terminal, {
+      progress: { n: terminal === "completed" ? total : 0, of: total },
+      reason: terminal === "completed" ? undefined : failure.slice(0, 60) || undefined,
+    });
+    await link.close();
   }
 }
 
@@ -693,10 +820,9 @@ export interface ReceivedWorkspace {
 /**
  * Join a share and reassemble the archive in memory.
  *
- * The visual check both humans compare is the first four hex characters of
- * `sha256("rv|" + ownerKey + "|" + recipientKey + "|" + size)`. The service
- * may send its own; when it does not, the receiver derives the same value and
- * announces it to the sender.
+ * The visual check both humans compare is the first four uppercase hex
+ * characters of `sha256("rv|" + ownerKey + "|" + recipientKey + "|" + size)`.
+ * The join response normally carries it; derivation is only a fallback.
  */
 export async function receiveWorkspace(
   options: ReceiveWorkspaceOptions,
@@ -709,12 +835,14 @@ export async function receiveWorkspace(
   const rawCheck = (joined.visualCheck || derived).toUpperCase().replace(/[^0-9A-Z]/g, "");
   const visualCheck = rawCheck.length >= 4 ? rawCheck.slice(0, 4) : derived.slice(0, 4).toUpperCase();
   const ownerName = joined.ownerDevice?.name || "the other device";
+  const channel = joined.channelId || channelId;
 
   const received = new Map<number, Uint8Array>();
   let expected = 0;
-  let resolveDone!: (sha: string) => void;
+  let settled = false;
+  let resolveDone!: () => void;
   let rejectDone!: (err: Error) => void;
-  const done = new Promise<string>((resolve, reject) => {
+  const done = new Promise<void>((resolve, reject) => {
     resolveDone = resolve;
     rejectDone = reject;
   });
@@ -734,24 +862,29 @@ export async function receiveWorkspace(
     service,
     joined.realtimeChannel,
     (message) => {
-      switch (message.t) {
-        case "chunk": {
-          received.set(message.i, bytesFromBase64(message.b64));
-          expected = message.of;
-          const bytes = [...received.values()].reduce((sum, part) => sum + part.length, 0);
-          progress(`received ${received.size}/${expected} chunks`, bytes);
-          void link.send({ t: "ack", i: message.i });
-          break;
+      if (message.t === "chunk") {
+        if (settled) return;
+        received.set(message.i, bytesFromBase64(message.b64));
+        expected = Math.max(expected, message.of);
+        const bytes = [...received.values()].reduce((sum, part) => sum + part.length, 0);
+        progress(`received ${received.size}/${expected} chunks`, bytes);
+        void link.send({ t: "ack", i: message.i });
+
+        if (expected > 0 && received.size >= expected) {
+          let complete = true;
+          for (let i = 0; i < expected; i++) {
+            if (!received.has(i)) {
+              complete = false;
+              break;
+            }
+          }
+          if (complete) {
+            settled = true;
+            resolveDone();
+          }
         }
-        case "finish": {
-          resolveDone(message.sha256);
-          break;
-        }
-        case "abort":
-          rejectDone(new Error(message.reason || "the other device aborted the transfer"));
-          break;
-        default:
-          break;
+      } else if (message.t === "abort") {
+        rejectDone(new Error(message.reason || "the other device aborted the transfer"));
       }
     },
     (status) => {
@@ -760,14 +893,10 @@ export async function receiveWorkspace(
   );
 
   try {
-    await link.send({ t: "ready" });
-    if (visualCheck) await link.send({ t: "check", check: visualCheck });
-
-    await timeout(
-      abortable(done, signal),
-      300_000,
-      "the transfer did not finish in time",
-    );
+    await reportStatus(service, channel, joined.recipientToken, "streaming", {
+      progress: { n: 0, of: expected || 1 },
+    });
+    await timeout(abortable(done, signal), 300_000, "the transfer did not finish in time");
     progress("checking the archive…");
 
     if (received.size !== expected) {
@@ -796,7 +925,10 @@ export async function receiveWorkspace(
     const sha256 = await sha256HexBytes(assembled);
     const ok = sha256 === joined.sha256.toLowerCase();
     await link.send({ t: "complete", sha256_ok: ok });
-    if (!ok) throw new Error("checksum mismatch — the copy was corrupted in transit");
+    if (!ok) {
+      await link.send({ t: "abort", reason: "integrity" });
+      throw new Error("checksum mismatch — the copy was corrupted in transit");
+    }
 
     const raw = decoder.decode(assembled);
     let archive: WorkspaceArchive;
@@ -805,6 +937,9 @@ export async function receiveWorkspace(
     } catch {
       throw new Error("the transferred workspace is not valid JSON");
     }
+    await reportStatus(service, channel, joined.recipientToken, "completed", {
+      progress: { n: expected, of: expected },
+    });
     onProgress({
       phase: "done",
       sent: assembled.length,
@@ -814,6 +949,9 @@ export async function receiveWorkspace(
       message: `received ${archive.files.length} files`,
     });
     return { archive, sha256, size: assembled.length, ownerName, visualCheck };
+  } catch (err) {
+    await closeRelayChannel(service, channel, joined.recipientToken);
+    throw err;
   } finally {
     await link.close();
   }

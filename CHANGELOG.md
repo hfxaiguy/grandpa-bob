@@ -24,12 +24,12 @@ workspace or an export.
 
 Toolbar **Send…/Receive…** move a workspace copy between two open tabs through
 the relay API: a fresh pairing per share, a 6-digit code plus a 4-character
-visual check on both screens, 192 KiB chunks over an ephemeral broadcast
-channel with per-chunk acks and SHA-256 verification. Nothing is stored on the
-service, so both tabs must stay open; the receiver imports into the current
-profile, another profile, or a new one (desktop mode: the single real
-workspace). Receive links support `?recv=<channel>&code=<digits>`. Copy mode
-only — ownership swap is planned separately.
+visual check on both screens, 192 KiB chunks over an ephemeral broadcast topic
+(event `relay`) with per-chunk acks and SHA-256 verification. Nothing is stored
+on the service, so both tabs must stay open; the receiver imports into the
+current profile, another profile, or a new one (desktop mode: the single real
+workspace). Pairing codes stay out of URLs (the service forbids URL keys).
+Copy mode only — ownership swap is planned separately.
 
 Tests: `test:profiles` plus an extended `test:workspace-transfer` cover the
 registry, version tags and bridge archives; `web/scripts/profile-smoke.mjs` and

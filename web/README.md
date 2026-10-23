@@ -346,7 +346,8 @@ later (`Profiles…` → **Seed…**):
 - Service URL, account, seed name, read key (and an upload key for publishing).
   Keys live in this browser's localStorage (`bob:swap`), never in the workspace
   or an export. New setups prefill the deployed service at
-  `https://bobswap.hfxaiguy.com`; any saved service overrides it.
+  `https://bobswap.hfxaiguy.com`; any saved service overrides it. API keys are
+  operator-issued (`read`/`upload`/`manage` scopes); there is no public signup.
 - On boot the profile asks `/api/v1/<account>/<seed>/latest/meta` and, when the
   seed is newer, shows the usual **Workspace update available** banner (never
   applies silently). Applying merges the archive and **keeps the local run log
@@ -366,16 +367,20 @@ through a BobSwap relay:
   stored on the service — both tabs must stay open, and losing a connection
   discards the transfer (nothing to resume). Copy mode only; ownership swaps are
   a later step.
-- Data is sliced into 192 KiB chunks (~256 KiB base64 messages) over an
-  ephemeral Realtime broadcast channel, acked individually and verified with
-  SHA-256. The receiving tab reassembles in memory and only then imports.
+- Data is sliced into 192 KiB chunks (~256 KiB base64 messages) over the
+  ephemeral broadcast topic named by the service (event `relay`), acked
+  individually and verified with SHA-256. The receiving tab reassembles in
+  memory and only then imports. The control plane (state, status, delete) is
+  driven with the role tokens from the offer/join responses.
 - The receiver chooses **current profile** or **as a new profile** (created on
   the spot). Relay copies include `workspace/logs/`; seed *updates* do not
   overwrite an existing log.
-- A share link can be sent as `?recv=<channel_id>&code=<six digits>`; opening it
-  prefills the Receive dialog. Add the service's Realtime URL/publishable key in
-  the Share dialog when it differs from the REST host (Supabase). The default
-  service is `https://bobswap.hfxaiguy.com`.
+- Pairing codes must never be put in URLs (the service rejects URL API keys and
+  this would leak the secret). Share the channel id and code out-of-band.
+- The default service's realtime endpoint is Supabase (`iqrsezxlgcfqxaiytsjj`)
+  with its public publishable key; both fields are editable in the BobSwap…
+  dialog for other deployments. See `/docs/agents` on the service for the
+  authoritative API reference.
 
 ## Standalone (no admin)
 
