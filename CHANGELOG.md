@@ -2,6 +2,23 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-23 — tree-tool descriptions carry their call shape
+
+A tree tool's description now ends with the shape its declared needs expect —
+`Takes {input: "…"}.` or, for an app that names its need differently,
+`Takes {task: "…"}.` — with optional needs called out. The schema already
+required the right keys, but the prompt only saw the prose description: the
+trunk's system prompt says every app takes `input`, so it called
+`browser({input: …})` and the engine refused the call ("needs 'task', but it
+does not resolve in scope"). The description is what the prompt (and the tool
+gate's catalog) reads, so the shape is stated where it cannot be missed.
+
+The browser app's need itself was also renamed `task` → `input` in the
+workspace, making the convention uniform — that edit lives in
+`$WORKSPACE_DIR/app/browser` and is covered there.
+
+Tests: `npm run test:trees` asserts the description spells out `{input: "…"}`.
+
 ## 2026-10-23 — board: a square tile grid with the trunk docked at the bottom
 
 The trunk no longer takes a full-height column beside the board. It is now the
@@ -47,25 +64,23 @@ inherits all of it (shared modules; `buildAppTools` derives a nested app's
 folder from its tree file, not its name), and the workspace trunk's
 `scanAppTreeNames()` fallback now recurses too.
 
-The UI went fractal with the tiles. The trunk is a full-height column on the
-right of the board (left of the event stream drawer) — a seat of its own, not
-a grid tile. A tile whose folder keeps `app/` sub-apps gets the board's zones
-one level down: its parked sub-apps stand as status-tinted squares in a narrow
-rail on the tile's LEFT edge (hidden by default — the same square language the
-board's hidden rail uses, hover reveals the flyout card), the tile's own chat
-stays full height in the middle, and a clicked square opens that sub-app as a
-smaller tile side-by-side on the right (open order is the render order, so a
-running chat never jumps; the square stays listed and highlighted). Sub-tiles
-are full tiles — recursion goes as deep as the folders do. Sub-apps never
-board: `orderedApps`/`hiddenApps` exclude parented apps, and a parented tile's
-✕ parks it into its parent's rail instead of the board's. Drag guards keep the
-frame edges honest: no landing inside one's own sub strip, onto an ancestor,
-or onto the trunk column.
+The UI went fractal with the tiles. A tile whose folder keeps `app/` sub-apps
+gets the board's zones one level down: its parked sub-apps stand as
+status-tinted squares in a narrow rail on the tile's LEFT edge (hidden by
+default — the same square language the board's hidden rail uses, hover reveals
+the flyout card), the tile's own chat stays full height in the middle, and a
+clicked square opens that sub-app as a smaller tile side-by-side on the right
+(open order is the render order, so a running chat never jumps; the square
+stays listed and highlighted). Sub-tiles are full tiles — recursion goes as
+deep as the folders do. Sub-apps never board: `orderedApps`/`hiddenApps`
+exclude parented apps, and a parented tile's ✕ parks it into its parent's rail
+instead of the board's. Drag guards keep the frame edges honest: no landing
+inside one's own sub strip, onto an ancestor, or onto the trunk's seat (which
+became the bottom dock later the same day — see the entry above).
 
 Tests: `npm run test:ui-order` (sub-apps never board; open/park state),
 `npm run typecheck`, `npm run build`, `npm run build:ui` (all fixtures
-verified headless: trunk column, parked rail squares, side-by-side open,
-park/restore).
+verified headless: parked rail squares, side-by-side open, park/restore).
 
 ## 2026-10-23 — memory panels no longer lose history when a rebuild overlaps a turn
 
