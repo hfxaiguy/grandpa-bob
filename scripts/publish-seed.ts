@@ -93,7 +93,6 @@ const lineQueue: string[] = [];
 let inputEnded = false;
 let rawActive = false;
 let pendingBuffer = "";
-let waitingResolve: (() => void) | null = null;
 
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk: string) => {
@@ -108,10 +107,6 @@ process.stdin.on("end", () => {
     pendingBuffer = "";
   }
   inputEnded = true;
-  if (waitingResolve) {
-    waitingResolve();
-    waitingResolve = null;
-  }
 });
 
 function flushLines(): void {
@@ -120,19 +115,6 @@ function flushLines(): void {
     lineQueue.push(pendingBuffer.slice(0, index).replace(/\r$/, ""));
     pendingBuffer = pendingBuffer.slice(index + 1);
   }
-  if (waitingResolve) {
-    const resolve = waitingResolve;
-    waitingResolve = null;
-    resolve();
-  }
-}
-
-function waitForInput(): Promise<void> {
-  if (lineQueue.length || inputEnded) return Promise.resolve();
-  return new Promise((resolve) => {
-    waitingResolve = resolve;
-    process.stdin.resume();
-  });
 }
 
 /**
@@ -156,9 +138,20 @@ function readRawLine(question: string, echo: boolean): Promise<string> {
       resolve(result);
     };
     const onData = (chunk: Buffer): void => {
-      for (const char of chunk.toString("utf8")) {
+      const text = chunk.toString("utf8");
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i];
         if (char === "\n" || char === "\r") {
-          finish(value);
+          // Anything after this newline belongs to later questions — keep it,
+          // do not drop it (a pty can deliver several answers in one chunk).
+          pendingBuffer = text.slice(i + 1);
+          rawActive = false;
+          flushLines();
+          stdin.setRawMode?.(false);
+          stdin.pause();
+          stdin.off("data", onData);
+          process.stdout.write("\n");
+          resolve(value);
           return;
         }
         if (char === "\u0003") {
@@ -168,7 +161,14 @@ function readRawLine(question: string, echo: boolean): Promise<string> {
         }
         if (char === "\u0004") {
           if (!value) {
-            finish("");
+            pendingBuffer = text.slice(i + 1);
+            rawActive = false;
+            flushLines();
+            stdin.setRawMode?.(false);
+            stdin.pause();
+            stdin.off("data", onData);
+            process.stdout.write("\n");
+            resolve("");
             return;
           }
           continue;
@@ -197,16 +197,13 @@ function readRawLine(question: string, echo: boolean): Promise<string> {
 /** Ask a question: queued piped lines first, typed input otherwise. */
 async function ask(question: string, fallback = ""): Promise<string> {
   if (lineQueue.length) return lineQueue.shift()!.trim();
-  if (!inputEnded) await waitForInput();
-  if (lineQueue.length) return lineQueue.shift()!.trim();
   if (inputEnded) return fallback;
+  // Interactive typing (or an open pipe): print the prompt, then read a line.
   return readRawLine(question, true);
 }
 
 /** Ask for a secret: queued piped lines first, hidden typing otherwise. */
 async function askSecret(question: string): Promise<string> {
-  if (lineQueue.length) return lineQueue.shift()!.trim();
-  if (!inputEnded) await waitForInput();
   if (lineQueue.length) return lineQueue.shift()!.trim();
   if (inputEnded) return "";
   return readRawLine(question, false);
