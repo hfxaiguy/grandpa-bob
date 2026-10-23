@@ -2,6 +2,31 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-23 — browser: retry the CDP handshake, pin a work tab, guard cross-site reads
+
+The in-tab browser tools now survive a busy browser and stop reading the wrong
+page. `BrowserCdp.connect()` makes three handshake attempts with a 1s backoff
+and a 5s open timeout (bad URLs are not retried), so six parallel walks no
+longer turn one busy socket into a failed verb. Each run lazily creates one
+`about:blank` work tab and reuses its `targetId` for every verb — the newest tab
+is only a fallback when tab creation itself fails — so a failed navigation or a
+user tab switch cannot feed a foreign page to the next read. If the work tab is
+closed between verbs, one fresh tab replaces it.
+
+The admin's `/api/llm/<slot>` proxy now retries the transient upstream class —
+truncated or mismatched bodies, connection resets, 429 and 5xx — twice with
+exponential backoff (500ms, 1s), buffering each response before forwarding. A
+120s `AbortSignal.timeout` per attempt bounds a hung provider; client stops and
+timeouts are never retried. Persistent 429/5xx responses are forwarded as the
+provider sent them rather than becoming a 502.
+
+The workspace's `site_walk` guards every direct landing with a host check: a read
+that landed elsewhere retries the page up to three times, then fails with
+`read landed on <url>, expected <host>` before any text is ingested (see the
+workspace changelog). Subdomain hops and search-engine redirectors are allowed;
+clicks are exempt because their href may be an opaque redirect. Tests: browser
+22, enrich-profile 143 (3 live skipped).
+
 ## 2026-10-23 — browser profiles, seed sources and a zero-storage relay
 
 The browser target now keeps **profiles**: independent OPFS workspaces under

@@ -100,15 +100,54 @@ export async function browserCdpTools(
 ): Promise<Record<string, KatTool>> {
   const endpoint = String(cdp ?? "").trim();
 
+  // One dedicated tab per run. Every verb opens a fresh socket, but they all
+  // attach to this targetId, so a failed navigation (or the user switching
+  // tabs) can never make the next verb read someone else's page. Created
+  // lazily; if creation fails, fall back to the newest-tab behavior.
+  let workTab: Promise<string | null> | null = null;
+
+  const createWorkTab = (client: BrowserCdp): Promise<string | null> =>
+    client
+      .createPageTarget("about:blank")
+      .then((target) => target.targetId)
+      .catch(() => null);
+
+  const pageForRun = async (client: BrowserCdp) => {
+    if (!workTab) workTab = createWorkTab(client);
+    const targetId = await workTab;
+    if (targetId) {
+      try {
+        return await client.pageSession(targetId);
+      } catch {
+        // Closed between verbs: replace it below, never read the newest tab.
+        workTab = null;
+      }
+    }
+    if (!workTab) {
+      // The pinned tab is gone (or its first attach failed): one fresh work tab.
+      const fresh = await createWorkTab(client);
+      if (fresh) {
+        workTab = Promise.resolve(fresh);
+        try {
+          return await client.pageSession(fresh);
+        } catch {
+          workTab = null;
+        }
+      }
+    }
+    // Tab creation itself failed: today's behavior is the only option left.
+    return client.pageSession();
+  };
+
   const session: Session = {
     profileHint:
-      "Uses the local Chrome started by `npm run chrome`, in the newest tab " +
-      "(a tab is opened when none is open).",
+      "Uses the local Chrome started by `npm run chrome`, in this run's dedicated " +
+      "work tab (a tab is opened when none exists).",
     async withPage(fn) {
       if (!endpoint) throw new Error(NOT_CONNECTED);
       const client = await BrowserCdp.connect(endpoint);
       try {
-        const { target, sessionId } = await client.pageSession();
+        const { target, sessionId } = await pageForRun(client);
         return await fn({
           url: target.url ?? null,
           launched: false,

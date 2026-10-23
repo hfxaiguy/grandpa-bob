@@ -25,8 +25,12 @@ export interface CdpConnectOptions {
   WebSocketImpl?: WebSocketCtor;
   /** Per-request timeout. */
   timeoutMs?: number;
-  /** Open-handshake timeout. */
+  /** Open-handshake timeout (per attempt). */
   openTimeoutMs?: number;
+  /** Handshake attempts before giving up. Defaults to 3. */
+  connectAttempts?: number;
+  /** Delay between handshake attempts. Defaults to 1s. */
+  retryDelayMs?: number;
 }
 
 export interface CdpTarget {
@@ -118,7 +122,24 @@ export class BrowserCdp {
     ws.addEventListener("error", fail);
   }
 
-  static connect(url: string, opts: CdpConnectOptions = {}): Promise<BrowserCdp> {
+  static async connect(url: string, opts: CdpConnectOptions = {}): Promise<BrowserCdp> {
+    const attempts = Math.max(1, opts.connectAttempts ?? 3);
+    const retryDelayMs = opts.retryDelayMs ?? 1_000;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        return await BrowserCdp.connectOnce(url, opts);
+      } catch (err) {
+        lastError = err;
+        // A bad URL/implementation will never heal; do not storm it.
+        if ((err as { permanent?: boolean })?.permanent) throw err;
+        if (attempt < attempts - 1) await sleep(retryDelayMs);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private static connectOnce(url: string, opts: CdpConnectOptions): Promise<BrowserCdp> {
     const Impl = opts.WebSocketImpl ?? (globalThis.WebSocket as WebSocketCtor);
     if (!Impl) return Promise.reject(new Error("WebSocket is not available in this environment"));
     return new Promise((resolve, reject) => {
@@ -126,7 +147,9 @@ export class BrowserCdp {
       try {
         ws = new Impl(url);
       } catch (err) {
-        reject(err instanceof Error ? err : new Error(String(err)));
+        const error = err instanceof Error ? err : new Error(String(err));
+        (error as Error & { permanent?: boolean }).permanent = true;
+        reject(error);
         return;
       }
       const timer = setTimeout(() => {
@@ -136,13 +159,18 @@ export class BrowserCdp {
           // ignore
         }
         reject(new Error(`timed out connecting to ${url}. ${CDP_UNAVAILABLE}`));
-      }, opts.openTimeoutMs ?? 10_000);
+      }, opts.openTimeoutMs ?? 5_000);
       ws.addEventListener("open", () => {
         clearTimeout(timer);
         resolve(new BrowserCdp(ws, opts));
       });
       ws.addEventListener("error", () => {
         clearTimeout(timer);
+        try {
+          ws.close();
+        } catch {
+          // already closed
+        }
         reject(new Error(`cannot connect to ${url}. ${CDP_UNAVAILABLE}`));
       });
     });
@@ -194,10 +222,19 @@ export class BrowserCdp {
     const pages = await this.pageTargets();
     const newest = pages[pages.length - 1];
     if (newest) return newest;
-    const { targetId } = await this.send<{ targetId: string }>("Target.createTarget", {
-      url: "about:blank",
-    });
-    return { targetId, type: "page", url: "about:blank", title: "" };
+    return this.createPageTarget();
+  }
+
+  /** Open a dedicated about:blank work tab and return its target. */
+  async createPageTarget(url = "about:blank"): Promise<CdpTarget> {
+    const { targetId } = await this.send<{ targetId: string }>("Target.createTarget", { url });
+    return { targetId, type: "page", url, title: "" };
+  }
+
+  /** A page target by id, or null when it has been closed. */
+  async targetById(targetId: string): Promise<CdpTarget | null> {
+    const pages = await this.pageTargets();
+    return pages.find((target) => target.targetId === targetId) ?? null;
   }
 
   /** Attach (once) to a page target; returns the flat session id. */
@@ -212,8 +249,17 @@ export class BrowserCdp {
     return sessionId;
   }
 
-  /** The page session tools work against. */
-  async pageSession(): Promise<{ target: CdpTarget; sessionId: string }> {
+  /**
+   * The page session tools work against. With `targetId`, that exact tab
+   * (the run's pinned work tab); otherwise Chrome's newest tab, or a fresh
+   * about:blank tab when none exists.
+   */
+  async pageSession(targetId?: string): Promise<{ target: CdpTarget; sessionId: string }> {
+    if (targetId) {
+      const target = await this.targetById(targetId);
+      if (!target) throw new Error(`work tab ${targetId} is gone`);
+      return { target, sessionId: await this.attach(target.targetId) };
+    }
     const target = await this.pageTarget();
     const sessionId = await this.attach(target.targetId);
     return { target, sessionId };

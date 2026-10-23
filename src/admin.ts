@@ -1431,6 +1431,29 @@ function startStaticOnly(config: AdminConfig): http.Server {
   return server;
 }
 
+/**
+ * The upstream model call can fail in ways that are not the request's fault:
+ * undici's truncated/mismatched Content-Length body, a connection reset, a
+ * provider 429 or a 5xx. Those are safe to retry — the proxy buffers the whole
+ * response before forwarding, so nothing has been sent to the worker yet.
+ */
+const LLM_UPSTREAM_ATTEMPTS = 3; // first try + 2 retries
+const LLM_UPSTREAM_TIMEOUT_MS = 120_000;
+const LLM_RETRY_BASE_MS = 500;
+
+function isTransientLlmError(err: unknown): boolean {
+  const name = (err as { name?: string })?.name ?? "";
+  // Our own timeout: retrying a generation that already ran 2 minutes is worse
+  // than reporting it. A client stop aborts too, and must never be retried.
+  if (name === "TimeoutError" || name === "AbortError") return false;
+  const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  return /content-length|terminated|other side closed|socket hang up|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ETIMEDOUT|EAI_AGAIN|UND_ERR|fetch failed|network/i.test(
+    message,
+  );
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 export function startAdmin(cfg?: AdminOptions): http.Server {
   const config: AdminConfig = { ...defaultConfig(), ...cfg };
   if (config.mode === "static") return startStaticOnly(config);
@@ -2462,13 +2485,46 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         };
         res.once("close", onClose);
         try {
-          const upstream = await fetch(`${entry.baseURL.replace(/\/$/, "")}${tail}`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(payload),
-            signal: upstreamStop.signal,
-          });
-          const buf = Buffer.from(await upstream.arrayBuffer());
+          const upstreamUrl = `${entry.baseURL.replace(/\/$/, "")}${tail}`;
+          const requestBody = JSON.stringify(payload);
+          let upstream: Response | undefined;
+          let buf: Buffer | undefined;
+          let lastError: unknown;
+          for (let attempt = 0; attempt < LLM_UPSTREAM_ATTEMPTS; attempt++) {
+            try {
+              const signal = AbortSignal.any([
+                upstreamStop.signal,
+                AbortSignal.timeout(LLM_UPSTREAM_TIMEOUT_MS),
+              ]);
+              const response = await fetch(upstreamUrl, {
+                method: "POST",
+                headers,
+                body: requestBody,
+                signal,
+              });
+              // Read fully before forwarding: a truncated body must retry
+              // upstream, not reach the worker half-written.
+              const responseBody = Buffer.from(await response.arrayBuffer());
+              upstream = response;
+              buf = responseBody;
+              // Throttling and provider 5xx are transient; forward the last
+              // response if every attempt returns one.
+              if (response.status !== 429 && response.status < 500) break;
+              lastError = new Error(`upstream HTTP ${response.status}`);
+            } catch (err) {
+              lastError = err;
+              const retry =
+                !upstreamStop.signal.aborted &&
+                attempt < LLM_UPSTREAM_ATTEMPTS - 1 &&
+                isTransientLlmError(err);
+              if (!retry) throw err;
+            }
+            if (upstreamStop.signal.aborted) return;
+            await sleep(LLM_RETRY_BASE_MS * 2 ** attempt);
+          }
+          if (!upstream || !buf) {
+            throw lastError instanceof Error ? lastError : new Error("upstream request failed");
+          }
           if (res.destroyed || res.writableEnded) return;
           res.writeHead(upstream.status, {
             "content-type": upstream.headers.get("content-type") ?? "application/json",
