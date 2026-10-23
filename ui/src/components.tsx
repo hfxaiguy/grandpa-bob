@@ -27,6 +27,7 @@ import {
   toggleWide,
   toggleHidden,
   togglePinned,
+  toggleMem,
   moveTile,
   hiddenApps,
   setStreamOpen,
@@ -139,10 +140,13 @@ function MemoryPanel(props: { app: string }) {
     return t.length > 200 ? t.slice(0, 200) + "…" : t;
   };
   const full = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
+  // Collapsed per tile, persisted in the layout store (tiles remount on every
+  // session switch, so a local signal would reset it constantly).
+  const memOpen = createMemo(() => !state.layout.memClosed.includes(props.app));
   return (
     <div class="mem">
-      <div class="panel-title">
-        memory
+      <button class="panel-title as-button" onClick={() => toggleMem(props.app)}>
+        memory <span class="count">{entries().length}</span>
         <Show when={origin()}>
           {(label) => (
             <span class="prov-dim mem-origin" title={`values belong to ${state.memorySession}`}>
@@ -150,23 +154,26 @@ function MemoryPanel(props: { app: string }) {
               {label()}
             </span>
           )}
+        </Show>{" "}
+        {memOpen() ? "▾" : "▸"}
+      </button>
+      <Show when={memOpen()}>
+        <Show when={entries().length} fallback={<div class="empty">no memory values yet</div>}>
+          <ul class="mem-list">
+            <For each={entries()}>
+              {(e) => (
+                <li
+                  style={{ "padding-left": `${e.depth * 12}px` }}
+                  title={`${e.path} — click to inspect`}
+                  onClick={() => setInspect({ path: e.path, value: e.value })}
+                >
+                  <span class="mem-key">{e.path.split("/").pop()}</span>
+                  <span class="mem-val">{shown(e.value)}</span>
+                </li>
+              )}
+            </For>
+          </ul>
         </Show>
-      </div>
-      <Show when={entries().length} fallback={<div class="empty">no memory values yet</div>}>
-        <ul class="mem-list">
-          <For each={entries()}>
-            {(e) => (
-              <li
-                style={{ "padding-left": `${e.depth * 12}px` }}
-                title={`${e.path} — click to inspect`}
-                onClick={() => setInspect({ path: e.path, value: e.value })}
-              >
-                <span class="mem-key">{e.path.split("/").pop()}</span>
-                <span class="mem-val">{shown(e.value)}</span>
-              </li>
-            )}
-          </For>
-        </ul>
       </Show>
       <Show when={inspect()}>
         {(sel) => (

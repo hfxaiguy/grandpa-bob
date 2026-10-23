@@ -19,7 +19,7 @@ const { state, setState, orderedApps, hiddenApps, togglePinned, toggleHidden, mo
 const apps = ["trunk", "alpha", "beta", "gamma"].map((name) => ({ name, description: "" }));
 setState("apps", apps);
 // What loadLayout() gives a board with no saved layout: trunk pinned.
-setState("layout", { order: [], hidden: [], expanded: [], wide: [], pinned: ["trunk"], subsOpen: [] });
+setState("layout", { order: [], hidden: [], expanded: [], wide: [], pinned: ["trunk"], subsOpen: [], memClosed: [] });
 
 const order = () => orderedApps().map((a) => a.name);
 const rail = () => hiddenApps().map((a) => a.name);

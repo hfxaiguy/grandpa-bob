@@ -30,6 +30,10 @@ export interface Layout {
    *  the render order of the side-by-side strip, so a running chat never
    *  jumps. Parks (closing) removes the entry. */
   subsOpen: string[];
+  /** Tiles whose memory panel is collapsed. Memory is open by default, so
+   *  this is the exception list (like hidden) — it survives reloads because
+   *  tiles remount on every session switch. */
+  memClosed: string[];
 }
 
 export interface UiState {
@@ -116,12 +120,22 @@ function loadLayout(): Layout {
         // Sub-app tiles start parked (the square rail inside their parent), so
         // an empty list is the right migration for layouts saved before this.
         subsOpen: Array.isArray(raw.subsOpen) ? raw.subsOpen : [],
+        // Memory panels start open; the closed list is the exception.
+        memClosed: Array.isArray(raw.memClosed) ? raw.memClosed : [],
       };
     }
   } catch {
     /* private mode / bad json */
   }
-  return { order: [], hidden: [], expanded: [], wide: [], pinned: ["trunk"], subsOpen: [] };
+  return {
+    order: [],
+    hidden: [],
+    expanded: [],
+    wide: [],
+    pinned: ["trunk"],
+    subsOpen: [],
+    memClosed: [],
+  };
 }
 
 /** Stream visibility: an explicit user choice, else open on desktop and closed
@@ -748,6 +762,15 @@ export function toggleExpanded(name: string): void {
 }
 export function toggleWide(name: string): void {
   setState("layout", "wide", (h) => (h.includes(name) ? h.filter((x) => x !== name) : [...h, name]));
+  saveLayout();
+}
+
+/** Collapse or open a tile's memory panel (persisted, like the rest of the
+ *  layout — tiles remount on every session switch). */
+export function toggleMem(name: string): void {
+  setState("layout", "memClosed", (list) =>
+    list.includes(name) ? list.filter((x) => x !== name) : [...list, name],
+  );
   saveLayout();
 }
 

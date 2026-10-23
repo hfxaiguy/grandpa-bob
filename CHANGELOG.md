@@ -2,6 +2,20 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-23 — ui: memory panels collapse per tile
+
+A tile's `memory` heading is a toggle now, in the events panel's exact idiom
+(`panel-title as-button`, ▾/▸ chevron) plus an entry-count badge, so a
+collapsed panel still shows it holds values; the list, the empty state and
+the click-to-inspect modal are unchanged otherwise. The choice is persisted
+in the tile layout (`memClosed`, an exception list — panels start open, like
+`hidden`) because tiles remount on every session switch and a component-local
+signal would reset it constantly. The browser target shares the component and
+the storage key, so the toggle works and persists there too.
+
+Tests: `npm run test:ui` (typecheck + build), `npm run test:ui-order`,
+`smoke:browser`.
+
 ## 2026-10-23 — web: boot failures name their stage; a wedged OPFS write no longer kills boot
 
 The toolbar's generic `error: …` line hid which boot step died. Gecko's OPFS
