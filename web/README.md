@@ -187,19 +187,23 @@ toolbar can offer an update even when a re-pack happens to reuse the same
 timestamp.
 
 To ship that packed seed to a BobSwap shelf without it drifting, publish the
-exact bytes (from the repo root):
+exact bytes (from the repo root). The first interactive run asks for the
+account, seed name and upload key (input hidden) and offers to save them in
+`~/.grandpa-bob/bobswap.json` (0600); the key is only remembered once the
+service has accepted it, so later runs need no arguments:
 
 ```sh
-BOBSWAP_ACCOUNT=personal BOBSWAP_SEED=trunk \
-BOBSWAP_UPLOAD_KEY=bsk_live_… npm run seed:publish
-# or: npm run seed:ship    # make-seed, then publish
+npm run seed:ship                     # make-seed, then publish
+npm run seed:publish -- --dry-run     # validate + print only
 ```
 
-`--url` defaults to `https://bobswap.hfxaiguy.com`; `--file`, `--version` and
-`--dry-run` are available (`npm run seed:publish -- --help`). The script
-computes the content-addressed version (`<sha12>-<compact createdAt>`), warns if
-`meta.json` is stale, and reports 200 (identical), 201 (new) or 409 (conflict)
-from the service.
+Non-interactive/CI: `BOBSWAP_ACCOUNT=… BOBSWAP_SEED=… BOBSWAP_UPLOAD_KEY=… npm
+run seed:publish`. `--url` defaults to `https://bobswap.hfxaiguy.com`; `--file`,
+`--version`, `--pack` and `--no-save` are available (`npm run seed:publish --
+--help`; `BOBSWAP_CONFIG` moves the saved file). The script computes the
+content-addressed version (`<sha12>-<compact createdAt>`), warns if `meta.json`
+is stale, and reports 200 (identical), 201 (new) or 409 (conflict) from the
+service.
 
 ### Clone from a git remote instead
 

@@ -2,6 +2,17 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-23 — seed:publish asks once, remembers, and seed:ship forwards flags
+
+`seed:publish` now prompts on a terminal for the account, seed name and upload
+key (hidden input) and offers to save them in `~/.grandpa-bob/bobswap.json`
+(0600; `BOBSWAP_CONFIG` overrides). The key is persisted only after the service
+accepted it — a dry run stores settings without the key, an auth failure stores
+nothing. Piped input is queued line-by-line (readline dropped lines that arrived
+between questions), so scripted TTY runs work too. `seed:ship` is now
+`publish-seed.ts --pack`, so `npm run seed:ship -- --dry-run` packs and then
+dry-runs in one command.
+
 ## 2026-10-23 — browser: retry the CDP handshake, pin a work tab, guard cross-site reads
 
 The in-tab browser tools now survive a busy browser and stop reading the wrong

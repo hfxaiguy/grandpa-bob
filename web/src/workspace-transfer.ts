@@ -17,7 +17,7 @@ export interface WorkspaceArchive {
   files: Array<{ path: string; base64: string }>;
 }
 
-interface IterableDirHandle extends FileSystemDirectoryHandle {
+interface IterableDirHandle {
   entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
 }
 
@@ -86,7 +86,7 @@ async function eachEntry(
   dir: FileSystemDirectoryHandle,
   visit: (name: string, handle: FileSystemHandle) => Promise<void>,
 ): Promise<void> {
-  for await (const [name, handle] of (dir as IterableDirHandle).entries()) {
+  for await (const [name, handle] of (dir as unknown as IterableDirHandle).entries()) {
     await visit(name, handle);
   }
 }

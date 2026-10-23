@@ -24,7 +24,7 @@ export const MIGRATION_FILE = "migration.json";
 const ACTIVE_KEY = "bob:profile";
 
 /** Directory iteration is available in browsers but missing from some DOM libs. */
-interface IterableDirHandle extends FileSystemDirectoryHandle {
+interface IterableDirHandle {
   entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
 }
 
@@ -286,7 +286,7 @@ const RESERVED_ROOT_ENTRIES = new Set([PROFILE_DIR, REGISTRY_FILE, MIGRATION_FIL
 async function rootEntryNames(): Promise<string[]> {
   const root = await originRoot();
   const names: string[] = [];
-  for await (const [name] of (root as IterableDirHandle).entries()) {
+  for await (const [name] of (root as unknown as IterableDirHandle).entries()) {
     names.push(name);
   }
   return names.filter((name) => !RESERVED_ROOT_ENTRIES.has(name));
@@ -312,7 +312,7 @@ async function copyInto(
   prefix: string,
   marker: MigrationMarker,
 ): Promise<void> {
-  for await (const [name, handle] of (srcDir as IterableDirHandle).entries()) {
+  for await (const [name, handle] of (srcDir as unknown as IterableDirHandle).entries()) {
     const rel = prefix ? `${prefix}/${name}` : name;
     if (handle.kind === "directory") {
       const srcChild = await srcDir.getDirectoryHandle(name);
@@ -466,7 +466,7 @@ async function copyTree(
   src: FileSystemDirectoryHandle,
   dst: FileSystemDirectoryHandle,
 ): Promise<void> {
-  for await (const [name, handle] of (src as IterableDirHandle).entries()) {
+  for await (const [name, handle] of (src as unknown as IterableDirHandle).entries()) {
     if (handle.kind === "directory") {
       const child = await dst.getDirectoryHandle(name, { create: true });
       await copyTree(await src.getDirectoryHandle(name), child);
