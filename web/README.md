@@ -361,9 +361,10 @@ reloads the tab).
   `/profiles/default/`. The move is marked in `/migration.json`, resumes if the
   tab closes mid-copy, verifies file count and total bytes, and only then removes
   the originals — a failed verification keeps both copies and refuses to boot.
-- The **Profiles…** dialog creates a blank profile (seeded on first boot) or a
-  copy of the current one, and deletes non-active profiles. Each profile has its
-  own `workspace/`, run log, chats, patterns and git history.
+- The **Profiles…** entry in the toolbar's **Sync…** dialog creates a blank
+  profile (seeded on first boot) or a copy of the current one, and deletes
+  non-active profiles. Each profile has its own `workspace/`, run log, chats,
+  patterns and git history.
 - **Export**/**Import** and the BobSwap flows act on the **active** profile.
   Archive paths stay `workspace/...`, so the same file can be imported into any
   profile, any device, or packed by `make-seed`.
@@ -373,7 +374,7 @@ reloads the tab).
 ## Seed sources (BobSwap seed shelf)
 
 A profile can be bound to a seed on a BobSwap service, so updates can arrive
-later (`Profiles…` → **Seed…**):
+later (`Sync…` → `Profiles…` → **Seed…**):
 
 - Service URL, account, seed name, read key (and an upload key for publishing).
   Keys live in this browser's localStorage (`bob:swap`), never in the workspace
@@ -391,8 +392,8 @@ later (`Profiles…` → **Seed…**):
 
 ## Sharing a workspace between devices (zero storage)
 
-Toolbar **Send…**/**Receive…** move a workspace copy between two open tabs
-through a BobSwap relay:
+Toolbar **Sync…** → **Send…**/**Receive…** move a workspace copy between two
+open tabs through a BobSwap relay:
 
 - Each share creates a fresh channel; the sender shows a 6-digit pairing code
   and a 4-character visual check that must match on both screens. Nothing is

@@ -808,6 +808,28 @@ function wireReceiveDialog(): void {
   dialog?.addEventListener("close", () => receiveAbort?.abort());
 }
 
+// ── sync menu (collapsed toolbar controls) ───────────────────────────────
+
+/**
+ * The toolbar's profile/transfer/BobSwap controls live in `#sync-dialog`.
+ * Closing it on a launcher click keeps native dialogs from stacking; the
+ * launcher's own click handler then opens its dialog in the same gesture.
+ */
+function wireSyncDialog(): void {
+  const dialog = el<HTMLDialogElement>("sync-dialog");
+  if (!dialog) return;
+  el<HTMLButtonElement>("sync-menu")?.addEventListener("click", () => dialog.showModal());
+  el<HTMLButtonElement>("sync-close")?.addEventListener("click", () => dialog.close());
+  dialog.addEventListener(
+    "click",
+    (event) => {
+      const target = event.target;
+      if (target instanceof HTMLButtonElement && target.id !== "sync-close") dialog.close();
+    },
+    true,
+  );
+}
+
 // ── entry point ──────────────────────────────────────────────────────────
 
 export function wireProfileUi(profileHooks: ProfileUiHooks): void {
@@ -824,6 +846,7 @@ export function wireProfileUi(profileHooks: ProfileUiHooks): void {
   wireSeedDialog();
   wireShareDialog();
   wireReceiveDialog();
+  wireSyncDialog();
 
   // Keep the receive dialog able to target the active profile after changes.
   const dialog = el<HTMLDialogElement>("profile-dialog");

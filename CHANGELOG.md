@@ -2,6 +2,21 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-23 — web: the toolbar's tools fold into one Sync… dialog
+
+The bar's Profiles…/Export/Import/BobSwap…/Send…/Receive… buttons now live in
+a `Sync…` dialog behind a single bar button; the bar keeps Storage, the
+server field, the Profile picker and the status line. The workspace-update
+banner (and its ✕) stays in the bar at its old spot — it only appears when a
+newer seed exists, as before. Launcher buttons close the menu before their
+own dialog opens, so native dialogs never stack; Export/Import act directly.
+The elements kept their IDs and handlers (they were moved, not rewritten),
+desktop mode still hides the OPFS-only rows (`#opfs-tools` now lives inside
+the dialog) and shows the BobSwap rows, exactly like the old bar.
+
+Tests: `npm --prefix web run typecheck` + `build`, `smoke:browser`,
+`smoke:profiles`, `smoke:seed-update`.
+
 ## 2026-10-23 — tree-tool descriptions carry their call shape
 
 A tree tool's description now ends with the shape its declared needs expect —

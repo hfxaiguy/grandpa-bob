@@ -61,6 +61,11 @@
       }
       dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
       dialog h3 { margin: 0 0 0.5rem; font-size: 15px; }
+      dialog h4 {
+        margin: 0.9rem 0 0.15rem; font-size: 11px; font-weight: 600;
+        letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+      }
+      dialog h4:first-of-type { margin-top: 0.2rem; }
       dialog p { margin: 0 0 0.6rem; }
       dialog label { display: block; margin: 0.35rem 0; color: var(--muted); }
       dialog label.inline { display: flex; align-items: center; gap: 0.4rem; }
@@ -82,6 +87,9 @@
       dialog progress { width: 100%; height: 0.7rem; }
       dialog form { margin-top: 0.8rem; border-top: 1px solid var(--border); padding-top: 0.6rem; }
       .row-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.7rem; }
+      .sync-row { display: flex; align-items: baseline; gap: 0.6rem; padding: 0.15rem 0; }
+      .sync-row > button { flex: 0 0 auto; min-width: 7.5rem; text-align: left; }
+      .sync-row > .muted { font-size: 12px; }
       .muted { color: var(--muted); }
       .badge { font-size: 11px; border: 1px solid var(--border); border-radius: 99px; padding: 0.05rem 0.45rem; color: var(--muted); }
       .profile-row { display: flex; justify-content: space-between; gap: 0.8rem; align-items: center; padding: 0.45rem 0; border-bottom: 1px solid var(--border); }
@@ -100,22 +108,14 @@
         </select>
       </label>
       <input id="storage-server" placeholder="http://127.0.0.1:8795" size="22" />
-      <span id="ws-tools">
-        <span id="opfs-tools">
-          <label>Profile
-            <select id="profile-select" title="Active workspace profile"></select>
-          </label>
-          <button id="profile-manage" type="button" title="Create, duplicate or delete profiles; set seed sources">Profiles…</button>
-          <button id="ws-export" type="button" title="Download the active profile as a JSON archive">Export</button>
-          <button id="ws-import" type="button" title="Merge a workspace archive into the active profile">Import</button>
-          <input id="ws-import-file" type="file" accept="application/json,.json" hidden />
-          <button id="ws-reseed" type="button" hidden>Workspace update available</button>
-          <button id="ws-reseed-dismiss" type="button" title="Not now" hidden>×</button>
-        </span>
-        <button id="swap-settings" type="button" title="Configure BobSwap services and keys">BobSwap…</button>
-        <button id="share-send" type="button" title="Send a copy of this profile to another device through BobSwap">Send…</button>
-        <button id="share-receive" type="button" title="Receive a workspace copy from another device">Receive…</button>
+      <span id="profile-tools">
+        <label>Profile
+          <select id="profile-select" title="Active workspace profile"></select>
+        </label>
       </span>
+      <button id="ws-reseed" type="button" hidden>Workspace update available</button>
+      <button id="ws-reseed-dismiss" type="button" title="Not now" hidden>×</button>
+      <button id="sync-menu" type="button" title="Profiles, workspace transfer and BobSwap services">Sync…</button>
       <span id="status">starting…</span>
     </div>
     <div id="app"></div>
@@ -197,6 +197,42 @@
         <button id="recv-cancel" type="button">Cancel</button>
         <button id="recv-close" type="button">Close</button>
       </div>
+    </dialog>
+
+    <dialog id="sync-dialog">
+      <h3>Sync</h3>
+      <p class="muted">Workspace profiles, transfer and BobSwap services.</p>
+      <section id="opfs-tools">
+        <h4>Profiles</h4>
+        <div class="sync-row">
+          <button id="profile-manage" type="button" title="Create, duplicate or delete profiles; set seed sources">Profiles…</button>
+          <span class="muted">Create, duplicate or delete profiles; set seed sources.</span>
+        </div>
+        <h4>Transfer</h4>
+        <div class="sync-row">
+          <button id="ws-export" type="button" title="Download the active profile as a JSON archive">Export</button>
+          <span class="muted">Download the active profile as a JSON archive.</span>
+        </div>
+        <div class="sync-row">
+          <button id="ws-import" type="button" title="Merge a workspace archive into the active profile">Import</button>
+          <span class="muted">Merge a workspace archive into the active profile.</span>
+        </div>
+        <input id="ws-import-file" type="file" accept="application/json,.json" hidden />
+      </section>
+      <h4>BobSwap</h4>
+      <div class="sync-row">
+        <button id="swap-settings" type="button" title="Configure BobSwap services and keys">BobSwap…</button>
+        <span class="muted">Configure BobSwap services and keys.</span>
+      </div>
+      <div class="sync-row">
+        <button id="share-send" type="button" title="Send a copy of this profile to another device through BobSwap">Send…</button>
+        <span class="muted">Send a copy of this profile to another device through BobSwap.</span>
+      </div>
+      <div class="sync-row">
+        <button id="share-receive" type="button" title="Receive a workspace copy from another device">Receive…</button>
+        <span class="muted">Receive a workspace copy from another device.</span>
+      </div>
+      <div class="row-actions"><button id="sync-close" type="button">Close</button></div>
     </dialog>
 
     <script type="module" src="/src/main.ts"></script>

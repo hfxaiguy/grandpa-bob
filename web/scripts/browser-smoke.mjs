@@ -191,16 +191,16 @@ if (upload !== "uploaded:hello upload") {
 }
 console.log("✓ upload button writes into the chosen workspace folder");
 
-// Workspace export/import: the toolbar controls exist in OPFS mode, Export
-// downloads a valid archive of the live workspace, and Import merges files
-// without dropping what the archive does not carry.
+// Workspace export/import: the Sync dialog's workspace controls exist in OPFS
+// mode, Export downloads a valid archive of the live workspace, and Import
+// merges files without dropping what the archive does not carry.
 const transfer = await evaluate(`(async () => {
   const hook = window.__bobWorkspaceTransfer;
   if (!hook) return "no workspace-transfer hook";
   const exportButton = document.getElementById("ws-export");
   const importButton = document.getElementById("ws-import");
-  const tools = document.getElementById("ws-tools");
-  if (!exportButton || !importButton || !tools) return "toolbar controls missing";
+  const tools = document.getElementById("opfs-tools");
+  if (!exportButton || !importButton || !tools) return "workspace controls missing";
   if (tools.hidden) return "workspace tools hidden in browser mode";
 
   // Capture the download the Export button triggers, then read the blob back.

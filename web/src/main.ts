@@ -131,6 +131,7 @@ const appEl = document.getElementById("app")!;
 const storageSelect = document.getElementById("storage-mode") as HTMLSelectElement | null;
 const storageServerInput = document.getElementById("storage-server") as HTMLInputElement | null;
 const opfsTools = document.getElementById("opfs-tools");
+const profileTools = document.getElementById("profile-tools");
 
 if (storageSelect) storageSelect.value = storageMode;
 if (storageServerInput) storageServerInput.value = storageServer;
@@ -140,6 +141,7 @@ function configureToolbar(): void {
   if (storageServerInput) storageServerInput.style.display = storageMode === "desktop" ? "" : "none";
   // Profile/export/import controls act on OPFS; desktop mode has one real
   // workspace. Send/Receive stay available in both modes.
+  if (profileTools) profileTools.hidden = storageMode !== "browser";
   if (opfsTools) opfsTools.hidden = storageMode !== "browser";
 }
 configureToolbar();
