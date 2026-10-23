@@ -13,15 +13,12 @@ import { ButtonStore } from "./buttons.js";
 import { telegramHtml, telegramRichHtml } from "./util/telegram-text.js";
 import {
   getSelectedPattern,
-  getSelectedRef,
   listTreeSources,
   notifyTreesChanged,
   setSelectedPattern,
-  setSelectedRef,
   writeEnv,
 } from "./admin.js";
 import { loadPattern } from "./pattern-loader.js";
-import { promoteDraft, scanTreeVersions } from "./tree-versions.js";
 import { BRIDGE_AWAY_TEXT, BRIDGE_TEXT_ONLY_TEXT, deferToBridge, isBridgeFresh } from "./telegram-bridge.js";
 
 export interface BotDeps {
@@ -380,107 +377,47 @@ export function createBot(deps: BotDeps): Bot {
    * tree first so a module that isn't runnable (e.g. patterns/shared.mjs)
    * fails here with a clear message instead of on the next turn.
    */
-  const switchTree = async (ctx: Context, name: string, ref?: string): Promise<string | null> => {
-    const target = ref ? `${name}@${ref}` : name;
+  const switchTree = async (ctx: Context, name: string): Promise<string | null> => {
     try {
-      await loadPattern(deps.workspace, target);
+      await loadPattern(deps.workspace, name);
     } catch (err) {
       return err instanceof Error ? err.message : String(err);
     }
     setSelectedPattern(name);
-    setSelectedRef(ref ?? "");
     try {
-      await writeEnv(deps.envPath, {
-        TREE_PATTERN: name,
-        TREE_REF: ref && ref !== "prod" ? ref : null,
-      });
+      await writeEnv(deps.envPath, { TREE_PATTERN: name });
     } catch { /* persist best-effort */ }
     notifyTreesChanged(name);
-    // The caller starts a fresh session on the chosen tree+version; sessions
-    // in other topics keep their own pinned version.
+    // The caller starts a fresh session on the chosen tree; sessions in other
+    // topics keep the tree they opened on.
     deps.agent.clear(followKey(ctx));
     return null;
   };
 
-  // /tree — switch the active tree/version without the web UI. Commands:
-  //   /tree                      one inline button per logical tree
-  //   /tree <name>               switch tree (new sessions use its prod)
-  //   /tree <name>@<vN|prod|draft>  switch tree + active version
-  //   /tree versions <name>      list prod, draft and any legacy snapshots
-  //   /tree promote <name>       promote the draft to production
+  // /tree — switch the active tree without the web UI. Commands:
+  //   /tree            one inline button per logical tree
+  //   /tree <name>     switch tree (new sessions adopt it)
   bot.command("tree", async (ctx) => {
     const sources = await listTreeSources(deps.workspace);
     const arg = (ctx.match ?? "").trim();
-    const words = arg.split(/\s+/).filter(Boolean);
-
-    if (words[0] === "versions") {
-      const name = words[1];
-      if (!name) {
-        await reply(ctx, "Usage: /tree versions <name>");
-        return;
-      }
-      const catalog = (await scanTreeVersions(deps.workspace)).find((c) => c.logical === name);
-      if (!catalog) {
-        await reply(ctx, `No tree named "${name}".`);
-        return;
-      }
-      const active = getSelectedRef() ?? "";
-      const activeLabel = getSelectedPattern() === name ? (active || "prod") : "(inactive tree)";
-      const withSpec = (label: string, v: string | null) =>
-        v && catalog.specVersions.includes(v) ? `${label} · spec` : label;
-      const lines = [
-        `${name} — active ref for new sessions: ${activeLabel}`,
-        ...(catalog.hasProd
-          ? [`  prod: ${withSpec(catalog.prodVersion ?? "prod", catalog.prodVersion)}`]
-          : ["  prod: (none)"]),
-        ...catalog.versions
-          .filter((v) => !(catalog.hasProd && catalog.prodVersion === v))
-          .map((v) => `  ${withSpec(v, v)}`),
-        `  draft${catalog.draft ? "" : " (missing)"}${catalog.draftSpec ? " · spec" : ""}`,
-      ];
-      await reply(ctx, lines.join("\n"));
-      return;
-    }
-
-    if (words[0] === "promote") {
-      const name = words[1];
-      if (!name) {
-        await reply(ctx, "Usage: /tree promote <name>");
-        return;
-      }
-      try {
-        const promoted = await promoteDraft(deps.workspace, name);
-        notifyTreesChanged(name);
-        await reply(
-          ctx,
-          `Promoted ${name} → ${promoted.file}. Live sessions keep the tree they opened on.`,
-        );
-      } catch (err) {
-        await reply(ctx, `Can't promote "${name}": ${err instanceof Error ? err.message : err}`);
-      }
-      return;
-    }
 
     if (arg) {
-      const at = arg.indexOf("@");
-      const name = at >= 0 ? arg.slice(0, at) : arg;
-      const ref = at >= 0 ? arg.slice(at + 1) : undefined;
-      const hit = sources.find((p) => p.name === name);
+      const hit = sources.find((p) => p.name === arg);
       if (!hit) {
         await reply(
           ctx,
-          `No tree named "${name}".\nAvailable: ${sources.map((p) => p.name).join(", ") || "(none)"}`,
+          `No tree named "${arg}".\nAvailable: ${sources.map((p) => p.name).join(", ") || "(none)"}`,
         );
         return;
       }
-      const err = await switchTree(ctx, name, ref);
+      const err = await switchTree(ctx, hit.name);
       if (err) {
         await reply(ctx, `Can't switch to "${arg}": ${err}`);
         return;
       }
       await reply(
         ctx,
-        `Active tree: ${name}${ref ? `@${ref}` : ""}\nConversation cleared — send a request to start it.`,
+        `Active tree: ${hit.name}\nConversation cleared — send a request to start it.`,
       );
       return;
     }
@@ -489,19 +426,14 @@ export function createBot(deps: BotDeps): Bot {
       return;
     }
     const current = getSelectedPattern();
-    const currentRef = getSelectedRef() ?? "";
     const keyboard = new InlineKeyboard();
     for (const p of sources) {
       keyboard.text(`${p.name === current ? "\u2713 " : ""}${p.name}`, `tree:${p.name}`).row();
     }
-    const label = currentRef && currentRef !== "prod" ? `${current}@${currentRef}` : current;
-    await ctx.reply(
-      `Active tree: ${label}\nTip: /tree versions <name> · /tree <name>@<vN>\nPick a tree:`,
-      {
-        ...threadOpts(ctx),
-        reply_markup: keyboard,
-      },
-    );
+    await ctx.reply(`Active tree: ${current}\nPick a tree:`, {
+      ...threadOpts(ctx),
+      reply_markup: keyboard,
+    });
   });
 
   bot.callbackQuery(/^tree:(.+)$/, async (ctx) => {

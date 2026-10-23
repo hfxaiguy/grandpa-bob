@@ -64,8 +64,6 @@ const mockAgent = () =>
     sessionMeta: () => [],
     hasContinuation: () => true, // skip the grow pass
     consumesInputDirectly: async () => false,
-    sessionRef: () => undefined,
-    pinnedVersions: () => [],
     clear() {},
     async run(_key: string, _content: unknown, onEmit?: (v: unknown) => void, opts?: { onEvent?: (e: unknown) => void }) {
       const runId = `run-tokens-${Date.now()}`;

@@ -189,29 +189,30 @@ The **workspace** (agent sandbox + git repo) lives OUTSIDE the project by defaul
 (`~/grandma-workspace`, see `WORKSPACE_DIR`) so its git history is fully
 independent of the harness.
 
-**Trees are also tools.** Every workspace tree — `patterns/<name>.draft.mjs` or
-`app/<name>/tree.draft.mjs` — is registered as a callable *tree tool*. A pattern
+**Trees are also tools.** Every workspace tree — `patterns/<name>.prod.mjs` or
+`app/<name>/tree.prod.mjs` — is registered as a callable *tree tool*. A pattern
 offers one to the model with `.tools("<name>")`; the model then calls it like
 any other tool and gets the tree's result back, while the tree runs in place.
 Its `.human()` pauses suspend the whole conversation and the next message
 resumes inside the tree (the calling prompt round is replayed from the log,
 not re-sent to the model).
 
-Each tree is a **two-file pair**: the editable draft (`patterns/<name>.draft.mjs`,
-`app/<name>/tree.draft.mjs`) and the live `*.prod.mjs`, with a single `.spec.md`
-shared by both. A session **freezes its tree on open** — the root pattern
-and the tree-tool registry are loaded once, on the first turn, and reused for
-the conversation's lifetime. So editing a draft or promoting a new `.prod`
-never disturbs a live conversation (a caller-list walk paused between dials
-keeps running the bytes it started on). A restart re-loads from disk; if the
-tree changed, the saved position is dropped and the turn starts fresh. New
-sessions adopt the current `prod` (or the `draft`/a legacy `vN` ref when
-selected).
+Each tree is **one file**. The notation in its leading `//` comment block IS
+the spec: change the code and that block in the same edit; git is the version
+history. There is no draft copy, no version snapshot, and no separate
+`.spec.md`.
+
+A session **freezes its tree on open** — the root pattern and the tree-tool
+registry are loaded once, on the first turn, and reused for the conversation's
+lifetime. Editing a tree file therefore never disturbs a live conversation (a
+caller-list walk paused between dials keeps running the bytes it started on).
+A restart re-loads from disk; if the tree changed, the saved position is
+dropped and the turn starts fresh.
 
 Because tree tools resolve through the loader, a tree that attaches another
 tree must do so **by name** (`From`/`Hook`/tree tool), never by a relative JS
-import: the loader resolves the live `prod`, whereas a relative import binds
-the draft and leaks edits through it.
+import: the loader resolves the live file, whereas a relative import binds the
+file's definition at import time.
 And a tree invoked as a tool gets **only its own `Tools()`** — host tools are
 not inherited into a called tree (only a `From()`-attached subtree inherits).
 Together these are the host's isolation + least-privilege contract.
@@ -219,13 +220,13 @@ Together these are the host's isolation + least-privilege contract.
 #### How a tree describes itself: description and `## Guide`
 
 When a tree is offered as a tool, the model that decides whether to call it
-sees two things drawn from the tree's spec:
+sees two things drawn from the app's README:
 
-- **The first prose paragraph** of `app/<name>/tree.spec.md` (falling back to
-  `tree.md`, then `README.md`) becomes the tool's schema `description` — one
-  sentence saying what the tree is for. BOB appends a fixed line:
-  `Call this to run the "<name>" tree; the tree's result is returned as the
-  tool result.`
+- **The first prose paragraph** of `app/<name>/README.md` becomes the tool's
+  schema `description` — one sentence saying what the tree is for. BOB appends
+  a fixed line: `Call this to run the "<name>" tree; the tree's result is
+  returned as the tool result.` (A pattern has no README: its description is
+  the `// <file> — <sentence>` line at the top of the file.)
 - **The `## Guide` section** becomes longer usage guidance, assembled into the
   `TOOL GUIDANCE` block of the calling prompt — but only when the tree is
   inside that prompt's `Tools()` scope.
@@ -245,22 +246,22 @@ Do **not** put the tree's implementation or authoring philosophy in it. "Write
 the tree in code, not prompts" is advice for the tree's own prompts and code; in
 a `## Guide` it is noise the caller cannot act on. Do not restate the short
 description either. Keep the section short — it rides in the caller's prompt on
-every turn. `app/email/tree.spec.md` and `app/contacts/tree.spec.md` are the
-shape to copy.
+every turn. `app/email/README.md` and `app/contacts/README.md` are the shape to
+copy.
 
-A `tree.spec.md` is a **line-notation** sketch of its `tree.draft.mjs` (canonical
-symbol reference: `grandma-kat/examples/notation/README.md`). One symbol worth
-naming for sketch authors: `**` opens a branch, and a condition is **not**
-required — `** if COND → …` is a *gated* branch, while a bare `**` is an
-*unconditional* grouping subtree.
+The leading comment block of a tree file is a **line-notation** sketch of the
+code that follows (canonical symbol reference:
+`grandma-kat/examples/notation/README.md`). One symbol worth naming for sketch
+authors: `**` opens a branch, and a condition is **not** required — `** if COND
+→ …` is a *gated* branch, while a bare `**` is an *unconditional* grouping
+subtree.
 
-The app's `README.md` is **not** a second copy of the spec. It documents the app
+The app's `README.md` is **not** a second copy of the tree. It documents the app
 around the tree — its tools, data model, config, run commands, and wiring — and
-points at `tree.spec.md` for the tree itself. (The spec is what BOB reads; the
-README is only the fallback source for the one-line description, above.)
-Restating the tree in the README drifts silently — nothing checks prose the way
-a spec is checked — so reference it instead of repeating its modes, prompts,
-steps or guard values.
+references the tree's header for the tree itself. Restating the tree in the
+README drifts silently — nothing checks prose the way the header (which lives
+with the code) is checked — so reference it instead of repeating its modes,
+prompts, steps or guard values.
 
 #### How a function tool describes itself: `description` and `guide`
 
@@ -451,7 +452,7 @@ With `BOB_WEB=1` the admin server additionally serves:
 > `npm run dev` is static-only too, but keeps Vite HMR on the frontend.
 
 - **`/` — tiled app UI.** A tiling "mission control": one tile per app (the
-  trunk plus every `app/<name>/tree.draft.mjs` in the workspace). Each tile shows
+  trunk plus every `app/<name>/tree.prod.mjs` in the workspace). Each tile shows
   that app's **own chat bubbles**, a read-only **memory panel** (values
   written inside that app, nested paths indented; **click a value to inspect
   its full content**), and a **mini event log**;
@@ -483,7 +484,7 @@ With `BOB_WEB=1` the admin server additionally serves:
   auto-arrange — drag to reorder, `⤢` to expand, `↔` to
   widen, `✕` to hide (the layout is remembered). The **session** button opens
   session controls (select / new / delete, follow-Telegram, **✈ send to
-  telegram**, tree + version, and the cheap/strong model pickers). The one
+  telegram**, tree, and the cheap/strong model pickers). The one
   stream is simply split per app. Built from `ui/` (SolidJS + Vite): run
   **`npm run build:ui`** once; until it is built, `/` shows a build notice.
 - **`/settings` — admin page.** Credentials & `.env` editor, bot/sherpa status +
@@ -718,9 +719,9 @@ token usage gets high.
 ### Workspace apps & secrets
 
 `workspace/app/<name>/` packages optional features: `tools.mjs` exports an
-array of tools the agent can call, `tree.draft.mjs` can be selected as the active
-tree. When an app needs a credential file it declares it in
-`app/<name>/secrets.json`:
+array of tools the agent can call, and `tree.prod.mjs` is the app's tree (one
+file; its header comment is the spec). When an app needs a credential file it
+declares it in `app/<name>/secrets.json`:
 
 ```json
 [{ "name": "google-service-account.json",

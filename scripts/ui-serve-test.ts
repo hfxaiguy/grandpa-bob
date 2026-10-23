@@ -40,8 +40,6 @@ const mockAgent = () =>
     sessionMeta: () => [],
     hasContinuation: () => false,
     consumesInputDirectly: async () => false,
-    sessionRef: () => undefined,
-    pinnedVersions: () => [],
     clear() {},
     async run() { return { status: "waiting" }; },
     modelSlots: () => [],

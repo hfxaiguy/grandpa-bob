@@ -49,7 +49,7 @@ Shortcuts for the admin mode: `npm run start:with-server` (built `dist/`) and
 | `attachments` over Platform | done (`test:attachments`) |
 | Pure model parser (`src/model-config.ts`) | done (`test:models`) |
 | `node:*` shims + Vite aliases (`web/src/shims/*`) | done — existing shared modules bundle |
-| `tree-sources` + `tree-versions` in the browser | done — **verified in real Chromium** |
+| `tree-sources` + `tree-files` in the browser | done — **verified in real Chromium** |
 | `grandma-kat` runtime in the browser | done — **verified in real Chromium** (`knit()` with `logger:false`) |
 | `SqliteTools` over `Platform.sqlite` | done; Node adapter (`test:sqlite`) + **browser sqlite-wasm worker, verified in real Chromium** |
 | Virtual coreutils (`src/platform/coreutils.ts`) | done (`test:coreutils`); browser `Shell` uses them |
@@ -136,7 +136,7 @@ npm start                       # http://127.0.0.1:8080 -> Storage: Desktop (dir
 Pick the workspace folder once. The handle is stored in IndexedDB; after a
 reload the browser only needs one click to re-grant permission (a browser rule,
 not an app choice). The tab then reads and writes the **real** folder — file
-tools, patterns, tree versions, the file browser and `git_status` all operate in
+tools, patterns, the file browser and `git_status` all operate in
 place, with no storage-server process.
 
 `SQL writes` is off by default: querying `contacts.db` / `comms.db` / `email.db`
@@ -162,8 +162,8 @@ Existing NodeNext shared modules bundle unchanged via Vite aliases:
 | `node:sqlite` | throwing stub (milestone 2) |
 | `node:child_process` | throwing stub (milestone 5) |
 
-The demo (`src/main.ts`) runs the real `listTreeSources`, `snapshotTree`, and
-`promoteTree` over OPFS, proving the alias approach.
+The demo (`src/main.ts`) runs the real `listTreeSources` and tree loading
+over OPFS, proving the alias approach.
 
 ## Run
 
@@ -257,7 +257,7 @@ mode BOB operates on the real workspace:
 - **files + shell + git** via the bridge (`platform.fs`/`platform.git`);
 - **SQLite** via the bridge's `node:sqlite` routes, so `sql_*` tools work;
 - **discovery follows the backend** — the `node:fs` shim is repointed with
-  `setActiveFs()`, so `tree-sources`/`tree-versions` read the desktop workspace;
+  `setActiveFs()`, so `tree-sources`/`tree-files` read the desktop workspace;
 - **git sync to a branch** — `git_push` takes a `branch` (default `main`) and
   the bridge runs `git push <remote> HEAD:refs/heads/<branch>`.
 
@@ -275,8 +275,8 @@ path (e.g. `/home/love/grandma-workspace.git`); in browser mode it must be a
 CORS http url. `?gitremote=…&gitbranch=…` preconfigures it.
 
 `npm run smoke` needs a Chromium/Chrome binary (override with `CHROME_BIN`) and
-the admin running. It exercises OPFS writes/rename, `tree-versions`
-snapshot/promote, `grandma-kat knit()`, WASM SQLite persistence, and a real LLM
+the admin running. It exercises OPFS writes/rename, tree discovery,
+`grandma-kat knit()`, WASM SQLite persistence, and a real LLM
 round-trip — this is the older demo runner (`#out`). The storage-mode checks are
 `npm run smoke:browser` and `npm run smoke:direct` (both need the admin and
 Chromium; `smoke:direct` fakes the folder picker to a real OPFS directory

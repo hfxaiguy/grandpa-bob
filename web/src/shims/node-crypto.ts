@@ -1,6 +1,6 @@
 /**
  * Vite alias target for `node:crypto`. Provides the sync `createHash` the
- * shared code expects (grandma-kat's definitionId, tree-versions' snapshot
+ * shared code expects (grandma-kat's definitionId, tree-files' resolution
  * hash) via the shared pure SHA-256, plus WebCrypto UUID/random bytes.
  */
 import { sha256hex } from "../../../src/platform/sha256";

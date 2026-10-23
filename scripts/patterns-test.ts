@@ -1,8 +1,8 @@
 /**
  * Tests for the admin pattern registry: listPatterns must surface only
- * runnable patterns (skip *.test.mjs smoke tests and non-.mjs files) and
- * parse the `// name.mjs — description` header convention. listTreeSources
- * also offers every app/<dir>/tree.mjs under the "app" group, and
+ * runnable production trees (skip *.test.mjs smoke tests and other files) and
+ * parse the `// name.prod.mjs — description` header convention. listTreeSources
+ * also offers every app/<dir>/tree.prod.mjs under the "app" group, and
  * loadPattern resolves those by directory name.
  * No Telegram token or LLM required. Run: npm run test:patterns
  */
@@ -18,12 +18,12 @@ const dir = path.join(ws, "patterns");
 await fs.mkdir(dir, { recursive: true });
 
 await fs.writeFile(
-  path.join(dir, "agent.mjs"),
-  "// agent.mjs — the main agent loop\nexport default function () {}\n",
+  path.join(dir, "agent.prod.mjs"),
+  "// agent.prod.mjs — the main agent loop\nexport default function () {}\n",
 );
 await fs.writeFile(
-  path.join(dir, "person-scan.mjs"),
-  "// person-scan.mjs — the greeted-person scan tree\nexport default function () {}\n",
+  path.join(dir, "person-scan.prod.mjs"),
+  "// person-scan.prod.mjs — the greeted-person scan tree\nexport default function () {}\n",
 );
 await fs.writeFile(
   path.join(dir, "person-scan.test.mjs"),
@@ -35,27 +35,27 @@ await fs.writeFile(path.join(dir, "notes.txt"), "not a pattern\n");
 const patterns = await listPatterns(ws);
 const names = patterns.map((p) => p.name).sort();
 
-assert.deepEqual(names, ["agent", "person-scan"], "only runnable .mjs patterns are listed");
+assert.deepEqual(names, ["agent", "person-scan"], "only runnable prod trees are listed");
 assert.ok(
   !patterns.some((p) => p.file.endsWith(".test.mjs")),
   "*.test.mjs smoke tests must never be offered as patterns",
 );
 
 const scan = patterns.find((p) => p.name === "person-scan")!;
-assert.equal(scan.file, "person-scan.mjs");
+assert.equal(scan.file, "person-scan.prod.mjs");
 assert.equal(scan.description, "the greeted-person scan tree");
 
 // Missing patterns dir → empty list, no throw.
 assert.deepEqual(await listPatterns(path.join(ws, "nope")), []);
 
-// App trees are selectable too: app/<dir>/tree.mjs, described by tree.md.
+// App trees are selectable too: app/<dir>/tree.prod.mjs, described by README.md.
 await fs.mkdir(path.join(ws, "app", "caller-list"), { recursive: true });
 await fs.writeFile(
-  path.join(ws, "app", "caller-list", "tree.md"),
+  path.join(ws, "app", "caller-list", "README.md"),
   "# Caller-list Tree\n\nThe caller-list tree walks a selected list one at a time.\n",
 );
 await fs.writeFile(
-  path.join(ws, "app", "caller-list", "tree.mjs"),
+  path.join(ws, "app", "caller-list", "tree.prod.mjs"),
   'export default function ({ Tree, name, Prompt }) { return Tree(name("caller_list"), Prompt(m => "hi")); }\n',
 );
 // An app without a tree is tools-only and must not appear.

@@ -157,11 +157,11 @@ const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-app-attr-"));
 await fs.mkdir(path.join(ws, "logs"), { recursive: true });
 // Two app trees so /api/apps has something beyond trunk.
 await fs.mkdir(path.join(ws, "app", "contacts"), { recursive: true });
-await fs.writeFile(path.join(ws, "app", "contacts", "tree.mjs"), "export default {};\n");
-await fs.writeFile(path.join(ws, "app", "contacts", "tree.md"), "# contacts\n\nContact manager.\n");
+await fs.writeFile(path.join(ws, "app", "contacts", "tree.prod.mjs"), "export default {};\n");
+await fs.writeFile(path.join(ws, "app", "contacts", "README.md"), "# contacts\n\nContact manager.\n");
 await fs.mkdir(path.join(ws, "app", "enrich"), { recursive: true });
-await fs.writeFile(path.join(ws, "app", "enrich", "tree.mjs"), "export default {};\n");
-await fs.writeFile(path.join(ws, "app", "enrich", "tree.md"), "# enrich\n\nProfile enrichment.\n");
+await fs.writeFile(path.join(ws, "app", "enrich", "tree.prod.mjs"), "export default {};\n");
+await fs.writeFile(path.join(ws, "app", "enrich", "README.md"), "# enrich\n\nProfile enrichment.\n");
 
 function freePort(): Promise<number> {
   return new Promise((resolve) => {
@@ -216,8 +216,6 @@ const mockAgent = () =>
     sessionMeta: () => [],
     hasContinuation: () => true, // skip the grow pass
     consumesInputDirectly: async () => false,
-    sessionRef: () => undefined,
-    pinnedVersions: () => [],
     clear() {},
     async run(_key: string, _content: unknown, onEmit?: (v: unknown) => void, opts?: { onEvent?: (e: unknown) => void }) {
       if (failNext) {

@@ -34,8 +34,6 @@ export interface UiState {
   follow: boolean;
   patterns: PatternInfo[];
   pattern: string;
-  versions: { versions: string[]; prod: string | null; draft: boolean; active: string };
-  ref: string;
   slots: Slot[];
   models: Record<string, string>;
   /** The in-tab registry is still the auto-generated mock one (standalone). */
@@ -118,8 +116,6 @@ export const [state, setState] = createStore<UiState>({
   follow: false,
   patterns: [],
   pattern: "",
-  versions: { versions: [], prod: null, draft: false, active: "prod" },
-  ref: "",
   slots: [],
   models: {},
   mockOnly: false,
@@ -179,28 +175,10 @@ export async function refreshApps(): Promise<void> {
 
 export async function refreshPatterns(): Promise<void> {
   try {
-    const d = await getJSON<{ current: string; ref: string; patterns: PatternInfo[] }>("/api/pattern");
-    setState({ patterns: d.patterns, pattern: d.current, ref: d.ref || "" });
+    const d = await getJSON<{ current: string; patterns: PatternInfo[] }>("/api/pattern");
+    setState({ patterns: d.patterns, pattern: d.current });
   } catch (e) {
     console.warn("patterns:", e);
-  }
-}
-
-export async function refreshVersions(name?: string): Promise<void> {
-  const n = name ?? state.pattern;
-  if (!n) return;
-  try {
-    const d = await getJSON<{ versions: string[]; prod: string | null; draft: boolean; active: string }>(
-      `/api/tree/versions?name=${encodeURIComponent(n)}`,
-    );
-    setState("versions", {
-      versions: d.versions || [],
-      prod: d.prod ?? null,
-      draft: !!d.draft,
-      active: d.active || "prod",
-    });
-  } catch (e) {
-    console.warn("versions:", e);
   }
 }
 
@@ -513,21 +491,10 @@ export async function setPattern(name: string): Promise<void> {
   try {
     await postJSON("/api/pattern", { name });
     setState("pattern", name);
-    await Promise.all([refreshSession(), refreshVersions(name)]);
+    await refreshSession();
     toast(`pattern: ${name} — conversation cleared`);
   } catch (e) {
     toast(e instanceof Error ? e.message : "pattern switch failed", true);
-  }
-}
-
-export async function setRef(ref: string): Promise<void> {
-  if (!ref || !state.pattern) return;
-  try {
-    await postJSON("/api/tree/version/active", { name: state.pattern, ref });
-    setState("ref", ref);
-    toast(`new sessions use: ${state.pattern}${ref !== "prod" ? "@" + ref : " (prod)"}`);
-  } catch (e) {
-    toast(e instanceof Error ? e.message : "version switch failed", true);
   }
 }
 
@@ -920,7 +887,6 @@ export async function init(): Promise<void> {
   } catch (e) {
     console.warn("session:", e);
   }
-  await refreshVersions();
   openLiveStream();
   setState("ready", true);
 }

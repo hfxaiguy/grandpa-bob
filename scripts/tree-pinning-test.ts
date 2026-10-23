@@ -1,16 +1,15 @@
 /**
  * Pin-on-open — a live session freezes its tree when it opens.
  *
- *   1. A fresh session pins the active ref ("relay@prod") and persists it as
- *      a session-meta marker in the log DB.
- *   2. Overwriting the `.prod` file mid-session does NOT disturb a live
- *      session: it keeps running the tree it opened on (the in-memory freeze).
+ *   1. A fresh session loads `patterns/<name>.prod.mjs` once.
+ *   2. Overwriting that file mid-session does NOT disturb a live session: it
+ *      keeps running the tree it opened on (the in-memory freeze).
  *   3. A restart (a fresh Agent, restoring from the log DB) re-loads the tree
  *      from disk; if it changed, the session drops with the "tree changed"
- *      notice and restarts on the active ref.
- *   4. A draft-pinned session behaves the same: frozen within the instance,
- *      dropped after a restart if the draft changed.
- *   5. clearSessionsForLogical only drops that logical's sessions.
+ *      notice and restarts on the current file.
+ *   4. Editing another tree's file never touches this session.
+ *   5. A Tools-only change does not drop a session (resume only cares about
+ *      the child structure).
  *
  * Mock model handler, no network. Run: npm run test:tree-pinning
  */
@@ -18,16 +17,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { Agent } from "../src/agent.js";
 import { ToolRegistry } from "../src/tools/index.js";
-import { promoteDraft } from "../src/tree-versions.js";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-pinning-"));
 const patterns = path.join(ws, "patterns");
 await fs.mkdir(patterns, { recursive: true });
 await fs.mkdir(path.join(ws, "logs"), { recursive: true });
-const logDb = path.join(ws, "logs", "grandma-kat.db");
 
 /** A two-pause tree factory authored with only the builder surface. */
 const treeSrc = (name: string, extra = "") => `export default function ({ Tree, name, Model, Human, Emit }) {
@@ -46,54 +42,35 @@ const SHAPE_EXTRA = `\n    Emit(() => ({ text: "extra" })),`;
 const handler = async () => ({ content: "mock-answer", reasoning: null, tool_calls: [] });
 const models = { cheap: { model: "cheap", handler } } as any;
 const tools = new ToolRegistry(ws, ["ls"]);
-const mkAgent = (patternName: string, patternRef?: () => string | undefined) =>
+const mkAgent = (patternName: string) =>
   new Agent({
     models,
     workspace: ws,
     tools,
     patternName: () => patternName,
-    ...(patternRef ? { patternRef } : {}),
   });
-const readSessions = async () => {
-  const db = new DatabaseSync(logDb);
-  try {
-    const out: Record<string, { ref?: string | null }> = {};
-    const rows = db
-      .prepare("SELECT run_id AS key, content FROM calls WHERE kind = 'web_session_meta' ORDER BY seq")
-      .all() as { key: string; content: string }[];
-    for (const row of rows) out[row.key] = JSON.parse(row.content) as { ref?: string | null };
-    return out;
-  } finally {
-    db.close();
-  }
-};
 const texts = (emitted: unknown[]) => emitted.map((e) => (e as { text: string }).text);
 
-// ── 1. a fresh session pins the active ref ──
-await fs.writeFile(path.join(patterns, "relay.mjs"), treeSrc("relay"));
-const promoted = await promoteDraft(ws, "relay");
-assert.equal(promoted.file, "patterns/relay.prod.mjs");
-assert.ok(await fs.stat(path.join(patterns, "relay.prod.mjs")));
+// ── 1. a fresh session opens on the prod file ──
+await fs.writeFile(path.join(patterns, "relay.prod.mjs"), treeSrc("relay"));
 let relay = mkAgent("relay");
 {
   const r1 = await relay.run("A", "hello");
   assert.equal(r1.status, "waiting");
-  assert.equal((await readSessions()).A.ref, "relay@prod", "the bare prod is the pinned ref");
-  console.log("1. fresh session pinned relay@prod");
+  console.log("1. fresh session opened on relay.prod.mjs");
 }
 
-// ── 2. pin-on-open: overwriting .prod mid-session does not disturb ──
+// ── 2. pin-on-open: overwriting the file mid-session does not disturb ──
 {
   await fs.writeFile(path.join(patterns, "relay.prod.mjs"), treeSrc("relay", SHAPE_EXTRA));
   const emitted: unknown[] = [];
   const r2 = await relay.run("A", "world", (v) => emitted.push(v));
   assert.equal(r2.status, "waiting");
   assert.deepEqual(texts(emitted), ["A:world"], "resumed on the frozen tree, no drop notice");
-  assert.equal((await readSessions()).A.ref, "relay@prod");
-  console.log("2. live session kept the tree it opened on despite a .prod overwrite");
+  console.log("2. live session kept the tree it opened on despite an overwrite");
 }
 
-// ── 3. a restart after a .prod change drops with the 'tree changed' notice ──
+// ── 3. a restart after a change drops with the 'tree changed' notice ──
 {
   relay = mkAgent("relay"); // fresh instance = restart; reloads relay.prod from disk
   const emitted: unknown[] = [];
@@ -101,44 +78,22 @@ let relay = mkAgent("relay");
   assert.equal(r3.status, "waiting");
   assert.match(texts(emitted)[0], /tree changed since it paused/);
   assert.deepEqual(texts(emitted)[1], "A:three");
-  console.log("3. restart after a .prod change dropped and restarted the session");
+  console.log("3. restart after a change dropped and restarted the session");
 }
 
-// ── 4. a draft-pinned session: frozen in-instance, dropped after restart ──
+// ── 4. editing another tree's file leaves this session alone ──
 {
-  await fs.writeFile(path.join(patterns, "drafty.mjs"), treeSrc("drafty"));
-  let drafty = mkAgent("drafty", () => "draft");
-  const r1 = await drafty.run("D", "one");
-  assert.equal(r1.status, "waiting");
-  assert.equal((await readSessions()).D.ref, "drafty@draft");
-
-  await fs.writeFile(path.join(patterns, "drafty.mjs"), treeSrc("drafty", SHAPE_EXTRA));
+  const before = await relay.run("E", "one");
+  assert.equal(before.status, "waiting");
+  await fs.writeFile(path.join(patterns, "other.prod.mjs"), treeSrc("other", SHAPE_EXTRA));
   const emitted: unknown[] = [];
-  const r2 = await drafty.run("D", "two", (v) => emitted.push(v));
-  assert.equal(r2.status, "waiting");
-  assert.deepEqual(texts(emitted), ["A:two"], "the frozen draft is unchanged in-instance");
-
-  drafty = mkAgent("drafty", () => "draft"); // restart
-  const emitted2: unknown[] = [];
-  await drafty.run("D", "three", (v) => emitted2.push(v));
-  assert.match(texts(emitted2)[0], /tree changed since it paused/);
-  assert.deepEqual(texts(emitted2)[1], "A:three");
-  console.log("4. draft-pinned session froze in-instance and dropped after a restart");
+  const after = await relay.run("E", "two", (v) => emitted.push(v));
+  assert.equal(after.status, "waiting");
+  assert.deepEqual(texts(emitted), ["A:two"], "no drop notice for an unrelated tree edit");
+  console.log("4. editing another tree did not disturb the session");
 }
 
-// ── 5. clearSessionsForLogical only touches that logical ──
-{
-  const agent = mkAgent("relay");
-  assert.equal(agent.hasContinuation("A"), true);
-  assert.equal(agent.hasContinuation("D"), true);
-  const cleared = agent.clearSessionsForLogical("relay");
-  assert.deepEqual(cleared, ["A"]);
-  assert.equal(agent.hasContinuation("A"), false);
-  assert.equal(agent.hasContinuation("D"), true, "another tree's session is untouched");
-  console.log("5. logical switch cleared only that logical's sessions");
-}
-
-// ── 6. resume-irrelevant churn does NOT drop a session ──
+// ── 5. resume-irrelevant churn does NOT drop a session ──
 //
 // The trunk's Tools() list is built from a filesystem scan of app/ (the
 // trunk's appTreeNames() scan), so creating or editing an app dir while a
@@ -158,8 +113,7 @@ let relay = mkAgent("relay");
   );
 }
 `;
-  await fs.writeFile(path.join(patterns, "toolsy.mjs"), toolsSrc("toolsy", ["list_files"]));
-  await promoteDraft(ws, "toolsy");
+  await fs.writeFile(path.join(patterns, "toolsy.prod.mjs"), toolsSrc("toolsy", ["list_files"]));
   let toolsy = mkAgent("toolsy");
   const r1 = await toolsy.run("T", "one");
   assert.equal(r1.status, "waiting");
@@ -170,7 +124,7 @@ let relay = mkAgent("relay");
   const r2 = await toolsy.run("T", "two", (v) => emitted.push(v));
   assert.equal(r2.status, "waiting");
   assert.deepEqual(texts(emitted), ["A:two"], "resumed with no drop notice for a Tools-only change");
-  console.log("6. a Tools-only change kept the session (no context loss)");
+  console.log("5. a Tools-only change kept the session (no context loss)");
 }
 
 await fs.rm(ws, { recursive: true, force: true });

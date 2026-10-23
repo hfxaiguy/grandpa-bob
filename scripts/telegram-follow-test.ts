@@ -43,8 +43,6 @@ const mockAgent = () =>
     sessionMeta: () => [{ key: "12345:0", updatedAt: Date.now() }],
     hasContinuation: () => false,
     consumesInputDirectly: async () => false,
-    sessionRef: () => undefined,
-    pinnedVersions: () => [],
     clear() {},
     async run(key: string, content: unknown, onEmit?: (v: unknown) => void) {
       usedKeys.push(key);

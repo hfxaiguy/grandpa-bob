@@ -12,7 +12,7 @@
 import type { AgentClient } from "../agent/agent-client";
 import type { Platform } from "../../../src/platform/types";
 import { listAppTrees, listPatterns, listTreeSources } from "../../../src/tree-sources";
-import { promoteDraft, resolveTreeEntry, scanTreeVersions } from "../../../src/tree-versions";
+import { resolveTreeEntry } from "../../../src/tree-files";
 import { serializeTree } from "../../../src/tree-serialize";
 import { newTurnApps, tagEventApp, type TurnApps } from "../../../src/app-attribution";
 import { createMemoryTracker, type MemoryWrite } from "../../../src/memory-track";
@@ -118,7 +118,6 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   const subscribers = new Set<(msg: EventMessage) => void>();
   let activePattern = opts.initialPattern || "trunk";
   let modelsJson = opts.modelsJson ?? "";
-  const activeRefs = new Map<string, string>();
   /** Per-conversation role→slot overrides (the chat model picker). */
   const sessionModels = new Map<string, Record<string, string>>();
   /**
@@ -672,16 +671,16 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   async function patternCatalog(): Promise<BackendResponse> {
     try {
       const sources = await listTreeSources(platform.workspaceRoot);
-      const patterns = sources.map((s) => ({ name: s.name, group: s.group, description: s.description, draft: s.draft }));
+      const patterns = sources.map((s) => ({ name: s.name, group: s.group, description: s.description }));
       const names = patterns.map((p) => p.name);
       // `activePattern` may arrive as a path from boot detection; compare by
-      // logical name so a prod-only tree (trunk) is not replaced by names[0].
+      // logical name so a tree path is not replaced by names[0].
       const wanted = patternLabel(activePattern);
       const current = names.includes(wanted) ? wanted : names[0] ?? activePattern;
       activePattern = current;
-      return { status: 200, body: { current, pattern: current, patterns, ref: "prod", refs: ["prod", "draft"] } };
+      return { status: 200, body: { current, pattern: current, patterns } };
     } catch {
-      return { status: 200, body: { current: activePattern, pattern: activePattern, patterns: [], ref: "prod", refs: [] } };
+      return { status: 200, body: { current: activePattern, pattern: activePattern, patterns: [] } };
     }
   }
 
@@ -1019,51 +1018,14 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       else sessionModels.delete(key);
       return { status: 200, body: { ok: true, models: rec } };
     }
-    if (pathname === "/api/tree/versions" && method === "GET") {
-      const name = search.get("name") ?? "";
-      const catalog = (await scanTreeVersions(platform.workspaceRoot).catch(() => [])).find((c) => c.logical === name);
-      return {
-        status: 200,
-        body: {
-          versions: catalog?.versions ?? [],
-          prod: catalog?.prodVersion ?? null,
-          draft: catalog?.draft ?? false,
-          active: activeRefs.get(name) ?? "prod",
-        },
-      };
-    }
-    if (pathname === "/api/tree/version/promote" && method === "POST") {
-      const { name = "" } = parseBody(body) as { name?: string };
-      return { status: 200, body: await promoteDraft(platform.workspaceRoot, name) };
-    }
-    if (pathname === "/api/tree/version/active" && method === "POST") {
-      const { name = "", ref = "prod" } = parseBody(body) as { name?: string; ref?: string };
-      if (name) activeRefs.set(name, ref || "prod");
-      return { status: 200, body: { ok: true, active: ref || "prod" } };
-    }
-    if (pathname === "/api/tree/spec" && method === "GET") {
-      const spec = search.get("pattern") ?? "";
-      const at = spec.lastIndexOf("@");
-      const entry = await resolveTreeEntry(
-        platform.workspaceRoot,
-        at >= 0 ? spec.slice(0, at) : spec,
-        at >= 0 ? spec.slice(at + 1) : "prod",
-      );
-      if (!entry?.specAbs) return { status: 404, body: { error: "no spec for this version" } };
-      const text = await platform.fs.readFile(entry.specAbs, "utf8").catch(() => null);
-      if (text == null) return { status: 404, body: { error: "no spec for this version" } };
-      return { status: 200, body: { specFile: entry.specFile, spec: text } };
-    }
     if (pathname === "/api/tree" && method === "GET") {
-      const spec = search.get("pattern") ?? "";
-      const at = spec.lastIndexOf("@");
-      const logical = at >= 0 ? spec.slice(0, at) : spec;
-      const entry = await resolveTreeEntry(platform.workspaceRoot, logical, at >= 0 ? spec.slice(at + 1) : "prod");
+      const logical = search.get("pattern") ?? "";
+      const entry = await resolveTreeEntry(platform.workspaceRoot, logical);
       if (!entry) return { status: 404, body: { error: `tree not found: ${logical}` } };
       try {
         const mod = await createModuleLoader(platform).load(entry.file);
         const def = (mod as { default?: unknown }).default ?? mod;
-        return { status: 200, body: { pattern: entry.internalName, tree: serializeTree(def) } };
+        return { status: 200, body: { pattern: entry.logical, tree: serializeTree(def) } };
       } catch (err) {
         return { status: 500, body: { error: `could not load tree: ${err instanceof Error ? err.message : String(err)}` } };
       }

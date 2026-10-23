@@ -12,7 +12,6 @@ import {
   setFollow,
   toggleMachine,
   setPattern,
-  setRef,
   setModel,
   chooseFallback,
   clearConversation,
@@ -1267,20 +1266,6 @@ export function SessionPanel(props: { onClose: () => void }) {
             <For each={state.patterns}>
               {(p) => <option value={p.name} selected={state.pattern === p.name}>{p.name}</option>}
             </For>
-          </select>
-        </label>
-        <label class="col">
-          version (new sessions)
-          <select onChange={(e) => void setRef(e.currentTarget.value)}>
-            <option value="prod" selected={(state.ref || "prod") === "prod"}>
-              prod{state.versions.prod ? ` (${state.versions.prod})` : ""}
-            </option>
-            <For each={state.versions.versions}>
-              {(v) => <option value={v} selected={state.ref === v}>{v}</option>}
-            </For>
-            <Show when={state.versions.draft}>
-              <option value="draft" selected={state.ref === "draft"}>draft</option>
-            </Show>
           </select>
         </label>
         <div class="row">

@@ -41,8 +41,6 @@ const mockAgent = () =>
     sessionMeta: () => [],
     hasContinuation: () => true,
     consumesInputDirectly: async () => true,
-    sessionRef: () => undefined,
-    pinnedVersions: () => [],
     modelSlots: () => [],
     clear() {},
     async run(_key: string, content: unknown, onEmit: (v: unknown) => void, opts?: any) {

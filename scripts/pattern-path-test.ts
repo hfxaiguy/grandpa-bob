@@ -1,7 +1,7 @@
 /**
- * The pattern picker sends logical names ("context_manager", "name@draft"),
- * while boot sends workspace paths ("patterns/trunk.mjs"). Both must end at the
- * version-aware file, or the module loader opens `<workspace>/context_manager`.
+ * The pattern picker sends logical names ("context_manager"), while boot sends
+ * workspace paths ("patterns/trunk.prod.mjs"). Both must end at the tree's one
+ * file, or the module loader opens `<workspace>/context_manager`.
  *
  *   npm run test:pattern-path
  */
@@ -18,12 +18,7 @@ async function main(): Promise<void> {
   const ws = await mkdtemp(path.join(os.tmpdir(), "bob-pattern-path-"));
   try {
     await mkdir(path.join(ws, "patterns"), { recursive: true });
-    for (const file of [
-      "context_manager.draft.mjs",
-      "context_manager.prod.mjs",
-      "trunk.prod.mjs",
-      "legacy.mjs",
-    ]) {
+    for (const file of ["context_manager.prod.mjs", "trunk.prod.mjs", "legacy.prod.mjs"]) {
       await writeFile(path.join(ws, "patterns", file), "export default {};\n");
     }
 
@@ -32,47 +27,34 @@ async function main(): Promise<void> {
     assert.equal(
       await resolvePatternPath(platform, "context_manager"),
       "patterns/context_manager.prod.mjs",
-      "a logical name resolves to its prod snapshot",
+      "a logical name resolves to its prod file",
     );
     assert.equal(
-      await resolvePatternPath(platform, "context_manager@draft"),
-      "patterns/context_manager.draft.mjs",
-      "a pinned draft ref resolves to the working file",
-    );
-    assert.equal(
-      await resolvePatternPath(platform, "patterns/trunk.mjs"),
-      "patterns/trunk.mjs",
+      await resolvePatternPath(platform, "patterns/trunk.prod.mjs"),
+      "patterns/trunk.prod.mjs",
       "an explicit path passes through untouched",
     );
     assert.equal(
       await resolvePatternPath(platform, ""),
-      "patterns/trunk.mjs",
+      "patterns/trunk.prod.mjs",
       "an empty pattern falls back to trunk",
-    );
-    assert.equal(
-      await resolvePatternPath(platform, "legacy"),
-      "patterns/legacy.mjs",
-      "a single-file pattern outside the version catalog still works",
     );
     await assert.rejects(
       () => resolvePatternPath(platform, "not_here"),
-      /unknown pattern 'not_here'.*available: context_manager, legacy, trunk/,
-      "a missing name lists the patterns that do exist",
+      /unknown tree 'not_here'/,
+      "a missing name fails with the name",
     );
 
-    // Discovery must list a tree that only exists as a prod snapshot (trunk in
-    // the live workspace), while still listing each logical tree exactly once.
+    // Discovery lists every prod tree exactly once.
     const sources = await listTreeSources(ws);
     const names = sources.map((s) => s.name).sort();
     assert.deepEqual(names, ["context_manager", "legacy", "trunk"]);
     assert.equal(
       sources.find((s) => s.name === "trunk")?.file,
       "trunk.prod.mjs",
-      "the prod snapshot is the listed file when there is no draft",
+      "the prod file is the listed file",
     );
-    console.log(
-      "pattern-path: logical names resolve to version-aware files; prod-only trees are discovered",
-    );
+    console.log("pattern-path: logical names resolve to prod files; prod-only trees are discovered");
   } finally {
     await rm(ws, { recursive: true, force: true });
   }

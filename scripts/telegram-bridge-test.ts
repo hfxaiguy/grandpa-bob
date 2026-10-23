@@ -47,8 +47,6 @@ const mockAgent = () =>
     sessionMeta: () => [{ key: "12345:0:abc123", updatedAt: Date.now() }],
     hasContinuation: () => false,
     consumesInputDirectly: async () => false,
-    sessionRef: () => undefined,
-    pinnedVersions: () => [],
     clear() {},
     async run() {
       return { status: "waiting", continuation: "mock:1" };

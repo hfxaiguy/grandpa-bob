@@ -48,7 +48,7 @@ await fs.mkdir(path.join(ws, "logs"), { recursive: true });
 await ensureRepo(ws);
 
 await fs.writeFile(
-  path.join(ws, "patterns", "prov.mjs"),
+  path.join(ws, "patterns", "prov.prod.mjs"),
   `export default function ({ Tree, name, Model, Human, Prompt, Memory, Emit, Return }) {
      return Tree(
        name("prov"),

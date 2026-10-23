@@ -52,7 +52,7 @@ import { cloneWorkspace } from "./platform/git-opfs";
 import { applyDatabaseDumps } from "../../src/db-sync";
 import { createAutoSync, DEFAULT_INTERVAL_MS } from "../../src/auto-sync";
 import { listTreeSources } from "../../src/tree-sources";
-import { resolveTreeEntry, scanTreeVersions } from "../../src/tree-versions";
+import { resolveTreeEntry } from "../../src/tree-files";
 import { patternLabel } from "./agent/pattern-path";
 import { parseSeedMeta, seedFreshness, type SeedMeta } from "./seed-version";
 import type { Platform } from "../../src/platform/types";
@@ -237,9 +237,8 @@ async function applySeedArchive(archive: WorkspaceArchive): Promise<string> {
 async function seedWorkspace(root: string): Promise<void> {
   const marker = platform.path.join(root, ".seeded");
   const force = params.has("reseed");
-  // The seed's trunk may be a prod snapshot (`trunk.prod.mjs`), not the bare
-  // `trunk.mjs` the old seeds shipped; use the version catalog, not a filename.
-  const hasTrunk = await resolveTreeEntry(platform.workspaceRoot, "trunk", null)
+  // A seeded workspace is usable only when its trunk tree is on disk.
+  const hasTrunk = await resolveTreeEntry(platform.workspaceRoot, "trunk")
     .then((entry) => !!entry)
     .catch(() => false);
   if (!force && (await isFile(marker)) && hasTrunk) {
@@ -370,17 +369,9 @@ async function buildFsIndex(target: Platform): Promise<void> {
 
 async function detectPattern(target: Platform): Promise<string> {
   try {
-    // Use the version catalog, not just editable drafts: a tree that exists
-    // only as a prod snapshot (the live workspace's `trunk.prod.mjs`) is
-    // runnable and must win over alphabetically-first drafts.
-    const catalog = await scanTreeVersions(target.workspaceRoot);
-    const ordered = [...catalog].sort((a, b) => a.logical.localeCompare(b.logical));
-    const preferred = ordered.find((c) => c.logical === "trunk") ?? ordered[0];
-    if (preferred) {
-      const entry = await resolveTreeEntry(target.workspaceRoot, preferred.logical, null);
-      if (entry) return preferred.logical;
-    }
+    // Prefer the trunk; otherwise the first tree in the workspace.
     const sources = await listTreeSources(target.workspaceRoot);
+    if (sources.some((s) => s.name === "trunk")) return "trunk";
     if (sources[0]) return sources[0].name;
   } catch {
     /* fall through */

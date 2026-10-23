@@ -10,7 +10,7 @@ import { loadModels } from "./models.js";
 import { createBot } from "./bot.js";
 import { checkStt } from "./stt.js";
 import { telegramHtml, telegramRichHtml } from "./util/telegram-text.js";
-import { startAdmin, getSelectedPattern, getSelectedRef, telegramFollowKey, telegramChatKey, newTelegramSession, remoteTurnStart, remoteTurnEvent, remoteTurnEnd, isAdminBusy } from "./admin.js";
+import { startAdmin, getSelectedPattern, telegramFollowKey, telegramChatKey, newTelegramSession, remoteTurnStart, remoteTurnEvent, remoteTurnEnd, isAdminBusy } from "./admin.js";
 import { createNodePlatform } from "./platform/node.js";
 import { createAppStore } from "./app-store.js";
 import { createAutoSync, DEFAULT_INTERVAL_MS, MIN_INTERVAL_MS } from "./auto-sync.js";
@@ -62,9 +62,9 @@ async function main(): Promise<void> {
   // db path string) lets Agent.run() wrap it per-run so the web UI can
   // stream tree events live.
   const katLogger = createLogger(path.join(config.workspaceDir, "logs/grandma-kat.db"), "info");
-  // patternName/patternRef are getters so the admin UI's selector can switch
-  // the active tree and version for NEW sessions at runtime; running sessions
-  // stay pinned to the version they started on.
+  // patternName is a getter so the admin UI's selector can switch the active
+  // tree for NEW sessions at runtime; running sessions stay pinned to the tree
+  // they opened on.
   // Host context for tree registers (grandma-kat runtime.context): an app tree
   // reaches the app-secrets store through it, so an app can expose only a tree.
   const treeContext = {
@@ -84,7 +84,7 @@ async function main(): Promise<void> {
       secrets.list(app).map((s) => ({ name: s.name, updatedAt: s.updatedAt, size: s.size })),
     trees: makeTreeContext(config.workspaceDir),
   };
-  const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger, patternName: getSelectedPattern, patternRef: getSelectedRef, context: treeContext, maxToolResultChars: config.maxToolResultChars });
+  const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger, patternName: getSelectedPattern, context: treeContext, maxToolResultChars: config.maxToolResultChars });
 
   // Periodic two-way git sync (pull then push). On by default when the
   // workspace has a remote; set AUTO_SYNC=0 to disable, AUTO_SYNC_INTERVAL_MS

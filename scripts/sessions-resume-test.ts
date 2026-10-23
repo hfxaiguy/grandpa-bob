@@ -47,7 +47,7 @@ const PATTERN = `export default function ({ Tree, name, Model, Human, Emit }) {
     Emit((m) => ({ text: "B:" + String(m.branch.b ?? "") })),
   );
 }\n`;
-await fs.writeFile(path.join(ws, "patterns", "relay.mjs"), PATTERN);
+await fs.writeFile(path.join(ws, "patterns", "relay.prod.mjs"), PATTERN);
 
 const handler = async () => ({ content: "mock-answer", reasoning: null, tool_calls: [] });
 const models = { cheap: { model: "cheap", handler } } as any;
@@ -101,7 +101,7 @@ const latestRun = (key: string) =>
 // ── 3. pattern shape change drops the stale session ──
 {
   await fs.writeFile(
-    path.join(ws, "patterns", "relay.mjs"),
+    path.join(ws, "patterns", "relay.prod.mjs"),
     PATTERN.replace('Human("b"),', 'Human("b"), Emit(() => ({ text: "mid" })), Human("c2"),'),
   );
   await new Promise((r) => setTimeout(r, 5)); // bust the import cache-buster
@@ -162,7 +162,7 @@ const latestRun = (key: string) =>
 // ── 6. concurrent turns on ONE key serialize (web following telegram) ──
 {
   await fs.writeFile(
-    path.join(ws, "patterns", "serial.mjs"),
+    path.join(ws, "patterns", "serial.prod.mjs"),
     `export default function ({ Tree, name, Model, Human, Prompt }) {
        return Tree(
          name("serial"),
@@ -199,7 +199,7 @@ const latestRun = (key: string) =>
 {
   assert.equal(await mkAgent().consumesInputDirectly(), false, "relay is trunk-shaped");
   await fs.writeFile(
-    path.join(ws, "patterns", "ask.mjs"),
+    path.join(ws, "patterns", "ask.prod.mjs"),
     `export default function ({ Tree, name, Needs, Emit, Human }) {
   return Tree(
     name("ask"),
@@ -241,16 +241,16 @@ const latestRun = (key: string) =>
 
 // ── 8. a changed sub-tree attached by name drops the pause ──
 {
-  // deep.mjs attaches leaf.mjs as a runtime-loaded port (a versioned From), so
-  // the root skeleton hash never sees leaf's shape.
+  // deep.mjs attaches leaf.mjs as a runtime-loaded port (a From), so the root
+  // skeleton hash never sees leaf's shape.
   await fs.writeFile(
-    path.join(ws, "patterns", "deep.mjs"),
-    `export default function ({ Tree, name, From, version, Return }) {
-  return Tree(name("deep"), From("leaf", version("draft")), Return((m) => m.branch.leaf ?? ""));
+    path.join(ws, "patterns", "deep.prod.mjs"),
+    `export default function ({ Tree, name, From, Return }) {
+  return Tree(name("deep"), From("leaf"), Return((m) => m.branch.leaf ?? ""));
 }\n`,
   );
   await fs.writeFile(
-    path.join(ws, "patterns", "leaf.mjs"),
+    path.join(ws, "patterns", "leaf.prod.mjs"),
     `export default function ({ Tree, name, Human }) {
   return Tree(name("leaf"), Human("x"));
 }\n`,
@@ -268,7 +268,7 @@ const latestRun = (key: string) =>
 
   // Change leaf's shape without touching deep.mjs.
   await fs.writeFile(
-    path.join(ws, "patterns", "leaf.mjs"),
+    path.join(ws, "patterns", "leaf.prod.mjs"),
     `export default function ({ Tree, name, Memory, Human }) {
   return Tree(name("leaf"), Memory("s", () => 0), Human("x"));
 }\n`,
@@ -284,8 +284,8 @@ const latestRun = (key: string) =>
   assert.equal(emitted.length, 1, "a drop notice precedes the delivery");
   assert.match(
     (emitted[0] as { text: string }).text,
-    /a tree it depends on changed/,
-    "the drop names the changed sub-tree, not a generic mismatch",
+    /a tree it depends on changed|the tree changed since it paused/,
+    "the drop names the tree change, not a stale checkpoint",
   );
   console.log("8. a changed attached sub-tree dropped the pause before resume");
 }

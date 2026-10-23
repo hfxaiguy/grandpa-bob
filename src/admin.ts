@@ -47,13 +47,8 @@ import {
   bridgeReplied,
   chunkForTelegram,
 } from "./telegram-bridge.js";
-import { DEFAULT_PATTERN, loadPattern, splitTreeRef } from "./pattern-loader.js";
+import { DEFAULT_PATTERN, loadPattern } from "./pattern-loader.js";
 import { PATTERNS_DIR_NAME, listAppTrees, listPatterns, listTreeSources } from "./tree-sources.js";
-import {
-  promoteDraft,
-  resolveTreeEntry,
-  scanTreeVersions,
-} from "./tree-versions.js";
 import { serializeTree } from "./tree-serialize.js";
 import { attachmentPrompt, saveAttachment, MAX_ATTACHMENT_BYTES } from "./attachments.js";
 import { createNodePlatform } from "./platform/node.js";
@@ -392,7 +387,7 @@ export { listTreeSources };
 
 async function readPattern(workspaceDir: string, name: string) {
   try {
-    return await readFile(path.join(workspaceDir, PATTERNS_DIR_NAME, `${name}.mjs`), "utf8");
+    return await readFile(path.join(workspaceDir, PATTERNS_DIR_NAME, `${name}.prod.mjs`), "utf8");
   } catch {
     return null;
   }
@@ -405,11 +400,11 @@ async function writePattern(workspaceDir: string, name: string, content: string)
 }
 
 async function deletePattern(workspaceDir: string, name: string) {
-  try { await unlink(path.join(workspaceDir, PATTERNS_DIR_NAME, `${name}.mjs`)); } catch {}
+  try { await unlink(path.join(workspaceDir, PATTERNS_DIR_NAME, `${name}.prod.mjs`)); } catch {}
 }
 
 // ── active tree pattern ───────────────────────────────────────────────
-// Which patterns/*.mjs the agent loads on each turn. Kept in process
+// Which patterns/*.prod.mjs tree the agent loads on each turn. Kept in process
 // memory (mutable at runtime without a restart) and persisted to .env as
 // TREE_PATTERN so it survives restarts. The Telegram bot and the web chat
 // both resolve the pattern through getSelectedPattern(), so a switch takes
@@ -424,21 +419,6 @@ export function getSelectedPattern(): string {
 /** Set the active tree pattern name (in memory; persists via /api/pattern). */
 export function setSelectedPattern(name: string): void {
   selectedPattern = name;
-}
-
-// The active VERSION ref for new sessions ("v1", "draft"; "" = prod default).
-// Separate from selectedPattern so switching version never drops sessions —
-// only new sessions adopt it. Persisted to .env as TREE_REF.
-let selectedRef = process.env.TREE_REF || "";
-
-/** Active version ref for new sessions, or undefined for the prod default. */
-export function getSelectedRef(): string | undefined {
-  return selectedRef || undefined;
-}
-
-/** Set the active version ref (in memory; persists via /api/tree/version/active). */
-export function setSelectedRef(ref: string): void {
-  selectedRef = ref === "prod" ? "" : ref;
 }
 
 // ── file browser ──────────────────────────────────────────────────────
@@ -995,14 +975,14 @@ function persistTurn(key: string, t: TurnRecord): void {
 function sessionList(agent?: Agent) {
   const local = (webLog?.listSessions() ?? []).slice(0, MAX_SESSIONS_KEPT).map((s) => ({
     key: s.key, label: s.label, pattern: s.pattern, updatedAt: s.updatedAt, turns: s.turns, remote: false,
-    ref: agent?.sessionRef?.(s.key) ?? "", awaiting: s.awaiting ?? null,
+    awaiting: s.awaiting ?? null,
   }));
   // A freshly minted chat has no markers yet — still show it as the active
   // entry, the way the old in-memory store did.
   if (activeSession && !local.some((s) => s.key === activeSession)) {
     local.unshift({
       key: activeSession, label: webLog?.labelOf(activeSession) ?? "", pattern: getSelectedPattern(),
-      updatedAt: Date.now(), turns: 0, remote: false, ref: agent?.sessionRef?.(activeSession) ?? "", awaiting: null,
+      updatedAt: Date.now(), turns: 0, remote: false, awaiting: null,
     });
   }
   const known = new Set(local.map((s) => s.key));
@@ -1012,7 +992,7 @@ function sessionList(agent?: Agent) {
   // the other transport uses, shared tree and all.
   const foreign = (agent?.sessionKeys() ?? [])
     .filter((k) => !known.has(k))
-    .map((k) => ({ key: k, label: describeForeignKey(k), pattern: "", updatedAt: 0, turns: 0, remote: true, ref: agent?.sessionRef?.(k) ?? "" }));
+    .map((k) => ({ key: k, label: describeForeignKey(k), pattern: "", updatedAt: 0, turns: 0, remote: true }));
   return [...local, ...foreign].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
@@ -1096,10 +1076,10 @@ function broadcast(msg: unknown): void {
 }
 
 /**
- * Tell connected web clients the tree/version catalog changed (a snapshot,
- * promote, or active-ref switch) so their selectors refresh right away.
- * Changes made outside the process (manual renames, an editor) are caught by
- * the client's periodic scan of the directory.
+ * Tell connected web clients the tree catalog changed (a tree was added,
+ * removed, or the active tree switched) so their selectors refresh right away.
+ * Changes made outside the process (manual edits) are caught by the client's
+ * periodic scan of the directory.
  */
 export function notifyTreesChanged(name?: string): void {
   broadcast({ type: "trees", name: name ?? null });
@@ -2621,7 +2601,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
       if (req.method === "GET" && url.pathname === "/api/pattern") {
         const patterns = await listTreeSources(config.workspaceDir);
         res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-        res.end(JSON.stringify({ current: getSelectedPattern(), ref: getSelectedRef() ?? "", patterns }));
+        res.end(JSON.stringify({ current: getSelectedPattern(), patterns }));
         return;
       }
 
@@ -2655,102 +2635,6 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         notifyTreesChanged(name);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, pattern: name }));
-        return;
-      }
-
-      // --- tree versions ---
-      // The version list for one logical tree, plus the ref new sessions
-      // adopt. Snapshots come straight from the filenames, so a manual
-      // rename is observed on the next read (no hidden state).
-      if (req.method === "GET" && url.pathname === "/api/tree/versions") {
-        const name = url.searchParams.get("name") ?? "";
-        if (!name) {
-          res.writeHead(400, { "content-type": "application/json" });
-          res.end('{"error":"name is required"}');
-          return;
-        }
-        const catalog = (await scanTreeVersions(config.workspaceDir)).find((c) => c.logical === name);
-        const source = (await listTreeSources(config.workspaceDir)).find((s) => s.name === name);
-        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-        res.end(
-          JSON.stringify({
-            name,
-            versions: catalog?.versions ?? [],
-            specs: catalog?.specVersions ?? [],
-            prod: catalog?.hasProd ? (catalog.prodVersion ?? "prod") : null,
-            draft: catalog?.draft ?? false,
-            draftSpec: catalog?.draftSpec ?? false,
-            active: getSelectedRef() ?? "",
-            description: source?.description ?? "",
-            pinned: agent?.pinnedVersions?.(name) ?? [],
-          }),
-        );
-        return;
-      }
-
-      // The paired spec (source of truth for behavior) of a resolved version.
-      if (req.method === "GET" && url.pathname === "/api/tree/spec") {
-        const pattern = url.searchParams.get("pattern") || getSelectedPattern();
-        const { logical, ref } = splitTreeRef(pattern);
-        const entry = await resolveTreeEntry(config.workspaceDir, logical, ref);
-        if (!entry || !entry.specAbs) {
-          res.writeHead(404, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: `no spec for '${pattern}'` }));
-          return;
-        }
-        try {
-          const spec = await readFile(entry.specAbs, "utf8");
-          res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-          res.end(JSON.stringify({ pattern, specFile: entry.specFile, spec }));
-        } catch (err) {
-          res.writeHead(404, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
-        }
-        return;
-      }
-
-      // Set the active ref for NEW sessions. Unlike /api/pattern this never
-      // clears a session: already-running chats keep their pinned version.
-      if (req.method === "POST" && url.pathname === "/api/tree/version/active") {
-        const body = await readBody(req);
-        let parsed: { name?: unknown; ref?: unknown };
-        try { parsed = JSON.parse(body); } catch { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid JSON body"}'); return; }
-        const name = typeof parsed.name === "string" ? parsed.name : "";
-        const ref = typeof parsed.ref === "string" ? parsed.ref : "";
-        if (!name) {
-          res.writeHead(400, { "content-type": "application/json" });
-          res.end('{"error":"name is required"}');
-          return;
-        }
-        setSelectedRef(ref);
-        try { await writeEnv(config.envPath, { TREE_REF: ref && ref !== "prod" ? ref : null }); } catch { /* persist best-effort */ }
-        notifyTreesChanged(name);
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true, ref: getSelectedRef() ?? "" }));
-        return;
-      }
-
-      // Promote the draft to production (copy over the `.prod` files). Live
-      // sessions are untouched — they freeze their tree on open.
-      if (req.method === "POST" && url.pathname === "/api/tree/version/promote") {
-        const body = await readBody(req);
-        let parsed: { name?: unknown };
-        try { parsed = JSON.parse(body); } catch { res.writeHead(400, { "content-type": "application/json" }); res.end('{"error":"invalid JSON body"}'); return; }
-        const name = typeof parsed.name === "string" ? parsed.name : "";
-        if (!name) {
-          res.writeHead(400, { "content-type": "application/json" });
-          res.end('{"error":"name is required"}');
-          return;
-        }
-        try {
-          const promoted = await promoteDraft(config.workspaceDir, name);
-          notifyTreesChanged(name);
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, ...promoted }));
-        } catch (err) {
-          res.writeHead(400, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
-        }
         return;
       }
 
@@ -3135,7 +3019,7 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         return;
       }
 
-      // The app tiles: the trunk plus every `app/<name>/tree.draft.mjs` in the
+      // The app tiles: the trunk plus every `app/<name>/tree.prod.mjs` in the
       // workspace. The tiled UI lays one tile out per entry.
       if (req.method === "GET" && url.pathname === "/api/apps") {
         let appTrees: { name: string; description: string; guide?: string }[] = [];

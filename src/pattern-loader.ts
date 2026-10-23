@@ -8,23 +8,11 @@
 // can self-modify patterns and see changes on the next turn.
 
 import { pathToFileURL } from "node:url";
-import { resolveTreeEntry } from "./tree-versions.js";
+import { resolveTreeEntry } from "./tree-files.js";
 // @ts-ignore — grandma-kat ships no .d.ts files.
-import { Tree, when, flag, goback, goto, max, update, calls, parameters, disableAuto, runAfterTool, onEmit, onHuman, toolBefore, toolAfter, name as elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, Hook, From, memory, version, description, optional } from "grandma-kat";
+import { Tree, when, flag, goback, goto, max, update, calls, parameters, disableAuto, runAfterTool, onEmit, onHuman, toolBefore, toolAfter, name as elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, Hook, From, memory, description, optional } from "grandma-kat";
 
 export const DEFAULT_PATTERN = "trunk";
-
-/**
- * Split `name@ref` into its logical tree name and version ref. The `@` is the
- * operator surface only — it never appears in a filename. A missing ref means
- * "prod, else draft".
- */
-export function splitTreeRef(name: string): { logical: string; ref?: string } {
-  const at = name.indexOf("@");
-  if (at < 0) return { logical: name };
-  const ref = name.slice(at + 1);
-  return { logical: name.slice(0, at), ref: ref || undefined };
-}
 
 /** Args passed to every pattern function. */
 export interface PatternContext {
@@ -70,11 +58,6 @@ export interface PatternContext {
   From: typeof From;
   /** Marker for From('name', memory(fn)) — the slots to seed. */
   memory: typeof memory;
-  /**
-   * Marker for From('name', version('vN'|'prod'|'draft')) — pin the imported
-   * tree to a snapshot. The host resolves it from disk at run time.
-   */
-  version: typeof version;
   /** Marker for Needs('name', description('...')) — an input-slots's note. */
   description: typeof description;
   /** Marker for Needs('name', optional()) — an input that may be absent. */
@@ -83,8 +66,8 @@ export interface PatternContext {
 
 /**
  * Load a named tree from the workspace. A name resolves to
- * `patterns/<name>.draft.mjs` first, then to an app tree at
- * `app/<name>/tree.draft.mjs`. The file may export a built tree
+ * `patterns/<name>.prod.mjs`, then to an app tree at
+ * `app/<name>/tree.prod.mjs`. The file may export a built tree
  * (`export default Tree(...)`) or a default function that receives
  * `PatternContext` and returns a Tree.
  *
@@ -95,16 +78,15 @@ export async function loadPattern(
   workspaceDir: string,
   name: string = DEFAULT_PATTERN,
 ) {
-  const { logical, ref } = splitTreeRef(name);
+  const logical = name;
   if (!/^[A-Za-z0-9._-]+$/.test(logical)) {
     throw new Error(`invalid pattern name '${name}'`);
   }
-  const resolved = await resolveTreeEntry(workspaceDir, logical, ref);
+  const resolved = await resolveTreeEntry(workspaceDir, logical);
   if (!resolved) {
     throw new Error(
-      `failed to load pattern '${name}': not found for '${logical}'` +
-        (ref ? ` at version '${ref}'` : "") +
-        ` in patterns/ or app/*/tree.draft.mjs`,
+      `failed to load pattern '${name}': not found at patterns/${logical}.prod.mjs ` +
+        `or app/${logical}/tree.prod.mjs`,
     );
   }
   const filePath = resolved.abs;
@@ -121,18 +103,17 @@ export async function loadPattern(
     throw new Error(`pattern '${name}' must export a default tree or a factory function: ${filePath}`);
   }
 
-  const ctx: PatternContext = { Tree, when, flag, goback, goto, max, update, calls, parameters, disableAuto, runAfterTool, onEmit, onHuman, toolBefore, toolAfter, name: elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Hook, Branch, Each, Call, Check, Emit, Return, Until, From, memory, version, description, optional };
+  const ctx: PatternContext = { Tree, when, flag, goback, goto, max, update, calls, parameters, disableAuto, runAfterTool, onEmit, onHuman, toolBefore, toolAfter, name: elementName, Model, Tools, Needs, Human, Prompt, Memory, Register, Hook, Branch, Each, Call, Check, Emit, Return, Until, From, memory, description, optional };
   const tree = typeof mod.default === "function" ? mod.default(ctx) : mod.default;
 
   if (!tree || typeof tree !== "object") {
     throw new Error(`pattern '${name}' must return a Tree definition: ${filePath}`);
   }
 
-  // Snapshot trees carry a stable version-qualified internal name
-  // (`trunk.v1`), so a checkpoint grown under one stays valid when promotion
-  // only renames files. The draft keeps the bare logical name.
+  // A tree's internal name is its logical name, so a checkpoint grown under a
+  // file keeps mapping after the file is edited in place.
   const def = (tree as { def?: { name?: string | null } }).def ?? (tree as { name?: string | null });
-  if (def && typeof def === "object") def.name = resolved.internalName;
+  if (def && typeof def === "object") def.name = resolved.logical;
 
   return tree;
 }

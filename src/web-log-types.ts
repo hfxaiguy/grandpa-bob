@@ -76,7 +76,7 @@ export interface StoredSession {
 }
 
 /** Conversation state that is not derivable from the engine's own trace
- *  (resume hash, model overrides, pinned refs, edit-detection signatures).
+ *  (resume hash, model overrides, edit-detection signatures).
  *  Written as a host marker row into the log DB, latest per key wins;
  *  `clearedAt` tombstones everything before it. Defined here so the Node
  *  agent/log and any future browser writer cannot drift on the string. */
@@ -91,8 +91,6 @@ export interface SessionMeta {
   /** Per-role model overrides ({ strong: "slot" }). Present replaces the map;
    *  absent or empty clears it. */
   models?: Record<string, string>;
-  /** The version ref the session is pinned to; null clears it. */
-  ref?: string | null;
   /** The paused stack's branch_path + subtree signature; null clears. */
   treePath?: string | null;
   subtreeHash?: string | null;
@@ -108,7 +106,6 @@ export interface SessionState {
   continuations: Map<string, string>;
   patterns: Map<string, string>;
   times: Map<string, number>;
-  refs: Map<string, string>;
   treePaths: Map<string, string>;
   subtreeHashes: Map<string, string>;
   models: Map<string, Record<string, string>>;

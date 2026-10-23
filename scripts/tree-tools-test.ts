@@ -32,7 +32,7 @@ const ROUTER = `export default function ({ Tree, name, Model, Tools, Prompt, Emi
     Emit((m) => ({ text: "mini-result:" + JSON.stringify(m.raw.branch.route.toolResults[0].result) })),
   );
 }\n`;
-await fs.writeFile(path.join(ws, "patterns", "router.mjs"), ROUTER);
+await fs.writeFile(path.join(ws, "patterns", "router.prod.mjs"), ROUTER);
 
 const MINI = `export default function ({ Tree, name, Needs, Model, Prompt, Human, Memory }) {
   return Tree(
@@ -45,12 +45,12 @@ const MINI = `export default function ({ Tree, name, Needs, Model, Prompt, Human
   );
 }\n`;
 await fs.mkdir(path.join(ws, "app", "mini"), { recursive: true });
-await fs.writeFile(path.join(ws, "app", "mini", "tree.mjs"), MINI);
+await fs.writeFile(path.join(ws, "app", "mini", "tree.prod.mjs"), MINI);
 
 // A broken app tree must be skipped, not break the turn.
 await fs.mkdir(path.join(ws, "app", "broken"), { recursive: true });
 await fs.writeFile(
-  path.join(ws, "app", "broken", "tree.mjs"),
+  path.join(ws, "app", "broken", "tree.prod.mjs"),
   `export default function () { throw new Error("boom"); }\n`,
 );
 
@@ -96,11 +96,11 @@ assert.deepEqual(emitted, [{ text: 'mini-result:"answered:yes"' }], "the subtree
 
 // ── 3. a tree's `## Guide` is discovered — for apps AND patterns ──
 const { listTreeSources } = await import("../src/tree-sources.js");
-await fs.writeFile(path.join(ws, "patterns", "router.spec.md"), "# router\n\n## Guide\n\nROUTER GUIDE.\n");
+await fs.writeFile(path.join(ws, "patterns", "router.md"), "# router\n\n## Guide\n\nROUTER GUIDE.\n");
 await fs.writeFile(path.join(ws, "app", "mini", "README.md"), "# mini\n\n## Guide\n\nMINI GUIDE.\n");
 const sources = new Map((await listTreeSources(ws)).map((s) => [s.name, s]));
 assert.equal(sources.get("router")?.guide, "ROUTER GUIDE.", "a pattern's ## Guide is read");
 assert.equal(sources.get("mini")?.guide, "MINI GUIDE.", "an app's ## Guide is read from its README");
-console.log("tree-tools-test: guides: pattern spec + app README ## Guide read");
+console.log("tree-tools-test: guides: pattern .md + app README ## Guide read");
 
 console.log("tree-tools-test: all assertions passed");

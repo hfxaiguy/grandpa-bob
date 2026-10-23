@@ -1,19 +1,16 @@
 // src/tree-context.ts
 //
-// The host context app trees use to read and publish trees. Knit calls this
-// from registers: list the workspace trees, load a draft/snapshot's spec, and
-// write an edited draft. All the tree-file rules live in tree-versions.ts;
-// this is the thin, guarded surface. Publishing writes the draft only —
-// promotion to `.prod` is a separate, explicit step.
+// The host context app trees use to read and save trees. Knit calls this from
+// registers: list the workspace trees, load a tree's header spec + module, and
+// write an edited tree. All the tree-file rules live in tree-files.ts; this is
+// the thin, guarded surface. A tree is ONE file — saving writes its
+// `.prod.mjs` in place; there is no draft copy and no separate spec file.
 
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  resolveTreeEntry,
-  scanTreeVersions,
-  type TreeKind,
-} from "./tree-versions.js";
+import { resolveTreeEntry, treePathFor, type TreeKind } from "./tree-files.js";
+import { listAppTrees, listPatterns } from "./tree-sources.js";
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
@@ -24,123 +21,114 @@ async function writeAtomic(abs: string, content: string): Promise<void> {
   await rename(tmp, abs);
 }
 
-/** First prose paragraph of a spec file, or "". */
-async function descriptionOf(specAbs: string | null): Promise<string> {
-  if (!specAbs) return "";
-  try {
-    const text = await readFile(specAbs, "utf8");
-    const para: string[] = [];
-    for (const raw of text.split("\n")) {
-      const line = raw.trim();
-      if (para.length === 0) {
-        if (!line || line.startsWith("#") || line.startsWith("```")) continue;
-        para.push(line);
-      } else if (!line) {
-        break;
-      } else {
-        para.push(line);
-      }
-    }
-    return para.join(" ").replace(/\*\*/g, "").slice(0, 400);
-  } catch {
-    return "";
+/**
+ * The tree's notation spec: the leading `//` comment block, uncommented. When
+ * the block carries a `## <name>` notation header, the spec starts there (the
+ * prose above it — title, symbol legend — is documentation, not notation).
+ */
+export function headerSpecOf(moduleText: string): string {
+  const lines: string[] = [];
+  for (const line of moduleText.split("\n")) {
+    if (line.startsWith("//")) lines.push(line.replace(/^\/\/ ?/, ""));
+    else if (!line.trim() && lines.length === 0) continue;
+    else break;
   }
+  const at = lines.findIndex((line) => /^\s*##\s+\S/.test(line));
+  return (at >= 0 ? lines.slice(at) : lines).join("\n").trim();
 }
 
 export interface TreeContext {
-  list(): Promise<
-    { name: string; kind: TreeKind; description: string; versions: string[]; hasProd: boolean; draft: boolean }[]
-  >;
-  load(args: { name: string; kind?: TreeKind; ref?: string | null }): Promise<{
+  list(): Promise<{ name: string; kind: TreeKind; description: string }[]>;
+  load(args: { name: string; kind?: TreeKind }): Promise<{
     exists: boolean;
+    /** The tree's header comment block — its notation spec. */
     spec: string;
+    /** The full module text. */
+    module: string;
     hash: string | null;
-    versions: string[];
     file: string | null;
-    version: string | null;
     kind: TreeKind | null;
   }>;
-  publish(args: {
+  save(args: {
     name: string;
     kind?: TreeKind;
-    ref?: string | null;
-    baseHash?: string | null;
     base_hash?: string | null;
-    spec: string;
     module: string;
-  }): Promise<{ name: string; version: string; created: boolean; files: string[] }>;
+    /** First README for a NEW app tree (never overwrites an existing one). */
+    readme?: string;
+  }): Promise<{ name: string; file: string; created: boolean }>;
 }
 
 export function makeTreeContext(workspaceDir: string): TreeContext {
-  const draftRelFor = (name: string, kind: TreeKind) =>
-    kind === "app" ? path.join("app", name, "tree.draft.mjs") : path.join("patterns", `${name}.draft.mjs`);
-  const specRelFor = (name: string, kind: TreeKind) =>
-    kind === "app" ? path.join("app", name, "tree.spec.md") : path.join("patterns", `${name}.spec.md`);
-
   return {
     async list() {
-      const catalog = await scanTreeVersions(workspaceDir);
-      const out = [];
-      for (const entry of catalog) {
-        const resolved = await resolveTreeEntry(workspaceDir, entry.logical, "draft");
-        out.push({
-          name: entry.logical,
-          kind: entry.kind,
-          description: await descriptionOf(resolved?.specAbs ?? null),
-          versions: entry.versions,
-          hasProd: entry.hasProd,
-          draft: entry.draft,
-        });
-      }
-      return out.sort((a, b) => a.name.localeCompare(b.name));
+      const sources = [...(await listPatterns(workspaceDir)), ...(await listAppTrees(workspaceDir))];
+      return sources
+        .map((s) => ({
+          name: s.name,
+          kind: (s.group === "app" ? "app" : "pattern") as TreeKind,
+          description: s.description,
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
     },
 
-    async load({ name, kind, ref }) {
-      const resolved = await resolveTreeEntry(workspaceDir, name, ref ?? "draft");
-      const catalog = (await scanTreeVersions(workspaceDir)).find((e) => e.logical === name);
+    async load({ name, kind }) {
+      const resolved = await resolveTreeEntry(workspaceDir, name);
       if (!resolved) {
-        return { exists: false, spec: "", hash: null, versions: catalog?.versions ?? [], file: null, version: null, kind: kind ?? null };
+        return { exists: false, spec: "", module: "", hash: null, file: null, kind: kind ?? null };
       }
-      const spec = resolved.specAbs ? await readFile(resolved.specAbs, "utf8") : "";
+      const module = await readFile(resolved.abs, "utf8");
       return {
-        exists: Boolean(resolved.specAbs || resolved.abs),
-        spec,
-        hash: spec ? sha256(spec) : null,
-        versions: catalog?.versions ?? [],
+        exists: true,
+        spec: headerSpecOf(module),
+        module,
+        hash: sha256(module),
         file: resolved.file,
-        version: resolved.version,
         kind: resolved.kind,
       };
     },
 
-    async publish({ name, kind = "app", baseHash, base_hash, spec, module }) {
-      const draftRel = draftRelFor(name, kind);
-      const specRel = specRelFor(name, kind);
-      const specAbs = path.join(workspaceDir, specRel);
+    async save({ name, kind = "app", base_hash, module, readme }) {
+      const rel = treePathFor(name, kind);
+      const abs = path.join(workspaceDir, rel);
 
-      // Guard: refuse when the spec on disk is not the one that was loaded.
-      const want = baseHash ?? base_hash ?? null;
-      if (want) {
+      // Guard: refuse when the file on disk is not the one that was loaded.
+      if (base_hash) {
         let current: string | null = null;
-        try { current = await readFile(specAbs, "utf8"); } catch { current = null; }
-        if (current !== null && sha256(current) !== want) {
+        try {
+          current = await readFile(abs, "utf8");
+        } catch {
+          current = null;
+        }
+        if (current !== null && sha256(current) !== base_hash) {
           throw new Error(
-            `the spec for '${name}' changed while it was being edited — reload the tree and retry`,
+            `the tree '${name}' changed while it was being edited — reload the tree and retry`,
           );
         }
       }
 
-      await writeAtomic(path.join(workspaceDir, draftRel), String(module ?? ""));
-      await writeAtomic(specAbs, String(spec ?? ""));
+      let created = true;
+      try {
+        await readFile(abs, "utf8");
+        created = false;
+      } catch {
+        created = true;
+      }
 
-      // The two-file model has no snapshot to cut: publishing writes the
-      // draft. Promotion to `.prod` is a separate, explicit step.
-      return {
-        name,
-        version: "draft",
-        created: true,
-        files: [draftRel, specRel],
-      };
+      await writeAtomic(abs, String(module ?? ""));
+
+      // A new app tree needs its README: the first paragraph is the tool
+      // description and `## Guide` is the caller guidance. Never overwrite a
+      // README the author already wrote.
+      if (kind === "app" && readme && created) {
+        const readmeAbs = path.join(workspaceDir, "app", name, "README.md");
+        try {
+          await readFile(readmeAbs, "utf8");
+        } catch {
+          await writeAtomic(readmeAbs, String(readme));
+        }
+      }
+      return { name, file: rel, created };
     },
   };
 }

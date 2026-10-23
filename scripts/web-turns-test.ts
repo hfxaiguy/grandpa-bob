@@ -72,8 +72,6 @@ const mockAgent = (wsDir: string, continuations: Map<string, string> = new Map()
     sessionContinuationIds: () => continuations,
     hasContinuation: () => true,
     consumesInputDirectly: async () => true,
-    sessionRef: () => undefined,
-    pinnedVersions: () => [],
     modelSlots: () => [],
     clear() {},
     async run(key: string, content: unknown, onEmit: (v: unknown) => void, opts?: any) {
@@ -275,8 +273,6 @@ let brandNewKey = "";
     sessionContinuationIds: () => new Map(),
     hasContinuation: () => true,
     consumesInputDirectly: async () => true,
-    sessionRef: () => undefined,
-    pinnedVersions: () => [],
     modelSlots: () => [],
     async run(key: string, content: unknown, onEmit: (v: unknown) => void, opts?: any) {
       usedKeys.push(key);

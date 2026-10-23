@@ -168,7 +168,7 @@ export function buildSettingsHtml(config: UiConfig): string {
 
 <div class="card">
   <h2 style="margin-top:0">Tree patterns</h2>
-  <p style="margin:4px 0"><small>grandma-kat Tree patterns (<code>.mjs</code>) in <code>workspace/patterns/</code>. The agent re-reads the active pattern on each turn — edit it to change behavior without restarting. The agent can also modify its own patterns using file tools. <b>Which one runs</b> is selected from the dropdown on the <a href="/" style="color:var(--accent)">chat page</a> (persisted as <code>TREE_PATTERN</code> in <code>.env</code>).</small></p>
+  <p style="margin:4px 0"><small>grandma-kat trees (<code>patterns/&lt;name&gt;.prod.mjs</code>) in <code>workspace/patterns/</code>. The agent re-reads the active tree each turn — edit it to change behavior without restarting. The agent can also modify its own patterns using file tools. <b>Which one runs</b> is selected from the dropdown on the <a href="/" style="color:var(--accent)">chat page</a> (persisted as <code>TREE_PATTERN</code> in <code>.env</code>).</small></p>
   <div id="pattern-list">(loading...)</div>
   <div class="actions">
     <button class="secondary" onclick="refreshPatterns()">Refresh</button>

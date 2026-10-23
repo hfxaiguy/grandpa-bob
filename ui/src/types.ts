@@ -66,7 +66,6 @@ export interface SessionInfo {
   updatedAt: number;
   turns: number;
   remote: boolean;
-  ref?: string;
   awaiting?: string | null;
 }
 

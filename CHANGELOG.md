@@ -38,6 +38,26 @@ seed binding, the update banner and log preservation in real Chromium. Docs:
 `README.md`, `web/README.md`; remaining work is tracked in
 `feature-plans/bob-profiles-seeds-relay-remaining.md`.
 
+## 2026-10-23 — one file per tree: drafts, specs, versions and promote are gone
+
+A runnable tree is now exactly `patterns/<name>.prod.mjs` or
+`app/<name>/tree.prod.mjs`. The leading `//` comment block is the tree's spec;
+an app's README carries the tool description and `## Guide`. `src/tree-versions.ts`
+(version parsing, snapshot catalogs, `promoteDraft`) is replaced by
+`src/tree-files.ts` (resolve/discover prod files); `tree-sources` lists only
+prod trees; and the tree context knit uses is `list`/`load`/`save`, where
+`save` writes the one prod file behind a module hash guard — publishing a draft
+and promoting it to prod no longer exist.
+
+Removed with it: `/tree versions` and `/tree promote`, the `TREE_REF` active
+version, the `/api/tree/versions`, `/api/tree/spec`, `/api/tree/version/active`
+and `/api/tree/version/promote` routes, session version refs (meta + API + the
+UI version picker), and `spec-lint`'s `*.spec.md` scan (it now lints the header
+of every prod tree). Pin-on-open is unchanged: a session still freezes the tree
+file it opened on. Tests: the version suites are deleted; tree discovery,
+pattern paths, pinning, spec-lint and the tree/app-tool tests now use
+`.prod.mjs` fixtures.
+
 ## 2026-10-22 — refs are minted by the engine; folds no longer write the grammar
 
 `grandma-kat`'s `Each` records now carry `itemRefs` — the finished

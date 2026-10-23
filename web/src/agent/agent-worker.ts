@@ -17,7 +17,7 @@ import { browserCdpTools } from "./browser-cdp";
 import { createAppStore } from "../../../src/app-store";
 import { setActiveFs, setFsIndex } from "../shims/node-fs-promises";
 import { listAppTrees } from "../../../src/tree-sources";
-import { resolveTreeEntry } from "../../../src/tree-versions";
+import { resolveTreeEntry } from "../../../src/tree-files";
 import { assembleGuides, HOST_GUIDES } from "../../../src/tool-guides";
 import { createWorkspaceLogger, type MemoryLogger, type WorkspaceLogger, type KatEvent } from "./logger";
 import {
@@ -353,19 +353,14 @@ function warnTreeFailure(platform: Platform, name: string, err: unknown): void {
   console.warn(`[app-trees] ${message}`);
 }
 
-/** Resolve + load a tree by logical name (or `name@ref`) from the workspace. */
+/** Resolve + load a tree by logical name from the workspace. */
 async function loadTreeRef(platform: Platform, name: string): Promise<unknown> {
   const key = `${platform.workspaceRoot}|${name}`;
   let pending = treeCache.get(key);
   if (!pending) {
     pending = (async () => {
-      const at = name.lastIndexOf("@");
-      const entry = await resolveTreeEntry(
-        platform.workspaceRoot,
-        at >= 0 ? name.slice(0, at) : name,
-        at >= 0 ? name.slice(at + 1) : null,
-      );
-      const file = entry?.file ?? `app/${name}/tree.mjs`;
+      const entry = await resolveTreeEntry(platform.workspaceRoot, name);
+      const file = entry?.file ?? `app/${name}/tree.prod.mjs`;
       const mod = await createModuleLoader(platform).load(file);
       return (mod as { default?: unknown }).default ?? mod;
     })();
@@ -385,7 +380,7 @@ async function loadTreeRef(platform: Platform, name: string): Promise<unknown> {
   }
 }
 
-/** Every runnable app tree (`app/<name>/tree.mjs`) as a callable tree tool, plus its guide. */
+/** Every runnable app tree (`app/<name>/tree.prod.mjs`) as a callable tree tool, plus its guide. */
 async function buildAppTreeTools(
   platform: Platform,
 ): Promise<{ tools: Record<string, unknown>; guides: Map<string, string> }> {
@@ -490,7 +485,7 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   await ready;
   throwIfStopped(signal);
 
-  // The tree catalog (resolveTreeEntry) reads through the node:fs shim, so the
+  // The tree resolver reads through the node:fs shim, so the
   // shim must follow the selected backend *before* a pattern name is resolved.
   // A fresh worker starts pointed at OPFS; resolving first made the first turn
   // after a reload look for `patterns/context_manager.mjs` in the wrong place.

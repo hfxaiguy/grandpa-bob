@@ -1,5 +1,8 @@
 /**
- * spec-lint.ts — a static check across the workspace's tree specs.
+ * spec-lint.ts — a static check across the workspace's tree header specs.
+ *
+ * A tree's notation lives in its leading `//` comment block (its spec); the
+ * lint reads that block from every `*.prod.mjs` tree file.
  *
  * The narration invariant: a tree that pauses must say, in a machine emit
  * (`<<!`), what it is waiting for. An input arriving at a `>>` pause with no
@@ -67,14 +70,26 @@ export function defaultWorkspace(): string {
   return process.env.WORKSPACE_DIR || path.join(os.homedir(), "grandma-workspace");
 }
 
-/** Lint every spec under `dir` — the pattern specs and each app's tree spec. */
+/** The tree's notation block: leading `//` comments from the `##` header down. */
+export function headerSpecOf(moduleText: string): string {
+  const out: string[] = [];
+  for (const line of String(moduleText ?? "").split("\n")) {
+    if (line.startsWith("//")) out.push(line.replace(/^\/\/ ?/, ""));
+    else if (!line.trim() && out.length === 0) continue;
+    else break;
+  }
+  const at = out.findIndex((line) => /^\s*##\s+\S/.test(line));
+  return (at >= 0 ? out.slice(at) : out).join("\n");
+}
+
+/** Lint every tree header under `dir` — patterns and each app's tree. */
 export async function lintWorkspace(dir = defaultWorkspace()): Promise<SpecReport[]> {
   const files: string[] = [];
 
   const patternsDir = path.join(dir, "patterns");
   try {
     for (const f of await readdir(patternsDir)) {
-      if (f.endsWith(".spec.md")) files.push(path.join(patternsDir, f));
+      if (f.endsWith(".prod.mjs")) files.push(path.join(patternsDir, f));
     }
   } catch {
     // no patterns directory
@@ -84,7 +99,7 @@ export async function lintWorkspace(dir = defaultWorkspace()): Promise<SpecRepor
   try {
     for (const entry of await readdir(appDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      files.push(path.join(appDir, entry.name, "tree.spec.md"));
+      files.push(path.join(appDir, entry.name, "tree.prod.mjs"));
     }
   } catch {
     // no app directory
@@ -96,9 +111,9 @@ export async function lintWorkspace(dir = defaultWorkspace()): Promise<SpecRepor
     try {
       text = await readFile(abs, "utf8");
     } catch {
-      continue; // apps without a spec (or a vanished file) are skipped
+      continue; // apps without a tree are skipped
     }
-    const violations = lintSpec(text);
+    const violations = lintSpec(headerSpecOf(text));
     if (violations.length) out.push({ file: path.relative(dir, abs), violations });
   }
   return out;

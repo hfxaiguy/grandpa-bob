@@ -6,7 +6,6 @@ import type { ToolRegistry } from "./tools/index.js";
 import type { ModelRegistry } from "./models.js";
 import { loadPattern } from "./pattern-loader.js";
 import { listTreeSources } from "./tree-sources.js";
-import { parseTreeBase, resolveTreeEntry } from "./tree-versions.js";
 import { raceWithStop, isAgentStopped, AgentStoppedError, throwIfStopped } from "./stop-error.js";
 import { runWithStop } from "./stop.js";
 import { WebLog } from "./web-log.js";
@@ -55,12 +54,6 @@ export interface AgentDeps {
    * switch the active pattern without a process restart).
    */
   patternName?: () => string;
-  /**
-   * Active version ref for NEW sessions: "vN", "draft", or undefined for the
-   * prod default. A getter so a UI/command can retarget new sessions without
-   * dropping the sessions already pinned to their own version.
-   */
-  patternRef?: () => string | undefined;
   /**
    * Host context forwarded verbatim to grandma-kat as `runtime.context` (and
    * from there to tree register bodies). App trees use it to reach things the
@@ -176,10 +169,6 @@ export class Agent {
   private continuations = new Map<string, string>();
   private sessionPatterns = new Map<string, string>(); // key → pattern definition hash
   private sessionTimes = new Map<string, number>(); // key → last activity (wall clock)
-  // key → pinned version ref ("contacts@v1", "contacts@draft"). A session
-  // keeps the version it started on; switching the active version only
-  // affects sessions created afterwards.
-  private sessionRefs = new Map<string, string>();
   // key → { role: targetSlot } model-slot overrides. Normally the tree picks
   // its own slots (`Model("strong")`, `Model("cheap")`); a conversation can
   // retarget any of them independently to another named entry in the registry
@@ -209,7 +198,7 @@ export class Agent {
   // in runExclusive then decides whether a restored continuation still maps.
   private sessionCache = new Map<
     string,
-    { pattern: unknown; defId: string; pinnedRef: string; treeTools: Record<string, unknown> }
+    { pattern: unknown; defId: string; treeTools: Record<string, unknown> }
   >();
   // One run at a time per conversation key. Web and Telegram may both
   // drive the SAME key (the web "follow" feature), and two concurrent
@@ -240,7 +229,6 @@ export class Agent {
     this.continuations = state.continuations;
     this.sessionPatterns = state.patterns;
     this.sessionTimes = state.times;
-    this.sessionRefs = state.refs;
     this.sessionTreePaths = state.treePaths;
     this.sessionSubtreeHashes = state.subtreeHashes;
     this.sessionModels = state.models;
@@ -289,7 +277,6 @@ export class Agent {
       ts: Date.now(),
       pattern: this.sessionPatterns.get(key) ?? null,
       models: models && Object.keys(models).length ? models : undefined,
-      ref: this.sessionRefs.get(key) ?? null,
       treePath: this.sessionTreePaths.get(key) ?? null,
       subtreeHash: this.sessionSubtreeHashes.get(key) ?? null,
       ...(opts.cleared ? { clearedAt: Date.now() } : {}),
@@ -450,33 +437,25 @@ export class Agent {
     // freshly loaded tree.
     let session = this.sessionCache.get(key);
     if (!session) {
-      // Resolve the session's pinned version. A fresh session adopts the
-      // active ref; a resumed session keeps the ref it started on, so editing
-      // or promoting another version never disturbs it.
+      // Load the active tree once, on the session's first turn. A resumed
+      // session keeps the bytes it opened on (pin-on-open), so editing the
+      // file never disturbs a live conversation.
       const logical = this.deps.patternName?.() ?? "trunk";
-      const activeRef = await this.resolveActiveRef(logical);
-      let pinnedRef = this.sessionRefs.get(key) ?? activeRef;
       let pattern: unknown;
 
       try {
-        pattern = await loadPattern(this.deps.workspace, pinnedRef);
+        pattern = await loadPattern(this.deps.workspace, logical);
       } catch (err) {
-        // The pinned version was removed (manual prune/rename). Drop the
-        // session and restart on whatever is active now.
-        if (!cont) throw err;
-        dropReason = "its version was removed";
-        pinnedRef = activeRef;
-        pattern = await loadPattern(this.deps.workspace, pinnedRef);
-        cont = undefined;
-        droppedContinuation = true;
+        // The tree went missing (deleted/renamed). Nothing can be resumed.
+        throw err;
       }
 
       let defId = Agent.resumeHash(pattern);
 
       // A checkpoint was grown under a specific tree SHAPE; if the child
-      // structure along the paused path changed (a draft edit that moves or
+      // structure along the paused path changed (an edit that moves or
       // renumbers children), the stored pause point may no longer map to the
-      // same `.human()` slot — start fresh on the active ref. Resume-irrelevant
+      // same `.human()` slot — start fresh on the current tree. Resume-irrelevant
       // churn (prompt text, tools, models, options — e.g. the trunk's app-tree
       // scan) does NOT change this hash, so it never drops a live session.
       // No stored hash (a pause from before session-meta markers existed) means
@@ -484,8 +463,7 @@ export class Agent {
       const storedPattern = this.sessionPatterns.get(key);
       if (!droppedContinuation && cont && storedPattern && storedPattern !== defId) {
         dropReason = "the tree changed since it paused (it was edited or the pattern was switched)";
-        pinnedRef = activeRef;
-        pattern = await loadPattern(this.deps.workspace, pinnedRef);
+        pattern = await loadPattern(this.deps.workspace, this.deps.patternName?.() ?? "trunk");
         defId = Agent.resumeHash(pattern);
         cont = undefined;
         droppedContinuation = true;
@@ -494,17 +472,16 @@ export class Agent {
       // A session also depends on trees attached BY NAME — From("contacts"),
       // an app tree tool — that the root skeleton never sees. Hash those from
       // the paused stack's branch_path and compare against what it paused with:
-      // promoting or editing one drops the pause here, cleanly, instead of
-      // resuming into changed code (or dying on a stale sub-tree name).
+      // editing one drops the pause here, cleanly, instead of resuming into
+      // changed code (or dying on a stale sub-tree name).
       if (!droppedContinuation && cont) {
         const storedPath = this.sessionTreePaths.get(key);
         const storedSig = this.sessionSubtreeHashes.get(key);
         if (storedPath && storedSig) {
           const now = await this.subtreeSignature(storedPath);
           if (now && now !== storedSig) {
-            dropReason = "a tree it depends on changed since it paused (it was edited or promoted)";
-            pinnedRef = activeRef;
-            pattern = await loadPattern(this.deps.workspace, pinnedRef);
+            dropReason = "a tree it depends on changed since it paused (it was edited)";
+            pattern = await loadPattern(this.deps.workspace, this.deps.patternName?.() ?? "trunk");
             defId = Agent.resumeHash(pattern);
             cont = undefined;
             droppedContinuation = true;
@@ -512,11 +489,11 @@ export class Agent {
         }
       }
 
-      session = { pattern, defId, pinnedRef, treeTools: await this.discoverTreeTools() };
+      session = { pattern, defId, treeTools: await this.discoverTreeTools() };
       this.sessionCache.set(key, session);
     }
 
-    const { pattern, defId, pinnedRef, treeTools } = session;
+    const { pattern, defId, treeTools } = session;
 
     // Guidance for the tools in scope (host + app + tree), assembled by the
     // registry so nothing about "how to use a tool" lives in the trunk.
@@ -530,7 +507,6 @@ export class Agent {
       this.continuations.delete(key);
       this.sessionPatterns.delete(key);
       this.sessionTimes.delete(key);
-      this.sessionRefs.delete(key);
       this.sessionTreePaths.delete(key);
       this.sessionSubtreeHashes.delete(key);
       this.persistSessionMeta(key);
@@ -673,7 +649,6 @@ export class Agent {
       this.continuations.set(key, outcome.continuation);
       this.sessionPatterns.set(key, defId);
       this.sessionTimes.set(key, Date.now());
-      this.sessionRefs.set(key, pinnedRef);
       // Remember which runtime-loaded subtrees this pause sits in, so a later
       // promote/edit of one is detected before the next resume.
       const treePath = outcome.treePath;
@@ -693,7 +668,6 @@ export class Agent {
     this.continuations.delete(key);
     this.sessionPatterns.delete(key);
     this.sessionTimes.delete(key);
-    this.sessionRefs.delete(key);
     this.sessionTreePaths.delete(key);
     this.sessionSubtreeHashes.delete(key);
     this.sessionCache.delete(key);
@@ -766,7 +740,7 @@ export class Agent {
   }
 
   /**
-   * Every runnable workspace tree (patterns/<name>.draft.mjs, app/<name>/tree.draft.mjs)
+   * Every runnable workspace tree (patterns/<name>.prod.mjs, app/<name>/tree.prod.mjs)
    * as a callable tool entry. Prompts opt in with `.tools("<name>")` and the
    * model calls them like any other tool; the engine runs the tree in place
    * (pauses inside resume in position). Broken trees are skipped so one bad
@@ -855,34 +829,15 @@ export class Agent {
    * falls back to its build-time registry.
    */
   private async loadTreeByName(name: string): Promise<unknown> {
-    // Names arrive in three shapes:
-    //   - a bare logical name ("caller-list", "contacts")
-    //   - the operator ref form ("trunk@v1", "trunk@draft")
-    //   - a version-qualified INTERNAL name ("trunk.v1") — checkpoints store
-    //     this as the resume tree name, and `.vN`/`.prod` are reserved.
-    // Only the logical part gets the underscore/dash fallback.
-    let logical: string;
-    let ref: string;
-    const at = name.indexOf("@");
-    if (at >= 0) {
-      logical = name.slice(0, at);
-      ref = name.slice(at + 1);
-    } else {
-      const parsed = parseTreeBase(name);
-      if (parsed && (parsed.version !== null || parsed.prod)) {
-        logical = parsed.logical;
-        ref = parsed.version ?? "prod";
-      } else {
-        logical = name;
-        ref = "";
-      }
-    }
-    const candidates = [logical];
-    if (logical.includes("_")) candidates.push(logical.replace(/_/g, "-"));
-    if (logical.includes("-")) candidates.push(logical.replace(/-/g, "_"));
+    // A checkpoint stores the tree's logical name. App directories may use a
+    // dash where the tree's internal name uses an underscore (and vice versa),
+    // so try both spellings.
+    const candidates = [name];
+    if (name.includes("_")) candidates.push(name.replace(/_/g, "-"));
+    if (name.includes("-")) candidates.push(name.replace(/-/g, "_"));
     for (const candidate of candidates) {
       try {
-        return await loadPattern(this.deps.workspace, ref ? `${candidate}@${ref}` : candidate);
+        return await loadPattern(this.deps.workspace, candidate);
       } catch {
         // try the next spelling
       }
@@ -900,7 +855,6 @@ export class Agent {
     this.continuations.delete(key);
     this.sessionPatterns.delete(key);
     this.sessionTimes.delete(key);
-    this.sessionRefs.delete(key);
     this.sessionTreePaths.delete(key);
     this.sessionSubtreeHashes.delete(key);
     this.sessionModels.delete(key);
@@ -909,15 +863,6 @@ export class Agent {
     // The checkpoint row is orphaned, not deleted — the clearedAt tombstone is
     // what keeps a restart from resurrecting it (or any older state).
     this.persistSessionMeta(key, { cleared: true });
-  }
-
-  /**
-   * The version ref a live session is pinned to ("contacts@v1",
-   * "contacts@draft"). Undefined for a session with no checkpoint. The UI
-   * shows this as a pinned-version badge.
-   */
-  sessionRef(key: string): string | undefined {
-    return this.sessionRefs.get(key);
   }
 
   /**
@@ -1040,54 +985,4 @@ export class Agent {
     Object.assign(base, registry);
   }
 
-  /**
-   * Version ids a live session still pins for `logical`. Pruning must never
-   * delete these — a running conversation would lose its tree mid-flight.
-   */
-  pinnedVersions(logical: string): string[] {
-    const out = new Set<string>();
-    for (const ref of this.sessionRefs.values()) {
-      const [refLogical, version] = ref.split("@");
-      if (refLogical === logical && version && version !== "draft" && version !== "prod") {
-        out.add(version);
-      }
-    }
-    return [...out];
-  }
-
-  /**
-   * Drop every session whose root tree is `logical` (a logical-tree switch
-   * invalidates the pause state). Sessions pinned to other logical trees are
-   * left alone. Version switches do NOT call this — only logical switches.
-   */
-  clearSessionsForLogical(logical: string): string[] {
-    const cleared: string[] = [];
-    for (const key of [...this.continuations.keys()]) {
-      const ref = this.sessionRefs.get(key);
-      const refLogical = ref ? ref.split("@")[0] : undefined;
-      // A legacy session (no stored ref) belonged to whatever logical was
-      // active before, so it is cleared with the switch.
-      if (refLogical === undefined || refLogical === logical) {
-        this.clear(key);
-        cleared.push(key);
-      }
-    }
-    return cleared;
-  }
-
-  /**
-   * The ref new sessions should adopt: the configured ref resolved to a
-   * concrete version ("vN") or "draft". Falls back to the raw ref when the
-   * tree cannot be scanned (loadPattern will surface the real error).
-   */
-  private async resolveActiveRef(logical: string): Promise<string> {
-    const ref = this.deps.patternRef?.();
-    const resolved = await resolveTreeEntry(this.deps.workspace, logical, ref);
-    const concrete = resolved
-      ? resolved.draft
-        ? "draft"
-        : (resolved.version ?? "prod")
-      : (ref ?? "prod");
-    return `${logical}@${concrete}`;
-  }
 }

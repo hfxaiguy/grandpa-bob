@@ -200,7 +200,7 @@ export class WebLog {
    * per session id, and that run's checkpoint (the engine deletes a checkpoint
    * as soon as it resumes, so a finished run has none and a paused one has
    * exactly one). Everything the trace cannot answer — resume hash, model
-   * overrides, pinned ref, paused tree path/signature — is replayed from
+   * overrides, paused tree path/signature — is replayed from
    * `web_session_meta` markers, oldest first, latest wins. A `clearedAt`
    * marker drops the key's state and any continuation from a run that started
    * before it.
@@ -210,7 +210,6 @@ export class WebLog {
       continuations: new Map(),
       patterns: new Map(),
       times: new Map(),
-      refs: new Map(),
       treePaths: new Map(),
       subtreeHashes: new Map(),
       models: new Map(),
@@ -218,7 +217,6 @@ export class WebLog {
     const clearedAt = new Map<string, number>();
     const drop = (key: string): void => {
       state.patterns.delete(key);
-      state.refs.delete(key);
       state.treePaths.delete(key);
       state.subtreeHashes.delete(key);
       state.models.delete(key);
@@ -242,10 +240,6 @@ export class WebLog {
       }
       if (Object.keys(models).length) state.models.set(key, models);
       else state.models.delete(key);
-      if ("ref" in rec) {
-        if (typeof rec.ref === "string" && rec.ref) state.refs.set(key, rec.ref);
-        else state.refs.delete(key);
-      }
       if ("treePath" in rec) {
         if (typeof rec.treePath === "string" && rec.treePath) state.treePaths.set(key, rec.treePath);
         else state.treePaths.delete(key);

@@ -24,7 +24,7 @@ await fs.mkdir(path.join(ws, "logs"), { recursive: true });
 await ensureRepo(ws);
 
 await fs.writeFile(
-  path.join(ws, "patterns", "one-shot.mjs"),
+  path.join(ws, "patterns", "one-shot.prod.mjs"),
   `export default function ({ Tree, name, Model, Prompt }) {
      return Tree(
        name("one-shot"),
@@ -36,7 +36,7 @@ await fs.writeFile(
    }\n`,
 );
 await fs.writeFile(
-  path.join(ws, "patterns", "two-step.mjs"),
+  path.join(ws, "patterns", "two-step.prod.mjs"),
   `export default function ({ Tree, name, Model, Emit, Human, Prompt }) {
      return Tree(
        name("two-step"),

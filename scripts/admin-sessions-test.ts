@@ -45,8 +45,6 @@ const mockAgent = () =>
     sessionMeta: () => [],
     hasContinuation: (k: string) => continuations.has(k),
     consumesInputDirectly: async () => false,
-    sessionRef: () => undefined,
-    pinnedVersions: () => [],
     clear(k: string) {
       cleared.push(k);
       continuations.delete(k);

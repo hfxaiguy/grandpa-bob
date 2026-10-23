@@ -52,26 +52,28 @@ assert.equal(lintSpec(["|| << emit the draft", "|| >> reply"].join("\n")).length
   assert.equal(v[0].line, 4);
 }
 
-// lintWorkspace reads patterns/*.spec.md and app/*/tree.spec.md, skips apps
-// without a spec, and reports only the violating file.
+// lintWorkspace reads the leading `//` header of patterns/*.prod.mjs and
+// app/*/tree.prod.mjs, skips apps without a tree, and reports only the
+// violating file.
 {
   const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-spec-lint-"));
+  const commented = (lines: string[]) => lines.map((l) => `// ${l}`).join("\n") + "\nexport default {};\n";
   try {
     await fs.mkdir(path.join(ws, "patterns"), { recursive: true });
     await fs.writeFile(
-      path.join(ws, "patterns", "ok.spec.md"),
-      ["<<! { tree: ok, doing: idle, at: start }", ">> start"].join("\n"),
+      path.join(ws, "patterns", "ok.prod.mjs"),
+      commented(["<<! { tree: ok, doing: idle, at: start }", ">> start"]),
     );
     await fs.mkdir(path.join(ws, "app", "bad"), { recursive: true });
     await fs.writeFile(
-      path.join(ws, "app", "bad", "tree.spec.md"),
-      ["<< emit the question", ">> reply"].join("\n"),
+      path.join(ws, "app", "bad", "tree.prod.mjs"),
+      commented(["<< emit the question", ">> reply"]),
     );
-    await fs.mkdir(path.join(ws, "app", "no-spec"), { recursive: true });
+    await fs.mkdir(path.join(ws, "app", "no-tree"), { recursive: true });
 
     const report = await lintWorkspace(ws);
-    assert.equal(report.length, 1, "only the violating spec is reported");
-    assert.equal(report[0].file, path.join("app", "bad", "tree.spec.md"));
+    assert.equal(report.length, 1, "only the violating tree header is reported");
+    assert.equal(report[0].file, path.join("app", "bad", "tree.prod.mjs"));
     assert.equal(report[0].violations.length, 1);
   } finally {
     await fs.rm(ws, { recursive: true, force: true });

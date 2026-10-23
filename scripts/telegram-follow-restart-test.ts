@@ -44,8 +44,6 @@ const mockAgent = () =>
     sessionMeta: () => [], // no live Telegram conversation after the restart
     hasContinuation: () => false,
     consumesInputDirectly: async () => false,
-    sessionRef: () => undefined,
-    pinnedVersions: () => [],
     clear() {},
     async run(_key: string, content: unknown, onEmit?: (v: unknown) => void) {
       if (onEmit) onEmit({ text: "echo:" + String(content) });

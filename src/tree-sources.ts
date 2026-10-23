@@ -1,57 +1,44 @@
 // Workspace tree discovery, shared by the admin UI (tree selector) and the
-// agent (tree tools). A runnable tree is `patterns/<name>.draft.mjs` or
-// `app/<name>/tree.draft.mjs` (the bare `<name>.mjs` / `tree.mjs` still counts
-// as a draft for back-compat).
+// agent (tree tools). A runnable tree is exactly one production file:
+// `patterns/<name>.prod.mjs` or `app/<name>/tree.prod.mjs`. The file's leading
+// comment block is its spec; an app's `## Guide` lives in its README.
 
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { isVersionFileName, parsePatternFileName, scanTreeVersions } from "./tree-versions.js";
+import { parsePatternFileName } from "./tree-files.js";
 
 export const PATTERNS_DIR_NAME = "patterns";
 
-export async function listPatterns(workspaceDir: string) {
+/** One runnable logical tree. */
+export interface TreeSource {
+  file: string;
+  name: string;
+  description: string;
+  group: string;
+  /** Agent-facing guidance from the `## Guide` section, when present. */
+  guide?: string;
+}
+
+export async function listPatterns(workspaceDir: string): Promise<TreeSource[]> {
   const patternsDir = path.join(workspaceDir, PATTERNS_DIR_NAME);
   try {
-    const files = await readdir(patternsDir);
-    // A pattern normally has an editable draft (`name.draft.mjs` / `name.mjs`);
-    // its `.prod`/`.vN` files are snapshots and stay out of the list. But a
-    // tree that exists ONLY as a snapshot (trunk in the live workspace is
-    // `trunk.prod.mjs`) is still runnable — the default ref picks prod — so it
-    // must be listed, or the picker and boot detection cannot see it.
-    const editable = new Set<string>();
-    for (const f of files) {
-      const parsed = parsePatternFileName(f);
-      if (parsed && parsed.version === null && !parsed.prod) editable.add(parsed.logical);
-    }
-    const out: { file: string; name: string; description: string; guide: string }[] = [];
-    for (const f of files) {
-      if (!f.endsWith(".mjs")) continue;
-      if (f.endsWith(".test.mjs")) continue; // smoke tests, not runnable patterns
-      const parsed = parsePatternFileName(f);
-      if (isVersionFileName(f)) {
-        // Keep the prod snapshot only when no draft exists for that tree.
-        if (!parsed?.prod || editable.has(parsed.logical)) continue;
-      }
+    const out: TreeSource[] = [];
+    for (const file of await readdir(patternsDir)) {
+      const name = parsePatternFileName(file);
+      if (!name) continue;
       try {
-        const content = await readFile(path.join(patternsDir, f), "utf8");
+        const content = await readFile(path.join(patternsDir, file), "utf8");
         const m = content.match(/^\/\/\s*(\S+\.mjs)\s*[—–-]\s*(.+)/m);
-        // The logical name comes from the filename — `.draft`/`.prod`/`.vN`
-        // are reserved suffixes — never from the first-line comment.
-        const name = parsed?.logical ?? f.replace(/\.mjs$/, "");
-        const desc = m ? m[2] : "(no description)";
-        // One spec per tree: patterns/<name>.spec.md carries the `## Guide`
-        // (the agent-facing "how to use me" text), same as an app tree.
         out.push({
-          file: f,
+          file,
           name,
-          description: desc,
-          guide: await guideFrom([
-            path.join(patternsDir, `${name}.spec.md`),
-            path.join(patternsDir, `${name}.md`),
-          ]),
+          description: m ? m[2] : "(no description)",
+          group: "patterns",
+          // A pattern may keep optional caller guidance beside it.
+          guide: await guideFrom([path.join(patternsDir, `${name}.md`)]),
         });
       } catch {
-        out.push({ file: f, name: f, description: "(read error)", guide: "" });
+        out.push({ file, name, description: "(read error)", group: "patterns", guide: "" });
       }
     }
     return out;
@@ -61,41 +48,27 @@ export async function listPatterns(workspaceDir: string) {
 }
 
 /**
- * App trees: every `app/<dir>/tree.prod.mjs` (V2; `tree.draft.mjs` / `tree.mjs`
- * are the older spellings) is runnable as a top-level tree, the same way a
- * `patterns/<name>.draft.mjs` is. The directory name is the selector value
- * (loadPattern resolves it).
+ * App trees: every `app/<dir>/tree.prod.mjs` is runnable as a top-level tree.
+ * The directory name is the selector value (loadPattern resolves it).
  */
-export async function listAppTrees(workspaceDir: string) {
+export async function listAppTrees(workspaceDir: string): Promise<TreeSource[]> {
   const appDir = path.join(workspaceDir, "app");
   try {
     const entries = await readdir(appDir, { withFileTypes: true });
-    const out: { file: string; name: string; description: string; guide: string; group: string }[] = [];
+    const out: TreeSource[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const dir = path.join(appDir, entry.name);
-      // V2 trees are a single tree.prod.mjs; tree.draft.mjs / tree.mjs (and
-      // versioned snapshots) are the older spellings and still count.
-      let treeFile: string | null = null;
-      for (const cand of ["tree.draft.mjs", "tree.mjs", "tree.prod.mjs"]) {
-        try {
-          await readFile(path.join(dir, cand), "utf8");
-          treeFile = cand;
-          break;
-        } catch {
-          // try the next spelling
-        }
+      try {
+        await readFile(path.join(dir, "tree.prod.mjs"), "utf8");
+      } catch {
+        continue; // apps without a tree are tools-only
       }
-      if (!treeFile) continue; // apps without a tree are tools-only
       out.push({
-        file: `app/${entry.name}/${treeFile}`,
+        file: `app/${entry.name}/tree.prod.mjs`,
         name: entry.name,
         description: await appTreeDescription(dir),
-        guide: await guideFrom([
-          path.join(dir, "tree.spec.md"),
-          path.join(dir, "tree.md"),
-          path.join(dir, "README.md"),
-        ]),
+        guide: await guideFrom([path.join(dir, "README.md")]),
         group: "app",
       });
     }
@@ -106,31 +79,29 @@ export async function listAppTrees(workspaceDir: string) {
 }
 
 /**
- * First prose paragraph of the app's tree.md, falling back to its README. Its
- * lines are joined, so a summary that wraps is not truncated; authors keep the
- * summary on its own line, then a blank line, then the detail.
+ * First prose paragraph of the app's README. Its lines are joined, so a summary
+ * that wraps is not truncated; authors keep the summary on its own line, then a
+ * blank line, then the detail.
  */
 async function appTreeDescription(appDir: string): Promise<string> {
-  for (const file of ["tree.spec.md", "tree.md", "README.md"]) {
-    try {
-      const content = await readFile(path.join(appDir, file), "utf8");
-      const para: string[] = [];
-      for (const raw of content.split("\n")) {
-        const line = raw.trim();
-        if (para.length === 0) {
-          if (!line || line.startsWith("#") || line.startsWith("```")) continue;
-          para.push(line);
-        } else if (!line) {
-          break;
-        } else {
-          para.push(line);
-        }
+  try {
+    const content = await readFile(path.join(appDir, "README.md"), "utf8");
+    const para: string[] = [];
+    for (const raw of content.split("\n")) {
+      const line = raw.trim();
+      if (para.length === 0) {
+        if (!line || line.startsWith("#") || line.startsWith("```")) continue;
+        para.push(line);
+      } else if (!line) {
+        break;
+      } else {
+        para.push(line);
       }
-      const text = para.join(" ").replace(/\*\*/g, "");
-      if (text) return text;
-    } catch {
-      // try the next file
     }
+    const text = para.join(" ").replace(/\*\*/g, "");
+    if (text) return text;
+  } catch {
+    // no README
   }
   return "(app tree)";
 }
@@ -138,8 +109,6 @@ async function appTreeDescription(appDir: string): Promise<string> {
 /**
  * The `## Guide` section of the first file that has one, trimmed, else "".
  * This is the agent-facing "how to use me" text, injected as TOOL GUIDANCE.
- * App guides live in the app's README (tree.spec.md / tree.md are the older
- * spellings); patterns carry theirs in patterns/<name>.spec.md.
  */
 async function guideFrom(files: string[]): Promise<string> {
   for (const file of files) {
@@ -164,44 +133,7 @@ async function guideFrom(files: string[]): Promise<string> {
   return "";
 }
 
-/** One runnable logical tree, with the versions currently on disk. */
-export interface TreeSource {
-  file: string;
-  name: string;
-  description: string;
-  group: string;
-  /** Agent-facing guidance from the spec's `## Guide` section, when present. */
-  guide?: string;
-  /** Version ids present, ascending (`["v1", "v2"]`). */
-  versions: string[];
-  /** Version ids whose paired `.spec.md` exists, ascending. */
-  specVersions: string[];
-  /** Version id of the prod snapshot, `"prod"` for a bare `.prod`, or null. */
-  prod: string | null;
-  /** True when an editable `patterns/<name>.draft.mjs` / `app/<name>/tree.draft.mjs` exists. */
-  draft: boolean;
-  /** True when the draft has a paired `.spec.md`. */
-  draftSpec: boolean;
-}
-
-/**
- * Everything the tree selector can run: patterns first, then app trees. Each
- * logical tree is listed once — snapshots (`<name>.vN[.prod].mjs`) never show
- * up as trees of their own.
- */
+/** Every tree the selector can run: patterns first, then app trees. */
 export async function listTreeSources(workspaceDir: string): Promise<TreeSource[]> {
-  type Base = Omit<TreeSource, "versions" | "specVersions" | "prod" | "draft" | "draftSpec">;
-  const patterns: Base[] = (await listPatterns(workspaceDir)).map((p) => ({ ...p, group: "patterns" }));
-  const catalog = new Map((await scanTreeVersions(workspaceDir)).map((c) => [c.logical, c]));
-  return [...patterns, ...(await listAppTrees(workspaceDir))].map((source) => {
-    const info = catalog.get(source.name);
-    return {
-      ...source,
-      versions: info?.versions ?? [],
-      specVersions: info?.specVersions ?? [],
-      prod: info?.hasProd ? (info.prodVersion ?? "prod") : null,
-      draft: info?.draft ?? true,
-      draftSpec: info?.draftSpec ?? false,
-    };
-  });
+  return [...(await listPatterns(workspaceDir)), ...(await listAppTrees(workspaceDir))];
 }
