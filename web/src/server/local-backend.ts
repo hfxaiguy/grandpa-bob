@@ -557,7 +557,13 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
           const ev = event as { kind?: string; content?: Record<string, unknown>; scope_id?: number | null; branch_path?: string };
           addTurnTokens(record, ev);
           const app = tagEventApp(apps, ev);
-          memory.track(key, ev, app);
+          // Stream the push the tracker returns (the node paths a write landed
+          // on) the same way the admin does: the panel merges it mid-turn,
+          // naming the session so the UI can drop another conversation's.
+          const push = memory.track(key, ev, app);
+          if (push) {
+            broadcast({ type: "memory", session: push.session, app: push.app, values: push.values });
+          }
           const tagged = { ...ev, app };
           record.events.push(tagged);
           broadcast({ type: "event", turnId, event: tagged });
@@ -927,8 +933,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         const next = patternLabel(want) || want;
         // Pause state is pattern-specific: a different tree has different
         // slots, so the tracked memory is dropped (as the admin does). The
-        // transcripts stay in the log.
-        if (next !== activePattern) memory.clear();
+        // transcripts stay in the log, and each panel rebuilds from it on
+        // its next view — a switch is not a deletion, so the sessions are
+        // reset unsealed rather than sealed empty.
+        if (next !== activePattern) memory.reset();
         activePattern = next;
         // The toolbar above the app shows the active pattern; let it follow
         // switches without polling.

@@ -2684,9 +2684,11 @@ export function startAdmin(cfg?: AdminOptions): http.Server {
         // Pause state is pattern-specific: no stored continuation can be
         // resumed under a different tree, so every live continuation is
         // dropped. Transcripts stay in the log (a record of what actually
-        // happened under the old tree) — the next message grows a fresh tree.
+        // happened under the old tree) — the next message grows a fresh tree,
+        // and each memory panel rebuilds from the log on its next view (a
+        // reset, not a clear: a switch is not a deletion).
         for (const key of agent?.sessionKeys() ?? []) agent?.clear(key);
-        memoryTracker.clear();
+        memoryTracker.reset();
         broadcast({ type: "cleared" });
         notifyTreesChanged(name);
         res.writeHead(200, { "content-type": "application/json" });

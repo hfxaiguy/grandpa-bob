@@ -16,6 +16,12 @@
  *      cap applies only to the sanitized per-turn event window.
  *   4. App attribution comes from the run's tree_enter/tree_exit, sessions
  *      stay isolated, `clear()` is final, and the LRU unseals evicted sessions.
+ *   5. Writes tracked before a rebuild are re-applied over the replay, not
+ *      used to cancel it: the panel's first fetch overlapping a running turn
+ *      still restores the earlier turns' slots (the old skip dropped them),
+ *      and a live value the log lacks yet survives.
+ *   6. `reset()` (a pattern switch) drops values but unseals — the next view
+ *      rebuilds from the log; `clear()` (a deletion) keeps the tombstone.
  *
  * Run: npm run test:memory-track
  */
@@ -110,6 +116,40 @@ mid.track(SESSION, { kind: "record", branch_path: "memory", scope_id: 1, content
 assert.equal(mid.payload(SESSION).apps.contacts["memory/big"], "live", "a live write after rebuild wins");
 mid.rebuild(SESSION, writes);
 assert.equal(mid.payload(SESSION).apps.contacts["memory/big"], "live", "a second rebuild is a no-op");
+
+// The race the old rebuild's skip built: a panel fetch that overlaps a running
+// turn tracked a live write BEFORE the rebuild. The replay must still restore
+// the earlier turns' slots (the old code skipped it and lost them), while the
+// live value still wins over a stale row.
+const midTurn = createMemoryTracker();
+midTurn.track(SESSION, writes[1], "contacts"); // streamed while the panel fetch was in flight
+midTurn.rebuild(SESSION, writes);
+const midTurnPanel = midTurn.payload(SESSION).apps.contacts;
+assert.deepEqual(
+  midTurnPanel,
+  { "memory/big": BIG, "memory/list": LIST },
+  "a rebuild after a live write restores the history the log holds",
+);
+
+// A tracked value the log does not hold yet (this page's un-flushed turn)
+// survives the replay, and the history beside it is restored.
+const pending = createMemoryTracker();
+pending.track(SESSION, { kind: "record", branch_path: "memory", scope_id: 1, content: { op: "memory", child: "big", value: "mid-turn" } }, "contacts");
+pending.rebuild(SESSION, writes);
+assert.equal(pending.payload(SESSION).apps.contacts["memory/big"], "mid-turn", "a live value the log lacks yet survives the replay");
+assert.deepEqual(pending.payload(SESSION).apps.contacts["memory/list"], LIST, "the slots beside it are restored");
+
+// reset() (the pattern switch) drops the values but unseals: the next view
+// rebuilds from the log. clear() (a deletion) stays final.
+const switched = createMemoryTracker();
+switched.rebuild(SESSION, writes);
+switched.track(SESSION, { kind: "record", branch_path: "memory", scope_id: 1, content: { op: "memory", child: "big", value: "stale" } }, "contacts");
+assert.equal(switched.needsRebuild(SESSION), false, "a tracked+rebuilt session is sealed");
+switched.reset();
+assert.deepEqual(switched.payload(SESSION), { values: {}, apps: {} }, "a reset drops the tracked values");
+assert.equal(switched.needsRebuild(SESSION), true, "a reset unseals: the next view rebuilds from the log");
+switched.rebuild(SESSION, writes);
+assert.equal(switched.payload(SESSION).apps.contacts["memory/big"], BIG, "the rebuilt panel comes from the log, not the reset state");
 
 // clear() is final: a later rebuild must not resurrect the dropped session.
 const dropped = createMemoryTracker();

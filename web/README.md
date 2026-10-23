@@ -106,7 +106,17 @@ a process restart, the tab after a reload — so both rebuild it lazily from the
 run log the first time a session is viewed. One tracker serves both hosts
 (`src/memory-track.ts`; wired in `src/admin.ts` and
 `web/src/server/local-backend.ts`), and `?session=` on `/api/tree/memory`
-selects the conversation being rebuilt/served.
+selects the conversation being rebuilt/served. While a turn runs, both hosts
+stream `memory` pushes naming the session, so the panel merges writes
+mid-turn.
+
+A rebuild replays the log rows and then re-applies the values this page tracked
+live, so the order does not matter: a panel fetch that overlaps a running turn
+still restores the earlier turns' slots (the old one-shot skip dropped them for
+the page's lifetime), and a value the log does not hold yet — a mid-turn write
+— survives the replay. A pattern switch resets the tracked values unsealed, so
+each session's next view replays the log again; only deleting a session keeps
+its map dropped for good.
 
 The rebuild reads **raw** `calls` rows for each turn's seq bounds
 (`WebLog.memoryWrites` / `log-store.memoryWrites`), not the sanitized per-turn

@@ -61,16 +61,29 @@ export interface MemoryTracker {
   /** The panel payload for one conversation. */
   payload(key: string): MemoryPayload;
   /**
-   * Replace a session's map with the values of its persisted writes (oldest
-   * first). Idempotent: the first call per session wins, later calls no-op —
-   * everything after that point arrives through `track()`. A session this
-   * process already tracked is left alone: its writes are newer than anything
-   * in the log (a live turn may not be persisted yet).
+   * Seed a session's map with the values of its persisted writes (oldest
+   * first). Idempotent for a sealed session: later calls no-op — everything
+   * after that point arrives through `track()`.
+   *
+   * Writes tracked live before the rebuild are newer than anything older in
+   * the log (a live turn may not be persisted yet), so they are re-applied
+   * over the replay rather than skipping it: slots written by earlier turns
+   * still restore when the panel's first fetch overlaps a running turn.
    */
   rebuild(key: string, writes: MemoryWrite[]): void;
-  /** True until this session has been rebuilt or cleared in this process. */
+  /**
+   * Forget every session's tracked memory without sealing: the next view
+   * rebuilds each session from the log. Context invalidation the log still
+   * owns (a pattern switch keeps a record of every turn) — unlike `clear()`,
+   * which keeps a deletion final.
+   */
+  reset(): void;
+  /** True until this session has been rebuilt or cleared in this process
+   *  (a cleared session never rebuilds again — it is deleted); `reset()`
+   *  unseals the sessions it wipes. */
   needsRebuild(key: string): boolean;
-  /** Forget a conversation's tracked memory, or every session. */
+  /** Forget a conversation's tracked memory, or every session. Final: a
+   *  cleared session never rebuilds, unlike `reset()`. */
   clear(key?: string): void;
 }
 
@@ -91,6 +104,12 @@ export function createMemoryTracker({
    * every request — and a cleared session would resurrect its old slots.
    */
   const sealed = new Set<string>();
+  /**
+   * Sessions a deletion dropped: never rebuilt again, even when a later
+   * `reset()` unseals the rest (a deleted session's rows stay in the log, but
+   * the conversation is gone — showing them again would read as resurrection).
+   */
+  const dead = new Set<string>();
 
   /**
    * The tracked memory for one conversation, created on first use. The oldest
@@ -174,29 +193,88 @@ export function createMemoryTracker({
     return { values: flat, apps };
   }
 
+  /** This process's tracked state for one session, copied out of the live
+   *  maps (so a mid-replay eviction cannot swallow it). */
+  function snapshot(key: string): {
+    values: Map<string, Map<string, unknown>>;
+    paths: Map<string, Map<string, Set<string>>>;
+  } {
+    const v = values.get(key);
+    const p = paths.get(key);
+    const outValues = new Map<string, Map<string, unknown>>();
+    const outPaths = new Map<string, Map<string, Set<string>>>();
+    if (v) for (const [app, slots] of v) outValues.set(app, new Map(slots));
+    if (p) {
+      for (const [app, slots] of p) {
+        const copy = new Map<string, Set<string>>();
+        for (const [slotKey, set] of slots) copy.set(slotKey, new Set(set));
+        outPaths.set(app, copy);
+      }
+    }
+    return { values: outValues, paths: outPaths };
+  }
+
+  /** Re-apply snapshotted live state over a replayed map: only values (and
+   *  node paths) the log cannot answer for yet land on top, nothing removed. */
+  function overlay(
+    key: string,
+    snap: { values: Map<string, Map<string, unknown>>; paths: Map<string, Map<string, Set<string>>> },
+  ): void {
+    if (!snap.values.size && !snap.paths.size) return;
+    const { values: sessionValues, paths: sessionPaths } = sessionMemory(key);
+    for (const [app, slots] of snap.values) {
+      let target = sessionValues.get(app);
+      if (!target) { target = new Map(); sessionValues.set(app, target); }
+      for (const [slotKey, value] of slots) target.set(slotKey, value);
+    }
+    for (const [app, slots] of snap.paths) {
+      let target = sessionPaths.get(app);
+      if (!target) { target = new Map(); sessionPaths.set(app, target); }
+      for (const [slotKey, path] of slots) {
+        let set = target.get(slotKey);
+        if (!set) { set = new Set(); target.set(slotKey, set); }
+        for (const p of path) set.add(p);
+      }
+    }
+  }
+
   function rebuild(key: string, writes: MemoryWrite[]): void {
-    if (sealed.has(key)) return;
+    if (sealed.has(key) || dead.has(key)) return;
     sealed.add(key);
-    // Writes tracked before this rebuild are newer than anything in the log (a
-    // live turn may not have a marker yet), so keep them instead of replaying
-    // history over them. A mid-turn write still arrives through `track()`.
-    if (values.has(key)) return;
+    // Writes tracked before this rebuild are newer than anything older in
+    // the log (a live turn may not have a marker yet), so they are snapshotted
+    // and re-applied OVER the replay instead of cancelling it: a panel fetch
+    // that overlaps a running turn must still restore the slots of earlier
+    // turns, and a value the log does not hold yet survives the replay anyway.
+    // A mid-turn write also keeps arriving through `track()`.
+    const live = snapshot(key);
     // Touch the session even when there is nothing to replay, so it still
     // participates in the LRU (and its seal is evicted with it).
     sessionMemory(key);
     for (const w of [...writes].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))) {
       track(key, w, w.app ?? "trunk");
     }
+    overlay(key, live);
+  }
+
+  /** Forget every session's tracked memory WITHOUT sealing: the next view
+   *  rebuilds each session from the log. Used for context invalidation the
+   *  log still owns (a pattern switch), unlike `clear()`'s tombstones. */
+  function reset(): void {
+    values.clear();
+    paths.clear();
+    sealed.clear();
   }
 
   function clear(key?: string): void {
     if (key) {
       values.delete(key);
       paths.delete(key);
-      sealed.add(key);
+      sealed.delete(key);
+      dead.add(key);
       return;
     }
-    for (const k of new Set([...values.keys(), ...paths.keys()])) sealed.add(k);
+    for (const k of new Set([...values.keys(), ...paths.keys()])) dead.add(k);
     values.clear();
     paths.clear();
   }
@@ -205,7 +283,8 @@ export function createMemoryTracker({
     track,
     payload,
     rebuild,
-    needsRebuild: (key) => !sealed.has(key),
+    reset,
+    needsRebuild: (key) => !sealed.has(key) && !dead.has(key),
     clear,
   };
 }

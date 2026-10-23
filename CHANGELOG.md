@@ -2,6 +2,32 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-23 — memory panels no longer lose history when a rebuild overlaps a turn
+
+The tiled memory panel's lazy rebuild (`src/memory-track.ts`) no longer skips
+the log replay when the process had already tracked a live write. The old
+`values.has(key)` early-out fired whenever the panel's first fetch overlapped a
+running turn (a bridge-relayed message right after a reload, a drawer pick
+mid-turn), sealed the session, and left the panel holding only that turn's
+slots for the page's lifetime. The rebuild now snapshots the tracked values and
+node paths, replays the persisted `calls` rows oldest first, and re-applies the
+snapshot over them: a value the log does not hold yet still wins, history is
+no longer dropped.
+
+A pattern switch resets the tracker instead of clearing it: the no-key
+`clear()` (`web/src/server/local-backend.ts`, `src/admin.ts`) wiped every
+conversation and marked them all sealed, so no panel could rebuild again in
+that page/process until a reload. Deletions still keep the tombstone
+(`clear(key)`).
+
+The browser backend now streams the pushes `memory.track()` returns — the same
+`{type:"memory", session, app, values}` message the admin sends — so the panel
+merges writes mid-turn instead of waiting for turn end.
+
+Tests: `npm run test:memory-track` (the overlap race, a pending live value
+surviving the replay, the switch's unseal), `npm run test:memory-race` (the
+SSE merge rules are unchanged), `npm run typecheck`, `npm run build:web`.
+
 ## 2026-10-23 — board layout: no phantom column, equal row heights, ✕ always reachable
 
 Three tile fixes, mostly fallout from the pinned/wide work:
