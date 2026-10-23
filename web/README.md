@@ -345,7 +345,8 @@ later (`Profiles…` → **Seed…**):
 
 - Service URL, account, seed name, read key (and an upload key for publishing).
   Keys live in this browser's localStorage (`bob:swap`), never in the workspace
-  or an export.
+  or an export. New setups prefill the deployed service at
+  `https://bobswap.hfxaiguy.com`; any saved service overrides it.
 - On boot the profile asks `/api/v1/<account>/<seed>/latest/meta` and, when the
   seed is newer, shows the usual **Workspace update available** banner (never
   applies silently). Applying merges the archive and **keeps the local run log
@@ -373,7 +374,8 @@ through a BobSwap relay:
   overwrite an existing log.
 - A share link can be sent as `?recv=<channel_id>&code=<six digits>`; opening it
   prefills the Receive dialog. Add the service's Realtime URL/publishable key in
-  the Share dialog when it differs from the REST host (Supabase).
+  the Share dialog when it differs from the REST host (Supabase). The default
+  service is `https://bobswap.hfxaiguy.com`.
 
 ## Standalone (no admin)
 

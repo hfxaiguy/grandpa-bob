@@ -34,6 +34,12 @@ running BobSwap instance.
 **Goal:** prove desktop ↔ phone sharing end-to-end against the Lovable-built
 service, and lock the transport contract down.
 
+Deployed service: `https://bobswap.hfxaiguy.com`. As of 2026-10-23 DNS resolves
+(185.158.133.1) but port 443 fails the TLS handshake (no certificate for the
+name) and port 80 answers `409 "error code: 1001"` — the origin is not serving
+yet. First task is to make `/api/health` reachable, then re-run the checks
+below.
+
 - [ ] Stand up the BobSwap service. Align these exact details with the generated
       build (they are the contract `web/src/swap.ts` implements):
       - channel name `rly:<channel_id>` (or return `realtime_channel`);

@@ -22,6 +22,7 @@ import {
 } from "./profiles";
 import {
   activeSwapService,
+  DEFAULT_SWAP_SERVICE_URL,
   fetchLatestSeed,
   fetchLatestSeedMeta,
   listSwapServices,
@@ -113,11 +114,14 @@ function fillServiceFields(service: SwapService | null): void {
     const input = el<HTMLInputElement>(id);
     if (input) input.value = value ?? "";
   };
-  set("seed-base-url", service?.baseUrl);
-  set("seed-realtime-url", service?.realtimeUrl);
-  set("seed-realtime-key", service?.realtimeKey);
-  set("seed-read-key", service?.readKey);
-  set("seed-upload-key", service?.uploadKey);
+  // A fresh setup defaults to the public BobSwap deployment; saved services
+  // and per-profile bindings still win.
+  const value = service ?? { baseUrl: DEFAULT_SWAP_SERVICE_URL };
+  set("seed-base-url", value.baseUrl);
+  set("seed-realtime-url", value.realtimeUrl);
+  set("seed-realtime-key", value.realtimeKey);
+  set("seed-read-key", value.readKey);
+  set("seed-upload-key", value.uploadKey);
 }
 
 // ── profile picker + manager ─────────────────────────────────────────────
@@ -518,20 +522,35 @@ function wireSeedDialog(): void {
 function fillServiceSelect(select: HTMLSelectElement | null, preferred?: string): void {
   if (!select) return;
   const services = listSwapServices();
-  select.replaceChildren(
-    ...services.map((service) => {
-      const option = document.createElement("option");
-      option.value = service.baseUrl;
-      option.textContent = service.baseUrl;
-      return option;
-    }),
-  );
+  const options = services.map((service) => {
+    const option = document.createElement("option");
+    option.value = service.baseUrl;
+    option.textContent = service.baseUrl;
+    return option;
+  });
+  if (!services.some((service) => service.baseUrl === DEFAULT_SWAP_SERVICE_URL)) {
+    const option = document.createElement("option");
+    option.value = DEFAULT_SWAP_SERVICE_URL;
+    option.textContent = `${DEFAULT_SWAP_SERVICE_URL} (default)`;
+    options.push(option);
+  }
+  select.replaceChildren(...options);
   const active = preferred || loadSwapStore().active;
-  if (active && services.some((service) => service.baseUrl === active)) {
+  if (active && options.some((option) => option.value === active)) {
     select.value = active;
   } else if (services[0]) {
     select.value = services[0].baseUrl;
+  } else {
+    select.value = DEFAULT_SWAP_SERVICE_URL;
   }
+}
+
+/** A saved service, or the built-in default without keys. */
+function resolveService(url: string | undefined): SwapService | null {
+  if (!url) return null;
+  const saved = listSwapServices().find((service) => service.baseUrl === url);
+  if (saved) return saved;
+  return url === DEFAULT_SWAP_SERVICE_URL ? { baseUrl: DEFAULT_SWAP_SERVICE_URL } : null;
 }
 
 function setShareProgress(progress: RelayProgress): void {
@@ -557,11 +576,10 @@ function setShareProgress(progress: RelayProgress): void {
 
 async function startShare(): Promise<void> {
   const ui = getHooks();
-  const services = listSwapServices();
   const selected = el<HTMLSelectElement>("share-service")?.value ?? "";
-  const service = services.find((entry) => entry.baseUrl === selected);
+  const service = resolveService(selected);
   if (!service) {
-    ui.flash("add a BobSwap service first (Profiles → Seed…)", 8000);
+    ui.flash("add a BobSwap service first (BobSwap…)", 8000);
     return;
   }
   const nameInput = el<HTMLInputElement>("share-device-name");
@@ -680,13 +698,12 @@ function renderReceiveTargets(): void {
 
 async function startReceive(): Promise<void> {
   const ui = getHooks();
-  const services = listSwapServices();
   const selected = el<HTMLSelectElement>("recv-service")?.value ?? "";
-  const service = services.find((entry) => entry.baseUrl === selected);
+  const service = resolveService(selected);
   const channelId = el<HTMLInputElement>("recv-channel")?.value.trim() ?? "";
   const code = el<HTMLInputElement>("recv-code")?.value.trim() ?? "";
   if (!service) {
-    ui.flash("add a BobSwap service first (Profiles → Seed…)", 8000);
+    ui.flash("add a BobSwap service first (BobSwap…)", 8000);
     return;
   }
   if (!channelId || !/^\d{6}$/.test(code)) {

@@ -15,7 +15,9 @@ active profile. Registry: `/profiles.json`; active name in `localStorage`.
 A profile can be **bound to a seed** on a BobSwap service (`Seed…`): the boot
 check compares `/latest/meta` with the profile's `.seeded` stamp and offers the
 usual update banner; applying merges the archive and keeps the local run log
-and chat history. Publishing uploads the profile as a content-addressed version
+and chat history. New setups default to the deployed service
+`https://bobswap.hfxaiguy.com` (a saved service overrides it). Publishing
+uploads the profile as a content-addressed version
 (`<sha12>-<compact createdAt>`), and `Check now`/`Unbind` round out the dialog.
 Service URLs and keys live in `localStorage` (`bob:swap`), never in the
 workspace or an export.

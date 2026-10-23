@@ -45,6 +45,9 @@ export interface SwapStore {
 
 const STORE_KEY = "bob:swap";
 
+/** Default BobSwap deployment; any saved service overrides it. */
+export const DEFAULT_SWAP_SERVICE_URL = "https://bobswap.hfxaiguy.com";
+
 function normalizeBaseUrl(raw: string): string {
   const value = String(raw ?? "").trim().replace(/\/+$/, "");
   if (!value) return "";
