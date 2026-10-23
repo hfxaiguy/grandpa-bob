@@ -9,6 +9,7 @@
  * index and the sqlite worker re-read the restored files.
  */
 import { posixPath as path } from "../../src/platform/paths";
+import type { FileSystem, Platform } from "../../src/platform/types";
 
 export interface WorkspaceArchive {
   version: 1;
@@ -107,10 +108,17 @@ async function collect(
   });
 }
 
-/** Read every file in OPFS (workspace + sqlite databases) into an archive. */
-export async function buildWorkspaceArchive(): Promise<WorkspaceArchive> {
+/** Resolve the archive root: a profile directory, or the origin root by default. */
+async function archiveRoot(provided?: FileSystemDirectoryHandle): Promise<FileSystemDirectoryHandle> {
+  return provided ?? navigator.storage.getDirectory();
+}
+
+/** Read every file under `root` into an archive (profile dir or OPFS root). */
+export async function buildWorkspaceArchive(
+  root?: FileSystemDirectoryHandle,
+): Promise<WorkspaceArchive> {
   const files: WorkspaceArchive["files"] = [];
-  await collect(await navigator.storage.getDirectory(), "", files);
+  await collect(await archiveRoot(root), "", files);
   return { version: 1, createdAt: new Date().toISOString(), files };
 }
 
@@ -119,24 +127,27 @@ export function archiveToBlob(archive: WorkspaceArchive): Blob {
   return new Blob([JSON.stringify(archive)], { type: "application/json" });
 }
 
-/** Read every file in OPFS (workspace + sqlite databases) into a JSON blob. */
-export async function exportWorkspace(): Promise<Blob> {
-  return archiveToBlob(await buildWorkspaceArchive());
+/** Read every file under `root` into a JSON blob (profile dir or OPFS root). */
+export async function exportWorkspace(root?: FileSystemDirectoryHandle): Promise<Blob> {
+  return archiveToBlob(await buildWorkspaceArchive(root));
 }
 
 /**
- * Write an archive back into OPFS (merge: paths in the archive are overwritten,
- * anything else is kept). Returns the number of files written.
+ * Write an archive back under `root` (merge: paths in the archive are
+ * overwritten, anything else is kept). Returns the number of files written.
  */
-export async function importWorkspace(archive: WorkspaceArchive): Promise<number> {
-  const root = await navigator.storage.getDirectory();
+export async function importWorkspace(
+  archive: WorkspaceArchive,
+  root?: FileSystemDirectoryHandle,
+): Promise<number> {
+  const base = await archiveRoot(root);
   let written = 0;
   for (const entry of archive.files) {
     const parts = entry.path.split("/").filter((part) => part && part !== ".");
     if (parts.some((part) => part === "..")) throw new Error(`invalid archive path: ${entry.path}`);
     const name = parts.pop();
     if (!name) continue;
-    let dir = root;
+    let dir = base;
     for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: true });
     let bytes: Uint8Array;
     try {
@@ -153,9 +164,95 @@ export async function importWorkspace(archive: WorkspaceArchive): Promise<number
   return written;
 }
 
-/** Recursively count files in OPFS (for display). */
-export async function countWorkspaceFiles(): Promise<number> {
+/** Recursively count files and total bytes under `root` (for profile info). */
+export async function summarizeWorkspace(
+  root?: FileSystemDirectoryHandle,
+): Promise<{ files: number; bytes: number }> {
+  let files = 0;
+  let bytes = 0;
+  const walk = async (dir: FileSystemDirectoryHandle): Promise<void> => {
+    await eachEntry(dir, async (name, handle) => {
+      if (handle.kind === "directory") {
+        await walk(await dir.getDirectoryHandle(name));
+        return;
+      }
+      const file = await (await dir.getFileHandle(name)).getFile();
+      files++;
+      bytes += file.size;
+    });
+  };
+  await walk(await archiveRoot(root));
+  return { files, bytes };
+}
+
+/** Recursively count files under `root` (for display). */
+export async function countWorkspaceFiles(root?: FileSystemDirectoryHandle): Promise<number> {
+  return (await summarizeWorkspace(root)).files;
+}
+
+// ── platform-based transfers (desktop mode) ──────────────────────────────
+
+interface BinaryFileSystem extends FileSystem {
+  readFileBytes?(path: string): Promise<Uint8Array>;
+}
+
+async function readPlatformBytes(platform: Platform, file: string): Promise<Uint8Array> {
+  const fs = platform.fs as BinaryFileSystem;
+  if (typeof fs.readFileBytes === "function") return fs.readFileBytes(file);
+  return new TextEncoder().encode(await platform.fs.readFile(file));
+}
+
+/**
+ * Archive the workspace behind any Platform (the desktop bridge, or OPFS)
+ * without a directory handle. Paths are `workspace/...` by default so the
+ * archive is importable everywhere else (browser profiles, seed shelf).
+ */
+export async function buildPlatformArchive(
+  platform: Platform,
+  prefix = "workspace",
+): Promise<WorkspaceArchive> {
   const files: WorkspaceArchive["files"] = [];
-  await collect(await navigator.storage.getDirectory(), "", files);
-  return files.length;
+  const walk = async (dir: string): Promise<void> => {
+    const entries = await platform.fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const full = platform.path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+        continue;
+      }
+      const rel = platform.path.relative(platform.workspaceRoot, full).replace(/^\/+/, "");
+      const archivePath = prefix ? (rel ? `${prefix}/${rel}` : prefix) : rel;
+      files.push({ path: archivePath, base64: toBase64(await readPlatformBytes(platform, full)) });
+    }
+  };
+  await walk(platform.workspaceRoot);
+  return { version: 1, createdAt: new Date().toISOString(), files };
+}
+
+/** Merge a portable archive into any Platform's workspace (desktop mode). */
+export async function importPlatformArchive(
+  platform: Platform,
+  archive: WorkspaceArchive,
+  prefix = "workspace",
+): Promise<number> {
+  let written = 0;
+  for (const entry of archive.files) {
+    const normalized = entry.path.replace(/^\/+/, "");
+    if (normalized.split("/").some((part) => part === "..")) {
+      throw new Error(`invalid archive path: ${entry.path}`);
+    }
+    const rel =
+      prefix && normalized === prefix
+        ? ""
+        : prefix && normalized.startsWith(`${prefix}/`)
+          ? normalized.slice(prefix.length + 1)
+          : normalized;
+    if (!rel) continue;
+    // The browser's freshness marker is profile bookkeeping, not workspace data.
+    if (rel === ".seeded") continue;
+    const target = platform.path.join(platform.workspaceRoot, rel);
+    await platform.fs.writeFile(target, fromBase64(entry.base64));
+    written++;
+  }
+  return written;
 }

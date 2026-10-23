@@ -8,6 +8,7 @@
  * The main thread talks to it over postMessage; see sqlite-wasm.ts.
  */
 import sqlite3InitModule from "@sqlite.org/sqlite-wasm";
+import { parseOpfsPrefix, resolveOpfsDir } from "./opfs-root";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
@@ -29,8 +30,11 @@ const stmts = new Map<number, { stmt: Any; dbId: number }>();
 let nextDbId = 1;
 let nextStmtId = 1;
 
+/** Active profile segments, carried in the worker name by sqlite-wasm.ts. */
+const OPFS_PREFIX = parseOpfsPrefix((self as unknown as { name?: string }).name);
+
 function root(): Promise<FileSystemDirectoryHandle> {
-  return navigator.storage.getDirectory();
+  return resolveOpfsDir(OPFS_PREFIX);
 }
 
 /**

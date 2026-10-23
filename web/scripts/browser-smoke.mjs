@@ -95,7 +95,7 @@ const res = await evaluate(`(async () => {
   await backend.ready;
   const r = await backend.request("POST", "/api/patterns", new URLSearchParams(),
     JSON.stringify({ name: "browser-smoke", content: "export default {};\\n" }));
-  const root = await navigator.storage.getDirectory();
+  const root = await window.__bobWorkspaceTransfer.profileRoot();
   const ws = await root.getDirectoryHandle("workspace");
   const patterns = await ws.getDirectoryHandle("patterns");
   const file = await (await patterns.getFileHandle("browser-smoke.mjs")).getFile();
@@ -178,7 +178,7 @@ const upload = await evaluate(`(async () => {
   for (let i = 0; i < 80 && document.querySelector(".drawer-card"); i++) await wait(100);
   if (document.querySelector(".drawer-card")) return "prompt did not close";
 
-  const root = await navigator.storage.getDirectory();
+  const root = await window.__bobWorkspaceTransfer.profileRoot();
   const workspace = await root.getDirectoryHandle("workspace");
   const dir = await workspace.getDirectoryHandle("smoke-uploads");
   const file = await (await dir.getFileHandle("upload-smoke.txt")).getFile();
@@ -227,7 +227,7 @@ const transfer = await evaluate(`(async () => {
     createdAt: new Date().toISOString(),
     files: [{ path: "workspace/smoke-import.txt", base64: btoa("imported by smoke") }],
   });
-  const root = await navigator.storage.getDirectory();
+  const root = await hook.profileRoot();
   const ws = await root.getDirectoryHandle("workspace");
   const imported = await (await (await ws.getFileHandle("smoke-import.txt")).getFile()).text();
   const kept = await (await (await ws.getDirectoryHandle("patterns")).getFileHandle("browser-smoke.mjs")).getFile();
@@ -386,7 +386,7 @@ for (let i = 0; i < 240 && !rebootedAfterImport; i++) {
   if (!rebootedAfterImport) await sleep(250);
 }
 const uiImport = await evaluate(`(async () => {
-  const root = await navigator.storage.getDirectory();
+  const root = await window.__bobWorkspaceTransfer.profileRoot();
   const ws = await root.getDirectoryHandle("workspace");
   const text = await (await (await ws.getFileHandle("smoke-import-ui.txt")).getFile()).text();
   const seeded = await ws.getFileHandle(".seeded").then((h) => h.getFile()).then((f) => f.size > 0).catch(() => false);

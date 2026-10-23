@@ -4,6 +4,7 @@
  * streamed events and emits.
  */
 import { AgentStoppedError } from "../../../src/stop-error";
+import { encodeOpfsPrefix } from "../platform/opfs-root";
 
 export interface AgentRunResult {
   result: unknown;
@@ -64,8 +65,11 @@ export class AgentClient {
   private pending = new Map<number, Pending>();
   private logPending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 
-  constructor() {
-    this.worker = new Worker(new URL("./agent-worker.ts", import.meta.url), { type: "module" });
+  constructor(opfsPrefix: readonly string[] = []) {
+    this.worker = new Worker(new URL("./agent-worker.ts", import.meta.url), {
+      type: "module",
+      name: encodeOpfsPrefix(opfsPrefix),
+    });
     this.worker.onmessage = (ev: MessageEvent) => {
       const msg = ev.data as {
         id: number;

@@ -6,15 +6,13 @@
  * sandbox: the host filesystem is not reachable.
  *
  * The handle-based implementation lives in ./handle-fs.ts and backs the OPFS
- * adapter.
+ * adapter. The root is not always the origin root: `./opfs-root.ts` holds the
+ * active profile segments, so switching profiles only rebinds the root.
  */
 import { posixPath as path } from "../../../src/platform/paths";
 import { createHandleFs, type HandleFileSystem } from "./handle-fs";
+import { resolveOpfsRoot } from "./opfs-root";
 
-async function opfsRoot(): Promise<FileSystemDirectoryHandle> {
-  return navigator.storage.getDirectory();
-}
-
-export const opfsFs: HandleFileSystem = createHandleFs(opfsRoot);
+export const opfsFs: HandleFileSystem = createHandleFs(resolveOpfsRoot);
 
 export { path };

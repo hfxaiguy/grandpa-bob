@@ -13,7 +13,9 @@
 import "./shims/process";
 import { setActiveFs, setFsIndex } from "./shims/node-fs-promises";
 import { createBrowserPlatform, initSqlite } from "./platform/browser";
+import { setOpfsRootSegments } from "./platform/opfs-root";
 import { createDesktopPlatform } from "./platform/desktop";
+import type { HandleFileSystem } from "./platform/handle-fs";
 import { AgentClient } from "./agent/agent-client";
 import { createLocalBackend } from "./server/local-backend";
 import { hostUi } from "./ui-host";
@@ -30,8 +32,22 @@ import {
   saveStorageServer,
   type StorageMode,
 } from "./settings";
-import { buildWorkspaceArchive, archiveToBlob, importWorkspace, validateWorkspaceArchive } from "./workspace-transfer";
+import { buildWorkspaceArchive, archiveToBlob, importWorkspace, validateWorkspaceArchive, buildPlatformArchive, importPlatformArchive } from "./workspace-transfer";
 import type { WorkspaceArchive } from "./workspace-transfer";
+import {
+  DEFAULT_PROFILE,
+  bootProfiles,
+  loadRegistry,
+  profileHandle,
+  profileSegmentsFor,
+  recordSeedVersion,
+  resolveActiveProfileName,
+  touchProfile,
+  type ProfileRegistry,
+  type SeedBinding,
+} from "./profiles";
+import { fetchLatestSeed, fetchLatestSeedMeta, serviceFor, type RemoteSeedMeta } from "./swap";
+import { wireProfileUi } from "./profile-ui";
 import { cloneWorkspace } from "./platform/git-opfs";
 import { applyDatabaseDumps } from "../../src/db-sync";
 import { createAutoSync, DEFAULT_INTERVAL_MS } from "../../src/auto-sync";
@@ -48,6 +64,11 @@ const storageMode: StorageMode =
   requestedStorage === "desktop" || requestedStorage === "browser" ? requestedStorage : storedStorage;
 const storageServer = normalizeStorageServer(params.get("server") ?? loadStorageServer());
 let configuredRemote = params.get("remote") ?? loadRemote();
+
+/** Active browser profile (browser mode only); desktop keeps one workspace. */
+let profileRegistry: ProfileRegistry | null = null;
+let activeProfile: string = DEFAULT_PROFILE;
+let activeProfileSegments: string[] = [];
 // The launcher (`npm run chrome`) opens the app with ?cdp=<browser ws url>;
 // persist it so a plain reload keeps the browser tools connected. An explicit
 // empty value (BOB_NO_CDP=1) clears a previously persisted socket instead.
@@ -109,7 +130,7 @@ window.addEventListener("bob:pattern", (event) => {
 const appEl = document.getElementById("app")!;
 const storageSelect = document.getElementById("storage-mode") as HTMLSelectElement | null;
 const storageServerInput = document.getElementById("storage-server") as HTMLInputElement | null;
-const wsTools = document.getElementById("ws-tools");
+const opfsTools = document.getElementById("opfs-tools");
 
 if (storageSelect) storageSelect.value = storageMode;
 if (storageServerInput) storageServerInput.value = storageServer;
@@ -117,8 +138,9 @@ if (storageServerInput) storageServerInput.value = storageServer;
 /** Show only the controls that matter for the selected storage backend. */
 function configureToolbar(): void {
   if (storageServerInput) storageServerInput.style.display = storageMode === "desktop" ? "" : "none";
-  // Export/Import act on OPFS; in desktop mode the workspace is the real folder.
-  if (wsTools) wsTools.hidden = storageMode !== "browser";
+  // Profile/export/import controls act on OPFS; desktop mode has one real
+  // workspace. Send/Receive stay available in both modes.
+  if (opfsTools) opfsTools.hidden = storageMode !== "browser";
 }
 configureToolbar();
 
@@ -135,6 +157,37 @@ let platform: Platform;
 /** The platform selected at boot; all callers share it (and its handles). */
 function activePlatform(): Platform {
   return platform;
+}
+
+/** The active profile's OPFS root (browser mode); undefined on the bridge. */
+async function activeProfileRoot(): Promise<FileSystemDirectoryHandle | undefined> {
+  const fs = platform.fs as Partial<HandleFileSystem>;
+  return typeof fs.rootHandle === "function" ? await fs.rootHandle() : undefined;
+}
+
+/** Archive the workspace BOB currently operates on (browser profile or bridge). */
+async function buildActiveArchive(): Promise<WorkspaceArchive> {
+  if (storageMode === "browser") return buildWorkspaceArchive(await activeProfileRoot());
+  return buildPlatformArchive(platform);
+}
+
+/**
+ * Merge an archive into `target` (a profile name) or, with null, into the
+ * single desktop workspace. Writes the freshness marker for profiles so the
+ * shipped seed cannot overlay an imported workspace on the next boot.
+ */
+async function importIntoWorkspace(target: string | null, archive: WorkspaceArchive): Promise<number> {
+  if (storageMode === "browser" && target) {
+    const root = await profileHandle(target);
+    const written = await importWorkspace(archive, root);
+    const workspace = await root.getDirectoryHandle("workspace", { create: true });
+    const stamped = await workspace.getFileHandle(".seeded", { create: true });
+    const writable = await stamped.createWritable();
+    await writable.write(new Date().toISOString());
+    await writable.close();
+    return written;
+  }
+  return importPlatformArchive(platform, archive);
 }
 
 // ── browser (OPFS) workspace preparation ────────────────────────────────
@@ -174,7 +227,7 @@ async function applySeedArchive(archive: WorkspaceArchive): Promise<string> {
   const files = hasLog
     ? archive.files.filter((f) => !f.path.startsWith("workspace/logs/"))
     : archive.files;
-  await importWorkspace({ ...archive, files });
+  await importWorkspace({ ...archive, files }, await activeProfileRoot());
   const raw = typeof archive.createdAt === "string" ? archive.createdAt : "";
   const stamp = raw && !Number.isNaN(Date.parse(raw)) ? raw : new Date().toISOString();
   await writeSeedStamp(stamp);
@@ -367,10 +420,12 @@ function wireWorkspaceTransfer(): void {
   // Smoke hook: the browser smoke drives export/import without a download dialog
   // or a reload. Like `__bobBackend`, it is only a test surface.
   (window as unknown as { __bobWorkspaceTransfer?: unknown }).__bobWorkspaceTransfer = {
-    buildWorkspaceArchive,
+    buildWorkspaceArchive: async () => buildWorkspaceArchive(await activeProfileRoot()),
     archiveToBlob,
     validateWorkspaceArchive,
-    importWorkspace,
+    importWorkspace: async (archive: WorkspaceArchive) =>
+      importWorkspace(archive, await activeProfileRoot()),
+    profileRoot: activeProfileRoot,
   };
 
   exportButton.addEventListener("click", () => {
@@ -380,7 +435,7 @@ function wireWorkspaceTransfer(): void {
       const label = exportButton.textContent;
       exportButton.textContent = "exporting…";
       try {
-        const archive = await buildWorkspaceArchive();
+        const archive = await buildWorkspaceArchive(await activeProfileRoot());
         const blob = archiveToBlob(archive);
         const name = `bob-workspace-${new Date().toISOString().slice(0, 10)}.json`;
         const url = URL.createObjectURL(blob);
@@ -427,7 +482,7 @@ function wireWorkspaceTransfer(): void {
       const label = importButton.textContent;
       importButton.textContent = "importing…";
       try {
-        const written = await importWorkspace(archive);
+        const written = await importWorkspace(archive, await activeProfileRoot());
         // The imported workspace is the newest thing this profile carries:
         // stamp it now so an older shipped seed is not offered for it.
         await writeSeedStamp(new Date().toISOString());
@@ -448,14 +503,35 @@ function wireWorkspaceTransfer(): void {
 /** The seed build the user declined, so one build does not nag every boot. */
 const SEED_DISMISSED_KEY = "bob.seedUpdate.dismissed";
 
+interface SeedUpdateOffer {
+  meta: RemoteSeedMeta;
+  label: string;
+  dismissKey: string;
+  apply: () => Promise<void>;
+}
+
 /**
- * Compare this workspace's recorded seed stamp with the seed the server
- * currently ships. `"newer"` means the browser is running an older workspace
- * than the files on disk — the seeder only runs on a fresh profile, so a fixed
- * tree would never arrive on its own. Offer the overlay; never apply silently.
+ * Offer a workspace update. Two sources exist:
+ *
+ * - the shipped seed (`/seed/meta.json`, only used when the profile has no
+ *   seed binding), and
+ * - a BobSwap seed bound to the profile (`/latest/meta`), which is how a
+ *   desktop publish reaches the phone.
+ *
+ * Both compare their `createdAt` with the profile's `.seeded` stamp; a binding
+ * also offers an update when the remote sha differs from the last pulled one.
+ * Nothing is ever applied silently.
  */
 async function checkSeedUpdate(): Promise<void> {
-  if (storageMode !== "browser" || configuredRemote) return;
+  if (storageMode !== "browser") return;
+  const record = profileRegistry?.profiles.find((profile) => profile.name === activeProfile);
+  if (record?.seed) {
+    await checkBoundSeedUpdate(record.seed);
+    return;
+  }
+  // The shipped seed must not overlay a workspace that was cloned from git.
+  if (configuredRemote) return;
+
   let meta: SeedMeta | null = null;
   try {
     const res = await fetch("/seed/meta.json", { cache: "no-cache" });
@@ -472,30 +548,80 @@ async function checkSeedUpdate(): Promise<void> {
     /* private mode: always offer */
   }
   if (dismissed === meta.createdAt) return;
-  wireSeedUpdate(meta);
+  wireSeedUpdate({
+    meta,
+    label: "Workspace update available",
+    dismissKey: SEED_DISMISSED_KEY,
+    apply: () => applySeedUpdate(meta),
+  });
+}
+
+/** Check a profile's bound BobSwap seed for a newer build. */
+async function checkBoundSeedUpdate(binding: SeedBinding): Promise<void> {
+  const service = serviceFor(binding.baseUrl);
+  if (!service) return;
+  let meta: Awaited<ReturnType<typeof fetchLatestSeedMeta>> = null;
+  try {
+    meta = await fetchLatestSeedMeta(service, binding.account, binding.seedName);
+  } catch {
+    return; /* service unreachable: keep working offline */
+  }
+  if (!meta) return;
+
+  const fresh = seedFreshness(seedStamp, meta) === "newer";
+  const shaChanged =
+    !!binding.lastVersion?.sha256 &&
+    !!meta.sha256 &&
+    meta.sha256.toLowerCase() !== binding.lastVersion.sha256.toLowerCase();
+  if (!fresh && !shaChanged) return;
+
+  const dismissKey = `${SEED_DISMISSED_KEY}:${binding.baseUrl}|${binding.account}/${binding.seedName}`;
+  const stamp = meta.seed_id_and_version ?? meta.createdAt;
+  try {
+    if (localStorage.getItem(dismissKey) === stamp) return;
+  } catch {
+    /* private mode: always offer */
+  }
+  wireSeedUpdate({
+    meta,
+    label: `Seed update: ${binding.seedName}`,
+    dismissKey,
+    apply: () => applyBoundSeedUpdate(binding, meta.seed_id_and_version),
+  });
 }
 
 /** Reveal the toolbar offer and wire its apply/dismiss actions. */
-function wireSeedUpdate(meta: SeedMeta): void {
+function wireSeedUpdate(offer: SeedUpdateOffer): void {
   const apply = document.getElementById("ws-reseed") as HTMLButtonElement | null;
   const dismiss = document.getElementById("ws-reseed-dismiss") as HTMLButtonElement | null;
   if (!apply) return;
-  const built = new Date(meta.createdAt).toLocaleString();
+  const built = new Date(offer.meta.createdAt).toLocaleString();
   const seeded = seedStamp ? new Date(seedStamp).toLocaleString() : "unknown";
-  apply.title = `Seed built ${built}\nWorkspace seeded ${seeded}`;
+  apply.title = `${offer.label}\nBuilt ${built}\nWorkspace seeded ${seeded}`;
+  apply.textContent = offer.label;
   apply.hidden = false;
   if (dismiss) dismiss.hidden = false;
-  apply.addEventListener("click", () => void applySeedUpdate(meta));
-  dismiss?.addEventListener("click", () => {
-    try {
-      localStorage.setItem(SEED_DISMISSED_KEY, meta.createdAt);
-    } catch {
-      /* private mode: offer again next boot */
-    }
-    apply.hidden = true;
-    dismiss.hidden = true;
-    flashStatus("workspace update declined");
-  });
+
+  const onClick = (): void => {
+    apply.removeEventListener("click", onClick);
+    void offer.apply();
+  };
+  apply.addEventListener("click", onClick);
+
+  dismiss?.addEventListener(
+    "click",
+    () => {
+      try {
+        localStorage.setItem(offer.dismissKey, offer.meta.seed_id_and_version ?? offer.meta.createdAt);
+      } catch {
+        /* private mode: offer again next boot */
+      }
+      apply.hidden = true;
+      dismiss.hidden = true;
+      flashStatus("workspace update declined");
+    },
+    { once: true },
+  );
 }
 
 async function applySeedUpdate(meta: SeedMeta): Promise<void> {
@@ -517,10 +643,33 @@ async function applySeedUpdate(meta: SeedMeta): Promise<void> {
   }
 }
 
+/** Pull the newest version of a bound seed into the active profile. */
+async function applyBoundSeedUpdate(binding: SeedBinding, version?: string): Promise<void> {
+  const service = serviceFor(binding.baseUrl);
+  if (!service) throw new Error("the seed service is not configured on this browser");
+  const proceed = confirm(
+    `Update "${activeProfile}" from the seed ${binding.account}/${binding.seedName}?\n\n` +
+      "Files are overlaid; the run log and chat history are preserved. " +
+      "The page reloads afterwards.",
+  );
+  if (!proceed) return;
+  setStatus("fetching seed…");
+  const fetched = await fetchLatestSeed(service, binding.account, binding.seedName);
+  await applySeedArchive(fetched.archive);
+  await recordSeedVersion(activeProfile, {
+    version: version ?? fetched.version ?? fetched.sha256.slice(0, 12),
+    sha256: fetched.sha256,
+    createdAt: fetched.archive.createdAt,
+    checkedAt: new Date().toISOString(),
+  });
+  flashStatus("seed applied — reloading…", 5000);
+  setTimeout(() => location.reload(), 400);
+}
+
 // ── boot ─────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
   if (storageMode === "desktop") {
-    await initSqlite();
+    await initSqlite([]);
     platform = createDesktopPlatform("/", storageServer);
     setActiveFs(platform.fs);
     await buildFsIndex(platform);
@@ -532,13 +681,30 @@ async function main(): Promise<void> {
       statusBase = `desktop bridge unreachable at ${storageServer}`;
     }
   } else {
-    await initSqlite();
+    // Profiles: move pre-profile OPFS data into /profiles/default once, then
+    // bind every layer (fs, sqlite worker, agent worker) to the active profile.
+    const boot = await bootProfiles();
+    profileRegistry = boot.registry;
+    activeProfile = resolveActiveProfileName(profileRegistry);
+    activeProfileSegments = profileSegmentsFor(activeProfile);
+    setOpfsRootSegments(activeProfileSegments);
+    await initSqlite(activeProfileSegments);
+    profileRegistry = await touchProfile(activeProfile);
+
     platform = createBrowserPlatform("/workspace");
     setActiveFs(platform.fs);
     await prepareBrowserWorkspace();
     await buildFsIndex(platform);
     await ensureModels(platform);
-    statusBase = seedStatus();
+    statusBase = `${seedStatus()} · ${activeProfile}`;
+    if (boot.migrated) {
+      flashStatus(
+        boot.resumed
+          ? "finished moving the workspace into the default profile"
+          : "moved this browser's workspace into the default profile",
+        8000,
+      );
+    }
   }
 
   // Periodic two-way git sync (pull then push) for the OPFS mirror only.
@@ -554,7 +720,7 @@ async function main(): Promise<void> {
   }
 
   const pattern = await detectPattern(platform);
-  const agent = new AgentClient();
+  const agent = new AgentClient(activeProfileSegments);
   // When the admin serves this page, use ITS models.json (and /api/llm proxy)
   // so the browser, the chat UI and Telegram all share one model config.
   const serverModels = await servedByAdmin();
@@ -573,10 +739,22 @@ async function main(): Promise<void> {
   });
 
   hostUi(backend, appEl, { page: "chat", port: 8080 });
-  if (storageMode === "browser") {
-    wireWorkspaceTransfer();
-    void checkSeedUpdate();
-  }
+  if (storageMode === "browser") wireWorkspaceTransfer();
+  wireProfileUi({
+    storage: () => storageMode,
+    activeProfile: () => activeProfile,
+    registry: () => profileRegistry ?? { version: 1, profiles: [{ name: activeProfile, createdAt: "" }] },
+    flash: flashStatus,
+    reload: () => location.reload(),
+    refreshRegistry: async () => {
+      if (storageMode === "browser") profileRegistry = await loadRegistry();
+      return profileRegistry ?? { version: 1, profiles: [{ name: activeProfile, createdAt: "" }] };
+    },
+    applySeedUpdate: (binding, _meta, version) => applyBoundSeedUpdate(binding, version),
+    buildActiveArchive,
+    importInto: importIntoWorkspace,
+  });
+  if (storageMode === "browser") void checkSeedUpdate();
   showStatus(pattern);
 }
 

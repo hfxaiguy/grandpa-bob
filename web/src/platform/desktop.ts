@@ -16,6 +16,13 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function fromBase64(text: string): Uint8Array {
+  const binary = atob(text);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
 async function call<T>(base: string, route: string, body: Record<string, unknown> = {}): Promise<T> {
   const res = await fetch(`${base}${route}`, {
     method: "POST",
@@ -27,10 +34,18 @@ async function call<T>(base: string, route: string, body: Record<string, unknown
   return json as T;
 }
 
-function httpFs(base: string): FileSystem {
+interface DesktopFileSystem extends FileSystem {
+  /** Binary read for archives (git objects, sqlite databases). */
+  readFileBytes(path: string): Promise<Uint8Array>;
+}
+
+function httpFs(base: string): DesktopFileSystem {
   return {
     async readFile(path) {
       return (await call<{ content: string }>(base, "/fs/read", { path })).content;
+    },
+    async readFileBytes(path) {
+      return fromBase64((await call<{ base64: string }>(base, "/fs/readBytes", { path })).base64);
     },
     async writeFile(path, data) {
       const body =

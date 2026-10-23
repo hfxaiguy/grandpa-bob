@@ -2,6 +2,40 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-23 — browser profiles, seed sources and a zero-storage relay
+
+The browser target now keeps **profiles**: independent OPFS workspaces under
+`/profiles/<name>/`, switchable from the toolbar (switching reloads). An
+installation from before profiles is moved once into `/profiles/default/`
+behind a resumable progress marker that verifies file count and bytes before
+removing the originals. Each profile has its own chats, patterns, run log and
+git history; Export/Import, `?reseed` and the agent worker all act on the
+active profile. Registry: `/profiles.json`; active name in `localStorage`.
+
+A profile can be **bound to a seed** on a BobSwap service (`Seed…`): the boot
+check compares `/latest/meta` with the profile's `.seeded` stamp and offers the
+usual update banner; applying merges the archive and keeps the local run log
+and chat history. Publishing uploads the profile as a content-addressed version
+(`<sha12>-<compact createdAt>`), and `Check now`/`Unbind` round out the dialog.
+Service URLs and keys live in `localStorage` (`bob:swap`), never in the
+workspace or an export.
+
+Toolbar **Send…/Receive…** move a workspace copy between two open tabs through
+the relay API: a fresh pairing per share, a 6-digit code plus a 4-character
+visual check on both screens, 192 KiB chunks over an ephemeral broadcast
+channel with per-chunk acks and SHA-256 verification. Nothing is stored on the
+service, so both tabs must stay open; the receiver imports into the current
+profile, another profile, or a new one (desktop mode: the single real
+workspace). Receive links support `?recv=<channel>&code=<digits>`. Copy mode
+only — ownership swap is planned separately.
+
+Tests: `test:profiles` plus an extended `test:workspace-transfer` cover the
+registry, version tags and bridge archives; `web/scripts/profile-smoke.mjs` and
+`web/scripts/seed-update-smoke.mjs` drive migration, switching, export scoping,
+seed binding, the update banner and log preservation in real Chromium. Docs:
+`README.md`, `web/README.md`; remaining work is tracked in
+`feature-plans/bob-profiles-seeds-relay-remaining.md`.
+
 ## 2026-10-22 — refs are minted by the engine; folds no longer write the grammar
 
 `grandma-kat`'s `Each` records now carry `itemRefs` — the finished

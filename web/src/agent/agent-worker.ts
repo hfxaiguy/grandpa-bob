@@ -8,6 +8,8 @@
  */
 import { Tree, name, Call, Return, Tools, knit, resume, inspectMemoryTool } from "grandma-kat";
 import { createBrowserPlatform, initSqlite } from "../platform/browser";
+import { setSqliteOpfsPrefix } from "../platform/sqlite-wasm";
+import { parseOpfsPrefix, setOpfsRootSegments } from "../platform/opfs-root";
 import { createDesktopPlatform } from "../platform/desktop";
 import type { Platform } from "../../../src/platform/types";
 import { browserTools, STUB_TOOL_NAMES } from "./browser-tools";
@@ -44,6 +46,15 @@ import {
 import { resolvePatternPath } from "./pattern-path";
 import { loadBrowserModels } from "./models";
 import { parseModels, type ModelRegistry } from "../../../src/model-config";
+
+/**
+ * Active profile segments, passed by AgentClient as the worker name. A worker
+ * is its own module instance, so it rebinds OPFS (and its sqlite worker) before
+ * the first platform call.
+ */
+const OPFS_PREFIX = parseOpfsPrefix((self as unknown as { name?: string }).name);
+setOpfsRootSegments(OPFS_PREFIX);
+setSqliteOpfsPrefix(OPFS_PREFIX);
 
 const ready = initSqlite();
 const platforms = new Map<string, Platform>();

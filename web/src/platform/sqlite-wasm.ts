@@ -5,6 +5,7 @@
  * Call `initSqlite()` once before opening (it boots the worker).
  */
 import type { SqliteColumn, SqliteDatabase, SqliteFactory, SqliteStatement } from "../../../src/platform/types";
+import { encodeOpfsPrefix } from "./opfs-root";
 
 interface Pending {
   resolve: (value: unknown) => void;
@@ -15,9 +16,19 @@ let worker: Worker | null = null;
 let nextId = 0;
 const pending = new Map<number, Pending>();
 
+/** Active profile segments, forwarded to the worker via its constructor name. */
+let opfsPrefix: string[] = [];
+
+export function setSqliteOpfsPrefix(parts: readonly string[]): void {
+  opfsPrefix = [...parts];
+}
+
 function ensureWorker(): Worker {
   if (worker) return worker;
-  worker = new Worker(new URL("./sqlite-worker.ts", import.meta.url), { type: "module" });
+  worker = new Worker(new URL("./sqlite-worker.ts", import.meta.url), {
+    type: "module",
+    name: encodeOpfsPrefix(opfsPrefix),
+  });
   worker.onmessage = (ev: MessageEvent) => {
     const msg = ev.data as { id: number; ok: boolean; result?: unknown; error?: string };
     const p = pending.get(msg.id);
@@ -47,8 +58,10 @@ function call<T = unknown>(op: string, payload: Record<string, unknown> = {}): P
  *
  * All databases live under the origin-private file system; the worker loads a
  * file into its in-memory engine on open and writes it back after mutations.
+ * `prefix` selects the active profile directory (empty = origin root).
  */
-export async function initSqlite(): Promise<void> {
+export async function initSqlite(prefix?: readonly string[]): Promise<void> {
+  if (prefix) setSqliteOpfsPrefix(prefix);
   await call("init", {});
 }
 

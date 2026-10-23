@@ -1,0 +1,817 @@
+/**
+ * BobSwap client: the seed shelf and the zero-storage workspace relay.
+ *
+ * Server contract (the API built separately):
+ *   GET  /api/v1/{account}/{seed}/latest/meta?key=…   → tiny freshness record
+ *   GET  /api/v1/{account}/{seed}/latest?key=…        → archive JSON (ETag/304)
+ *   PUT  /api/v1/{account}/{seed}/{id-and-version}    → upload (Bearer, upload scope)
+ *   POST /api/v1/relay/channels                       → pair a share (Bearer, read scope)
+ *   POST /api/v1/relay/channels/{id}/join             → join with a pairing code
+ *
+ * Relay content travels over an ephemeral realtime broadcast channel; the
+ * service stores nothing. Chunks are base64 JSON messages (192 KiB slices →
+ * ~256 KiB payloads), acknowledged individually, verified with SHA-256.
+ *
+ * The realtime transport is Supabase Realtime (`@supabase/supabase-js`,
+ * dynamically imported so the default app bundle does not carry it). All
+ * protocol messages ride the broadcast event `msg` on channel
+ * `rly:{channel_id}`; the service may return another channel name, which is
+ * used verbatim.
+ */
+import type { WorkspaceArchive } from "./workspace-transfer";
+import type { SeedMeta } from "./seed-version";
+import { seedVersionTag } from "./profiles";
+import type { DeviceIdentity } from "./device-keys";
+
+// ── service configuration (localStorage) ─────────────────────────────────
+
+export interface SwapService {
+  /** REST base, e.g. `https://bobswap.example.com`. Keys route to /api/v1. */
+  baseUrl: string;
+  /** Supabase URL for Realtime (defaults to baseUrl). */
+  realtimeUrl?: string;
+  /** Supabase publishable/anon key — needed only for the relay transport. */
+  realtimeKey?: string;
+  /** Read-scope BobSwap key (seeds + opening relay channels). */
+  readKey?: string;
+  /** Upload-scope BobSwap key (publishing seeds). */
+  uploadKey?: string;
+}
+
+export interface SwapStore {
+  active?: string;
+  services: Record<string, SwapService>;
+}
+
+const STORE_KEY = "bob:swap";
+
+function normalizeBaseUrl(raw: string): string {
+  const value = String(raw ?? "").trim().replace(/\/+$/, "");
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  const isLocal = /^(localhost|127\.|0\.0\.0\.0|\[::1\])/i.test(value);
+  return `${isLocal ? "http" : "https"}://${value}`;
+}
+
+export function loadSwapStore(): SwapStore {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as SwapStore) : null;
+    if (!parsed || typeof parsed !== "object" || !parsed.services) return { services: {} };
+    return { active: parsed.active, services: parsed.services };
+  } catch {
+    return { services: {} };
+  }
+}
+
+export function saveSwapStore(store: SwapStore): void {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(store));
+  } catch {
+    /* private mode */
+  }
+}
+
+/** Save (or replace) a service entry and make it active. */
+export function saveSwapService(service: SwapService): SwapService {
+  const baseUrl = normalizeBaseUrl(service.baseUrl);
+  if (!baseUrl) throw new Error("service URL is required");
+  const stored: SwapService = { ...service, baseUrl };
+  const store = loadSwapStore();
+  store.services[baseUrl] = stored;
+  store.active = baseUrl;
+  saveSwapStore(store);
+  return stored;
+}
+
+export function activeSwapService(): SwapService | null {
+  const store = loadSwapStore();
+  const key = store.active && store.services[store.active] ? store.active : Object.keys(store.services)[0];
+  return key ? store.services[key] : null;
+}
+
+export function listSwapServices(): SwapService[] {
+  return Object.values(loadSwapStore().services);
+}
+
+/** Look up the service that owns a seed binding's baseUrl. */
+export function serviceFor(baseUrl: string): SwapService | null {
+  const store = loadSwapStore();
+  const key = normalizeBaseUrl(baseUrl);
+  return store.services[key] ?? null;
+}
+
+// ── small helpers ────────────────────────────────────────────────────────
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+export function base64FromBytes(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+export function bytesFromBase64(text: string): Uint8Array {
+  const binary = atob(text);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+export async function sha256HexBytes(bytes: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", bytes as unknown as BufferSource),
+  );
+  return [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export async function sha256HexText(text: string): Promise<string> {
+  return sha256HexBytes(encoder.encode(text));
+}
+
+function apiBase(service: SwapService): string {
+  return `${service.baseUrl.replace(/\/+$/, "")}/api/v1`;
+}
+
+function requireKey(service: SwapService, scope: "read" | "upload"): string {
+  const key = scope === "upload" ? service.uploadKey : service.readKey;
+  if (!key) {
+    throw new Error(
+      `this BobSwap service has no ${scope} key yet — add one in the share settings`,
+    );
+  }
+  return key;
+}
+
+async function apiError(res: Response): Promise<Error> {
+  let message = `BobSwap request failed (${res.status})`;
+  try {
+    const body = (await res.json()) as { error?: unknown };
+    if (typeof body.error === "string") message = `${body.error} (${res.status})`;
+  } catch {
+    /* non-JSON error body */
+  }
+  return new Error(message);
+}
+
+function timeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+// ── seeds ────────────────────────────────────────────────────────────────
+
+export interface RemoteSeedMeta extends SeedMeta {
+  seed_id_and_version?: string;
+  sha256?: string;
+  size?: number;
+  fileCount?: number;
+}
+
+/** Freshness record of a seed's newest version; null when unavailable. */
+export async function fetchLatestSeedMeta(
+  service: SwapService,
+  account: string,
+  seedName: string,
+): Promise<RemoteSeedMeta | null> {
+  const key = requireKey(service, "read");
+  const url = `${apiBase(service)}/${encodeURIComponent(account)}/${encodeURIComponent(seedName)}/latest/meta?key=${encodeURIComponent(key)}`;
+  const res = await fetch(url, { cache: "no-cache", headers: { accept: "application/json" } });
+  if (res.status === 401 || res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw await apiError(res);
+  return (await res.json()) as RemoteSeedMeta;
+}
+
+export interface FetchedSeed {
+  archive: WorkspaceArchive;
+  raw: string;
+  version?: string;
+  sha256: string;
+  size: number;
+  meta: RemoteSeedMeta | null;
+}
+
+/**
+ * Download a seed's latest archive. Verifies the bytes against the service's
+ * sha when it advertises one; never trusts a mismatched body.
+ */
+export async function fetchLatestSeed(
+  service: SwapService,
+  account: string,
+  seedName: string,
+): Promise<FetchedSeed> {
+  const key = requireKey(service, "read");
+  const base = `${apiBase(service)}/${encodeURIComponent(account)}/${encodeURIComponent(seedName)}/latest`;
+  const [res, meta] = await Promise.all([
+    fetch(`${base}?key=${encodeURIComponent(key)}`, { cache: "no-cache" }),
+    fetchLatestSeedMeta(service, account, seedName).catch(() => null),
+  ]);
+  if (!res.ok) throw await apiError(res);
+  const raw = await res.text();
+  const bytes = encoder.encode(raw);
+  const sha256 = await sha256HexBytes(bytes);
+  const announced = meta?.sha256;
+  if (announced && announced.toLowerCase() !== sha256) {
+    throw new Error("seed download failed its checksum — try again or republish the seed");
+  }
+  let archive: WorkspaceArchive;
+  try {
+    archive = JSON.parse(raw) as WorkspaceArchive;
+  } catch {
+    throw new Error("seed download is not valid JSON");
+  }
+  return {
+    archive,
+    raw,
+    version: res.headers.get("x-seed-version") ?? meta?.seed_id_and_version,
+    sha256,
+    size: bytes.length,
+    meta,
+  };
+}
+
+export interface PublishedSeed {
+  version: string;
+  sha256: string;
+  createdAt: string;
+  size: number;
+  fileCount: number;
+}
+
+/**
+ * Upload the active workspace as a new seed version. The version segment is
+ * content-addressed (`<sha12>-<compact createdAt>`) so the service can verify
+ * it against the body and re-uploads stay idempotent.
+ */
+export async function publishSeed(
+  service: SwapService,
+  account: string,
+  seedName: string,
+  archive: WorkspaceArchive,
+): Promise<PublishedSeed> {
+  const key = requireKey(service, "upload");
+  const raw = JSON.stringify(archive);
+  const bytes = encoder.encode(raw);
+  const sha256 = await sha256HexBytes(bytes);
+  const createdAt = archive.createdAt || new Date().toISOString();
+  const version = seedVersionTag(sha256, createdAt);
+  const url =
+    `${apiBase(service)}/${encodeURIComponent(account)}/${encodeURIComponent(seedName)}/` +
+    encodeURIComponent(version);
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: {
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+    },
+    body: raw,
+  });
+  if (!res.ok) throw await apiError(res);
+  return { version, sha256, createdAt, size: bytes.length, fileCount: archive.files.length };
+}
+
+// ── relay: channel setup ─────────────────────────────────────────────────
+
+export interface RelayChannelInfo {
+  channelId: string;
+  code: string;
+  realtimeChannel: string;
+  expiresAt?: string;
+  visualCheck?: string;
+}
+
+export interface RelayJoinInfo {
+  realtimeChannel: string;
+  mode: string;
+  size: number;
+  sha256: string;
+  ownerDevice: { name?: string; public_key?: string };
+  visualCheck?: string;
+}
+
+export async function createRelayChannel(
+  service: SwapService,
+  archive: WorkspaceArchive,
+  device: DeviceIdentity,
+): Promise<{ info: RelayChannelInfo; raw: string; sha256: string; size: number }> {
+  const key = requireKey(service, "read");
+  const raw = JSON.stringify(archive);
+  const bytes = encoder.encode(raw);
+  const sha256 = await sha256HexBytes(bytes);
+  const res = await fetch(`${apiBase(service)}/relay/channels`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      mode: "copy",
+      size: bytes.length,
+      sha256,
+      file_count: archive.files.length,
+      owner_device: { name: device.name, public_key: device.publicKeyB64 },
+    }),
+  });
+  if (!res.ok) throw await apiError(res);
+  const body = (await res.json()) as {
+    channel_id?: string;
+    pairing_code?: string;
+    realtime_channel?: string;
+    expires_at?: string;
+    visual_check?: string;
+  };
+  if (!body.channel_id || !body.pairing_code) {
+    throw new Error("BobSwap returned an incomplete channel");
+  }
+  return {
+    raw,
+    sha256,
+    size: bytes.length,
+    info: {
+      channelId: body.channel_id,
+      code: body.pairing_code,
+      realtimeChannel: body.realtime_channel ?? `rly:${body.channel_id}`,
+      expiresAt: body.expires_at,
+      visualCheck: body.visual_check,
+    },
+  };
+}
+
+export async function joinRelayChannel(
+  service: SwapService,
+  channelId: string,
+  code: string,
+  device: DeviceIdentity,
+): Promise<RelayJoinInfo> {
+  const res = await fetch(
+    `${apiBase(service)}/relay/channels/${encodeURIComponent(channelId)}/join`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        pairing_code: code,
+        device: { name: device.name, public_key: device.publicKeyB64 },
+      }),
+    },
+  );
+  if (!res.ok) throw await apiError(res);
+  const raw = (await res.json()) as Record<string, unknown>;
+  const rawOwner =
+    raw.owner_device && typeof raw.owner_device === "object"
+      ? (raw.owner_device as Record<string, unknown>)
+      : raw.ownerDevice && typeof raw.ownerDevice === "object"
+        ? (raw.ownerDevice as Record<string, unknown>)
+        : {};
+  return {
+    realtimeChannel:
+      typeof raw.realtime_channel === "string" ? raw.realtime_channel : `rly:${channelId}`,
+    mode: typeof raw.mode === "string" ? raw.mode : "copy",
+    size: typeof raw.size === "number" ? raw.size : 0,
+    sha256: typeof raw.sha256 === "string" ? raw.sha256 : "",
+    ownerDevice: {
+      name: typeof rawOwner.name === "string" ? rawOwner.name : "the other device",
+      public_key:
+        typeof rawOwner.public_key === "string"
+          ? rawOwner.public_key
+          : typeof rawOwner.publicKey === "string"
+            ? rawOwner.publicKey
+            : "",
+    },
+    visualCheck: typeof raw.visual_check === "string" ? raw.visual_check : undefined,
+  };
+}
+
+// ── relay: ephemeral transport ───────────────────────────────────────────
+
+export type RelayMessage =
+  | { t: "ready" }
+  | { t: "check"; check: string }
+  | { t: "chunk"; i: number; of: number; b64: string }
+  | { t: "ack"; i: number }
+  | { t: "finish"; sha256: string; of: number }
+  | { t: "complete"; sha256_ok: boolean }
+  | { t: "abort"; reason?: string };
+
+interface RealtimeLink {
+  send(message: RelayMessage): Promise<void>;
+  close(): Promise<void>;
+}
+
+async function connectRealtime(
+  service: SwapService,
+  channelName: string,
+  onMessage: (message: RelayMessage) => void,
+  onStatus: (status: string) => void,
+): Promise<RealtimeLink> {
+  const url = service.realtimeUrl || service.baseUrl;
+  if (!service.realtimeKey) {
+    throw new Error(
+      "this BobSwap service has no realtime key configured — add the Supabase " +
+        "publishable key in the share settings",
+    );
+  }
+  const { createClient } = await import("@supabase/supabase-js");
+  const client = createClient(url, service.realtimeKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const channel = client.channel(channelName, {
+    config: { broadcast: { self: false } },
+  });
+  channel.on("broadcast", { event: "msg" }, (event) => {
+    onMessage(event.payload as RelayMessage);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("realtime connection timed out")), 20_000);
+    channel.subscribe((status) => {
+      onStatus(status);
+      if (status === "SUBSCRIBED") {
+        clearTimeout(timer);
+        resolve();
+      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+        clearTimeout(timer);
+        reject(new Error(`realtime channel failed (${status})`));
+      }
+    });
+  });
+
+  return {
+    async send(message) {
+      const result = await channel.send({
+        type: "broadcast",
+        event: "msg",
+        payload: message,
+      });
+      if (result !== "ok") throw new Error(`realtime send failed (${result})`);
+    },
+    async close() {
+      await client.removeChannel(channel).catch(() => undefined);
+      try {
+        client.realtime.disconnect();
+      } catch {
+        /* already gone */
+      }
+    },
+  };
+}
+
+// ── relay: sender ────────────────────────────────────────────────────────
+
+export interface RelayProgress {
+  phase: "offered" | "waiting" | "sending" | "verifying" | "done" | "error";
+  sent: number;
+  total: number;
+  message: string;
+  check?: string;
+  peer?: string;
+  code?: string;
+}
+
+export interface SendWorkspaceOptions {
+  service: SwapService;
+  archive: WorkspaceArchive;
+  device: DeviceIdentity;
+  onChannel: (info: RelayChannelInfo) => void;
+  onProgress: (progress: RelayProgress) => void;
+  signal?: AbortSignal;
+}
+
+const CHUNK_INPUT_BYTES = 192 * 1024;
+
+/** Reject as soon as `signal` aborts (relay waits must be cancellable). */
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new Error("cancelled"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new Error("cancelled"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
+/** Offer a workspace copy and stream it once the other device joins. */
+export async function sendWorkspace(options: SendWorkspaceOptions): Promise<void> {
+  const { service, archive, device, onChannel, onProgress, signal } = options;
+  const { info, raw, sha256, size } = await createRelayChannel(service, archive, device);
+  onChannel(info);
+  onProgress({
+    phase: "offered",
+    sent: 0,
+    total: size,
+    code: info.code,
+    message: "waiting for the other device to join…",
+    check: info.visualCheck,
+  });
+
+  const bytes = encoder.encode(raw);
+  const total = Math.ceil(bytes.length / CHUNK_INPUT_BYTES) || 1;
+  let check = info.visualCheck;
+  let peer = "";
+  let closed = false;
+
+  let ready!: () => void;
+  const readyPromise = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  let settle!: (ok: boolean) => void;
+  let fail!: (err: Error) => void;
+  const completion = new Promise<boolean>((resolve, reject) => {
+    settle = resolve;
+    fail = reject;
+  });
+  const ackWaiters = new Map<number, () => void>();
+
+  const link = await connectRealtime(
+    service,
+    info.realtimeChannel,
+    (message) => {
+      switch (message.t) {
+        case "ready":
+          ready();
+          break;
+        case "check":
+          check = message.check || check;
+          onProgress({
+            phase: "waiting",
+            sent: 0,
+            total: size,
+            code: info.code,
+            check,
+            peer,
+            message: "devices verified — starting transfer…",
+          });
+          break;
+        case "ack":
+          ackWaiters.get(message.i)?.();
+          break;
+        case "complete":
+          settle(message.sha256_ok === true);
+          break;
+        case "abort":
+          fail(new Error(message.reason || "the other device aborted the transfer"));
+          break;
+        default:
+          break;
+      }
+    },
+    (status) => {
+      if (status === "SUBSCRIBED") peer = peer || "connected";
+    },
+  );
+
+  try {
+    await timeout(
+      abortable(readyPromise, signal),
+      120_000,
+      "the other device did not join in time",
+    );
+    onProgress({
+      phase: "sending",
+      sent: 0,
+      total: size,
+      code: info.code,
+      check,
+      peer,
+      message: `streaming ${total} chunks…`,
+    });
+
+    for (let i = 0; i < total; i++) {
+      if (signal?.aborted) throw new Error("cancelled");
+      const slice = bytes.subarray(i * CHUNK_INPUT_BYTES, (i + 1) * CHUNK_INPUT_BYTES);
+      await link.send({ t: "chunk", i, of: total, b64: base64FromBytes(slice) });
+
+      let attempts = 0;
+      while (attempts < 3) {
+        const acked = new Promise<void>((resolve) => ackWaiters.set(i, resolve));
+        try {
+          await timeout(abortable(acked, signal), 20_000, `chunk ${i + 1} was not acknowledged`);
+          break;
+        } catch (err) {
+          attempts++;
+          if (attempts >= 3) throw err;
+        }
+      }
+      ackWaiters.delete(i);
+
+      onProgress({
+        phase: "sending",
+        sent: Math.min(size, (i + 1) * CHUNK_INPUT_BYTES),
+        total: size,
+        code: info.code,
+        check,
+        peer,
+        message: `sent ${i + 1}/${total}`,
+      });
+    }
+
+    onProgress({
+      phase: "verifying",
+      sent: size,
+      total: size,
+      code: info.code,
+      check,
+      peer,
+      message: "waiting for the checksum…",
+    });
+    await link.send({ t: "finish", sha256, of: total });
+    const ok = await timeout(
+      abortable(completion, signal),
+      60_000,
+      "the other device did not confirm the checksum",
+    );
+    if (!ok) throw new Error("the receiving device reported a checksum mismatch");
+    onProgress({
+      phase: "done",
+      sent: size,
+      total: size,
+      code: info.code,
+      check,
+      peer,
+      message: "workspace delivered",
+    });
+  } catch (err) {
+    onProgress({
+      phase: "error",
+      sent: 0,
+      total: size,
+      code: info.code,
+      check,
+      peer,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  } finally {
+    if (!closed) {
+      closed = true;
+      await link.close();
+    }
+  }
+}
+
+// ── relay: receiver ──────────────────────────────────────────────────────
+
+export interface ReceiveWorkspaceOptions {
+  service: SwapService;
+  channelId: string;
+  code: string;
+  device: DeviceIdentity;
+  onProgress: (progress: RelayProgress) => void;
+  signal?: AbortSignal;
+}
+
+export interface ReceivedWorkspace {
+  archive: WorkspaceArchive;
+  sha256: string;
+  size: number;
+  ownerName: string;
+  visualCheck?: string;
+}
+
+/**
+ * Join a share and reassemble the archive in memory.
+ *
+ * The visual check both humans compare is the first four hex characters of
+ * `sha256("rv|" + ownerKey + "|" + recipientKey + "|" + size)`. The service
+ * may send its own; when it does not, the receiver derives the same value and
+ * announces it to the sender.
+ */
+export async function receiveWorkspace(
+  options: ReceiveWorkspaceOptions,
+): Promise<ReceivedWorkspace> {
+  const { service, channelId, code, device, onProgress, signal } = options;
+  const joined = await joinRelayChannel(service, channelId, code, device);
+
+  const ownerKey = joined.ownerDevice?.public_key ?? "";
+  const derived = await sha256HexText(`rv|${ownerKey}|${device.publicKeyB64}|${joined.size}`);
+  const rawCheck = (joined.visualCheck || derived).toUpperCase().replace(/[^0-9A-Z]/g, "");
+  const visualCheck = rawCheck.length >= 4 ? rawCheck.slice(0, 4) : derived.slice(0, 4).toUpperCase();
+  const ownerName = joined.ownerDevice?.name || "the other device";
+
+  const received = new Map<number, Uint8Array>();
+  let expected = 0;
+  let resolveDone!: (sha: string) => void;
+  let rejectDone!: (err: Error) => void;
+  const done = new Promise<string>((resolve, reject) => {
+    resolveDone = resolve;
+    rejectDone = reject;
+  });
+
+  const progress = (message: string, sent = 0): void => {
+    onProgress({
+      phase: "sending",
+      sent,
+      total: joined.size,
+      check: visualCheck,
+      peer: ownerName,
+      message,
+    });
+  };
+
+  const link = await connectRealtime(
+    service,
+    joined.realtimeChannel,
+    (message) => {
+      switch (message.t) {
+        case "chunk": {
+          received.set(message.i, bytesFromBase64(message.b64));
+          expected = message.of;
+          const bytes = [...received.values()].reduce((sum, part) => sum + part.length, 0);
+          progress(`received ${received.size}/${expected} chunks`, bytes);
+          void link.send({ t: "ack", i: message.i });
+          break;
+        }
+        case "finish": {
+          resolveDone(message.sha256);
+          break;
+        }
+        case "abort":
+          rejectDone(new Error(message.reason || "the other device aborted the transfer"));
+          break;
+        default:
+          break;
+      }
+    },
+    (status) => {
+      if (status === "SUBSCRIBED") progress("connected — waiting for the first chunk…");
+    },
+  );
+
+  try {
+    await link.send({ t: "ready" });
+    if (visualCheck) await link.send({ t: "check", check: visualCheck });
+
+    await timeout(
+      abortable(done, signal),
+      300_000,
+      "the transfer did not finish in time",
+    );
+    progress("checking the archive…");
+
+    if (received.size !== expected) {
+      await link.send({ t: "complete", sha256_ok: false });
+      await link.send({ t: "abort", reason: "missing chunks" });
+      throw new Error(`transfer incomplete (${received.size}/${expected} chunks)`);
+    }
+
+    let size = 0;
+    for (let i = 0; i < expected; i++) {
+      const part = received.get(i);
+      if (!part) {
+        await link.send({ t: "complete", sha256_ok: false });
+        throw new Error(`transfer incomplete (chunk ${i} missing)`);
+      }
+      size += part.length;
+    }
+    const assembled = new Uint8Array(size);
+    let offset = 0;
+    for (let i = 0; i < expected; i++) {
+      const part = received.get(i)!;
+      assembled.set(part, offset);
+      offset += part.length;
+    }
+
+    const sha256 = await sha256HexBytes(assembled);
+    const ok = sha256 === joined.sha256.toLowerCase();
+    await link.send({ t: "complete", sha256_ok: ok });
+    if (!ok) throw new Error("checksum mismatch — the copy was corrupted in transit");
+
+    const raw = decoder.decode(assembled);
+    let archive: WorkspaceArchive;
+    try {
+      archive = JSON.parse(raw) as WorkspaceArchive;
+    } catch {
+      throw new Error("the transferred workspace is not valid JSON");
+    }
+    onProgress({
+      phase: "done",
+      sent: assembled.length,
+      total: joined.size,
+      check: visualCheck,
+      peer: ownerName,
+      message: `received ${archive.files.length} files`,
+    });
+    return { archive, sha256, size: assembled.length, ownerName, visualCheck };
+  } finally {
+    await link.close();
+  }
+}

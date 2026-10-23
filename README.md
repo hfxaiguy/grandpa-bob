@@ -14,6 +14,11 @@ every change it makes is **git-committed automatically**.
   in the header:
   - **Browser (OPFS)** — a private sandbox in the tab, seeded from the workspace,
     with toolbar **Export**/**Import** for a whole-workspace JSON backup;
+    **profiles** keep separate OPFS workspaces (switchable in the toolbar, each
+    with its own chats, patterns, log and git history), and a profile can be
+    bound to a **BobSwap seed** for updates — and **Send…/Receive…** passes a
+    workspace copy to another open tab through the zero-storage BobSwap relay
+    (fresh pairing per share; nothing stored).
   - **Desktop (local server)** — the loopback storage bridge, for the real
     workspace on disk (and the only mode Firefox can use).
   The header's **upload** button puts files from a normal OS picker into any

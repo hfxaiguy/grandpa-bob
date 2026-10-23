@@ -54,6 +54,9 @@ const routes = {
   async "POST /fs/read"({ path: p }) {
     return { content: await fs.readFile(resolveIn(p), "utf8") };
   },
+  async "POST /fs/readBytes"({ path: p }) {
+    return { base64: (await fs.readFile(resolveIn(p))).toString("base64") };
+  },
   async "POST /fs/write"({ path: p, content, base64 }) {
     const abs = resolveIn(p);
     await fs.mkdir(path.dirname(abs), { recursive: true });

@@ -52,6 +52,43 @@
       #status { color: var(--muted); }
       #toolbar button:disabled { opacity: 0.55; cursor: default; }
       #app { flex: 1; min-height: 0; }
+
+      dialog {
+        background: var(--panel); color: var(--fg);
+        border: 1px solid var(--border); border-radius: 10px;
+        padding: 1rem 1.1rem; width: min(680px, 92vw);
+        max-height: 88vh; overflow: auto;
+      }
+      dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+      dialog h3 { margin: 0 0 0.5rem; font-size: 15px; }
+      dialog p { margin: 0 0 0.6rem; }
+      dialog label { display: block; margin: 0.35rem 0; color: var(--muted); }
+      dialog label.inline { display: flex; align-items: center; gap: 0.4rem; }
+      dialog label.inline input { display: inline; width: auto; margin: 0; }
+      dialog input, dialog select {
+        display: block; width: 100%; margin-top: 0.2rem;
+        font: inherit; font-size: 13px; color: var(--fg);
+        background: var(--card); border: 1px solid var(--border);
+        border-radius: 6px; padding: 0.35rem 0.5rem;
+      }
+      dialog button {
+        font: inherit; font-size: 13px; color: var(--fg);
+        background: var(--card); border: 1px solid var(--border);
+        border-radius: 6px; padding: 0.35rem 0.6rem;
+      }
+      dialog button:hover { border-color: var(--accent); }
+      dialog button.danger { border-color: #7f3b46; }
+      dialog .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 0.8rem; }
+      dialog progress { width: 100%; height: 0.7rem; }
+      dialog form { margin-top: 0.8rem; border-top: 1px solid var(--border); padding-top: 0.6rem; }
+      .row-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.7rem; }
+      .muted { color: var(--muted); }
+      .badge { font-size: 11px; border: 1px solid var(--border); border-radius: 99px; padding: 0.05rem 0.45rem; color: var(--muted); }
+      .profile-row { display: flex; justify-content: space-between; gap: 0.8rem; align-items: center; padding: 0.45rem 0; border-bottom: 1px solid var(--border); }
+      .profile-row:last-child { border-bottom: 0; }
+      #share-code { font-size: 28px; letter-spacing: 0.25em; color: var(--accent); }
+      #share-check { font-size: 20px; letter-spacing: 0.15em; color: var(--accent); }
+      @media (max-width: 620px) { dialog .grid { grid-template-columns: 1fr; } }
     </style>
   </head>
   <body>
@@ -63,16 +100,105 @@
         </select>
       </label>
       <input id="storage-server" placeholder="http://127.0.0.1:8795" size="22" />
-      <span id="ws-tools" hidden>
-        <button id="ws-export" type="button" title="Download the browser workspace as a JSON archive">Export</button>
-        <button id="ws-import" type="button" title="Merge a workspace archive into this browser">Import</button>
-        <input id="ws-import-file" type="file" accept="application/json,.json" hidden />
-        <button id="ws-reseed" type="button" hidden>Workspace update available</button>
-        <button id="ws-reseed-dismiss" type="button" title="Not now" hidden>×</button>
+      <span id="ws-tools">
+        <span id="opfs-tools">
+          <label>Profile
+            <select id="profile-select" title="Active workspace profile"></select>
+          </label>
+          <button id="profile-manage" type="button" title="Create, duplicate or delete profiles; set seed sources">Profiles…</button>
+          <button id="ws-export" type="button" title="Download the active profile as a JSON archive">Export</button>
+          <button id="ws-import" type="button" title="Merge a workspace archive into the active profile">Import</button>
+          <input id="ws-import-file" type="file" accept="application/json,.json" hidden />
+          <button id="ws-reseed" type="button" hidden>Workspace update available</button>
+          <button id="ws-reseed-dismiss" type="button" title="Not now" hidden>×</button>
+        </span>
+        <button id="swap-settings" type="button" title="Configure BobSwap services and keys">BobSwap…</button>
+        <button id="share-send" type="button" title="Send a copy of this profile to another device through BobSwap">Send…</button>
+        <button id="share-receive" type="button" title="Receive a workspace copy from another device">Receive…</button>
       </span>
       <span id="status">starting…</span>
     </div>
     <div id="app"></div>
+
+    <dialog id="profile-dialog">
+      <h3>Workspace profiles</h3>
+      <p class="muted">Separate OPFS workspaces in this browser. Switching reloads the tab.</p>
+      <div id="profile-list"></div>
+      <form id="profile-create">
+        <label>New profile name
+          <input id="profile-new-name" placeholder="travel" autocomplete="off" />
+        </label>
+        <label>Source
+          <select id="profile-new-source">
+            <option value="blank">fresh workspace (seeded on first boot)</option>
+            <option value="duplicate">copy of the current profile</option>
+          </select>
+        </label>
+        <label class="inline"><input id="profile-new-switch" type="checkbox" checked /> switch to it after creating</label>
+        <div class="row-actions"><button type="submit">Create profile</button></div>
+      </form>
+      <div class="row-actions"><button id="profile-close" type="button">Close</button></div>
+    </dialog>
+
+    <dialog id="seed-dialog">
+      <h3><span id="seed-dialog-title">Seed source</span> — <span id="seed-profile-name"></span></h3>
+      <p id="seed-dialog-hint" class="muted">Bind this profile to a seed on a BobSwap service. Updates appear in the toolbar; the run log and chat history are kept.</p>
+      <div class="grid">
+        <label>Service URL<input id="seed-base-url" placeholder="https://bobswap.example.com" /></label>
+        <label>Realtime URL (optional)<input id="seed-realtime-url" placeholder="defaults to the service URL" /></label>
+        <label>Realtime key (optional)<input id="seed-realtime-key" placeholder="Supabase publishable key" /></label>
+        <label id="seed-account-label">Account<input id="seed-account" placeholder="personal" /></label>
+        <label id="seed-name-label">Seed name<input id="seed-name" placeholder="trunk" /></label>
+        <label>Read key<input id="seed-read-key" placeholder="bsk_live_…" /></label>
+        <label>Upload key<input id="seed-upload-key" placeholder="bsk_live_…" /></label>
+      </div>
+      <div id="seed-status" class="muted"></div>
+      <div class="row-actions">
+        <button id="seed-save" type="button">Save</button>
+        <button id="seed-check" type="button">Check now</button>
+        <button id="seed-apply" type="button" hidden>Apply update</button>
+        <button id="seed-publish" type="button">Publish this profile</button>
+        <button id="seed-unbind" type="button">Unbind</button>
+        <button id="seed-close" type="button">Close</button>
+      </div>
+    </dialog>
+
+    <dialog id="share-dialog">
+      <h3>Send this workspace</h3>
+      <p class="muted">The service stores nothing. Keep this tab open until the other device has joined and the copy is delivered.</p>
+      <label>Service<select id="share-service"></select></label>
+      <label>This device<input id="share-device-name" placeholder="desktop" /></label>
+      <div id="share-offer" hidden>
+        <p>Pairing code <strong id="share-code">…</strong></p>
+        <p>Visual check <strong id="share-check">—</strong> <span class="muted">(must match the other device)</span></p>
+        <p class="muted">Channel <code id="share-channel"></code></p>
+      </div>
+      <progress id="share-bar" max="100" value="0"></progress>
+      <div id="share-progress" class="muted"></div>
+      <div class="row-actions">
+        <button id="share-start" type="button">Start</button>
+        <button id="share-cancel" type="button">Cancel</button>
+        <button id="share-close" type="button">Close</button>
+      </div>
+    </dialog>
+
+    <dialog id="receive-dialog">
+      <h3>Receive a workspace</h3>
+      <p class="muted">Enter the pairing code shown on the sending device (or open its share link).</p>
+      <label>Service<select id="recv-service"></select></label>
+      <label>Channel<input id="recv-channel" placeholder="chan_…" autocomplete="off" /></label>
+      <label>Pairing code<input id="recv-code" inputmode="numeric" maxlength="6" placeholder="123456" autocomplete="off" /></label>
+      <label>Import into<select id="recv-target"></select></label>
+      <label id="recv-new-wrap" hidden>New profile name<input id="recv-new-name" placeholder="phone-copy" autocomplete="off" /></label>
+      <progress id="recv-bar" max="100" value="0"></progress>
+      <div id="recv-status" class="muted"></div>
+      <div class="row-actions">
+        <button id="recv-join" type="button">Join</button>
+        <button id="recv-cancel" type="button">Cancel</button>
+        <button id="recv-close" type="button">Close</button>
+      </div>
+    </dialog>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

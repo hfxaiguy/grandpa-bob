@@ -281,6 +281,12 @@ round-trip — this is the older demo runner (`#out`). The storage-mode checks a
 `npm run smoke:browser` and `npm run smoke:direct` (both need the admin and
 Chromium; `smoke:direct` fakes the folder picker to a real OPFS directory
 and asserts file writes plus the sqlite read-only/write-back behavior).
+The profile flows have two more headless checks against the standalone build
+(`npm run web:standalone` from the repo root, port 8080):
+`npm run smoke:profiles` (pre-profile migration, create/switch, export scoping,
+seed-binding persistence) and `npm run smoke:seed-update` (banner, apply, run-log
+preservation and version recording against a fake BobSwap service). Both accept
+`CHROME_BIN` like the other smokes.
 
 The LLM smoke also needs the mock endpoint: `npm run mock-llm` (port 8787) in a
 second terminal, plus a registry that points at it. On the standalone server
@@ -295,12 +301,12 @@ hidden in Desktop mode, where the workspace is the real folder. OPFS is
 evictable unless the browser grants persistent storage, so this backup is a
 first-class control.
 
-- **Export** downloads the whole tab workspace as `bob-workspace-<date>.json`:
-  every file in OPFS — `app/`, `patterns/`, `lib/`, the app `.db` files and
+- **Export** downloads the active profile's workspace as `bob-workspace-<date>.json`:
+  every file in that profile — `app/`, `patterns/`, `lib/`, the app `.db` files and
   `logs/grandma-kat.db` (which holds the browser chat sessions). The format is
   the same `WorkspaceArchive` v1 the seed uses, so a `make-seed` file can be
   imported too.
-- **Import** merges an archive over the current workspace: files with the same
+- **Import** merges an archive over the active profile: files with the same
   path are overwritten, files the archive does not carry are kept. It validates
   the archive first, asks for confirmation, then reloads the tab so the
   platform, fs index and sqlite worker re-read the restored files. When the
@@ -309,6 +315,65 @@ first-class control.
 
 The archive is base64-in-JSON (binary-safe, dependency-free), so expect it to be
 about a third larger than the workspace and to be built in memory.
+
+## Workspace profiles (browser OPFS)
+
+The browser target keeps several **profiles**: independent workspaces in the
+same origin's OPFS, switched from the toolbar's **Profile** picker (switching
+reloads the tab).
+
+- Every profile lives at `/profiles/<name>/`; `/profiles.json` in the OPFS root
+  is the registry (name, timestamps, optional seed source). The active name is
+  in localStorage (`bob:profile`), so each browser/phone keeps its own selection.
+- An installation from before profiles is moved once into
+  `/profiles/default/`. The move is marked in `/migration.json`, resumes if the
+  tab closes mid-copy, verifies file count and total bytes, and only then removes
+  the originals — a failed verification keeps both copies and refuses to boot.
+- The **Profiles…** dialog creates a blank profile (seeded on first boot) or a
+  copy of the current one, and deletes non-active profiles. Each profile has its
+  own `workspace/`, run log, chats, patterns and git history.
+- **Export**/**Import** and the BobSwap flows act on the **active** profile.
+  Archive paths stay `workspace/...`, so the same file can be imported into any
+  profile, any device, or packed by `make-seed`.
+- Desktop (local server) mode is unchanged: one workspace, profile controls
+  hidden.
+
+## Seed sources (BobSwap seed shelf)
+
+A profile can be bound to a seed on a BobSwap service, so updates can arrive
+later (`Profiles…` → **Seed…**):
+
+- Service URL, account, seed name, read key (and an upload key for publishing).
+  Keys live in this browser's localStorage (`bob:swap`), never in the workspace
+  or an export.
+- On boot the profile asks `/api/v1/<account>/<seed>/latest/meta` and, when the
+  seed is newer, shows the usual **Workspace update available** banner (never
+  applies silently). Applying merges the archive and **keeps the local run log
+  and chat history**; saved walk positions reset once.
+- **Publish this profile** uploads the current workspace as a new version
+  (`<sha12>-<compact createdAt>`), **Check now** compares on demand.
+- `X-Seed-Version` and ETag/304 keep repeat checks cheap; `?key=` URLs make the
+  same flow usable from a phone link.
+
+## Sharing a workspace between devices (zero storage)
+
+Toolbar **Send…**/**Receive…** move a workspace copy between two open tabs
+through a BobSwap relay:
+
+- Each share creates a fresh channel; the sender shows a 6-digit pairing code
+  and a 4-character visual check that must match on both screens. Nothing is
+  stored on the service — both tabs must stay open, and losing a connection
+  discards the transfer (nothing to resume). Copy mode only; ownership swaps are
+  a later step.
+- Data is sliced into 192 KiB chunks (~256 KiB base64 messages) over an
+  ephemeral Realtime broadcast channel, acked individually and verified with
+  SHA-256. The receiving tab reassembles in memory and only then imports.
+- The receiver chooses **current profile** or **as a new profile** (created on
+  the spot). Relay copies include `workspace/logs/`; seed *updates* do not
+  overwrite an existing log.
+- A share link can be sent as `?recv=<channel_id>&code=<six digits>`; opening it
+  prefills the Receive dialog. Add the service's Realtime URL/publishable key in
+  the Share dialog when it differs from the REST host (Supabase).
 
 ## Standalone (no admin)
 
