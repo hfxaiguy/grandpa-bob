@@ -2,6 +2,31 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-23 — web: boot failures name their stage; a wedged OPFS write no longer kills boot
+
+The toolbar's generic `error: …` line hid which boot step died. Gecko's OPFS
+backend reports a wedged write as a bare `UnknownError: Unknown failure`
+DOMException (`dom/fs/child/FileSystemRequestHandler.cpp` maps every unmapped
+failure to that message), and such an exception carries no JS frames — the
+console stack pointed at the catch itself. Each boot stage now sets a marker
+(`bootProfiles`, `initSqlite`, `touchProfile`, `prepareBrowserWorkspace`,
+`buildFsIndex`, `ensureModels`, `detectPattern`, `servedByAdmin`): the console
+logs `boot failed [stage: …]` with the full error and the toolbar shows
+`error: <name> (<stage>)`.
+
+`touchProfile`'s registry write is the first write of boot and purely
+cosmetic (`lastUsedAt`); a browser whose write path refuses it no longer
+takes the whole app down — it retries once after 300 ms (a transient lock
+from a just-torn-down page), then warns and boots with the in-memory
+registry. The next successful registry write lands the timestamp.
+
+Verified along the way: the workspace/profile data survives such a wedge
+intact — a copy of the real browser profile boots and writes cleanly, so the
+failure state lives only in the live browser's storage actor (a full browser
+restart clears it).
+
+Tests: `npm --prefix web run typecheck`, `smoke:browser`.
+
 ## 2026-10-23 — web: the toolbar's tools fold into one Sync… dialog
 
 The bar's Profiles…/Export/Import/BobSwap…/Send…/Receive… buttons now live in

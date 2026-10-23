@@ -269,8 +269,26 @@ export async function touchProfile(name: string): Promise<ProfileRegistry> {
     ...record,
     lastUsedAt: new Date().toISOString(),
   }));
-  await writeRegistry(next);
+  try {
+    await writeRegistry(next);
+  } catch (err) {
+    // lastUsedAt is cosmetic. A wedged browser storage backend reports this
+    // as a bare failure (Gecko: `UnknownError: Unknown failure`), and failing
+    // boot over a timestamp write would take the whole app down. One retry
+    // clears a transient lock from a just-torn-down page; beyond that, boot
+    // with the in-memory registry and let the next registry write land it.
+    await sleep(300);
+    try {
+      await writeRegistry(next);
+    } catch (retryErr) {
+      console.warn("could not touch the profile registry", retryErr);
+    }
+  }
   return next;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function loadRegistry(): Promise<ProfileRegistry> {

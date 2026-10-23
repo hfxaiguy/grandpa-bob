@@ -691,11 +691,21 @@ async function applyBoundSeedUpdate(binding: SeedBinding, version?: string): Pro
 }
 
 // ── boot ─────────────────────────────────────────────────────────────────
+
+/**
+ * Which boot stage is running. Gecko's OPFS can fail with a native
+ * `UnknownError: Unknown failure` DOMException whose stack carries no JS
+ * frames, so the stage marker is the only way to tell which call failed.
+ */
+let bootStage = "start";
+
 async function main(): Promise<void> {
   if (storageMode === "desktop") {
+    bootStage = "desktop: initSqlite";
     await initSqlite([]);
     platform = createDesktopPlatform("/", storageServer);
     setActiveFs(platform.fs);
+    bootStage = "desktop: buildFsIndex";
     await buildFsIndex(platform);
     statusBase = "desktop";
     try {
@@ -707,18 +717,24 @@ async function main(): Promise<void> {
   } else {
     // Profiles: move pre-profile OPFS data into /profiles/default once, then
     // bind every layer (fs, sqlite worker, agent worker) to the active profile.
+    bootStage = "bootProfiles";
     const boot = await bootProfiles();
     profileRegistry = boot.registry;
     activeProfile = resolveActiveProfileName(profileRegistry);
     activeProfileSegments = profileSegmentsFor(activeProfile);
     setOpfsRootSegments(activeProfileSegments);
+    bootStage = "initSqlite";
     await initSqlite(activeProfileSegments);
+    bootStage = "touchProfile";
     profileRegistry = await touchProfile(activeProfile);
 
     platform = createBrowserPlatform("/workspace");
     setActiveFs(platform.fs);
+    bootStage = "prepareBrowserWorkspace";
     await prepareBrowserWorkspace();
+    bootStage = "buildFsIndex";
     await buildFsIndex(platform);
+    bootStage = "ensureModels";
     await ensureModels(platform);
     statusBase = `${seedStatus()} · ${activeProfile}`;
     if (boot.migrated) {
@@ -743,10 +759,12 @@ async function main(): Promise<void> {
     }).start();
   }
 
+  bootStage = "detectPattern";
   const pattern = await detectPattern(platform);
   const agent = new AgentClient(activeProfileSegments);
   // When the admin serves this page, use ITS models.json (and /api/llm proxy)
   // so the browser, the chat UI and Telegram all share one model config.
+  bootStage = "servedByAdmin";
   const serverModels = await servedByAdmin();
   if (!serverModels) statusBase += " · standalone";
   const backend = createLocalBackend({
@@ -783,5 +801,12 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  setStatus(`error: ${err instanceof Error ? err.message : String(err)}`);
+  // Surface the full error (name + stack + failing stage) in the console; the
+  // toolbar keeps a one-liner for glanceability. `err.name` matters: browser
+  // storage failures come through as DOMExceptions
+  // (UnknownError/SecurityError/…), and Gecko's OPFS reports bare
+  // "Unknown failure" with no usable stack.
+  console.error(`boot failed [stage: ${bootStage}]`, err);
+  const label = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  setStatus(`error: ${label} (${bootStage})`);
 });
