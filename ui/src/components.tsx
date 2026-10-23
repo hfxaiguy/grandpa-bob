@@ -1296,12 +1296,16 @@ export function Tiles(props: { apps: AppInfo[]; trunk?: AppInfo }) {
   // the other tiles into a strip at the right (see `.grid.has-wide`).
   const hasWide = () => props.apps.some((a) => state.layout.wide.includes(a.name));
   return (
-    <div class="grid" classList={{ "has-wide": hasWide() }}>
-      <For each={props.apps}>{(a) => <Tile app={a} />}</For>
-      {/* The trunk is the board's home tile: it spans the whole bottom row and
-          stays docked there (sticky) while the app tiles scroll under it. */}
+    <>
+      <div class="grid" classList={{ "has-wide": hasWide() }}>
+        <For each={props.apps}>{(a) => <Tile app={a} />}</For>
+      </div>
+      {/* The trunk is the board's home tile: a full-width row below the square
+          grid, docked to the bottom of the tiles viewport (sticky) while the
+          app tiles scroll under it. It sits outside the grid so sticky has the
+          whole scroll area as its containing block, not a single grid cell. */}
       <Show when={props.trunk}>{(t) => <Tile app={t()} />}</Show>
-    </div>
+    </>
   );
 }
 

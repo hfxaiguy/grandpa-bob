@@ -76,17 +76,39 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .toolbar button.active { border-color: var(--accent); color: var(--accent); background: #17243f; }
 
 .body { display: flex; flex: 1; min-height: 0; }
-.tiles { flex: 1; overflow: auto; padding: 12px; }
+/* A column so the trunk dock can take the bottom of the board: the grid sits at
+   the top, the trunk's auto margin eats the leftover height. */
+.tiles { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
 
+/* ── the board: a true square grid ───────────────────────────────────────
+   Every app tile is a square cell, so the rows line up exactly however much
+   content a tile holds (the chat scrolls inside its square rather than
+   stretching the row). `wide` buys two tracks at the same height (2:1),
+   `expanded` takes the whole row, and the trunk docks across the bottom. */
 .grid {
   display: grid;
+  flex: none;
   /* `min(340px, 100%)` so a narrow phone gets one full-width column instead of
      a 340px track that overflows the viewport. */
   grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
   gap: 12px;
-  /* Tiles in a row share its height (`max-height` on .tile still caps them), so
-     a short trunk tile does not float above a taller neighbour. */
   align-items: stretch;
+}
+.grid > .tile {
+  aspect-ratio: 1 / 1;
+  min-height: 0;
+  max-height: none;
+}
+.grid > .tile.wide {
+  grid-column: span 2;
+  /* Two tracks wide, one track tall: the same height as its neighbours. */
+  aspect-ratio: 2 / 1;
+}
+.grid > .tile.expanded {
+  grid-column: 1 / -1;
+  aspect-ratio: auto;
+  min-height: min(70vh, 620px);
+  max-height: 82vh;
 }
 /* A `wide` tile spans two tracks, so make sure two actually exist: in a layout
    that only fits one 340px column, `span 2` would create an implicit second
@@ -225,23 +247,41 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
   align-items: stretch;
   border-left: 1px solid var(--border);
 }
-/* Inside the strip the grid's span rules mean nothing — keep sub-tiles compact
-   and let them fill the strip's height instead. */
+/* Inside the strip the grid's square/span rules mean nothing — keep sub-tiles
+   compact and let them fill the strip's height instead. */
 .tile-subs-area .tile {
   flex: none;
   width: 240px;
   min-height: 0;
   max-height: none;
+  aspect-ratio: auto;
 }
 .tile-subs-area .tile.expanded,
-.tile-subs-area .tile.wide { grid-column: auto; }
+.tile-subs-area .tile.wide { grid-column: auto; aspect-ratio: auto; }
 
-/* The trunk column: full board height, its own seat left of the stream. */
-.tile.trunk-col {
-  flex: none;
-  width: min(440px, 36vw);
-  min-height: 0;
+/* The trunk dock: the board's home conversation spans the full width below the
+   square grid and stays docked to the bottom of the tiles viewport while the app
+   tiles scroll beneath it. It floats a little over the grid — a lift and a
+   deeper shadow on hover/focus make the dock read as a panel hovering above the
+   tiles rather than another cell. */
+.tiles > .tile.trunk-dock {
+  width: 100%;
+  margin-top: auto;
+  aspect-ratio: auto;
+  height: min(46vh, 440px);
+  min-height: 280px;
   max-height: none;
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(110, 168, 254, 0.1);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.tiles > .tile.trunk-dock:hover,
+.tiles > .tile.trunk-dock:focus-within {
+  transform: translateY(-4px);
+  border-color: var(--accent);
+  box-shadow: 0 -18px 44px rgba(0, 0, 0, 0.62), 0 0 22px rgba(110, 168, 254, 0.22);
 }
 
 /* Pointer-based tile dragging (see the Tile component): the label that follows
@@ -598,15 +638,14 @@ body.dragging-tile { user-select: none !important; }
   .hidden-rail { width: 38px; padding: 8px 0; }
   .hidden-app { width: 24px; height: 24px; }
 
-  /* The trunk becomes the stack's first full-width tile; the app grid and the
-     rail follow it. */
-  .body { flex-direction: column; }
-  .tile.trunk-col { order: -1; width: 100%; max-height: 62vh; }
+  /* The square grid is already one full-width column here; the trunk dock keeps
+     its bottom seat but takes more of the phone's height. */
+  .tiles > .tile.trunk-dock { height: 56vh; min-height: 260px; }
   .tile-rail { width: 30px; }
   .tile-subs-area .tile { width: 200px; }
 
   /* A 2-column span would create an implicit track on a single-column grid. */
-  .tile.wide { grid-column: auto; }
+  .tile.wide { grid-column: auto; aspect-ratio: 1 / 1; }
   /* 16px stops iOS Safari from zooming the page when the composer focuses. */
   .composer-row textarea { font-size: 16px; }
 

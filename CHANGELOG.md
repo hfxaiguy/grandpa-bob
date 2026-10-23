@@ -2,6 +2,26 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-23 — board: a square tile grid with the trunk docked at the bottom
+
+The trunk no longer takes a full-height column beside the board. It is now the
+board's **dock**: a full-width home tile below the app grid, pinned to the
+bottom of the tiles viewport (sticky) while the app tiles scroll underneath it.
+When the board is short it still sits at the bottom (the flex column's auto
+margin eats the leftover height). On hover/focus it lifts 4px, outlines in the
+accent and deepens its upward shadow, so it reads as a panel hovering over the
+grid rather than one more cell. The trunk keeps its ✕ park gesture and is still
+not a drag seat or drop target.
+
+The app tiles are a true **square grid** now: `aspect-ratio: 1` cells, so rows
+line up exactly no matter how much chat/panel content a tile holds (the chat
+scrolls inside its square instead of stretching the row). `↔ wide` is a 2:1
+cell (two tracks, same height as its neighbours); `⤢ expand` still takes the
+whole row and its own height. Phone keeps one square column and the dock takes
+56vh.
+
+Tests: `npm run test:ui-order`, `ui` typecheck and `npm run build:ui`.
+
 ## 2026-10-23 — apps within apps: fractal app folders and tiles
 
 Every app folder may now keep an `app/` folder of its own. The dotted logical
