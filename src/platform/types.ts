@@ -96,6 +96,11 @@ export interface SqliteFactory {
    * nothing is ever loaded or persisted to the workspace (path is advisory).
    */
   open(path: string, opts: { readOnly: boolean; scratch?: boolean }): Promise<SqliteDatabase>;
+  /**
+   * The database file as bytes (a snapshot for workspace export). Optional:
+   * targets that cannot export a logical image simply omit it.
+   */
+  exportBytes?(path: string): Promise<Uint8Array>;
 }
 
 /** The bundle of adapters a target injects into the shared core. */

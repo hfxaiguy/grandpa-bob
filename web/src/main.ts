@@ -155,6 +155,8 @@ storageSelect?.addEventListener("change", applyStorage);
 storageServerInput?.addEventListener("change", applyStorage);
 
 let platform: Platform;
+/** Set once the agent worker exists; workspace export asks it for the log snapshot. */
+let archiveAgent: AgentClient | null = null;
 
 /** The platform selected at boot; all callers share it (and its handles). */
 function activePlatform(): Platform {
@@ -169,8 +171,33 @@ async function activeProfileRoot(): Promise<FileSystemDirectoryHandle | undefine
 
 /** Archive the workspace BOB currently operates on (browser profile or bridge). */
 async function buildActiveArchive(): Promise<WorkspaceArchive> {
-  if (storageMode === "browser") return buildWorkspaceArchive(await activeProfileRoot());
+  if (storageMode === "browser") return buildBrowserArchive();
   return buildPlatformArchive(platform);
+}
+
+/**
+ * The browser archive plus a live run-log snapshot. The streaming VFS keeps its
+ * files under `.gpb-runlog` (not a plain workspace file), so the archive carries
+ * SQLite's logical page image at the legacy log path instead; an import stages
+ * that file and the next boot re-imports it.
+ */
+async function buildBrowserArchive(): Promise<WorkspaceArchive> {
+  const archive = await buildWorkspaceArchive(await activeProfileRoot());
+  archive.files = archive.files.filter((file) => !file.path.startsWith(".gpb-runlog/"));
+  const snapshot = await archiveAgent
+    ?.log<{ base64?: string } | null>("exportRunLog")
+    .catch((err) => {
+      console.warn("run-log snapshot omitted from the archive:", err);
+      return null;
+    });
+  if (snapshot?.base64) {
+    // Replace the (possibly stale) legacy file with the live logical image.
+    archive.files = archive.files.filter((file) => file.path !== "workspace/logs/grandma-kat.db");
+    archive.files.push({ path: "workspace/logs/grandma-kat.db", base64: snapshot.base64 });
+  }
+  // No snapshot (unavailable log): keep the raw legacy file the walk found, so
+  // the log can still be backed up and recovered by hand.
+  return archive;
 }
 
 /**
@@ -293,6 +320,17 @@ async function seedWorkspace(root: string): Promise<void> {
 
 async function prepareBrowserWorkspace(): Promise<void> {
   const root = "/workspace";
+
+  // An imported workspace may carry a run-log snapshot (see the Import button).
+  // The streaming VFS owns its own files, so drop the pool before anything
+  // opens the log; the first open migrates the snapshot.
+  const restoreMarker = platform.path.join(root, "logs/.runlog-restore");
+  if (await isFile(restoreMarker)) {
+    const profileRoot = await activeProfileRoot();
+    await profileRoot?.removeEntry(".gpb-runlog", { recursive: true }).catch(() => undefined);
+    await platform.fs.rm(restoreMarker).catch(() => undefined);
+  }
+
   if (configuredRemote) {
     const gitDir = platform.path.join(root, ".git");
     const hasRepo = await isFile(gitDir);
@@ -446,7 +484,7 @@ function wireWorkspaceTransfer(): void {
   // Smoke hook: the browser smoke drives export/import without a download dialog
   // or a reload. Like `__bobBackend`, it is only a test surface.
   (window as unknown as { __bobWorkspaceTransfer?: unknown }).__bobWorkspaceTransfer = {
-    buildWorkspaceArchive: async () => buildWorkspaceArchive(await activeProfileRoot()),
+    buildWorkspaceArchive: async () => buildBrowserArchive(),
     archiveToBlob,
     validateWorkspaceArchive,
     importWorkspace: async (archive: WorkspaceArchive) =>
@@ -461,7 +499,7 @@ function wireWorkspaceTransfer(): void {
       const label = exportButton.textContent;
       exportButton.textContent = "exporting…";
       try {
-        const archive = await buildWorkspaceArchive(await activeProfileRoot());
+        const archive = await buildBrowserArchive();
         const blob = archiveToBlob(archive);
         const name = `bob-workspace-${new Date().toISOString().slice(0, 10)}.json`;
         const url = URL.createObjectURL(blob);
@@ -509,6 +547,14 @@ function wireWorkspaceTransfer(): void {
       importButton.textContent = "importing…";
       try {
         const written = await importWorkspace(archive, await activeProfileRoot());
+        // A run-log snapshot in the archive replaces the streaming log on the
+        // next boot: the VFS owns its files while the tab is running, so mark
+        // the reset now and let prepareBrowserWorkspace drop the pool.
+        if (archive.files.some((file) => file.path === "workspace/logs/grandma-kat.db")) {
+          await platform.fs
+            .writeFile(platform.path.join("/workspace", "logs/.runlog-restore"), new Date().toISOString())
+            .catch(() => undefined);
+        }
         // The imported workspace is the newest thing this profile carries:
         // stamp it now so an older shipped seed is not offered for it.
         await writeSeedStamp(new Date().toISOString());
@@ -627,7 +673,13 @@ function wireSeedUpdate(offer: SeedUpdateOffer): void {
 
   const onClick = (): void => {
     apply.removeEventListener("click", onClick);
-    void offer.apply();
+    offer.apply().catch((err) => {
+      // A failed overlay (e.g. a wedged OPFS write) must name itself instead of
+      // becoming an unhandled rejection: the workspace on disk is unchanged.
+      apply.hidden = false;
+      if (dismiss) dismiss.hidden = false;
+      flashStatus(`workspace update failed: ${errorText(err)}`, 12_000);
+    });
   };
   apply.addEventListener("click", onClick);
 
@@ -762,6 +814,7 @@ async function main(): Promise<void> {
   bootStage = "detectPattern";
   const pattern = await detectPattern(platform);
   const agent = new AgentClient(activeProfileSegments);
+  archiveAgent = agent;
   // When the admin serves this page, use ITS models.json (and /api/llm proxy)
   // so the browser, the chat UI and Telegram all share one model config.
   bootStage = "servedByAdmin";

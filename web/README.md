@@ -335,9 +335,11 @@ first-class control.
 
 - **Export** downloads the active profile's workspace as `bob-workspace-<date>.json`:
   every file in that profile — `app/`, `patterns/`, `lib/`, the app `.db` files and
-  `logs/grandma-kat.db` (which holds the browser chat sessions). The format is
-  the same `WorkspaceArchive` v1 the seed uses, so a `make-seed` file can be
-  imported too.
+  `logs/grandma-kat.db` (which holds the browser chat sessions). The run log is
+  exported as a logical SQLite snapshot, not as the streaming VFS's internal
+  files; an import stages that snapshot and the next boot replaces the
+  profile's log with it. The format is the same `WorkspaceArchive` v1 the seed
+  uses, so a `make-seed` file can be imported too.
 - **Import** merges an archive over the active profile: files with the same
   path are overwritten, files the archive does not carry are kept. It validates
   the archive first, asks for confirmation, then reloads the tab so the

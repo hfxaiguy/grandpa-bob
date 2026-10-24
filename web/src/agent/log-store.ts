@@ -24,6 +24,7 @@ import { sanitizeEvent, type SanitizedEvent } from "../../../src/sanitize";
 import { newTurnApps, tagEventApp } from "../../../src/app-attribution";
 import { listAppTrees } from "../../../src/tree-sources";
 import type { KatEvent } from "./logger";
+import { mib, trimRunLog } from "./runlog-retention";
 
 export const MARKER_TURN = "web_turn_end";
 export const MARKER_LABEL = "web_session_label";
@@ -85,6 +86,33 @@ function enqueue<T>(dbPath: string, task: () => Promise<T>): Promise<T> {
 /** The open log DB for a platform (one cached handle, schema ensured once). */
 const handles = new WeakMap<Platform, Promise<unknown>>();
 
+/** Throttle for the steady-state size check; the first open always checks. */
+const TRIM_INTERVAL_MS = 5 * 60_000;
+const lastTrimAt = new Map<string, number>();
+
+/**
+ * Keep the run log under its size budget. Runs on first open (which is the
+ * rescue path for an oversized legacy log) and, throttled, after each turn.
+ * Failures are notes, never turn failures: retention is housekeeping.
+ */
+async function maybeTrim(platform: Platform, db: Db, force = false): Promise<void> {
+  const key = logDbPath(platform);
+  const now = Date.now();
+  if (!force && now - (lastTrimAt.get(key) ?? 0) < TRIM_INTERVAL_MS) return;
+  lastTrimAt.set(key, now);
+  try {
+    const result = await trimRunLog(db);
+    if (result) {
+      console.info(
+        `[runlog] trimmed ${mib(result.beforeBytes)} → ${mib(result.afterBytes)} ` +
+          `(${result.runs} runs, ${result.sessions} sessions, ${result.rows} rows)`,
+      );
+    }
+  } catch (err) {
+    console.warn("[runlog] retention failed:", err);
+  }
+}
+
 async function dbFor(platform: Platform): Promise<Db> {
   const path = logDbPath(platform);
   let pending = handles.get(platform) as Promise<Db> | undefined;
@@ -93,6 +121,9 @@ async function dbFor(platform: Platform): Promise<Db> {
       await platform.fs.mkdir(platform.path.dirname(path), { recursive: true }).catch(() => {});
       const db = await platform.sqlite.open(path, { readOnly: false });
       await db.exec(RUN_LOG_DDL);
+      // First open of the session: an oversized log gets its one trim now,
+      // before reads start paying for it.
+      await maybeTrim(platform, db, true);
       return db;
     })();
     pending.catch(() => handles.delete(platform));
@@ -246,6 +277,9 @@ export async function writeTurnEnd(platform: Platform, m: TurnMarker): Promise<v
       toSeq,
       ts: Date.now(),
     });
+    // Turn boundaries are the natural retention point: the log just grew, and
+    // no engine run is mid-flight. Throttled inside maybeTrim.
+    await maybeTrim(platform, db);
   });
 }
 
@@ -312,6 +346,17 @@ export async function readRow(platform: Platform, seq: number): Promise<LogRow |
       content: parseJson(row.content),
     } as LogRow;
   });
+}
+
+/**
+ * A logical snapshot of the run log for workspace export. The streaming VFS
+ * keeps its own file layout under `.gpb-runlog`, so the archive needs SQLite's
+ * page image, not the OPFS bytes.
+ */
+export async function exportLogDb(platform: Platform): Promise<Uint8Array | null> {
+  const exportBytes = platform.sqlite.exportBytes;
+  if (!exportBytes) return null;
+  return withLogDb(platform, () => exportBytes.call(platform.sqlite, logDbPath(platform)));
 }
 
 /** The picker: every session key in the log, minus deletions. */

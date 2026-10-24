@@ -100,6 +100,9 @@ export const nodeSqlite: SqliteFactory = {
       },
     };
   },
+  async exportBytes(path: string): Promise<Uint8Array> {
+    return fs.readFile(path);
+  },
 };
 
 /** Build a Node-backed `Platform`. `allowedCommands` feeds the shell adapter. */

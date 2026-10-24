@@ -40,6 +40,7 @@
     "test:sessions": "tsx scripts/sessions-resume-test.ts",
     "test:webturns": "tsx scripts/web-turns-test.ts",
     "test:runs-table": "tsx scripts/runs-table-test.ts",
+    "test:runlog-retention": "tsx scripts/runlog-retention-test.ts",
     "test:provenance": "tsx scripts/provenance-test.ts",
     "test:web-memory": "tsx scripts/web-memory-test.ts",
     "test:memory-race": "tsx scripts/memory-race-test.ts",

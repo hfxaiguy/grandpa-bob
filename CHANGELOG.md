@@ -2,6 +2,48 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-24 — web: the run log streams through OPFS instead of loading whole
+
+The browser target opened every database by deserializing the whole file into
+the wasm heap. That works for app stores but not for the KAT run log: it keeps
+full prompts and transcripts, so it outgrew the heap and `read_runs` died at
+open with `Failed to allocate 119787520 bytes` — a failure no query narrowing
+could fix. The run log now uses sqlite-wasm's `opfs-sahpool` VFS: SQLite reads
+and writes pages of the OPFS file directly, so size is no longer bounded by
+the wasm heap and a write costs pages instead of a whole-file export. The
+legacy whole-file log is imported once in 1 MiB chunks (so even a log larger
+than the heap migrates) and left in place as a backup; the VFS directory is
+profile-scoped (`.gpb-runlog`), and a second tab that cannot acquire the sync
+access handle gets a clear message instead of a split brain.
+
+Retention keeps the log under a 64 MiB budget: on first open and (throttled)
+at turn boundaries, the newest 10 engine runs are always kept, older runs
+survive only while the budget covers their content, and the file is VACUUM'd;
+runs with a pending checkpoint are never touched, and only if that is not
+enough are sessions older than the newest 20 retired from the picker.
+A file too large for the whole-file engine (or an allocation failure) now
+surfaces as "database … too large to open in this browser" rather than the
+raw allocator error. The insight tree's LOCATE prompt also stops after the
+same environment error twice and reports the failure instead of retrying.
+Workspace export carries a logical snapshot of the log (the VFS's own files
+are never copied); an import stages it and the next boot replaces the
+profile's streaming log with it. When the snapshot cannot be produced, the
+export keeps the raw legacy file instead, so an unopenable log is still
+backup-able.
+
+`@sqlite.org/sqlite-wasm` is now 3.54: 3.53 deleted the entire pool directory
+whenever installation failed (a closed tab, a transient OPFS error), which
+could destroy the migrated log. The install passes `preserveOnInitFailure`, so
+a failure leaves the files intact; if the pool is empty or absent the worker
+falls back to the legacy whole-file log instead of refusing to run, and a
+failed workspace-update apply reports the error rather than becoming an
+uncaught rejection.
+
+Tests: `npm run test:runlog-retention`, `web/scripts/runlog-smoke.mjs`
+(legacy import, session visible after reload, writes served by the pool, old
+file untouched), `web/scripts/browser-smoke.mjs` (turn logged, sessions and
+refs survive reload).
+
 ## 2026-10-23 — ui: tile modals portal out so they cover the viewport
 
 Clicking a memory slot opened the inspector inside the tile instead of over

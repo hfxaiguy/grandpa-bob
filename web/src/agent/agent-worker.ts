@@ -30,6 +30,7 @@ import {
   memoryWrites,
   readRow,
   turnCount,
+  exportLogDb,
   writeDelete,
   writeLabel,
   writeTurnEnd,
@@ -741,6 +742,21 @@ async function handleLog(msg: LogMessage): Promise<void> {
       case "readRow":
         result = await readRow(platform, Number(p.seq));
         break;
+      case "exportRunLog": {
+        // A logical snapshot for workspace export: the archive cannot copy the
+        // streaming VFS's files, so it carries SQLite's page image instead.
+        const bytes = await exportLogDb(platform);
+        if (!bytes) {
+          result = null;
+          break;
+        }
+        let binary = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        }
+        result = { base64: btoa(binary), bytes: bytes.length };
+        break;
+      }
       default:
         throw new Error(`unknown log op: ${msg.op}`);
     }

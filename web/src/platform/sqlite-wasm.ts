@@ -56,9 +56,12 @@ function call<T = unknown>(op: string, payload: Record<string, unknown> = {}): P
 /**
  * Boot the sqlite worker. Idempotent.
  *
- * All databases live under the origin-private file system; the worker loads a
- * file into its in-memory engine on open and writes it back after mutations.
- * `prefix` selects the active profile directory (empty = origin root).
+ * Ordinary databases live under the origin-private file system; the worker
+ * loads a file into its in-memory engine on open and writes it back after
+ * mutations. The KAT run log (`logs/grandma-kat.db`) is the exception: it
+ * streams through the `opfs-sahpool` VFS, so its size is not bounded by the
+ * wasm heap. `prefix` selects the active profile directory (empty = origin
+ * root).
  */
 export async function initSqlite(prefix?: readonly string[]): Promise<void> {
   if (prefix) setSqliteOpfsPrefix(prefix);
@@ -94,6 +97,10 @@ export function createSqliteWasm(): SqliteFactory {
           await call("close", { dbId });
         },
       };
+    },
+    async exportBytes(path: string): Promise<Uint8Array> {
+      const bytes = await call<Uint8Array>("export", { path });
+      return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     },
   };
 }

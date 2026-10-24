@@ -97,6 +97,9 @@ async function collect(
   out: WorkspaceArchive["files"],
 ): Promise<void> {
   await eachEntry(dir, async (name, handle) => {
+    // The streaming run-log VFS owns this directory; export carries a logical
+    // snapshot at logs/grandma-kat.db instead (see buildBrowserArchive).
+    if (name === ".gpb-runlog") return;
     const rel = path.join(prefix, name);
     if (handle.kind === "directory") {
       await collect(await dir.getDirectoryHandle(name), rel, out);
@@ -143,6 +146,9 @@ export async function importWorkspace(
   const base = await archiveRoot(root);
   let written = 0;
   for (const entry of archive.files) {
+    // VFS-internal pool files are never restored directly; the logical log
+    // snapshot at logs/grandma-kat.db is imported by the next boot instead.
+    if (entry.path === ".gpb-runlog" || entry.path.startsWith(".gpb-runlog/")) continue;
     const parts = entry.path.split("/").filter((part) => part && part !== ".");
     if (parts.some((part) => part === "..")) throw new Error(`invalid archive path: ${entry.path}`);
     const name = parts.pop();
@@ -172,6 +178,7 @@ export async function summarizeWorkspace(
   let bytes = 0;
   const walk = async (dir: FileSystemDirectoryHandle): Promise<void> => {
     await eachEntry(dir, async (name, handle) => {
+      if (name === ".gpb-runlog") return;
       if (handle.kind === "directory") {
         await walk(await dir.getDirectoryHandle(name));
         return;
