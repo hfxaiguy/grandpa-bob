@@ -441,9 +441,11 @@ The seed carries `models.json` from `web/public/models.standalone.json`: the
 neuralwatt slots (`v4`, `v4.1`) with `cheap → v4` and `strong → v4.1`. Keys are
 `${NEURALWATT_API_KEY}` — paste the key into **Settings → Credentials &
 .env → Neuralwatt API key**; it is stored in this browser profile
-(localStorage), never in the workspace or the seed. The Settings **Models JSON**
-editor overrides the seed file, and the **Test** button probes an endpoint from
-the tab.
+(localStorage), never in the workspace or the seed. For a key without a
+shortcut field, press **+ Add key** — the name goes in the left box, the value
+on the right — then **Save all keys**. The Settings **Models JSON** editor
+overrides the seed file, and the **Test** button probes an endpoint from the
+tab.
 
 The picker marks the auto-generated `:8787` registry ("mock models only") when
 no real registry is configured. Profiles seeded before this change are upgraded

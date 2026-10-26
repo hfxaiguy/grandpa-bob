@@ -2,6 +2,33 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-26 — settings: the .env editor reads what dotenv reads
+
+The "All .env keys" editor and the bot were looking at different files: the bot
+loads `.env` with `dotenv`, but the admin's own parser only matched bare
+`UPPERCASE=value` lines in an LF-split file. A `.env` with Windows CRLF endings,
+a UTF-8 BOM, `export KEY=…` lines or lowercase/dotted/hyphenated names showed
+up as "(no keys — add one below)" — saving from that state looked broken.
+
+- **The parser matches dotenv's surface.** `readEnv`/`writeEnv` strip a BOM,
+  split on CRLF or LF, accept indentation, an `export ` prefix, and
+  `[A-Za-z_][A-Za-z0-9_.-]*` names. Comments and lines outside the update set
+  keep their exact text; values stay verbatim (quotes included); a rewrite
+  normalizes the file to LF.
+- **"Save all keys" says what is wrong.** No rows → "press + Add key first";
+  a value with a blank KEY NAME → "put the key name in the left box"; an
+  invalid name is rejected before it can silently vanish; otherwise
+  "nothing to change".
+- **Pasting `KEY=value` fills both boxes.** The name box splits the line at
+  the first `=`, strips `export `, and moves the value across.
+- **The success toast names the store.** With the admin behind the page it
+  says the bot needs a restart; hosted by the in-browser backend it says the
+  browser profile was updated and applies immediately.
+
+Tests: `npm run test:env-editor` (BOM/CRLF/export/lowercase parse + rewrite
+round-trip, and the real settings script in a VM for the paste split, hints,
+validation and both success toasts), plus `test:pages` and both typechecks.
+
 ## 2026-10-24 — web: the run log streams through OPFS instead of loading whole
 
 The browser target opened every database by deserializing the whole file into

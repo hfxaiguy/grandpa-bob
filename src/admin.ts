@@ -146,13 +146,24 @@ function mimeFor(file: string): string {
   }
 }
 
+// One .env line: optional indentation, dotenv's `export ` prefix, a key, and
+// the raw value. dotenv (what config.ts loads) accepts CRLF files, a UTF-8 BOM,
+// `export KEY=…` and lowercase/dotted/hyphenated names; the editor must not
+// silently drop keys it accepts. Values stay verbatim (quotes included) so a
+// read → edit → write round-trip never rewrites a secret.
+const ENV_LINE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=(.*)$/;
+
+function envLines(data: string): string[] {
+  return data.replace(/^\uFEFF/, "").split(/\r?\n/);
+}
+
 async function readEnv(envPath: string): Promise<Record<string, string> | null> {
   try {
     const data = await readFile(envPath, "utf8");
     const out: Record<string, string> = {};
-    for (const line of data.split("\n")) {
-      const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
-      if (m) out[m[1]] = m[2];
+    for (const line of envLines(data)) {
+      const m = line.match(ENV_LINE);
+      if (m) out[m[1]] = m[2].trim();
     }
     return out;
   } catch {
@@ -169,12 +180,12 @@ async function readEnv(envPath: string): Promise<Record<string, string> | null> 
 export async function writeEnv(envPath: string, updates: Record<string, string | null>) {
   let lines: string[] = [];
   try {
-    lines = (await readFile(envPath, "utf8")).split("\n");
+    lines = envLines(await readFile(envPath, "utf8"));
   } catch { /* no existing file */ }
   const pending = new Map(Object.entries(updates));
   const out: string[] = [];
   for (const line of lines) {
-    const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+    const m = line.match(ENV_LINE);
     if (m && pending.has(m[1])) {
       const v = pending.get(m[1])!;
       pending.delete(m[1]);
@@ -187,6 +198,8 @@ export async function writeEnv(envPath: string, updates: Record<string, string |
   for (const [k, v] of pending) {
     if (v !== null) out.push(`${k}=${v}`); // new keys
   }
+  // A BOM/CRLF source file comes back as plain LF: every line was re-joined
+  // here, and mixed endings in a file edited from two OSes is worse than one.
   await writeFile(envPath, out.join("\n").replace(/\n+$/, "") + "\n", { mode: 0o600 });
 }
 

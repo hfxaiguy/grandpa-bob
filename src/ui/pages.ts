@@ -344,7 +344,22 @@ function renderEnvKeys() {
     k.value = r.key;
     k.placeholder = "KEY NAME";
     k.spellcheck = false;
-    k.oninput = () => { r.key = k.value; };
+    // Pasting a whole KEY=value line into the name box is the common slip —
+    // split it across both boxes instead of saving a key literally named that.
+    k.oninput = () => {
+      const eq = k.value.indexOf("=");
+      if (eq > 0) {
+        const name = k.value.slice(0, eq).trim().replace(/^export\\s+/i, "");
+        if (name) {
+          r.key = name;
+          r.value = k.value.slice(eq + 1).trim();
+          k.value = name;
+          v.value = r.value;
+        }
+        return;
+      }
+      r.key = k.value;
+    };
     const del = document.createElement("button");
     del.className = "secondary";
     del.textContent = "×";
@@ -383,12 +398,36 @@ function collectEnvUpdates() {
   return updates;
 }
 
+// A key name the .env editor and dotenv both understand.
+function validEnvKey(key) {
+  return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(key);
+}
+
 async function saveAllEnv() {
   const updates = collectEnvUpdates();
-  if (!Object.keys(updates).length) { toast("nothing to change", true); return; }
+  if (!Object.keys(updates).length) {
+    // Say *why* there is nothing to save: an empty editor and a blank KEY NAME
+    // box are different mistakes, and the old catch-all sent people in circles.
+    const rows = envRows.filter((r) => !r.removed);
+    if (!rows.length) { toast("no keys loaded — press + Add key first", true); return; }
+    if (rows.some((r) => !r.key.trim() && r.value.trim())) {
+      toast("put the key name in the left box — rows with a value but no name are skipped", true);
+      return;
+    }
+    if (rows.every((r) => !r.key.trim() && !r.value.trim())) {
+      toast("type the key name in the left box and its value on the right", true);
+      return;
+    }
+    toast("nothing to change — edit a value, add a key, or remove one", true);
+    return;
+  }
+  const bad = Object.keys(updates).filter((k) => k && !validEnvKey(k));
+  if (bad.length) { toast("invalid key name: " + bad[0] + " — use letters, digits, _ . -", true); return; }
   try {
     await api("/api/env", { method: "POST", body: JSON.stringify(updates) });
-    toast("saved — restart the bot to apply");
+    // With the admin behind the page this edits .env (bot restart to apply);
+    // hosted by the in-browser backend it writes the browser profile instead.
+    toast(serverAdmin ? "saved — restart the bot to apply" : "saved to this browser profile — applies immediately");
     envRows = [];
     renderEnvKeys();
     await refreshStatus();
