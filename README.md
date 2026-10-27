@@ -481,7 +481,7 @@ With `BOB_WEB=1` the admin server additionally serves:
   up. A **failed turn raises a dismissible banner** at the top, marks its tile
   `error`, and keeps that tile's input so you can retry. Event-log lines (and
   the global stream) **expand on click** to their full payload. Tiles
-  auto-arrange — drag to reorder, `⤢` to expand, `↔` to
+  auto-arrange — drag to reorder, `⤢` to expand (the trunk dock too), `↔` to
   widen, `✕` to hide (the layout is remembered). The **session** button opens
   session controls (select / new / delete, follow-Telegram, **✈ send to
   telegram**, tree, and the cheap/strong model pickers). The one

@@ -907,7 +907,8 @@ export function Tile(props: { app: AppInfo }) {
   const paused = () => state.awaiting === name();
   const over = () => dragging() !== null && dragging() !== name() && dropTarget() === name();
   // The trunk is the board's home tile: docked across the bottom row, so it has
-  // no pin, wide/expand or drag seat of its own — only the park gesture stays.
+  // no pin or drag seat of its own and already spans every column. It keeps the
+  // expand toggle (a taller dock) and the park gesture.
   const isTrunk = () => props.app.group === "trunk";
   // This tile's sub-apps: every child is a rail square (board order); the
   // opened ones render side-by-side beside this tile's chat (open order).
@@ -1074,14 +1075,7 @@ export function Tile(props: { app: AppInfo }) {
             <span class="tile-name">{name()}</span>
             <span class="tile-status">{statusText()}</span>
             <span class="spacer" />
-            <Show
-              when={!isTrunk()}
-              fallback={
-                <button title="hide — parks it in the board rail" onClick={() => toggleHidden(name())}>
-                  ✕
-                </button>
-              }
-            >
+            <Show when={!isTrunk()}>
               <button
                 class="tile-pin"
                 classList={{ active: pinned() }}
@@ -1094,9 +1088,21 @@ export function Tile(props: { app: AppInfo }) {
               <button title={wide() ? "stop spanning two columns" : "wide — span two columns"} onClick={() => toggleWide(name())}>
                 ↔
               </button>
-              <button title={expanded() ? "restore" : "expand"} onClick={() => toggleExpanded(name())}>
-                {expanded() ? "⤡" : "⤢"}
-              </button>
+            </Show>
+            {/* The trunk dock expands too: its height is a user choice like
+                every tile's. Pin and wide stay hidden there — the dock has no
+                grid seat to pin and already spans every column. */}
+            <button title={expanded() ? "restore" : "expand"} onClick={() => toggleExpanded(name())}>
+              {expanded() ? "⤡" : "⤢"}
+            </button>
+            <Show
+              when={!isTrunk()}
+              fallback={
+                <button title="hide — parks it in the board rail" onClick={() => toggleHidden(name())}>
+                  ✕
+                </button>
+              }
+            >
               <button title={props.app.parent ? "park into the parent's rail" : "hide — parks it in the board rail"} onClick={park}>
                 ✕
               </button>

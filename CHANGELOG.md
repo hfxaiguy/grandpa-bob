@@ -2,6 +2,16 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-27 — board: the trunk dock can expand
+
+The trunk's bottom dock was a fixed `min(46vh, 440px)` panel whose header kept
+only its park gesture. It now carries the same `⤢`/`⤡` expand toggle as every
+other tile: expanded, the dock grows to 82vh (78vh on a phone) and keeps
+sticking to the bottom while the app tiles scroll beneath it. The choice
+persists in `gpb.tiled.layout` like the rest of the layout. Pin and wide stay
+hidden on the trunk — it has no grid seat to pin and already spans every
+column.
+
 ## 2026-10-26 — settings: the .env editor reads what dotenv reads
 
 The "All .env keys" editor and the bot were looking at different files: the bot

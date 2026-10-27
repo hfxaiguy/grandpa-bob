@@ -283,6 +283,9 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
   border-color: var(--accent);
   box-shadow: 0 -18px 44px rgba(0, 0, 0, 0.62), 0 0 22px rgba(110, 168, 254, 0.22);
 }
+/* The dock's expand toggle: grow upward over the grid (it stays sticky at the
+   bottom) to the same 82vh ceiling as an expanded tile. */
+.tiles > .tile.trunk-dock.expanded { height: 82vh; }
 
 /* Pointer-based tile dragging (see the Tile component): the label that follows
    the cursor, and the global cursor/selection lock while a tile is in flight. */
@@ -641,6 +644,7 @@ body.dragging-tile { user-select: none !important; }
   /* The square grid is already one full-width column here; the trunk dock keeps
      its bottom seat but takes more of the phone's height. */
   .tiles > .tile.trunk-dock { height: 56vh; min-height: 260px; }
+  .tiles > .tile.trunk-dock.expanded { height: 78vh; }
   .tile-rail { width: 30px; }
   .tile-subs-area .tile { width: 200px; }
 
