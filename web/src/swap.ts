@@ -28,6 +28,8 @@ export interface SwapService {
   realtimeUrl?: string;
   /** Supabase publishable/anon key — needed only for the relay transport. */
   realtimeKey?: string;
+  /** Account namespace the keys belong to (BobSwap keys are account-bound). */
+  account?: string;
   /** Read-scope BobSwap key (seeds + opening relay channels). */
   readKey?: string;
   /** Upload-scope BobSwap key (publishing seeds). */
@@ -117,6 +119,17 @@ export function serviceFor(baseUrl: string): SwapService | null {
   return store.services[key] ?? null;
 }
 
+/**
+ * Saved service for a URL, or the built-in default deployment (which has no
+ * API keys) so dialogs can show what is missing instead of a bare error.
+ */
+export function resolveSwapService(baseUrl: string | undefined): SwapService | null {
+  if (!baseUrl) return null;
+  const saved = serviceFor(baseUrl);
+  if (saved) return saved;
+  return normalizeBaseUrl(baseUrl) === DEFAULT_SWAP_SERVICE_URL ? defaultSwapService() : null;
+}
+
 // ── small helpers ────────────────────────────────────────────────────────
 
 const encoder = new TextEncoder();
@@ -156,7 +169,7 @@ function requireKey(service: SwapService, scope: "read" | "upload"): string {
   const key = scope === "upload" ? service.uploadKey : service.readKey;
   if (!key) {
     throw new Error(
-      `this BobSwap service has no ${scope} key yet — add one in the share settings`,
+      `this BobSwap service has no ${scope} key yet — add one in Sync… → BobSwap…`,
     );
   }
   return key;

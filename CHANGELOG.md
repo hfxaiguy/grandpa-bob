@@ -2,6 +2,25 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-27 — web: service settings own the account and keys; seed bindings only name the seed
+
+The BobSwap dialog (`Sync…` → `BobSwap…`) is now the only place to enter the
+service URL, realtime endpoint/key, account and read/upload keys. A profile's
+**Seed…** dialog shows only a service picker and the seed name, with the
+resolved account in its hint, so keys and account are configured once instead
+of being retyped for every profile. The account is stored on the service entry
+(`bob:swap`); existing bindings keep their stored account when the service does
+not have one yet. Missing-key errors now point at `Sync… → BobSwap…` instead of
+the non-existent "share settings".
+
+Hidden dialog fields now really disappear: the author rule `dialog label {
+display: block }` was overriding the `[hidden]` attribute, which is why Account
+and Seed name still appeared in the service-only dialog. A global `[hidden] {
+display: none !important }` fixes that, and the service dialog no longer shows
+a dangling "—" after its title.
+
+Checks: `web` typecheck + build, and a manual pass over both dialog modes.
+
 ## 2026-10-27 — ui: JSON payloads render as a collapsible tree
 
 Every JSON surface in the tiled UI was a flat `<pre>`, and the memory and ref

@@ -46,7 +46,7 @@ import {
   type ProfileRegistry,
   type SeedBinding,
 } from "./profiles";
-import { fetchLatestSeed, fetchLatestSeedMeta, serviceFor, type RemoteSeedMeta } from "./swap";
+import { fetchLatestSeed, fetchLatestSeedMeta, resolveSwapService, type RemoteSeedMeta } from "./swap";
 import { wireProfileUi } from "./profile-ui";
 import { cloneWorkspace } from "./platform/git-opfs";
 import { applyDatabaseDumps } from "../../src/db-sync";
@@ -631,11 +631,11 @@ async function checkSeedUpdate(): Promise<void> {
 
 /** Check a profile's bound BobSwap seed for a newer build. */
 async function checkBoundSeedUpdate(binding: SeedBinding): Promise<void> {
-  const service = serviceFor(binding.baseUrl);
+  const service = resolveSwapService(binding.baseUrl);
   if (!service) return;
   let meta: Awaited<ReturnType<typeof fetchLatestSeedMeta>> = null;
   try {
-    meta = await fetchLatestSeedMeta(service, binding.account, binding.seedName);
+    meta = await fetchLatestSeedMeta(service, service.account || binding.account, binding.seedName);
   } catch {
     return; /* service unreachable: keep working offline */
   }
@@ -721,16 +721,17 @@ async function applySeedUpdate(meta: SeedMeta): Promise<void> {
 
 /** Pull the newest version of a bound seed into the active profile. */
 async function applyBoundSeedUpdate(binding: SeedBinding, version?: string): Promise<void> {
-  const service = serviceFor(binding.baseUrl);
+  const service = resolveSwapService(binding.baseUrl);
   if (!service) throw new Error("the seed service is not configured on this browser");
+  const account = service.account || binding.account;
   const proceed = confirm(
-    `Update "${activeProfile}" from the seed ${binding.account}/${binding.seedName}?\n\n` +
+    `Update "${activeProfile}" from the seed ${account}/${binding.seedName}?\n\n` +
       "Files are overlaid; the run log and chat history are preserved. " +
       "The page reloads afterwards.",
   );
   if (!proceed) return;
   setStatus("fetching seed…");
-  const fetched = await fetchLatestSeed(service, binding.account, binding.seedName);
+  const fetched = await fetchLatestSeed(service, account, binding.seedName);
   await applySeedArchive(fetched.archive, fetched.sha256);
   await recordSeedVersion(activeProfile, {
     version: version ?? fetched.version ?? fetched.sha256.slice(0, 12),

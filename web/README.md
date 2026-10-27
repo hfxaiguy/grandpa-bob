@@ -378,9 +378,10 @@ reloads the tab).
 A profile can be bound to a seed on a BobSwap service, so updates can arrive
 later (`Sync…` → `Profiles…` → **Seed…**):
 
-- Service URL, account, seed name, read key (and an upload key for publishing).
-  Keys live in this browser's localStorage (`bob:swap`), never in the workspace
-  or an export. New setups prefill the deployed service at
+- The **BobSwap…** dialog stores the service URL, realtime endpoint/key, account
+  and API keys in this browser's localStorage (`bob:swap`); **Seed…** only asks
+  which service and the seed name. Keys never enter the workspace or an
+  export. New setups prefill the deployed service at
   `https://bobswap.hfxaiguy.com`; any saved service overrides it. API keys are
   operator-issued (`read`/`upload`/`manage` scopes); there is no public signup.
 - On boot the profile asks `/api/v1/<account>/<seed>/latest/meta` and, when the

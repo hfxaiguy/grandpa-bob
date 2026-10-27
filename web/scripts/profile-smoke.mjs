@@ -175,10 +175,30 @@ assert(t.active === "travel", "the new profile becomes active");
 assert(t.patternFiles > 0 && t.seeded, "a fresh profile is seeded with a workspace");
 assert(t.files > 0 && t.badPaths.length === 0, "export is scoped to the active profile with workspace/ paths");
 
-// 4. Configure a service and a seed binding; both must persist.
+// 4. Configure a service and a seed binding; both must persist. The two
+//    dialog modes must not ask for each other's fields.
+await evaluate(`document.getElementById("swap-settings").click()`);
+const serviceFields = JSON.parse(await evaluate(`(() => {
+  const shown = (id) => getComputedStyle(document.getElementById(id)).display !== "none";
+  return JSON.stringify({
+    account: shown("seed-account-label"),
+    readKey: shown("seed-read-key-label"),
+    uploadKey: shown("seed-upload-key-label"),
+    seedName: shown("seed-name-label"),
+    service: shown("seed-service-label"),
+  });
+})()`));
+assert(
+  serviceFields.account &&
+    serviceFields.readKey &&
+    serviceFields.uploadKey &&
+    !serviceFields.seedName &&
+    !serviceFields.service,
+  "the BobSwap service dialog shows account/keys but not the seed name or service picker",
+);
 await evaluate(`(() => {
-  document.getElementById("swap-settings").click();
   document.getElementById("seed-base-url").value = "https://bobswap.example.com";
+  document.getElementById("seed-account").value = "personal";
   document.getElementById("seed-read-key").value = "bsk_live_read";
   document.getElementById("seed-upload-key").value = "bsk_live_upload";
   document.getElementById("seed-save").click();
@@ -194,7 +214,27 @@ await evaluate(`(() => {
   const rows = [...document.querySelectorAll("#profile-list .profile-row")];
   const travelRow = rows.find((row) => row.textContent.includes("travel"));
   [...travelRow.querySelectorAll("button")].find((b) => b.textContent === "Seed…").click();
-  document.getElementById("seed-account").value = "personal";
+  return "opened";
+})()`);
+const bindingFields = JSON.parse(await evaluate(`(() => {
+  const shown = (id) => getComputedStyle(document.getElementById(id)).display !== "none";
+  return JSON.stringify({
+    account: shown("seed-account-label"),
+    readKey: shown("seed-read-key-label"),
+    uploadKey: shown("seed-upload-key-label"),
+    seedName: shown("seed-name-label"),
+    service: shown("seed-service-label"),
+  });
+})()`));
+assert(
+  bindingFields.seedName &&
+    bindingFields.service &&
+    !bindingFields.account &&
+    !bindingFields.readKey &&
+    !bindingFields.uploadKey,
+  "the profile seed dialog shows the service picker and seed name only",
+);
+await evaluate(`(() => {
   document.getElementById("seed-name").value = "trunk";
   document.getElementById("seed-save").click();
   return "saved";

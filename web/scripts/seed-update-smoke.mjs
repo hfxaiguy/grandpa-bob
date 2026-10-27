@@ -162,6 +162,7 @@ await waitFor(`document.readyState === "complete" && !!window.__bobWorkspaceTran
 await evaluate(`(() => {
   document.getElementById("swap-settings").click();
   document.getElementById("seed-base-url").value = "http://127.0.0.1:${SERVICE_PORT}";
+  document.getElementById("seed-account").value = "personal";
   document.getElementById("seed-read-key").value = "${READ_KEY}";
   document.getElementById("seed-save").click();
   document.getElementById("seed-close").click();
@@ -175,7 +176,6 @@ await waitFor(
 await evaluate(`(() => {
   const row = document.querySelector("#profile-list .profile-row");
   [...row.querySelectorAll("button")].find((b) => b.textContent === "Seed…").click();
-  document.getElementById("seed-account").value = "personal";
   document.getElementById("seed-name").value = "trunk";
   document.getElementById("seed-save").click();
   return "saved";

@@ -30,9 +30,9 @@ import {
   loadSwapStore,
   publishSeed,
   receiveWorkspace,
+  resolveSwapService,
   saveSwapService,
   sendWorkspace,
-  serviceFor,
   type RelayChannelInfo,
   type RelayProgress,
   type RemoteSeedMeta,
@@ -105,6 +105,7 @@ function serviceFromSeedFields(): SwapService | null {
     baseUrl,
     realtimeUrl: el<HTMLInputElement>("seed-realtime-url")?.value.trim() || undefined,
     realtimeKey: el<HTMLInputElement>("seed-realtime-key")?.value.trim() || undefined,
+    account: el<HTMLInputElement>("seed-account")?.value.trim() || undefined,
     readKey: el<HTMLInputElement>("seed-read-key")?.value.trim() || undefined,
     uploadKey: el<HTMLInputElement>("seed-upload-key")?.value.trim() || undefined,
   };
@@ -121,6 +122,7 @@ function fillServiceFields(service: SwapService | null): void {
   set("seed-base-url", value.baseUrl);
   set("seed-realtime-url", value.realtimeUrl);
   set("seed-realtime-key", value.realtimeKey);
+  set("seed-account", value.account);
   set("seed-read-key", value.readKey);
   set("seed-upload-key", value.uploadKey);
 }
@@ -289,13 +291,23 @@ function openSeedDialog(profile: ProfileRecord): void {
   pendingSeedCheck = null;
 
   setSeedDialogChrome("Seed source", profile.name);
-  const account = el<HTMLInputElement>("seed-account");
   const seedName = el<HTMLInputElement>("seed-name");
-  if (account) account.value = profile.seed?.account ?? "";
   if (seedName) seedName.value = profile.seed?.seedName ?? "";
 
-  const stored = profile.seed ? serviceFor(profile.seed.baseUrl) : activeSwapService();
-  fillServiceFields(stored ?? (profile.seed ? { baseUrl: profile.seed.baseUrl } : null));
+  const picker = el<HTMLSelectElement>("seed-service");
+  fillServiceSelect(picker, profile.seed?.baseUrl);
+  // Keep a binding's service visible even when its entry was removed.
+  const preferred = profile.seed?.baseUrl;
+  if (picker && preferred && ![...picker.options].some((option) => option.value === preferred)) {
+    const option = document.createElement("option");
+    option.value = preferred;
+    option.textContent = `${preferred} (not configured)`;
+    picker.append(option);
+    picker.value = preferred;
+  }
+  const stored = resolveSwapService(picker?.value);
+  fillServiceFields(stored);
+  setSeedBindingHint(stored, profile.seed);
 
   setSeedStatus(profile.seed?.lastVersion ? `last pulled version: ${profile.seed.lastVersion.version}` : "");
   const apply = el<HTMLButtonElement>("seed-apply");
@@ -315,7 +327,7 @@ function openServiceDialog(): void {
   setSeedDialogChrome("BobSwap service", "");
   fillServiceFields(activeSwapService());
   setSeedStatus(
-    "Services are saved per browser. A profile additionally binds an account + seed name.",
+    "Services, accounts and keys are saved per browser. Profiles bind a seed name on the selected service.",
   );
   const apply = el<HTMLButtonElement>("seed-apply");
   if (apply) apply.hidden = true;
@@ -324,26 +336,58 @@ function openServiceDialog(): void {
   dialog.showModal();
 }
 
+/** Explain which service/account a binding will use, or what is missing. */
+function setSeedBindingHint(service: SwapService | null, binding?: SeedBinding): void {
+  const hint = el<HTMLElement>("seed-dialog-hint");
+  if (!hint) return;
+  const legacy = binding && service && binding.baseUrl === service.baseUrl ? binding.account : "";
+  const account = service?.account || legacy || "";
+  hint.textContent = !service
+    ? "Add a BobSwap service first (Sync… → BobSwap…), then bind this profile to a seed."
+    : !account
+      ? `Set the account for ${service.baseUrl} in Sync… → BobSwap…, then bind this profile to a seed.`
+      : !service.readKey
+        ? `Add a read key for ${service.baseUrl} in Sync… → BobSwap…, then bind this profile to a seed.`
+        : `Bind this profile to a seed on ${service.baseUrl} (account ${account}). ` +
+          "Updates appear in the toolbar; the run log and chat history are kept.";
+}
+
 /** Show/hide the binding-only fields and actions for the current dialog mode. */
 function setSeedDialogChrome(title: string, profileName: string): void {
   const titleEl = el<HTMLElement>("seed-dialog-title");
   if (titleEl) titleEl.textContent = title;
   const nameEl = el<HTMLElement>("seed-profile-name");
   if (nameEl) nameEl.textContent = profileName;
+  const suffix = el<HTMLElement>("seed-profile-suffix");
+  if (suffix) suffix.hidden = !profileName;
   const binding = seedDialogMode === "binding";
-  for (const id of ["seed-account-label", "seed-name-label"]) {
+  // Service configuration (URLs, account, keys) belongs to BobSwap….
+  for (const id of [
+    "seed-base-url-label",
+    "seed-realtime-url-label",
+    "seed-realtime-key-label",
+    "seed-account-label",
+    "seed-read-key-label",
+    "seed-upload-key-label",
+  ]) {
     const label = el<HTMLElement>(id);
-    if (label) label.hidden = !binding;
+    if (label) label.hidden = binding;
   }
+  const serviceLabel = el<HTMLElement>("seed-service-label");
+  if (serviceLabel) serviceLabel.hidden = !binding;
+  const seedNameLabel = el<HTMLElement>("seed-name-label");
+  if (seedNameLabel) seedNameLabel.hidden = !binding;
   for (const id of ["seed-check", "seed-publish"]) {
     const button = el<HTMLElement>(id);
     if (button) button.hidden = !binding;
   }
+  const save = el<HTMLButtonElement>("seed-save");
+  if (save) save.textContent = binding ? "Save seed source" : "Save service";
   const hint = el<HTMLElement>("seed-dialog-hint");
   if (hint) {
     hint.textContent = binding
-      ? "Bind this profile to a seed on a BobSwap service. Updates appear in the toolbar; the run log and chat history are kept."
-      : "Add a BobSwap service once, then either bind a profile to a seed or use Send/Receive.";
+      ? "Bind this profile to a seed on the configured BobSwap service. Updates appear in the toolbar; the run log and chat history are kept."
+      : "Configure a BobSwap service once (URL, account, keys), then either bind a profile to a seed or use Send/Receive.";
   }
 }
 
@@ -352,7 +396,7 @@ function setSeedStatus(text: string): void {
   if (status) status.textContent = text;
 }
 
-/** Persist the service/keys fields (shared by binding and service-only mode). */
+/** Persist the service/keys fields (service-only mode). */
 function saveServiceFields(): SwapService | null {
   const service = serviceFromSeedFields();
   if (!service) {
@@ -362,29 +406,47 @@ function saveServiceFields(): SwapService | null {
   return saveSwapService(service);
 }
 
-/** Persist the seed source form as this profile's binding. */
-async function saveSeedBinding(): Promise<SeedBinding | null> {
-  if (!seedDialogProfile) return null;
-  const ui = getHooks();
-  const account = el<HTMLInputElement>("seed-account")?.value.trim() ?? "";
+/** Validate the seed source form into a binding (no persistence). */
+function seedBindingFromFields(profileName: string): SeedBinding | null {
   const seedName = el<HTMLInputElement>("seed-name")?.value.trim() ?? "";
-  if (!ACCOUNT_RE.test(account)) {
-    setSeedStatus("account names use lowercase letters, digits, dot, dash or underscore");
-    return null;
-  }
   if (!isValidSeedName(seedName)) {
     setSeedStatus("seed names use lowercase letters, digits, dot, dash or underscore");
     return null;
   }
-  const saved = saveServiceFields();
-  if (!saved) return null;
-  const existing = currentProfileRecord(seedDialogProfile)?.seed;
-  const binding: SeedBinding = {
-    baseUrl: saved.baseUrl,
+  const existing = currentProfileRecord(profileName)?.seed;
+  // The service owns the account and keys; a binding only names the seed.
+  const selected = el<HTMLSelectElement>("seed-service")?.value ?? "";
+  const service = selected
+    ? resolveSwapService(selected)
+    : existing
+      ? resolveSwapService(existing.baseUrl)
+      : activeSwapService();
+  if (!service) {
+    setSeedStatus("add a configured BobSwap service first (Sync… → BobSwap…)");
+    return null;
+  }
+  // Only carry a legacy account over when the binding stays on the same
+  // service; a different service must declare its own account.
+  const account =
+    service.account || (existing && existing.baseUrl === service.baseUrl ? existing.account : "");
+  if (!ACCOUNT_RE.test(account)) {
+    setSeedStatus("set the account in the BobSwap service settings first (Sync… → BobSwap…)");
+    return null;
+  }
+  return {
+    baseUrl: service.baseUrl,
     account,
     seedName,
     lastVersion: existing?.lastVersion,
   };
+}
+
+/** Persist the seed source form as this profile's binding. */
+async function saveSeedBinding(): Promise<SeedBinding | null> {
+  if (!seedDialogProfile) return null;
+  const ui = getHooks();
+  const binding = seedBindingFromFields(seedDialogProfile);
+  if (!binding) return null;
   await setSeedBinding(seedDialogProfile, binding);
   await ui.refreshRegistry();
   return binding;
@@ -392,18 +454,33 @@ async function saveSeedBinding(): Promise<SeedBinding | null> {
 
 async function checkSeedNow(): Promise<void> {
   const ui = getHooks();
-  const binding = await saveSeedBinding();
+  if (!seedDialogProfile) return;
+  const binding = seedBindingFromFields(seedDialogProfile);
   if (!binding) return;
-  const service = serviceFor(binding.baseUrl);
+  // Checking is a read: only the typed fields matter. A storage backend that
+  // refuses the registry write (Gecko's wedged OPFS reports a bare
+  // `UnknownError: Unknown failure`) must not block it — warn, check anyway,
+  // and let Apply retry the save.
+  let persisted = true;
+  try {
+    await setSeedBinding(seedDialogProfile, binding);
+    await ui.refreshRegistry();
+  } catch (err) {
+    persisted = false;
+    setSeedStatus(`binding not saved: ${errorText(err)} — checking the fields as typed…`);
+  }
+  const notSaved = persisted ? "" : " · binding not saved";
+  const service = resolveSwapService(binding.baseUrl);
   if (!service) {
-    setSeedStatus("service configuration is missing");
+    setSeedStatus(`service configuration is missing — add it in Sync… → BobSwap…${notSaved}`);
     return;
   }
+  const account = service.account || binding.account;
   setSeedStatus("checking…");
   try {
-    const meta = await fetchLatestSeedMeta(service, binding.account, binding.seedName);
+    const meta = await fetchLatestSeedMeta(service, account, binding.seedName);
     if (!meta) {
-      setSeedStatus("seed not found (or the read key is wrong)");
+      setSeedStatus(`seed not found (or the read key is wrong)${notSaved}`);
       return;
     }
     const version = meta.seed_id_and_version;
@@ -412,21 +489,28 @@ async function checkSeedNow(): Promise<void> {
     setSeedStatus(
       `latest: ${version ?? "(unlabelled)"} · ${new Date(meta.createdAt).toLocaleString()}` +
         (meta.sha256 ? ` · ${meta.sha256.slice(0, 12)}…` : "") +
-        (newer ? " — newer than this profile" : " — up to date"),
+        (newer ? " — newer than this profile" : " — up to date") +
+        notSaved,
     );
     pendingSeedCheck = newer ? { meta, version } : null;
     const apply = el<HTMLButtonElement>("seed-apply");
     if (apply) apply.hidden = !newer;
     if (newer) ui.flash(`seed update available: ${binding.seedName}`, 6000);
   } catch (err) {
-    setSeedStatus(`check failed: ${errorText(err)}`);
+    setSeedStatus(`check failed: ${errorText(err)}${notSaved}`);
   }
 }
 
 async function applyCheckedSeed(): Promise<void> {
   const ui = getHooks();
   if (!pendingSeedCheck || !seedDialogProfile) return;
-  const binding = await saveSeedBinding();
+  let binding: SeedBinding | null = null;
+  try {
+    binding = await saveSeedBinding();
+  } catch (err) {
+    setSeedStatus(`save failed: ${errorText(err)}`);
+    return;
+  }
   if (!binding) return;
   const dialog = el<HTMLDialogElement>("seed-dialog");
   dialog?.close();
@@ -439,25 +523,37 @@ async function applyCheckedSeed(): Promise<void> {
 
 async function publishProfile(profile: ProfileRecord): Promise<void> {
   const ui = getHooks();
-  const binding =
-    profile.name === seedDialogProfile ? await saveSeedBinding() : profile.seed ?? null;
+  let binding: SeedBinding | null = null;
+  try {
+    binding =
+      profile.name === seedDialogProfile ? await saveSeedBinding() : (profile.seed ?? null);
+  } catch (err) {
+    setSeedStatus(`save failed: ${errorText(err)}`);
+    ui.flash(`could not save the seed source: ${errorText(err)}`, 10_000);
+    return;
+  }
   if (!binding) {
     ui.flash("set a seed source for this profile first", 8000);
     return;
   }
-  const service = serviceFor(binding.baseUrl);
-  if (!service?.uploadKey) {
-    ui.flash("this service has no upload key — add one in the seed dialog", 8000);
+  const service = resolveSwapService(binding.baseUrl);
+  if (!service) {
+    ui.flash("this seed's BobSwap service is not configured — add it in Sync… → BobSwap…", 8000);
     return;
   }
-  if (!confirm(`Publish profile "${profile.name}" to ${binding.account}/${binding.seedName}?`)) return;
+  if (!service.uploadKey) {
+    ui.flash("this service has no upload key — add one in Sync… → BobSwap…", 8000);
+    return;
+  }
+  const account = service.account || binding.account;
+  if (!confirm(`Publish profile "${profile.name}" to ${account}/${binding.seedName}?`)) return;
   try {
     ui.flash("building archive…", 5000);
     const archive =
       ui.storage() === "desktop" || profile.name === ui.activeProfile()
         ? await ui.buildActiveArchive()
         : await buildWorkspaceArchive(await profileHandle(profile.name));
-    const published = await publishSeed(service, binding.account, binding.seedName, archive);
+    const published = await publishSeed(service, account, binding.seedName, archive);
     await recordSeedVersion(profile.name, {
       version: published.version,
       sha256: published.sha256,
@@ -499,6 +595,11 @@ function wireSeedDialog(): void {
       .catch((err) => setSeedStatus(`save failed: ${errorText(err)}`));
   });
   el<HTMLButtonElement>("seed-check")?.addEventListener("click", () => void checkSeedNow());
+  el<HTMLSelectElement>("seed-service")?.addEventListener("change", () => {
+    const service = resolveSwapService(el<HTMLSelectElement>("seed-service")?.value);
+    if (service) fillServiceFields(service);
+    setSeedBindingHint(service, currentProfileRecord(seedDialogProfile)?.seed);
+  });
   el<HTMLButtonElement>("seed-apply")?.addEventListener("click", () => void applyCheckedSeed());
   el<HTMLButtonElement>("seed-unbind")?.addEventListener("click", () => {
     if (!seedDialogProfile) return;
@@ -546,14 +647,6 @@ function fillServiceSelect(select: HTMLSelectElement | null, preferred?: string)
   }
 }
 
-/** A saved service, or the built-in default without API keys. */
-function resolveService(url: string | undefined): SwapService | null {
-  if (!url) return null;
-  const saved = listSwapServices().find((service) => service.baseUrl === url);
-  if (saved) return saved;
-  return url === DEFAULT_SWAP_SERVICE_URL ? defaultSwapService() : null;
-}
-
 function setShareProgress(progress: RelayProgress): void {
   const bar = el<HTMLProgressElement>("share-bar");
   if (bar) {
@@ -578,7 +671,7 @@ function setShareProgress(progress: RelayProgress): void {
 async function startShare(): Promise<void> {
   const ui = getHooks();
   const selected = el<HTMLSelectElement>("share-service")?.value ?? "";
-  const service = resolveService(selected);
+  const service = resolveSwapService(selected);
   if (!service) {
     ui.flash("add a BobSwap service first (BobSwap…)", 8000);
     return;
@@ -700,7 +793,7 @@ function renderReceiveTargets(): void {
 async function startReceive(): Promise<void> {
   const ui = getHooks();
   const selected = el<HTMLSelectElement>("recv-service")?.value ?? "";
-  const service = resolveService(selected);
+  const service = resolveSwapService(selected);
   const channelId = el<HTMLInputElement>("recv-channel")?.value.trim() ?? "";
   const code = el<HTMLInputElement>("recv-code")?.value.trim() ?? "";
   if (!service) {

@@ -15,6 +15,9 @@
         --muted: #a9b8d6;
         --accent: #6ea8fe;
       }
+      /* Author display rules (e.g. `dialog label { display: block }`) beat the
+         UA stylesheet's [hidden] rule; keep the attribute authoritative. */
+      [hidden] { display: none !important; }
       html, body { margin: 0; height: 100%; }
       body {
         display: flex; flex-direction: column;
@@ -141,16 +144,17 @@
     </dialog>
 
     <dialog id="seed-dialog">
-      <h3><span id="seed-dialog-title">Seed source</span> — <span id="seed-profile-name"></span></h3>
+      <h3><span id="seed-dialog-title">Seed source</span><span id="seed-profile-suffix"> — <span id="seed-profile-name"></span></span></h3>
       <p id="seed-dialog-hint" class="muted">Bind this profile to a seed on a BobSwap service. Updates appear in the toolbar; the run log and chat history are kept.</p>
       <div class="grid">
-        <label>Service URL<input id="seed-base-url" placeholder="https://bobswap.example.com" /></label>
-        <label>Realtime URL (optional)<input id="seed-realtime-url" placeholder="defaults to the service URL" /></label>
-        <label>Realtime key (optional)<input id="seed-realtime-key" placeholder="Supabase publishable key" /></label>
+        <label id="seed-service-label">Service<select id="seed-service"></select></label>
+        <label id="seed-base-url-label">Service URL<input id="seed-base-url" placeholder="https://bobswap.example.com" /></label>
+        <label id="seed-realtime-url-label">Realtime URL (optional)<input id="seed-realtime-url" placeholder="defaults to the service URL" /></label>
+        <label id="seed-realtime-key-label">Realtime key (optional)<input id="seed-realtime-key" placeholder="Supabase publishable key" /></label>
         <label id="seed-account-label">Account<input id="seed-account" placeholder="personal" /></label>
         <label id="seed-name-label">Seed name<input id="seed-name" placeholder="trunk" /></label>
-        <label>Read key<input id="seed-read-key" placeholder="bsk_live_…" /></label>
-        <label>Upload key<input id="seed-upload-key" placeholder="bsk_live_…" /></label>
+        <label id="seed-read-key-label">Read key<input id="seed-read-key" placeholder="bsk_live_…" /></label>
+        <label id="seed-upload-key-label">Upload key<input id="seed-upload-key" placeholder="bsk_live_…" /></label>
       </div>
       <div id="seed-status" class="muted"></div>
       <div class="row-actions">
