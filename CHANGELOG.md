@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-27 — ui: JSON payloads render as a collapsible tree
+
+Every JSON surface in the tiled UI was a flat `<pre>`, and the memory and ref
+inspectors went through the markdown renderer, which mangled braces and quotes.
+They now share one `JsonView` component (`ui/src/json-view.tsx`): collapsible
+objects and arrays with `{n keys}` / `[n items]` summaries, syntax colors from
+the theme, type-colored leaves, and tree guide lines. Collections open to depth
+2 by default; deeper nodes start collapsed. Strings are JSON-escaped, clipped
+at 400 characters with a "show all" button, and `ref://…` handles inside them
+stay clickable inspect links. Non-JSON text (a truncated row, a plain string
+value) falls back to a verbatim `<pre>`.
+
+The viewer is wired into the memory inspector, a log row's detail and fetched
+full row, the ref inspector, and the provenance writer value. Log details mount
+their tree only while the row is open: a closed `<details>` still mounts its
+children, and 200 rows of trees would be a lot of DOM. Copy buttons keep
+copying the original JSON strings, so the `EventLine` cache and the event dump
+are untouched. No new dependency.
+
+Checks: `ui` typecheck + build, root typecheck, `test:ui-describe`, and a
+headless Chromium pass over collapsed/expanded nodes, long-string reveal, ref
+links and the raw fallback.
+
 ## 2026-10-27 — board: the trunk dock can expand
 
 The trunk's bottom dock was a fixed `min(46vh, 440px)` panel whose header kept

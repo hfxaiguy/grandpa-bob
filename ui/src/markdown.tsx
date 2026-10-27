@@ -31,8 +31,9 @@ const SAFE_HREF = /^(?:https?:\/\/|mailto:)/i;
 const safeHref = (href: string): boolean => SAFE_HREF.test(href);
 
 /** Running text with any `ref://…` handles replaced by caller-rendered nodes.
- *  Sentence punctuation after a handle is not part of it (as before). */
-function withRefs(text: string, renderRef?: (token: string) => JSX.Element): JSX.Element {
+ *  Sentence punctuation after a handle is not part of it (as before). Also used
+ *  by the JSON viewer so handles inside string values stay clickable. */
+export function withRefs(text: string, renderRef?: (token: string) => JSX.Element): JSX.Element {
   if (!renderRef || !text.includes("ref://")) return text;
   const out: JSX.Element[] = [];
   let last = 0;

@@ -1,8 +1,10 @@
 /** Tile, memory, per-tile event log, global stream, session panel. */
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import type { JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { describeEvent, streamLines, type EventLine } from "./describe";
 import { copyEventStream, copyText, downloadEventStream } from "./event-dump";
+import { JsonView } from "./json-view";
 import {
   state,
   send,
@@ -139,7 +141,6 @@ function MemoryPanel(props: { app: string }) {
     const t = typeof v === "string" ? v : JSON.stringify(v);
     return t.length > 200 ? t.slice(0, 200) + "…" : t;
   };
-  const full = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
   // Collapsed per tile, persisted in the layout store (tiles remount on every
   // session switch, so a local signal would reset it constantly).
   const memOpen = createMemo(() => !state.layout.memClosed.includes(props.app));
@@ -189,7 +190,7 @@ function MemoryPanel(props: { app: string }) {
                   <span class="spacer" />
                   <button onClick={() => setInspect(null)}>✕</button>
                 </div>
-                <div class="mem-modal-body"><RefText text={full(sel().value)} /></div>
+                <div class="mem-modal-body"><JsonView value={sel().value} renderRef={refLink} /></div>
               </div>
             </div>
           </Portal>
@@ -215,6 +216,9 @@ function LogRow(props: { line: EventLine; showApp?: boolean }) {
   }
   const [full, setFull] = createSignal<{ text: string; chars: number; truncated: boolean } | null>(null);
   const [loading, setLoading] = createSignal(false);
+  // The JSON tree is only built while the row is open: a closed <details>
+  // still mounts its children, and 200 rows of trees is a lot of DOM.
+  const [expanded, setExpanded] = createSignal(false);
 
   const loadFull = async (): Promise<void> => {
     const seq = props.line.seq;
@@ -255,14 +259,11 @@ function LogRow(props: { line: EventLine; showApp?: boolean }) {
       class="log-row"
       classList={{ emit: props.line.emit, [props.line.cls]: !!props.line.cls }}
       onToggle={(event) => {
+        const el = event.currentTarget as HTMLDetailsElement;
+        setExpanded(el.open);
         // Opening an LLM call should show the exact prompt immediately, not
         // require a second click. Other rows fetch on demand.
-        if (
-          (event.currentTarget as HTMLDetailsElement).open &&
-          props.line.kind === "llm_call" &&
-          !full() &&
-          !loading()
-        ) {
+        if (el.open && props.line.kind === "llm_call" && !full() && !loading()) {
           void loadFull();
         }
       }}
@@ -274,7 +275,9 @@ function LogRow(props: { line: EventLine; showApp?: boolean }) {
         <span class="badge">{props.line.badge}</span>
         <span class="log-text"><RefText text={props.line.text} inline /></span>
       </summary>
-      <pre class="log-detail">{props.line.detail}</pre>
+      <Show when={expanded()}>
+        <div class="log-detail"><JsonView text={props.line.detail} renderRef={refLink} /></div>
+      </Show>
       <div class="log-actions">
         <button type="button" onClick={() => void copy(props.line.detail, "event")}>copy</button>
         <Show when={props.line.seq}>
@@ -292,7 +295,9 @@ function LogRow(props: { line: EventLine; showApp?: boolean }) {
               </span>
               <button type="button" onClick={() => copyMessages()}>copy messages</button>
             </div>
-            <pre class="log-detail full">{value().text}</pre>
+            <div class="log-detail full">
+              <JsonView text={value().text} startDepth={3} renderRef={refLink} />
+            </div>
           </>
         )}
       </Show>
@@ -315,32 +320,30 @@ function parseRef(token: string): { seq: number; path: string | null } | null {
   return { seq: Number(m[1]), path: rest.length ? rest.join("/") : null };
 }
 
+/** One `ref://…` handle as a clickable inspect link; a token without a row
+ *  number stays plain text. Shared by markdown text and the JSON tree. */
+function refLink(token: string): JSX.Element {
+  const r = parseRef(token);
+  if (!r) return token;
+  return (
+    <button
+      class="ref-link"
+      title={`inspect ${token}`}
+      onClick={(ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openRef(r.seq, r.path);
+      }}
+    >
+      {token}
+    </button>
+  );
+}
+
 /** Render text as markdown, with any `ref://…` tokens as clickable inspect
  *  links. `inline` flattens block syntax for one-line surfaces (log rows). */
 function RefText(props: { text: string; inline?: boolean }) {
-  return (
-    <Markdown
-      text={props.text}
-      inline={props.inline}
-      renderRef={(token) => {
-        const r = parseRef(token);
-        if (!r) return token;
-        return (
-          <button
-            class="ref-link"
-            title={`inspect ${token}`}
-            onClick={(ev) => {
-              ev.preventDefault();
-              ev.stopPropagation();
-              openRef(r.seq, r.path);
-            }}
-          >
-            {token}
-          </button>
-        );
-      }}
-    />
-  );
+  return <Markdown text={props.text} inline={props.inline} renderRef={refLink} />;
 }
 
 /** The ref inspector: the run-log row a `ref://…` handle points at, in full. */
@@ -389,7 +392,7 @@ export function RefModal() {
                     <div class="prov-dim">
                       {d().chars} chars{d().truncated ? " — shown truncated" : ""}
                     </div>
-                    <div class="prov-value ref-value"><RefText text={d().value} /></div>
+                    <div class="prov-value ref-value"><JsonView text={d().value} renderRef={refLink} /></div>
                   </>
                 )}
               </Show>
@@ -709,9 +712,12 @@ function PieceRow(props: { piece: ProvPiece; depth: number }) {
               <div class="prov-val">{preview(w())}</div>
             </Show>
             <Show when={open()}>
-              <pre class="prov-value">
-                {(w().text || "(no value)") + (w().truncated ? `\n… (${w().chars} chars total)` : "")}
-              </pre>
+              <div class="prov-value">
+                <JsonView text={w().text || "(no value)"} startDepth={1} renderRef={refLink} />
+                <Show when={w().truncated}>
+                  <div class="jv-note">… ({w().chars} chars total)</div>
+                </Show>
+              </div>
             </Show>
           </div>
         )}

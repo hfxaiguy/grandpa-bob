@@ -628,6 +628,54 @@ body.dragging-tile { user-select: none !important; }
 .md-raw { white-space: pre-wrap; word-break: break-word; color: var(--muted); }
 .md-img { color: var(--accent); }
 
+/* ── JSON tree (ui/src/json-view.tsx) ────────────────────────────────── */
+
+.jv { font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+.jv-node { display: inline; }
+.jv-toggle {
+  display: inline;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.jv-toggle:focus-visible { outline: 1px dotted var(--accent); outline-offset: 2px; }
+.jv-caret { display: inline-block; width: 11px; color: var(--muted); }
+.jv-brace, .jv-punc { color: var(--muted); }
+.jv-summary { color: var(--muted); font-style: italic; margin: 0 2px; }
+/* Block children inside the inline node break the nested entries onto their
+   own lines while the caret, brace and key stay on the parent's line. */
+.jv-rows { display: block; margin-left: 5px; padding-left: 9px; border-left: 1px solid var(--border); }
+.jv-row { display: block; }
+/* Nested close braces sit at the entry's indent; the root aligns under its
+   own opening brace. */
+.jv-close { display: block; }
+.jv > .jv-node > .jv-close { margin-left: 11px; }
+.jv-key { color: var(--accent); }
+.jv-index { color: var(--muted); }
+.jv-str { color: var(--ok); }
+.jv-num { color: var(--warn); }
+.jv-bool { color: var(--pink); }
+.jv-null { color: var(--muted); font-style: italic; }
+.jv-more {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.jv-more:hover { color: var(--accent); }
+.jv-note { color: var(--muted); font-size: 10.5px; margin-top: 4px; }
+.jv-raw { margin: 0; padding: 0; border: 0; background: none; font: inherit; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
+
 /* ── small screens ────────────────────────────────────────────────────────
    Same 640px breakpoint as SMALL_QUERY in store.ts. The stream starts hidden
    there and opens as a bottom sheet; the rest is the phone pass over the shell
