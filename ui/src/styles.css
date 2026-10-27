@@ -440,10 +440,8 @@ body.dragging-tile { user-select: none !important; }
 .mem-modal-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .mem-modal-path { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mem-modal-body { margin: 0; padding: 12px; overflow: auto; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
-.log-row { color: var(--muted); }
-.log-row > summary { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; cursor: pointer; list-style: none; }
-.log-row > summary::-webkit-details-marker { display: none; }
-.log-row > summary:hover { color: var(--fg); }
+.log-row { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; border-radius: 4px; color: var(--muted); cursor: pointer; }
+.log-row:hover, .log-row:focus-visible { color: var(--fg); outline: none; }
 .badge { color: var(--accent); flex: 0 0 auto; min-width: 42px; }
 .log-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-row.emit .log-text { color: var(--fg); }
@@ -455,11 +453,16 @@ body.dragging-tile { user-select: none !important; }
 .log-sep { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; user-select: none; }
 .log-sep::before, .log-sep::after { content: ""; flex: 1; border-top: 1px dashed var(--border); }
 .log-sep:first-child { margin-top: 2px; }
-.log-detail { margin: 2px 0 6px 44px; padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--fg); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.log-detail.full { max-height: 480px; }
-.log-actions { display: flex; align-items: center; gap: 6px; margin: 0 0 4px 44px; }
-.log-actions button { padding: 1px 7px; font-size: 10.5px; }
-.log-note { margin-right: auto; color: var(--muted); font-size: 10.5px; }
+/* ── event inspector modal (ui/src/components.tsx) ────────────────────── */
+.ev-modal-card { width: min(880px, 94vw); }
+.ev-modal-title { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev-modal-tabs { display: flex; gap: 4px; padding: 8px 12px 0; }
+.ev-modal-tabs button { padding: 3px 10px; font-size: 11px; color: var(--muted); background: none; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
+.ev-modal-tabs button:hover { color: var(--fg); }
+.ev-modal-tabs button.active { color: var(--fg); background: var(--bg); border-color: var(--border); }
+.ev-modal-body { flex: 1; min-height: 0; padding: 10px 12px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.ev-modal-actions { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border); }
+.ev-modal-actions button { padding: 2px 8px; font-size: 11px; }
 
 .stream {
   width: min(420px, 40vw);

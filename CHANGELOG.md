@@ -2,6 +2,28 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-27 — ui: event rows open the full payload in a modal
+
+Clicking a row in the event stream expanded a `<details>` inline, squeezing the
+payload into a 240px box inside a 400px-wide panel — and the same row in a tile's
+event log got even less room. Every row now opens one shared event inspector
+instead (mounted at the app root, so neither the stream nor a tile's containment
+can clip it): the sanitized live payload on an "event" tab, and the untruncated
+run-log row on a "full row" tab. The modal carries the copy actions that used to
+sit inline (`copy event`, `copy full`, `copy messages`) and closes on overlay
+click or ✕.
+
+Inspecting a model call opens on the full row automatically: its live detail
+only summarizes the message array, and the exact prompt is what one opens it
+for. Other events fetch their run-log row on demand. Rows keep the header's
+app/badge/text and are keyboard-operable (Enter/Space); turn dividers stay plain
+separators. Because `LogRow` is shared, the global stream and per-tile logs
+behave identically. `ref://…` links inside the JSON still open the ref
+inspector above the event modal.
+
+Checks: `ui` typecheck and build (`npm --prefix ui run typecheck`,
+`npm --prefix ui run build`).
+
 ## 2026-10-27 — tools: `read_json` parses file/text/ref content as JSON
 
 The model read a JSON file with `read_file` and got an escaped string it had to

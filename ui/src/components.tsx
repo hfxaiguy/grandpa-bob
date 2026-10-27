@@ -200,50 +200,39 @@ function MemoryPanel(props: { app: string }) {
   );
 }
 
-// A single log line, expandable to its full event payload. Native
-// <details>/<summary> keeps it keyboard-accessible for free. The detail is the
-// sanitized event; "full" fetches the raw run-log row (complete messages, no
-// 400-char caps) for exact prompt/output inspection.
-function LogRow(props: { line: EventLine; showApp?: boolean }) {
-  // Turn boundaries are synthetic rows, not events: a plain divider with no
-  // expand/copy affordances and no app column.
-  if (props.line.kind === "turn") {
-    return (
-      <div class="log-sep" title={`turn started ${new Date(props.line.ts).toLocaleTimeString()}`}>
-        {props.line.text}
-      </div>
-    );
-  }
+// ── event inspector ────────────────────────────────────────────────────
+// Every row in the event stream (global and per-tile) opens this modal rather
+// than expanding inline: the payload gets room, and a re-render of the stream
+// can never collapse an open row. One shared signal, so whichever row is
+// clicked, the same modal opens.
+const [eventView, setEventView] = createSignal<EventLine | null>(null);
+
+function openEvent(line: EventLine): void {
+  setEventView(line);
+}
+
+function closeEvent(): void {
+  setEventView(null);
+}
+
+/** The full event payload. The "event" tab is the sanitized live payload; the
+ *  "full row" tab fetches the untruncated run-log row (complete messages, no
+ *  400-char caps). LLM calls open on the full row automatically — their live
+ *  detail only summarizes the (huge) message history. */
+export function EventModal() {
   const [full, setFull] = createSignal<{ text: string; chars: number; truncated: boolean } | null>(null);
   const [loading, setLoading] = createSignal(false);
-  // The JSON tree is only built while the row is open: a closed <details>
-  // still mounts its children, and 200 rows of trees is a lot of DOM.
-  const [expanded, setExpanded] = createSignal(false);
-
-  const loadFull = async (): Promise<void> => {
-    const seq = props.line.seq;
-    if (!seq) return;
-    setLoading(true);
-    try {
-      const target = await fetchRef(seq);
-      setFull({ text: target.value, chars: target.chars, truncated: target.truncated });
-    } catch (err) {
-      toast(err instanceof Error ? err.message : String(err), true);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [tab, setTab] = createSignal<"event" | "full">("event");
+  const [err, setErr] = createSignal("");
 
   const copy = async (text: string, label: string): Promise<void> => {
     const ok = await copyText(text);
     toast(ok ? `copied ${label}` : "clipboard blocked", !ok);
   };
 
-  const copyMessages = (): void => {
-    const current = full();
-    if (!current) return;
+  const copyMessages = (text: string): void => {
     try {
-      const parsed = JSON.parse(current.text) as { messages?: unknown };
+      const parsed = JSON.parse(text) as { messages?: unknown };
       if (!Array.isArray(parsed.messages)) {
         toast("this event has no message array", true);
         return;
@@ -254,54 +243,181 @@ function LogRow(props: { line: EventLine; showApp?: boolean }) {
     }
   };
 
+  const loadFull = async (line: EventLine): Promise<void> => {
+    const seq = line.seq;
+    if (!seq) return;
+    setLoading(true);
+    setErr("");
+    try {
+      const target = await fetchRef(seq);
+      // A slower fetch must not replace a payload the user has since opened.
+      if (eventView() !== line) return;
+      setFull({ text: target.value, chars: target.chars, truncated: target.truncated });
+      setTab("full");
+    } catch (e) {
+      if (eventView() === line) setErr(e instanceof Error ? e.message : "could not load the full row");
+    } finally {
+      if (eventView() === line) setLoading(false);
+    }
+  };
+
+  // A fresh line resets the modal, then eagerly loads the full row for LLM
+  // calls: the exact prompt is the point of inspecting them.
+  createEffect(() => {
+    const line = eventView();
+    if (!line) return;
+    setFull(null);
+    setErr("");
+    setLoading(false);
+    setTab("event");
+    if (line.kind === "llm_call" && line.seq) void loadFull(line);
+  });
+
   return (
-    <details
+    <Show when={eventView()}>
+      {(line) => (
+        <div
+          class="mem-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${line().kind} event`}
+          onClick={(ev) => ev.target === ev.currentTarget && closeEvent()}
+        >
+          <div class="mem-modal-card ev-modal-card">
+            <div class="mem-modal-head">
+              <span class="badge">{line().badge}</span>
+              <span class="ev-modal-title">
+                {line().app} · {line().kind}
+                <span class="prov-dim">
+                  {" · "}
+                  {new Date(line().ts).toLocaleTimeString()}
+                  {line().seq ? ` · seq ${line().seq}` : ""}
+                </span>
+              </span>
+              <span class="spacer" />
+              <Show when={loading()}>
+                <span class="spinner" />
+              </Show>
+              <Show when={line().seq}>
+                <button
+                  type="button"
+                  disabled={loading()}
+                  title="fetch the untruncated run-log row"
+                  onClick={() => void loadFull(line())}
+                >
+                  {full() ? "reload full" : "full row"}
+                </button>
+              </Show>
+              <button type="button" title="close" onClick={closeEvent}>
+                ✕
+              </button>
+            </div>
+            <div class="ev-modal-tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab() === "event"}
+                classList={{ active: tab() === "event" }}
+                onClick={() => setTab("event")}
+              >
+                event
+              </button>
+              <Show when={line().seq}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={tab() === "full"}
+                  classList={{ active: tab() === "full" }}
+                  onClick={() => {
+                    setTab("full");
+                    if (!full() && !loading()) void loadFull(line());
+                  }}
+                >
+                  full row
+                  {full() ? ` · ${full()!.chars} chars${full()!.truncated ? " · truncated" : ""}` : ""}
+                </button>
+              </Show>
+            </div>
+            <Show when={err()}>
+              <div class="prov-err">{err()}</div>
+            </Show>
+            <div class="mem-modal-body ev-modal-body">
+              <Show
+                when={tab() === "full"}
+                fallback={<JsonView text={line().detail} renderRef={refLink} />}
+              >
+                <Show
+                  when={full()}
+                  fallback={
+                    <div class="empty">
+                      {loading()
+                        ? "loading the run-log row…"
+                        : line().seq
+                          ? "the full row is not loaded"
+                          : "this event has no run-log row"}
+                    </div>
+                  }
+                >
+                  {(value) => <JsonView text={value().text} startDepth={3} renderRef={refLink} />}
+                </Show>
+              </Show>
+            </div>
+            <div class="ev-modal-actions">
+              <button type="button" onClick={() => void copy(line().detail, "event detail")}>
+                copy event
+              </button>
+              <Show when={full()}>
+                {(value) => (
+                  <>
+                    <button type="button" onClick={() => void copy(value().text, "full row")}>
+                      copy full
+                    </button>
+                    <button type="button" onClick={() => copyMessages(value().text)}>
+                      copy messages
+                    </button>
+                  </>
+                )}
+              </Show>
+            </div>
+          </div>
+        </div>
+      )}
+    </Show>
+  );
+}
+
+// A single log line. Clicking it opens the event inspector above; turn
+// boundaries are synthetic rows, not events, so they stay plain dividers.
+function LogRow(props: { line: EventLine; showApp?: boolean }) {
+  if (props.line.kind === "turn") {
+    return (
+      <div class="log-sep" title={`turn started ${new Date(props.line.ts).toLocaleTimeString()}`}>
+        {props.line.text}
+      </div>
+    );
+  }
+  return (
+    <div
       class="log-row"
       classList={{ emit: props.line.emit, [props.line.cls]: !!props.line.cls }}
-      onToggle={(event) => {
-        const el = event.currentTarget as HTMLDetailsElement;
-        setExpanded(el.open);
-        // Opening an LLM call should show the exact prompt immediately, not
-        // require a second click. Other rows fetch on demand.
-        if (el.open && props.line.kind === "llm_call" && !full() && !loading()) {
-          void loadFull();
+      role="button"
+      tabindex="0"
+      aria-haspopup="dialog"
+      title="open the full event"
+      onClick={() => openEvent(props.line)}
+      onKeyDown={(ev) => {
+        if (ev.key === "Enter" || ev.key === " ") {
+          ev.preventDefault();
+          openEvent(props.line);
         }
       }}
     >
-      <summary>
-        <Show when={props.showApp}>
-          <span class="stream-app">{props.line.app}</span>
-        </Show>
-        <span class="badge">{props.line.badge}</span>
-        <span class="log-text"><RefText text={props.line.text} inline /></span>
-      </summary>
-      <Show when={expanded()}>
-        <div class="log-detail"><JsonView text={props.line.detail} renderRef={refLink} /></div>
+      <Show when={props.showApp}>
+        <span class="stream-app">{props.line.app}</span>
       </Show>
-      <div class="log-actions">
-        <button type="button" onClick={() => void copy(props.line.detail, "event")}>copy</button>
-        <Show when={props.line.seq}>
-          <button type="button" onClick={() => void loadFull()}>
-            {loading() ? "loading…" : full() ? "reload full" : "full"}
-          </button>
-        </Show>
-      </div>
-      <Show when={full()}>
-        {(value) => (
-          <>
-            <div class="log-actions">
-              <span class="log-note">
-                full row · {value().chars} chars{value().truncated ? " · truncated" : ""}
-              </span>
-              <button type="button" onClick={() => copyMessages()}>copy messages</button>
-            </div>
-            <div class="log-detail full">
-              <JsonView text={value().text} startDepth={3} renderRef={refLink} />
-            </div>
-          </>
-        )}
-      </Show>
-    </details>
+      <span class="badge">{props.line.badge}</span>
+      <span class="log-text"><RefText text={props.line.text} inline /></span>
+    </div>
   );
 }
 

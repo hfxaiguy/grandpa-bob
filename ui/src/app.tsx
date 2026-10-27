@@ -2,7 +2,7 @@
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import logo from "./assets/logo.webp";
 import logoMark from "./assets/logo-mark.webp";
-import { GlobalStream, HiddenRail, RailCard, RefModal, SessionPanel, Tiles, WorkspaceUpload } from "./components";
+import { EventModal, GlobalStream, HiddenRail, RailCard, RefModal, SessionPanel, Tiles, WorkspaceUpload } from "./components";
 import { init, orderedApps, state, stop, toggleHidden, toggleSub, toggleMachine, toggleStream, dismissError, retryLast } from "./store";
 
 function TilesMenu() {
@@ -142,6 +142,7 @@ export function App() {
         <SessionPanel onClose={() => setShowSession(false)} />
       </Show>
 
+      <EventModal />
       <RefModal />
 
       <Show when={state.toast}>
