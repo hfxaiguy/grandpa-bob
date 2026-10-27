@@ -69,6 +69,19 @@ export const HOST_GUIDES: HostGuide[] = [
       "numbers (leading-zero ids stay text); everything else is text. One statement per call.",
   },
   {
+    tools: ["read_json"],
+    guide:
+      "READING JSON: read_json parses content that is (or might be) JSON instead of returning raw " +
+      'text. Pass exactly one source — "path" for a workspace file, "text" for a JSON string already ' +
+      'in context, or "ref" for a ref://<tool>.<seq> handle to a truncated tool result (the full ' +
+      "value stays in the log; a string payload is parsed). The result is { json: <value> }: a " +
+      "structured value, so a big one comes back as a ref:// handle and rows stay whole. Reach one " +
+      'part with "at", a /-separated walk of object keys and array indices (at "rows/0/email"; a ref ' +
+      "may carry the same path itself, and at composes after it). Strict JSON only: on a parse error " +
+      "the message says why — content that looks like JSONL needs read_file, not this tool. Prefer " +
+      "read_json over read_file whenever the file is JSON.",
+  },
+  {
     tools: ["inspect_memory"],
     guide:
       "INSPECTING A HANDLE: a truncated tool result carries a ref://<name>.<seq> " +

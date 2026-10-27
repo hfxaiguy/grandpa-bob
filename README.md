@@ -154,6 +154,7 @@ src/
   tools/
     index.ts      tool schemas (OpenAI format) + dispatcher
     files.ts      list/read/write/edit/delete, sandboxed, auto-committing
+    json.ts       read_json — parse a file/text/ref as JSON (+ /-path walk)
     shell.ts      run_command with allowlist + git deny-list
     sqlite.ts     sql_query (read) + sql_write (write) — SQLite tools, lockable
     git.ts        repo init + auto-commit + workspace .gitignore helpers
@@ -666,6 +667,21 @@ with real-time event streaming.
 strings (`"error: old_string not found in notes.md"`). The model sees the failure
 as a normal tool result and typically self-corrects (re-reads the file, adjusts).
 Only LLM/transport errors propagate up to the user as "Something went wrong".
+
+**What is `read_json` for?**
+`read_json` reads content that is (or might be) JSON as a **structured value**
+instead of raw text. Pass exactly one source: `path` for a workspace file,
+`text` for a JSON string already in context, or `ref` for a
+`ref://<name>.<seq>` handle to a value the run log holds whole (a truncated
+tool result). It returns `{ json: <value> }`, so the model sees structure and
+the usual `ref://` handles / row-trimming apply to big values. An optional
+`at` walks into the value with the same `/`-separated dialect as
+`inspect_memory` — array segments are indices, everything else an object key
+(`at: "rows/0/email"`); a ref may carry that path itself and `at` composes
+after it. Parsing is strict `JSON.parse` (whitespace/BOM tolerated): a failure
+is a normal tool error saying why, including when the content looks like
+JSONL. Apps opt in by naming `read_json` in their tree's `Tools(...)`, like
+any host tool — every workspace app tree does today.
 
 **What happens at the 12-iteration limit?**
 The tools branch's `until` loop throws a `KnitError` with `"tool-iteration limit"`.

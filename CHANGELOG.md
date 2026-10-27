@@ -2,6 +2,35 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-27 — tools: `read_json` parses file/text/ref content as JSON
+
+The model read a JSON file with `read_file` and got an escaped string it had to
+parse mentally — and any structure (rows, ref handles, row-trimming) was lost on
+the way into the prompt. `read_json` now reads one source per call: `path` (a
+sandboxed workspace file), `text` (a JSON string already in context, e.g. another
+tool's output), or `ref` (a `ref://<name>.<seq>` handle to a value the run log
+holds whole). It returns `{ json: <value> }` — a structured tool result — so big
+values come back as `ref://` handles like any other object result.
+
+`at` walks into the resolved value with the same `/`-separated dialect as
+`inspect_memory` and ref handles (array segments are indices; everything else an
+object key), and composes after a ref's own embedded path. Parsing is strict
+`JSON.parse` after trimming whitespace/BOM, with actionable errors: syntax
+detail, empty content, a size cap (2 M chars), and a JSONL call-out when every
+line parses on its own. A failing read is a normal `error:` tool result, so the
+model self-corrects.
+
+Both targets share the implementation (`src/tools/json.ts`, `FileTools.readJsonText`):
+the Node registry registers `read_json` and forwards the engine's `ctx.readRef`,
+and the browser worker does the same through its own tool map. Prompt guidance
+lives in `src/tool-guides.ts`. Every workspace app tree opts in by naming
+`read_json` in its `Tools(...)` (or its prompt tool lists); `knit` got a
+tree-level list for it. The workspace's own changelog records the app grants.
+
+Checks: `npm run typecheck`, `npm --prefix web run typecheck`,
+`npm --prefix web run build`, `npm run test:read-json`, plus the app suites
+(browser, caller-list, contacts, email, enrich-profile, files, knit).
+
 ## 2026-10-27 — web: service settings own the account and keys; seed bindings only name the seed
 
 The BobSwap dialog (`Sync…` → `BobSwap…`) is now the only place to enter the

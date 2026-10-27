@@ -9,6 +9,7 @@ import { ownedDbApp, ownedDbError } from "./app-dbs.js";
 import type { AppStore } from "../app-store.js";
 import { OpencodeTools } from "./opencode.js";
 import { CsvTools, CSV_QUERY_DEFINITION } from "./csv.js";
+import { READ_JSON_DEFINITION, readJsonValue } from "./json.js";
 import { GitTools, GIT_DEFINITIONS } from "./git-tools.js";
 import { createNodePlatform } from "../platform/node.js";
 import type { AppTool } from "../app-tools.js";
@@ -101,6 +102,7 @@ export class ToolRegistry {
     this.definitions.push(...appTools.map(toOpenAiDefinition));
     this.definitions.push(...GIT_DEFINITIONS);
     this.definitions.push(CSV_QUERY_DEFINITION);
+    this.definitions.push(READ_JSON_DEFINITION);
     this.definitions.push(INSPECT_MEMORY_DEFINITION);
   }
 
@@ -356,6 +358,15 @@ export class ToolRegistry {
         }
         case "csv_query":
           return await this.csv.query(String(args.query ?? ""), String(args.path ?? ""));
+        case "read_json": {
+          // The `ref` source resolves through the engine's per-call ctx, like
+          // inspect_memory — the handle belongs to THIS run's log.
+          const result = await readJsonValue(args, {
+            readFile: (rel) => this.files.readJsonText(rel),
+            readRef: ctx?.readRef,
+          });
+          return { ...result };
+        }
         case "exa_search":
           return await this.exa.search({
             query: String(args.query ?? ""),

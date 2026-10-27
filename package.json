@@ -58,6 +58,7 @@
     "test:quota-error": "tsx scripts/quota-error-test.ts",
     "test:fallback": "tsx scripts/fallback-test.ts",
     "test:csv": "tsx scripts/csv-test.ts",
+    "test:read-json": "tsx scripts/read-json-test.ts",
     "test:secrets": "tsx scripts/secrets-test.ts",
     "test:shell": "tsx scripts/shell-sandbox-test.ts",
     "test:paths": "tsx scripts/path-shim-test.ts",

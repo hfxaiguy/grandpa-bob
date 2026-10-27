@@ -69,6 +69,20 @@ export class FileTools {
     return content || "(empty file)";
   }
 
+  /**
+   * Read a workspace file as raw UTF-8 text for JSON parsing. Unlike
+   * `readFile` it never truncates — a truncated JSON document cannot parse —
+   * so the caller (read_json) enforces its own size cap on the content.
+   */
+  async readJsonText(rel: string): Promise<string> {
+    const { fs } = this.platform;
+    const abs = this.resolve(rel);
+    const st = await fs.stat(abs).catch(() => null);
+    if (!st) throw new Error(`not found: ${rel}`);
+    if (st.isDirectory()) throw new Error(`not a file: ${rel} (use list_files)`);
+    return fs.readFile(abs, "utf8");
+  }
+
   async writeFile(rel: string, content: string): Promise<string> {
     const { fs, git, path } = this.platform;
     const abs = this.resolve(rel);

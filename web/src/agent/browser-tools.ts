@@ -6,6 +6,7 @@ import { FileTools } from "../../../src/tools/files";
 import { SqliteTools } from "../../../src/tools/sqlite";
 import { ownedDbApp, ownedDbError } from "../../../src/tools/app-dbs";
 import { CsvTools, CSV_QUERY_DEFINITION } from "../../../src/tools/csv";
+import { READ_JSON_DEFINITION, readJsonValue } from "../../../src/tools/json";
 import { runCommand } from "../../../src/platform/coreutils";
 import { writeDatabaseDumps } from "../../../src/db-sync";
 import { createSqliteWasm } from "../platform/sqlite-wasm";
@@ -18,6 +19,8 @@ type Args = Record<string, unknown>;
 export interface ToolCtx {
   /** True inside an app tree entered as a tool — the app owns its store. */
   boundary?: boolean;
+  /** Resolve a `ref://<name>.<seq>` handle against this run's log. */
+  readRef?: (ref: string) => unknown;
 }
 export interface KatTool {
   description: string;
@@ -150,6 +153,21 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         properties: {},
       }) as { type: "object"; properties?: Record<string, unknown>; required?: string[] },
       execute: async (a) => csv.query(String(a.query ?? ""), String(a.path ?? "")),
+    },
+    read_json: {
+      description: READ_JSON_DEFINITION.function.description,
+      parameters: READ_JSON_DEFINITION.function.parameters as {
+        type: "object";
+        properties?: Record<string, unknown>;
+        required?: string[];
+      },
+      // The browser registry hands the engine's ctx straight to execute, so a
+      // ref resolves against this run's log exactly as on the Node target.
+      execute: async (a, ctx) =>
+        readJsonValue(a, {
+          readFile: (rel) => files.readJsonText(rel),
+          readRef: ctx?.readRef,
+        }),
     },
     run_command: {
       description: "Run an allowlisted command over the virtual workspace filesystem.",
