@@ -207,6 +207,11 @@ npm run seed:ship                     # make-seed, then publish
 npm run seed:publish -- --dry-run     # validate + print only
 ```
 
+A publish without `--pack` ships the existing file unchanged. Interactive runs
+now warn about that, and every successful publish prints the shelf's resolved
+`latest` (version label, `createdAt`, sha) — the exact record browsers compare
+against — so a stale or shadowed upload is visible immediately.
+
 Non-interactive/CI: `BOBSWAP_ACCOUNT=… BOBSWAP_SEED=… BOBSWAP_UPLOAD_KEY=… npm
 run seed:publish`. `--url` defaults to `https://bobswap.hfxaiguy.com`; `--file`,
 `--version`, `--pack` and `--no-save` are available (`npm run seed:publish --
@@ -384,10 +389,17 @@ later (`Sync…` → `Profiles…` → **Seed…**):
   export. New setups prefill the deployed service at
   `https://bobswap.hfxaiguy.com`; any saved service overrides it. API keys are
   operator-issued (`read`/`upload`/`manage` scopes); there is no public signup.
-- On boot the profile asks `/api/v1/<account>/<seed>/latest/meta` and, when the
-  seed is newer, shows the usual **Workspace update available** banner (never
-  applies silently). Applying merges the archive and **keeps the local run log
-  and chat history**; saved walk positions reset once.
+- On boot — and every five minutes while the tab stays open, plus whenever it
+  becomes visible again — the profile asks
+  `/api/v1/<account>/<seed>/latest/meta` and, when the seed is newer, shows the
+  usual **Workspace update available** banner (never applies silently). A
+  publish cannot push to an open tab, so the periodic check is what makes a
+  shelf update arrive without a reload (`?seedpoll=<ms>` shortens it for
+  tests). Each check logs a `[seed-check]` line naming the local and remote
+  sha/timestamp and the decision, so a refused key or a malformed response is
+  visible instead of looking like "current". Applying merges the archive and
+  **keeps the local run log and chat history**; saved walk positions reset
+  once.
 - **Publish this profile** uploads the current workspace as a new version
   (`<sha12>-<compact createdAt>`), **Check now** compares on demand.
 - `X-Seed-Version` and ETag/304 keep repeat checks cheap; `?key=` URLs make the

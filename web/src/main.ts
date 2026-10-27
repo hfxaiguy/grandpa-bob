@@ -632,17 +632,37 @@ async function checkSeedUpdate(): Promise<void> {
 /** Check a profile's bound BobSwap seed for a newer build. */
 async function checkBoundSeedUpdate(binding: SeedBinding): Promise<void> {
   const service = resolveSwapService(binding.baseUrl);
-  if (!service) return;
-  let meta: Awaited<ReturnType<typeof fetchLatestSeedMeta>> = null;
-  try {
-    meta = await fetchLatestSeedMeta(service, service.account || binding.account, binding.seedName);
-  } catch {
-    return; /* service unreachable: keep working offline */
+  if (!service) {
+    console.warn(
+      `[seed-check] ${binding.account}/${binding.seedName}: no saved service for ${binding.baseUrl} — add it in Sync… → BobSwap…`,
+    );
+    return;
   }
-  if (!meta) return;
+  const account = service.account || binding.account;
+  let meta: RemoteSeedMeta | null = null;
+  try {
+    meta = await fetchLatestSeedMeta(service, account, binding.seedName);
+  } catch (err) {
+    // Keep working offline, but never hide the reason: a rejected key, a
+    // rate limit or a malformed payload used to look identical to "current".
+    console.warn(`[seed-check] ${account}/${binding.seedName}: check failed: ${errorText(err)}`);
+    return;
+  }
+  if (!meta) {
+    console.warn(
+      `[seed-check] ${account}/${binding.seedName}: no metadata — missing seed, account mismatch, or rejected read key`,
+    );
+    return;
+  }
 
   const knownSha = binding.lastVersion?.sha256 ?? seedSha;
-  if (seedFreshness(seedStamp, meta, SEED_CLOCK_TOLERANCE_MS, knownSha) !== "newer") return;
+  const freshness = seedFreshness(seedStamp, meta, SEED_CLOCK_TOLERANCE_MS, knownSha);
+  console.log(
+    `[seed-check] ${account}/${binding.seedName}: local ${seedStamp ?? "unseeded"} / ` +
+      `${knownSha ? `${knownSha.slice(0, 12)}…` : "no sha"}, remote ${meta.createdAt} / ` +
+      `${meta.sha256 ? `${meta.sha256.slice(0, 12)}…` : "no sha"} → ${freshness}`,
+  );
+  if (freshness !== "newer") return;
 
   const dismissKey = `${SEED_DISMISSED_KEY}:${binding.baseUrl}|${binding.account}/${binding.seedName}`;
   const stamp = meta.seed_id_and_version ?? meta.sha256 ?? meta.createdAt;
@@ -659,11 +679,44 @@ async function checkBoundSeedUpdate(binding: SeedBinding): Promise<void> {
   });
 }
 
+/** How often an open tab re-checks the shelf. A publish cannot push to it. */
+const SEED_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+
+/**
+ * Keep checking while the tab stays open. The CLI and another device publish
+ * to the shelf, not to this tab, so on-boot checks alone leave a long-lived
+ * tab permanently stale. `?seedpoll=<ms>` shortens the interval for tests.
+ */
+function startSeedWatcher(): void {
+  const requested = Number(params.get("seedpoll") ?? "");
+  const intervalMs = Math.max(
+    1000,
+    Number.isFinite(requested) && requested > 0 ? requested : SEED_CHECK_INTERVAL_MS,
+  );
+  let checking = false;
+  const check = (): void => {
+    if (checking || document.visibilityState === "hidden") return;
+    checking = true;
+    void checkSeedUpdate().finally(() => {
+      checking = false;
+    });
+  };
+  window.setInterval(check, intervalMs);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") check();
+  });
+}
+
+/** Detaches the handlers of the offer currently shown in the toolbar. */
+let seedOfferCleanup: (() => void) | null = null;
+
 /** Reveal the toolbar offer and wire its apply/dismiss actions. */
 function wireSeedUpdate(offer: SeedUpdateOffer): void {
   const apply = document.getElementById("ws-reseed") as HTMLButtonElement | null;
   const dismiss = document.getElementById("ws-reseed-dismiss") as HTMLButtonElement | null;
   if (!apply) return;
+  // A periodic re-check re-offers the same buttons; never stack handlers.
+  seedOfferCleanup?.();
   const built = new Date(offer.meta.createdAt).toLocaleString();
   const seeded = seedStamp ? new Date(seedStamp).toLocaleString() : "unknown";
   apply.title = `${offer.label}\nBuilt ${built}\nWorkspace seeded ${seeded}`;
@@ -671,32 +724,36 @@ function wireSeedUpdate(offer: SeedUpdateOffer): void {
   apply.hidden = false;
   if (dismiss) dismiss.hidden = false;
 
+  let applying = false;
   const onClick = (): void => {
-    apply.removeEventListener("click", onClick);
+    if (applying) return;
+    applying = true;
     offer.apply().catch((err) => {
       // A failed overlay (e.g. a wedged OPFS write) must name itself instead of
       // becoming an unhandled rejection: the workspace on disk is unchanged.
+      applying = false;
       apply.hidden = false;
       if (dismiss) dismiss.hidden = false;
       flashStatus(`workspace update failed: ${errorText(err)}`, 12_000);
     });
   };
+  const onDismiss = (): void => {
+    try {
+      localStorage.setItem(offer.dismissKey, offer.meta.seed_id_and_version ?? offer.meta.sha256 ?? offer.meta.createdAt);
+    } catch {
+      /* private mode: offer again next boot */
+    }
+    apply.hidden = true;
+    if (dismiss) dismiss.hidden = true;
+    flashStatus("workspace update declined");
+  };
   apply.addEventListener("click", onClick);
-
-  dismiss?.addEventListener(
-    "click",
-    () => {
-      try {
-        localStorage.setItem(offer.dismissKey, offer.meta.seed_id_and_version ?? offer.meta.sha256 ?? offer.meta.createdAt);
-      } catch {
-        /* private mode: offer again next boot */
-      }
-      apply.hidden = true;
-      dismiss.hidden = true;
-      flashStatus("workspace update declined");
-    },
-    { once: true },
-  );
+  dismiss?.addEventListener("click", onDismiss);
+  seedOfferCleanup = () => {
+    apply.removeEventListener("click", onClick);
+    dismiss?.removeEventListener("click", onDismiss);
+    seedOfferCleanup = null;
+  };
 }
 
 async function applySeedUpdate(meta: SeedMeta): Promise<void> {
@@ -713,7 +770,8 @@ async function applySeedUpdate(meta: SeedMeta): Promise<void> {
     const text = await res.text();
     const archive = JSON.parse(text) as WorkspaceArchive;
     await applySeedArchive(archive, platform.crypto.sha256hex(text));
-    setTimeout(() => location.reload(), 300);
+    flashStatus("workspace updated — reloading…", 5000);
+    setTimeout(() => location.reload(), 1500);
   } catch (err) {
     flashStatus(`workspace update failed: ${errorText(err)}`, 10_000);
   }
@@ -732,6 +790,7 @@ async function applyBoundSeedUpdate(binding: SeedBinding, version?: string): Pro
   if (!proceed) return;
   setStatus("fetching seed…");
   const fetched = await fetchLatestSeed(service, account, binding.seedName);
+  setStatus(`applying ${fetched.archive.files.length} files…`);
   await applySeedArchive(fetched.archive, fetched.sha256);
   await recordSeedVersion(activeProfile, {
     version: version ?? fetched.version ?? fetched.sha256.slice(0, 12),
@@ -740,7 +799,7 @@ async function applyBoundSeedUpdate(binding: SeedBinding, version?: string): Pro
     checkedAt: new Date().toISOString(),
   });
   flashStatus("seed applied — reloading…", 5000);
-  setTimeout(() => location.reload(), 400);
+  setTimeout(() => location.reload(), 1500);
 }
 
 // ── boot ─────────────────────────────────────────────────────────────────
@@ -850,7 +909,10 @@ async function main(): Promise<void> {
     buildActiveArchive,
     importInto: importIntoWorkspace,
   });
-  if (storageMode === "browser") void checkSeedUpdate();
+  if (storageMode === "browser") {
+    void checkSeedUpdate();
+    startSeedWatcher();
+  }
   showStatus(pattern);
 }
 

@@ -2,6 +2,36 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-27 — seed updates: watcher, visible progress, loud failures
+
+A published seed never announced itself to an open tab: `checkSeedUpdate` ran
+once at boot, and every failure inside the bound-seed check — missing read key,
+unresolvable service URL, `401/403/404`, rate limit, malformed JSON — returned
+silently, so "no update" and "the check never ran" looked identical. The apply
+path had the opposite problem: `fetching seed…` stayed on screen through the
+whole overlay, and after a `400 ms` reload the `seed applied` message was gone
+before it could be read.
+
+Now:
+
+- A watcher re-checks on an interval (default 5 min, `?seedpoll=<ms>` for tests)
+  and on `visibilitychange`, browser mode only. Repeated offers re-wire the
+  toolbar buttons instead of stacking handlers.
+- Every check logs one `[seed-check]` line with the local stamp/sha, remote
+  `createdAt`/sha and the freshness decision; skipped checks log why.
+- `/latest/meta` is parsed and validated (`parseRemoteSeedMeta`) rather than
+  cast blindly: a shape drift is an error, not a silent "current". The Seed…
+  dialog's **Check now** surfaces it too.
+- Apply shows `fetching seed…` → `applying N files…` → `seed applied —
+  reloading…` and holds the reload 1.5 s so the status is readable (same for
+  the server-shipped seed path).
+- `seed:publish` prints the shelf's resolved `latest` after every upload and
+  warns when a later-uploaded version shadows this one; interactive runs that
+  skipped `--pack` say they are shipping unchanged bytes.
+
+Checks: `web` typecheck and the `smoke:seed-update` + `smoke:profiles` headless
+runs (the seed smoke now covers publish-without-reload and malformed metadata).
+
 ## 2026-10-27 — ui: event rows open the full payload in a modal
 
 Clicking a row in the event stream expanded a `<details>` inline, squeezing the

@@ -231,7 +231,8 @@ if (argv.includes("--help") || argv.includes("-h")) {
   process.exit(0);
 }
 
-if (argv.includes("--pack")) {
+const packed = argv.includes("--pack");
+if (packed) {
   console.log("seed:publish: packing first (npm run make-seed)…");
   const result = spawnSync("npm", ["run", "make-seed"], { cwd: repoRoot, stdio: "inherit" });
   if (result.status !== 0) fail("make-seed failed");
@@ -288,6 +289,7 @@ const file = path.resolve(
   repoRoot,
   flag("file") ?? process.env.BOBSWAP_FILE ?? "web/public/seed/workspace.json",
 );
+const explicitFile = Boolean(flag("file") ?? process.env.BOBSWAP_FILE);
 
 let bytes: Buffer;
 let archive: { version?: unknown; createdAt?: unknown; files?: unknown };
@@ -327,11 +329,53 @@ const target =
   `${baseUrl}/api/v1/${encodeURIComponent(account)}/${encodeURIComponent(seedName)}/` +
   encodeURIComponent(version);
 
+// A plain `seed:publish` ships whatever bytes are already in the file; that is
+// legitimate for CI, but an interactive run often expects a fresh pack.
+if (!packed && !explicitFile && interactive) {
+  console.warn(
+    "seed:publish: warning — uploading the existing archive unchanged; `npm run seed:ship` re-packs first",
+  );
+}
+
 console.log(`archive : ${file}`);
 console.log(`account : ${account}/${seedName}`);
 console.log(`bytes   : ${bytes.length}`);
 console.log(`sha256  : ${sha256}`);
 console.log(`target  : ${target}`);
+
+/**
+ * Print what the shelf resolves as `/latest` after the upload. That is the
+ * exact record browsers compare against, and `/latest` follows the most
+ * recently uploaded version — not the newest `createdAt`.
+ */
+async function reportShelfLatest(): Promise<void> {
+  try {
+    const res = await fetch(
+      `${baseUrl}/api/v1/${encodeURIComponent(account)}/${encodeURIComponent(seedName)}/latest/meta`,
+      { headers: { authorization: `Bearer ${apiKey}` } },
+    );
+    if (!res.ok) return; // advisory: the PUT already succeeded
+    const meta = (await res.json()) as {
+      createdAt?: unknown;
+      sha256?: unknown;
+      seed_id_and_version?: unknown;
+    };
+    const shelfSha = typeof meta.sha256 === "string" ? meta.sha256.toLowerCase() : "";
+    console.log(
+      `latest  : ${typeof meta.seed_id_and_version === "string" ? meta.seed_id_and_version : "(unlabelled)"}` +
+        ` · ${typeof meta.createdAt === "string" ? meta.createdAt : "?"}` +
+        (shelfSha ? ` · ${shelfSha.slice(0, 12)}…` : ""),
+    );
+    if (shelfSha && shelfSha !== sha256) {
+      console.warn(
+        `seed:publish: warning — /latest serves ${shelfSha.slice(0, 12)}…, not this archive ` +
+          `(${sha256.slice(0, 12)}…); another version was uploaded more recently`,
+      );
+    }
+  } catch {
+    /* advisory only */
+  }
+}
 
 let verified = false; // a key is only persisted after the service accepted it
 
@@ -365,12 +409,14 @@ const res = await fetch(target, {
 if (res.status === 201) {
   verified = true;
   console.log(`published: new version ${version}`);
+  await reportShelfLatest();
   await rememberSettings();
   process.exit(0);
 }
 if (res.status === 200) {
   verified = true;
   console.log(`unchanged: ${version} already carries these exact bytes`);
+  await reportShelfLatest();
   await rememberSettings();
   process.exit(0);
 }

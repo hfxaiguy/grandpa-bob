@@ -15,7 +15,7 @@
  * verified with SHA-256. Pairing codes must never appear in URLs.
  */
 import type { WorkspaceArchive } from "./workspace-transfer";
-import type { SeedMeta } from "./seed-version";
+import { parseSeedMeta, type SeedMeta } from "./seed-version";
 import { seedVersionTag } from "./profiles";
 import type { DeviceIdentity } from "./device-keys";
 
@@ -209,6 +209,31 @@ export interface RemoteSeedMeta extends SeedMeta {
   sha256?: string;
   size?: number;
   fileCount?: number;
+  /** Server-side upload timestamp (what `/latest` resolves by). */
+  uploaded_at?: string;
+}
+
+/**
+ * Validate a `/latest/meta` payload. The client once cast the JSON blindly,
+ * which could turn a service-side shape change into a silent "current" (the
+ * timestamp compare treats an unparseable `createdAt` as no update). Malformed
+ * metadata is now an error the caller can surface.
+ */
+export function parseRemoteSeedMeta(raw: unknown): RemoteSeedMeta | null {
+  const base = parseSeedMeta(raw);
+  if (!base) return null;
+  const record = raw as Record<string, unknown>;
+  const labelled =
+    typeof record.seed_id_and_version === "string" ? record.seed_id_and_version.trim() : "";
+  const uploaded =
+    typeof record.uploaded_at === "string" && !Number.isNaN(Date.parse(record.uploaded_at))
+      ? record.uploaded_at
+      : undefined;
+  return {
+    ...base,
+    seed_id_and_version: labelled || undefined,
+    uploaded_at: uploaded,
+  };
 }
 
 /** Freshness record of a seed's newest version; null when unavailable. */
@@ -222,7 +247,15 @@ export async function fetchLatestSeedMeta(
   const res = await fetch(url, { cache: "no-cache", headers: { accept: "application/json" } });
   if (res.status === 401 || res.status === 403 || res.status === 404) return null;
   if (!res.ok) throw await apiError(res);
-  return (await res.json()) as RemoteSeedMeta;
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error("seed metadata is not valid JSON");
+  }
+  const meta = parseRemoteSeedMeta(body);
+  if (!meta) throw new Error("seed metadata is malformed (expected createdAt and sha256)");
+  return meta;
 }
 
 export interface FetchedSeed {

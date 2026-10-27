@@ -69,6 +69,12 @@ const server = createServer((req, res) => {
       return;
     }
     res.setHeader("content-type", "application/json");
+    if (phase === 3) {
+      // Malformed metadata: missing createdAt/sha256. The client must surface
+      // this as a failure, not read it as "current".
+      res.end(JSON.stringify({ version: 1 }));
+      return;
+    }
     res.end(
       JSON.stringify({
         version: 1,
@@ -154,8 +160,9 @@ const assert = (condition, message) => { if (!condition) throw new Error(`assert
 await send("Runtime.enable");
 await send("Page.enable");
 
-// Fresh boot (no legacy data).
-await send("Page.navigate", { url: `${BASE}/?storage=browser` });
+// Fresh boot (no legacy data). A 1 s poll keeps the update checks testable
+// without reloading the tab.
+await send("Page.navigate", { url: `${BASE}/?storage=browser&seedpoll=1000` });
 await waitFor(`document.readyState === "complete" && !!window.__bobWorkspaceTransfer`, "app boot");
 
 // Configure the service and bind the default profile to its seed.
@@ -187,7 +194,7 @@ await waitFor(
 await sleep(500);
 
 // Reload: boot must now offer the update.
-await send("Page.navigate", { url: `${BASE}/?storage=browser` });
+await send("Page.navigate", { url: `${BASE}/?storage=browser&seedpoll=1000` });
 await waitFor(
   `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && !document.getElementById("ws-reseed").hidden`,
   "seed update banner",
@@ -206,10 +213,11 @@ const before = await evaluate(`(async () => {
 })()`);
 const logBefore = JSON.parse(before);
 
-// Apply (the confirm is auto-accepted by the CDP handler above).
-await evaluate(`document.getElementById("ws-reseed").click()`);
+// Apply (the confirm is auto-accepted by the CDP handler above). The marker
+// disappears with the old document, so the wait cannot pass before the reload.
+await evaluate(`window.__smokeBeforeReload = true; document.getElementById("ws-reseed").click()`);
 await waitFor(
-  `document.readyState === "complete" && !!window.__bobWorkspaceTransfer`,
+  `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && !window.__smokeBeforeReload`,
   "reload after applying the seed",
 );
 await sleep(800);
@@ -248,18 +256,47 @@ assert(requests.some((r) => r.includes("latest/meta") && r.includes("key=")), "m
 
 // Phase 2: a re-pack with the SAME createdAt but different bytes. Without the
 // content hash this would look current; the hash must still offer an update.
+// The tab stays open: the periodic watcher (not a reload) has to notice it.
 phase = 2;
 assert(current().archive.createdAt === a.seeded, "phase 2 reuses the applied timestamp");
-await send("Page.navigate", { url: `${BASE}/?storage=browser` });
 await waitFor(
-  `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && !document.getElementById("ws-reseed").hidden`,
-  "same-timestamp seed update banner",
+  `!!document.getElementById("ws-reseed") && !document.getElementById("ws-reseed").hidden`,
+  "same-timestamp seed update banner from the watcher",
 );
 const label2 = await evaluate(`document.getElementById("ws-reseed").textContent`);
 assert(String(label2).includes("Seed update: trunk"), `hash-only banner names the seed (got: ${label2})`);
 
+// Phase 3: malformed shelf metadata must surface a failure, not "current".
+phase = 3;
+await send("Page.navigate", { url: `${BASE}/?storage=browser&seedpoll=1000` });
+await waitFor(
+  `document.readyState === "complete" && !!window.__bobWorkspaceTransfer`,
+  "app boot after malformed metadata",
+);
+await sleep(2500); // at least two poll cycles
+const bannerHidden = await evaluate(`document.getElementById("ws-reseed").hidden`);
+assert(bannerHidden === true, "malformed metadata does not show an update banner");
+await evaluate(`(() => {
+  document.getElementById("sync-menu").click();
+  document.getElementById("profile-manage").click();
+  return "opened";
+})()`);
+await waitFor(`!!document.querySelector("#profile-list .profile-row")`, "profile manager rows");
+await evaluate(`(() => {
+  const row = document.querySelector("#profile-list .profile-row");
+  [...row.querySelectorAll("button")].find((b) => b.textContent === "Seed…").click();
+  return "seed dialog";
+})()`);
+await waitFor(`document.getElementById("seed-dialog").open === true`, "seed dialog open");
+await evaluate(`document.getElementById("seed-check").click()`);
+await waitFor(
+  `(document.getElementById("seed-status")?.textContent ?? "").includes("check failed")`,
+  "malformed metadata reported by Check now",
+);
+
 if (exceptions.length) cleanup(1, `runtime exceptions:\n${exceptions.join("\n")}`);
 console.log(
-  "seed-update smoke: banner, apply, log preservation, version record and hash-only re-pack all passed",
+  "seed-update smoke: banner, apply, log preservation, version record, hash-only re-pack, " +
+    "watcher offer and malformed-metadata reporting all passed",
 );
 cleanup(0);
