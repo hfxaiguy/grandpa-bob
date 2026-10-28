@@ -54,6 +54,10 @@ export interface Turn {
   emitApps?: (string | null)[] | null;
   awaiting?: string | null;
   buttons?: EmitButton[] | null;
+  /** How the turn entered its tree (see `TurnRecord.runMode`). */
+  runMode?: "resumed" | "restored" | "fresh";
+  /** A fresh run although the previous turn paused — its context was lost. */
+  contextLost?: boolean;
   /** Model slots offered after a quota wall (402); a tap retargets the failed
    *  role and re-runs the turn (POST /api/fallback). */
   fallback?: EmitButton[] | null;

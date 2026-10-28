@@ -136,6 +136,24 @@ event window:
 > (legacy/migrated rows) cannot be replayed, and the live map holds at most 32
 > sessions (LRU; an evicted session rebuilds from the log when viewed again).
 
+### A paused turn resumes across a reload
+
+The engine pauses a tree at `Human()` with a **checkpoint**; BOB's browser
+logger shadows it into the run log's `checkpoints` table (grandma-kat's
+portable `createSessionLogStore`, wired in `web/src/agent/logger.ts`). On the
+first turn of a fresh worker the host asks `resumableCheckpoint` which pause
+belongs to the chat — the last turn marker's run, while that run still has a
+checkpoint and no delete tombstone follows it — then `restore()` hydrates the
+run's replay window and the engine's own `resume()` continues the conversation.
+Same run id, same memory slots; the tracker is not involved.
+
+A missing or torn checkpoint (a flush killed mid-write) drops to a fresh tree
+with a logged reason instead of resuming into a partial log. Each turn records
+`runMode` (`resumed` / `restored` / `fresh`) and `contextLost`, so the chat can
+say "continued the paused session from before the reload" or warn that prior
+context was not available. Restore is browser-storage only: in desktop-bridge
+mode the shared log's continuation policy belongs to the Node agent.
+
 ### Direct folder mode (Chromium)
 
 ```sh
@@ -471,6 +489,13 @@ Ollama Cloud (`ollama.com`) is intentionally not in the standalone registry: it
 sends no `access-control-allow-origin` header (the preflight answers `405` on
 both `/api/chat` and `/v1/chat/completions`), so a browser cannot call it
 directly. The `gemma` slot remains available when the admin serves the page.
+
+Exa web search (`exa_search`) *does* work in the browser: `api.exa.ai` answers
+the preflight for `POST` with `authorization` + `content-type`, so the tool
+calls it directly from the tab (no proxy). Paste the key under **Settings →
+Credentials & .env → Exa search API key**; it is `EXO_API_KEY` in `.env`, the
+name the Node target has always read. Without a key the tool stays in the
+registry and answers `error: web search not configured`, exactly like Node.
 neuralwatt answers `access-control-allow-origin: *`, so direct browser calls
 work.
 

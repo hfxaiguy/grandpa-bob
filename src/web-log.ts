@@ -456,6 +456,8 @@ export class WebLog {
         buttons: m.buttons ?? null,
         fallback: m.fallback ?? null,
         awaiting: m.awaiting ?? null,
+        runMode: m.runMode,
+        contextLost: m.contextLost,
         tokens: m.tokens ?? null,
         events: [],
       };
@@ -532,13 +534,13 @@ export class WebLog {
       .all(runId, fromSeq, toSeq) as { seq: number; kind: string; content: string }[];
     const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })), this.appNames() ?? undefined);
     const rows = this.db
-      .prepare(`SELECT seq, kind, branch_path, scope_id, content FROM calls WHERE ${bounds} AND kind IN ('memory','record') ORDER BY seq`)
+      .prepare(`SELECT seq, kind, branch_path, scope_id, content FROM calls WHERE ${bounds} AND kind = 'record' ORDER BY seq`)
       .all(runId, fromSeq, toSeq) as { seq: number; kind: string; branch_path: string | null; scope_id: number | null; content: string | null }[];
     const out: MemoryWrite[] = [];
     for (const r of rows) {
       const content = parseJson(r.content) as Record<string, unknown> | null;
       const op = content?.op;
-      const memWrite = r.kind === "memory" || (r.kind === "record" && (op === "memory" || op === "memoryUpdate"));
+      const memWrite = op === "memory" || op === "memoryUpdate";
       if (!memWrite) continue;
       out.push({
         seq: r.seq,

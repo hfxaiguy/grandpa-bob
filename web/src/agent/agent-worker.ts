@@ -29,6 +29,7 @@ import {
   listSessions,
   memoryWrites,
   readRow,
+  resumableCheckpoint,
   turnCount,
   exportLogDb,
   writeDelete,
@@ -276,6 +277,14 @@ interface Session {
   platform: Platform;
 }
 
+/**
+ * How a turn entered its tree:
+ *   resumed  — continued the in-memory checkpoint (same worker)
+ *   restored — rebuilt a paused run from the run log after a reload
+ *   fresh    — knitted a new tree (no continuation, or the restore was dropped)
+ */
+type RunMode = "resumed" | "restored" | "fresh";
+
 const sessions = new Map<string, Session>();
 /** The session each in-flight/completed run used, so a turn marker can find it. */
 const runs = new Map<number, Session>();
@@ -513,6 +522,34 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   await session.logger.ready;
   throwIfStopped(signal);
 
+  // A fresh worker (a page reload) starts with no in-memory continuation, but
+  // the paused run's checkpoint is still in the run log. Hydrate the logger's
+  // replay window from it before choosing knit-vs-resume, so a reload does not
+  // silently re-seed the conversation (the "try again" bug: a new run with an
+  // empty conversation). A stale or partial pause is not fatal — it drops to a
+  // fresh tree, the browser counterpart of the Node target's droppable guard.
+  let runMode: RunMode = session.continuation ? "resumed" : "fresh";
+  if (!session.continuation && storage === "browser") {
+    try {
+      const found = await resumableCheckpoint(platform, chatKey);
+      if (found) {
+        const restored = await session.logger.restore(found.checkpoint);
+        if (restored.ok) {
+          session.continuation = found.checkpoint.id;
+          runMode = "restored";
+        } else {
+          console.warn(
+            `[session ${chatKey}] could not restore ${found.checkpoint.id}: ${restored.reason}`,
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[session ${chatKey}] restore failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   const registry = await (async (): Promise<ModelRegistry> => {
     // Served by the admin: its models.json is the single source (and the
     // /api/llm proxy supplies the network + keys). Settings JSON is only a
@@ -539,6 +576,7 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   const toolsMap: Record<string, unknown> = {
     ...browserTools(platform, {
       remote: opts.remote ?? "",
+      exaApiKey: opts.env?.EXO_API_KEY ?? "",
       flushLog: () => session.logger.flush(),
       store: appStore,
     }),
@@ -609,7 +647,13 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
         throwIfStopped(signal);
         session.continuation = res.continuation!;
         runs.delete(opts.id);
-        post({ id: opts.id, type: "result", result: { status: "waiting", humanSlot: res.humanSlot }, eventCount: 0 });
+        post({
+          id: opts.id,
+          type: "result",
+          result: { status: "waiting", humanSlot: res.humanSlot },
+          eventCount: 0,
+          mode: runMode,
+        });
         void session.logger.flush();
         return;
       }
@@ -623,6 +667,7 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
     type: "result",
     result: res.result ?? { status: res.status ?? "done" },
     eventCount: session.logger.events.length,
+    mode: runMode,
   });
   void session.logger.flush();
 }

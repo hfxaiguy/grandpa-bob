@@ -33,6 +33,66 @@ declare module "grandma-kat" {
     query: (sql: string, params?: unknown[]) => Promise<unknown[]> | unknown[],
     opts?: { defaultLimit?: number },
   ): RunLogTool;
+  // --- portable session log store (src/logstore.mjs) --------------------
+  /** The engine's calls + checkpoints DDL; drivers add their own indexes. */
+  export const LOG_TABLES: string;
+  export interface SessionLogRow {
+    seq: number;
+    run_id: string;
+    definition_id?: string;
+    branch_path?: string | null;
+    iteration?: number | null;
+    scope_id?: number | null;
+    kind: string;
+    content: unknown;
+  }
+  export interface SessionLogCheckpoint {
+    id: string;
+    run_id: string;
+    seq: number;
+    resume_positions: string;
+  }
+  export interface SessionLogDriver {
+    appendCalls(rows: readonly SessionLogRow[]): Promise<void> | void;
+    upsertCheckpoint(row: SessionLogCheckpoint): Promise<void> | void;
+    deleteCheckpointRow?(id: string): Promise<void> | void;
+    getCheckpoint?(id: string): Promise<SessionLogCheckpoint | null> | SessionLogCheckpoint | null;
+    getEvents?(
+      runId: string,
+      opts?: { upToSeq?: number },
+    ): Promise<readonly SessionLogRow[]> | readonly SessionLogRow[];
+    headSeq?(): Promise<number> | number;
+    startRun?(runId: string, sessionId?: string | null): Promise<void> | void;
+  }
+  export type SessionLogRestore =
+    | { ok: true; checkpoint: SessionLogCheckpoint; events: number }
+    | { ok: false; reason: string };
+  export interface SessionLogStore {
+    ready: Promise<void>;
+    log(event: Omit<SessionLogRow, "seq"> & { seq?: number }): number;
+    readRow(seq: number): SessionLogRow | null;
+    saveCheckpoint(
+      id: string,
+      runId: string,
+      seq: number,
+      resumePositions: unknown,
+    ): void;
+    getCheckpoint(id: string): SessionLogCheckpoint | null;
+    deleteCheckpoint(id: string): void;
+    getEvents(runId: string): SessionLogRow[];
+    startRun(runId: string, sessionId?: string | null): void;
+    flush(): Promise<void>;
+    restore(checkpoint: string | SessionLogCheckpoint): Promise<SessionLogRestore>;
+    close(): void;
+    readonly events: SessionLogRow[];
+  }
+  export function createSessionLogStore(options: {
+    driver: SessionLogDriver;
+    allocateSeq?: () => number;
+    onEvent?: (row: SessionLogRow) => void;
+    onError?: (err: unknown) => void;
+    flushDelayMs?: number;
+  }): SessionLogStore;
   export const grandma: { knit: typeof knit; resume: typeof resume };
   const _default: { knit: typeof knit; resume: typeof resume };
   export default _default;

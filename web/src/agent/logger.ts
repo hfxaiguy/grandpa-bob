@@ -1,20 +1,31 @@
 /**
- * Browser grandma-kat loggers.
+ * Browser grandma-kat loggers — a thin adapter over the engine's portable log
+ * store (`createSessionLogStore` in grandma-kat).
  *
- * `createMemoryLogger` is the synchronous contract knit() needs: { log,
- * saveCheckpoint, getCheckpoint, deleteCheckpoint, getEvents, close }. Events
- * and checkpoints live in memory; `onEvent` lets the worker stream each event
- * to the UI.
- *
- * `createWorkspaceLogger` wraps it and also persists events to the workspace
- * run log (logs/grandma-kat.db) so `read_runs` / `logs_review` can recall past
- * turns in the browser. Writes are buffered and flushed as one batched INSERT,
- * because the browser SQLite engine exports the whole DB on every mutation.
- * The batched write shares log-store's serial queue and open connection with
- * the session markers, so the two never lose each other's rows.
+ * The engine logs and reads rows synchronously (refs are row addresses; a
+ * resume replays the run's events in the same tick), while the browser's
+ * SQLite handle is an async worker proxy. The store therefore keeps the rows
+ * in an in-memory replica — complete by construction: `log()` appends before
+ * it returns a seq, and checkpoints are shadowed only after the call rows they
+ * depend on — and flushes the shadow in batches through log-store's serial
+ * queue. After a reload a fresh worker calls `restore()` to hydrate the
+ * replica from the same run log before deciding knit-vs-resume.
  */
 import type { Platform } from "../../../src/platform/types";
-import { appendEvents, ensureLogCursor, nextLogSeq } from "./log-store";
+import {
+  createSessionLogStore,
+  type SessionLogCheckpoint,
+  type SessionLogStore,
+} from "grandma-kat";
+import {
+  appendEvents,
+  deleteCheckpointRow,
+  ensureLogCursor,
+  loadCheckpointRow,
+  loadRunEvents,
+  nextLogSeq,
+  saveCheckpointRow,
+} from "./log-store";
 
 export interface KatEvent {
   run_id?: string;
@@ -45,108 +56,95 @@ export interface MemoryLogger {
 export interface WorkspaceLogger extends MemoryLogger {
   /** Resolves once the DB seq cursor is seeded (await before the first log). */
   readonly ready: Promise<void>;
-  /** Persist buffered events to logs/grandma-kat.db now. */
+  /** Persist buffered events and checkpoint shadows now. */
   flush(): Promise<void>;
+  /**
+   * Rebuild the in-memory replica from the run log (a cold worker after a
+   * reload): loads the paused run's rows and the checkpoint, validates that
+   * the pause row is present, then leaves the engine's `resume()` synchronous.
+   */
+  restore(
+    checkpoint: string | SessionLogCheckpoint,
+  ): Promise<{ ok: true; events: number } | { ok: false; reason: string }>;
 }
 
+/** What the engine logs (plus the seq the store assigns) in the store's terms. */
+type EngineLogEvent = Parameters<SessionLogStore["log"]>[0];
+
+/** An in-memory logger for tests and throwaway runs (nothing is persisted). */
 export function createMemoryLogger(
   onEvent?: (event: KatEvent) => void,
   allocSeq?: () => number,
 ): MemoryLogger {
-  let seq = 0;
-  const events: KatEvent[] = [];
-  const checkpoints = new Map<string, unknown>();
-
+  const store = createSessionLogStore({
+    driver: {
+      appendCalls() {},
+      upsertCheckpoint() {},
+      deleteCheckpointRow() {},
+    },
+    allocateSeq: allocSeq,
+    onEvent: (row) => onEvent?.(row as unknown as KatEvent),
+    onError: () => {},
+    flushDelayMs: 0,
+  });
   return {
-    log(event) {
-      const row = { ...event, seq: allocSeq ? allocSeq() : ++seq };
-      events.push(row);
-      onEvent?.(row);
-      return row.seq ?? 0;
-    },
-    readRow(at) {
-      return events.find((e) => e.seq === at) ?? null;
-    },
-    saveCheckpoint(id, runId, atSeq, resumePositions) {
-      checkpoints.set(id, {
-        id,
-        run_id: runId,
-        seq: atSeq,
-        resume_positions: JSON.stringify(resumePositions),
-      });
-    },
-    getCheckpoint(id) {
-      return checkpoints.get(id) ?? null;
-    },
-    deleteCheckpoint(id) {
-      checkpoints.delete(id);
-    },
-    getEvents(runId) {
-      return events.filter((e) => e.run_id === runId);
-    },
-    close() {},
+    log: (event) => store.log(event as EngineLogEvent),
+    readRow: (seq) => store.readRow(seq) as KatEvent | null,
+    saveCheckpoint: (id, runId, seq, resumePositions) =>
+      store.saveCheckpoint(id, runId, seq, resumePositions),
+    getCheckpoint: (id) => store.getCheckpoint(id),
+    deleteCheckpoint: (id) => store.deleteCheckpoint(id),
+    getEvents: (runId) => store.getEvents(runId) as KatEvent[],
+    close: () => store.close(),
     get events() {
-      return events;
+      return store.events as KatEvent[];
     },
   };
 }
 
-// Mirrors grandma-kat's SqliteLogger schema (src/logger.mjs CREATE_TABLES).
-// log-store owns the DDL now; the logger and the session markers share it.
-
 /**
- * In-memory + persistent logger for the browser agent worker. The in-memory
- * half stays synchronous (knit needs it); the DB half buffers events and
- * flushes them in one batched INSERT, so a long run costs one DB export per
- * flush rather than one per event.
+ * The workspace logger: the engine contract over the OPFS run log. Call
+ * `await logger.ready` before the first `log()` (the seq cursor must be seeded
+ * from the database so refs address the rows on disk).
  */
 export function createWorkspaceLogger(
   platform: Platform,
   onEvent?: (event: KatEvent) => void,
 ): WorkspaceLogger {
-  // The seq the engine logs must be the row's seq on disk: refs are addresses.
-  // A failed seed falls back to 0; the flush re-keys from the DB's MAX(seq).
   const ready = ensureLogCursor(platform).catch(() => {});
-  const mem = createMemoryLogger(onEvent, () => nextLogSeq(platform));
-  let pending: KatEvent[] = [];
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let chain: Promise<void> = Promise.resolve();
-
-  const write = (batch: KatEvent[]): void => {
-    if (!batch.length) return;
-    chain = chain
-      .then(() => appendEvents(platform, batch))
-      .catch(() => {
-        /* best-effort: a failed log write must never break a run */
-      });
-  };
+  const store = createSessionLogStore({
+    driver: {
+      appendCalls: (rows) => appendEvents(platform, rows as unknown as KatEvent[]),
+      upsertCheckpoint: (row) => saveCheckpointRow(platform, row),
+      deleteCheckpointRow: (id) => deleteCheckpointRow(platform, id),
+      getCheckpoint: (id) => loadCheckpointRow(platform, id),
+      getEvents: (runId, opts) => loadRunEvents(platform, runId, opts?.upToSeq),
+    },
+    allocateSeq: () => nextLogSeq(platform),
+    onEvent: (row) => onEvent?.(row as unknown as KatEvent),
+    onError: (err) =>
+      console.warn(`[runlog] write failed: ${err instanceof Error ? err.message : String(err)}`),
+  });
 
   return {
-    ...mem,
     ready,
+    log: (event) => store.log(event as EngineLogEvent),
+    readRow: (seq) => store.readRow(seq) as KatEvent | null,
+    saveCheckpoint: (id, runId, seq, resumePositions) =>
+      store.saveCheckpoint(id, runId, seq, resumePositions),
+    getCheckpoint: (id) => store.getCheckpoint(id),
+    deleteCheckpoint: (id) => store.deleteCheckpoint(id),
+    getEvents: (runId) => store.getEvents(runId) as KatEvent[],
+    flush: () => store.flush(),
+    restore: async (checkpoint) => {
+      const result = await store.restore(checkpoint);
+      return result.ok
+        ? { ok: true as const, events: result.events }
+        : { ok: false as const, reason: result.reason };
+    },
+    close: () => store.close(),
     get events() {
-      return mem.events;
+      return store.events as KatEvent[];
     },
-    log(event) {
-      const seq = mem.log(event);
-      // Queue the row (with its seq), not the raw event: the flush writes the
-      // exact seq the engine just consumed.
-      const row = mem.events[mem.events.length - 1];
-      if (row) pending.push(row);
-      if (!timer) timer = setTimeout(() => void flush(), 150);
-      return seq;
-    },
-    flush,
   };
-
-  async function flush(): Promise<void> {
-    if (timer) {
-      clearTimeout(timer);
-      timer = null;
-    }
-    const batch = pending;
-    pending = [];
-    write(batch);
-    await chain;
-  }
 }

@@ -120,6 +120,18 @@ function tokenLine(t: TurnTokens | null | undefined): string | null {
   return `\u21c5 ${fmtTokenCount(t.input)} in \u00b7 ${fmtTokenCount(t.output)} out \u00b7 ${calls}`;
 }
 
+/**
+ * A line under the turn's last bubble when the turn's relationship to its
+ * session matters: a tree restored from the run log after a reload, or — the
+ * regression this guards — a fresh run although the previous turn paused, i.e.
+ * the context was silently lost.
+ */
+function turnNote(t: Turn): string | null {
+  if (t.contextLost) return "\u26a0 started a fresh run \u2014 the previous session\u2019s context was not restored";
+  if (t.runMode === "restored") return "\u21ba continued the paused session from before the reload";
+  return null;
+}
+
 function MemoryPanel(props: { app: string }) {
   const [inspect, setInspect] = createSignal<{ path: string; value: unknown } | null>(null);
   const entries = createMemo(() => {
@@ -1281,6 +1293,21 @@ export function Tile(props: { app: AppInfo }) {
                       {(line) => (
                         <div class="turn-tokens" title="tokens this turn used (input counts the full prompt on every model call)">
                           {line()}
+                        </div>
+                      )}
+                    </Show>
+                    <Show when={b.lastOfTurn ? turnNote(b.turn) : null}>
+                      {(note) => (
+                        <div
+                          class="turn-note"
+                          classList={{ warn: !!b.turn.contextLost }}
+                          title={
+                            b.turn.contextLost
+                              ? "a paused session existed in the run log, but this turn grew a new tree"
+                              : "the paused tree was rebuilt from the run log after the page reloaded"
+                          }
+                        >
+                          {note()}
                         </div>
                       )}
                     </Show>

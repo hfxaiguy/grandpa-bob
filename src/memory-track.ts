@@ -144,11 +144,11 @@ export function createMemoryTracker({
   function track(key: string, ev: unknown, app = "trunk"): MemoryWritePush | null {
     const raw = ev as MemoryWrite | null | undefined;
     const content = raw?.content ?? null;
-    // Memory writes are record events with op memory/memoryUpdate; older runs
-    // logged them as their own "memory" kind.
+    // Memory writes are record events with op memory/memoryUpdate (the
+    // engine has logged no other encoding since 2026-09-21; the Node logger
+    // converts any older kind-'memory' rows on open).
     const memWrite =
-      raw?.kind === "memory" ||
-      (raw?.kind === "record" && (content?.op === "memory" || content?.op === "memoryUpdate"));
+      raw?.kind === "record" && (content?.op === "memory" || content?.op === "memoryUpdate");
     if (!memWrite || raw?.scope_id == null || !content) return null;
     const child = typeof content.child === "string" ? content.child : "";
     const slotKey = `${raw.scope_id}/${child}`;

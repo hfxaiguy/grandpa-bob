@@ -3,7 +3,7 @@ import type OpenAI from "openai";
 import { inspectMemoryTool } from "grandma-kat";
 import { FileTools } from "./files.js";
 import { ShellTools } from "./shell.js";
-import { ExaSearchTools } from "./websearch.js";
+import { ExaSearchTools, EXA_SEARCH_DEFINITION } from "./websearch.js";
 import { SqliteTools } from "./sqlite.js";
 import { ownedDbApp, ownedDbError } from "./app-dbs.js";
 import type { AppStore } from "../app-store.js";
@@ -233,42 +233,7 @@ export class ToolRegistry {
         },
       },
     },
-    {
-      type: "function",
-      function: {
-        name: "exa_search",
-        description:
-          "Search the web via the Exa Search API. Returns structured data: a JSON object with " +
-          "'query', 'count', and 'results', where each result has title, url, publishedDate, " +
-          "highlights (query-relevant excerpts) and text (page content up to 8000 chars). " +
-          "Use for current events, facts, research, or anything requiring up-to-date web information.",
-        parameters: {
-          type: "object",
-          properties: {
-            query: { type: "string", description: "Natural language search query" },
-            type: {
-              type: "string",
-              enum: ["auto", "fast", "instant", "deep-lite", "deep", "deep-reasoning"],
-              description: "Search method (default 'auto'). 'fast'/'instant' for speed, 'deep' variants for multi-step research.",
-            },
-            numResults: { type: "integer", description: "Number of results (1-100, default 5)" },
-            category: {
-              type: "string",
-              enum: ["company", "people", "publication", "news", "personal site", "financial report"],
-              description: "Focus on a specific content type (default: any)",
-            },
-            includeDomains: {
-              type: "array",
-              items: { type: "string" },
-              description: "Only return results from these domains (e.g. ['reuters.com'])",
-            },
-            startPublishedDate: { type: "string", description: "ISO 8601 date — only results published after this date" },
-            endPublishedDate: { type: "string", description: "ISO 8601 date — only results published before this date" },
-          },
-          required: ["query"],
-        },
-      },
-    },
+    EXA_SEARCH_DEFINITION,
     {
       type: "function",
       function: {

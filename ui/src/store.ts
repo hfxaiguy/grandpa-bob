@@ -997,6 +997,8 @@ export function handleSSE(msg: any): void {
             if (msg.buttons) t.buttons = msg.buttons;
             if (msg.tokens) t.tokens = msg.tokens;
             t.fallback = msg.fallback ?? null;
+            if (msg.runMode) t.runMode = msg.runMode;
+            if (msg.contextLost != null) t.contextLost = Boolean(msg.contextLost);
           }
           s.awaiting = msg.awaiting ?? null;
         }),

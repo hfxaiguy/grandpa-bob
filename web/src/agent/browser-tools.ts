@@ -6,10 +6,12 @@ import { FileTools } from "../../../src/tools/files";
 import { SqliteTools } from "../../../src/tools/sqlite";
 import { ownedDbApp, ownedDbError } from "../../../src/tools/app-dbs";
 import { CsvTools, CSV_QUERY_DEFINITION } from "../../../src/tools/csv";
+import { ExaSearchTools, EXA_SEARCH_DEFINITION } from "../../../src/tools/websearch";
 import { READ_JSON_DEFINITION, readJsonValue } from "../../../src/tools/json";
 import { runCommand } from "../../../src/platform/coreutils";
 import { writeDatabaseDumps } from "../../../src/db-sync";
 import { createSqliteWasm } from "../platform/sqlite-wasm";
+import { withLogDb } from "./log-store";
 import { runLogToolFromQuery } from "grandma-kat";
 import type { Platform } from "../../../src/platform/types";
 import type { AppStore } from "../../../src/app-store";
@@ -31,6 +33,12 @@ export interface KatTool {
 export interface BrowserToolOptions {
   /** Git remote to fetch/push (from settings/`?remote=`). */
   remote?: string;
+  /**
+   * Exa Search API key (`EXO_API_KEY`). Missing key is fine: the tool is still
+   * offered and answers with the same "not configured" error as the Node
+   * target, so the two registries stay identical.
+   */
+  exaApiKey?: string;
   /** Flush buffered run-log events before read_runs reads them. */
   flushLog?: () => Promise<void> | void;
   /**
@@ -47,17 +55,23 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
   // mode, where platform.sqlite is the bridge's per-call handle and could not
   // hold the scratch table between statements.
   const csv = new CsvTools(platform, createSqliteWasm());
+  // Pure fetch + AbortController (no Node builtins) — the same class the Node
+  // target uses. api.exa.ai answers CORS preflights for POST + authorization,
+  // so the browser calls it directly.
+  const exa = new ExaSearchTools(opts.exaApiKey ?? "");
   const root = platform.workspaceRoot;
 
-  // read_runs over the browser's own run log (OPFS-backed WASM SQLite).
+  // read_runs over the browser's own run log. Query through log-store's
+  // cached, serial-queued handle instead of opening a fresh connection per
+  // call: the log streams through the opfs-sahpool VFS, which keeps one pooled
+  // connection per file, and the whole-file fallback would load the entire log
+  // into wasm memory on every open. The queue also lets the buffered event
+  // flushes land before the read.
   const runLog = runLogToolFromQuery(async (sql, params = []) => {
-    const db = await platform.sqlite.open(platform.path.join(root, "logs/grandma-kat.db"), { readOnly: true });
-    try {
+    return withLogDb(platform, async (db) => {
       const stmt = await db.prepare(sql);
       return await stmt.all(...params);
-    } finally {
-      await db.close();
-    }
+    });
   });
 
   return {
@@ -67,12 +81,16 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         type: "object",
         properties: { path: { type: "string" }, recursive: { type: "boolean" } },
       },
-      execute: async (a) => ({ listing: await files.listFiles(String(a.path ?? "."), a.recursive !== false) }),
+      // Text results are returned bare (the raw string), matching the Node
+      // target's dispatch (src/tools/index.ts). A `{ content }` wrapper ends up
+      // double-encoded in the model transcript and in ref:// payloads, forcing
+      // every caller to hand over `ref://…/content` instead of the value.
+      execute: async (a) => await files.listFiles(String(a.path ?? "."), a.recursive !== false),
     },
     read_file: {
       description: "Read a file's full contents.",
       parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
-      execute: async (a) => ({ content: await files.readFile(String(a.path ?? "")) }),
+      execute: async (a) => await files.readFile(String(a.path ?? "")),
     },
     write_file: {
       description: "Create or overwrite a file.",
@@ -81,7 +99,7 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         properties: { path: { type: "string" }, content: { type: "string" } },
         required: ["path", "content"],
       },
-      execute: async (a) => ({ result: await files.writeFile(String(a.path ?? ""), String(a.content ?? "")) }),
+      execute: async (a) => await files.writeFile(String(a.path ?? ""), String(a.content ?? "")),
     },
     edit_file: {
       description: "Replace an exact string in a file.",
@@ -96,19 +114,17 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         required: ["path", "old_string", "new_string"],
       },
       execute: async (a) =>
-        ({
-          result: await files.editFile(
-            String(a.path ?? ""),
-            String(a.old_string ?? ""),
-            String(a.new_string ?? ""),
-            a.replace_all === true,
-          ),
-        }),
+        await files.editFile(
+          String(a.path ?? ""),
+          String(a.old_string ?? ""),
+          String(a.new_string ?? ""),
+          a.replace_all === true,
+        ),
     },
     delete_file: {
       description: "Delete a file.",
       parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
-      execute: async (a) => ({ result: await files.deleteFile(String(a.path ?? "")) }),
+      execute: async (a) => await files.deleteFile(String(a.path ?? "")),
     },
     sql_query: {
       description: "Run a read-only SQL query against a workspace .db file.",
@@ -169,6 +185,28 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
           readRef: ctx?.readRef,
         }),
     },
+    exa_search: {
+      description: EXA_SEARCH_DEFINITION.function.description,
+      parameters: EXA_SEARCH_DEFINITION.function.parameters as {
+        type: "object";
+        properties?: Record<string, unknown>;
+        required?: string[];
+      },
+      execute: async (a) =>
+        exa.search({
+          query: String(a.query ?? ""),
+          type: a.type !== undefined ? String(a.type) : undefined,
+          numResults: a.numResults !== undefined ? Number(a.numResults) : undefined,
+          category: a.category !== undefined ? String(a.category) : undefined,
+          includeDomains: Array.isArray(a.includeDomains)
+            ? (a.includeDomains as unknown[]).map(String)
+            : undefined,
+          startPublishedDate:
+            a.startPublishedDate !== undefined ? String(a.startPublishedDate) : undefined,
+          endPublishedDate:
+            a.endPublishedDate !== undefined ? String(a.endPublishedDate) : undefined,
+        }),
+    },
     run_command: {
       description: "Run an allowlisted command over the virtual workspace filesystem.",
       parameters: {
@@ -177,13 +215,11 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         required: ["command"],
       },
       execute: async (a) =>
-        ({
-          output: await runCommand(
-            { fs: platform.fs, path: platform.path, workspaceRoot: root },
-            String(a.command ?? ""),
-            Array.isArray(a.args) ? (a.args as unknown[]).map(String) : [],
-          ),
-        }),
+        await runCommand(
+          { fs: platform.fs, path: platform.path, workspaceRoot: root },
+          String(a.command ?? ""),
+          Array.isArray(a.args) ? (a.args as unknown[]).map(String) : [],
+        ),
     },
     git_status: {
       description: "Show the workspace git branch and changed files.",
@@ -245,7 +281,6 @@ function notAvailable(name: string): KatTool {
 
 /** Names the workspace trunk declares but this target does not implement. */
 export const STUB_TOOL_NAMES = [
-  "exa_search",
   "upsert_contact",
   "log_message",
   "get_contact",

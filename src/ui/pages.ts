@@ -124,6 +124,8 @@ export function buildSettingsHtml(config: UiConfig): string {
     <input id="f-ollama" type="password" placeholder="ollama-api-key...">
     <label>Neuralwatt API key <span id="cur-neuralwatt" style="float:right"></span></label>
     <input id="f-neuralwatt" type="password" placeholder="sk-...">
+    <label>Exa search API key <span id="cur-exo" style="float:right"></span></label>
+    <input id="f-exo" type="password" placeholder="exa-... (used by exa_search)">
     <small>Shortcuts for the most common keys — every other key in <code>.env</code> is editable below.</small>
     <div class="actions">
       <button type="submit">Save credentials</button>
@@ -321,6 +323,7 @@ async function refreshStatus() {
   $("cur-hf").textContent     = env.LLM_API_KEY         ? "current: " + env.LLM_API_KEY.slice(0,6) + "..." : "(unset)";
   $("cur-ollama").textContent = env.OLLAMA_API_KEY      ? "current: " + env.OLLAMA_API_KEY.slice(0,6) + "..." : "(unset)";
   $("cur-neuralwatt").textContent = env.NEURALWATT_API_KEY ? "current: " + env.NEURALWATT_API_KEY.slice(0,6) + "..." : "(unset)";
+  $("cur-exo").textContent = env.EXO_API_KEY ? "current: " + env.EXO_API_KEY.slice(0,6) + "..." : "(unset)";
   // Populate the all-keys editor only when it's not holding unsaved edits.
   if (!envRows.length) {
     envRows = Object.entries(env).map(([key, value]) => ({ key, orig: key, value: String(value), removed: false }));
@@ -880,11 +883,12 @@ async function saveEnv(e) {
   if ($("f-hf").value)     body.LLM_API_KEY         = $("f-hf").value;
   if ($("f-ollama").value) body.OLLAMA_API_KEY      = $("f-ollama").value;
   if ($("f-neuralwatt").value) body.NEURALWATT_API_KEY = $("f-neuralwatt").value;
+  if ($("f-exo").value)    body.EXO_API_KEY         = $("f-exo").value;
   if (Object.keys(body).length === 0) { toast("nothing to save", true); return; }
   try {
     await api("/api/env", { method: "POST", body: JSON.stringify(body) });
     toast("saved");
-    $("f-token").value = $("f-uid").value = $("f-hf").value = $("f-ollama").value = $("f-neuralwatt").value = "";
+    $("f-token").value = $("f-uid").value = $("f-hf").value = $("f-ollama").value = $("f-neuralwatt").value = $("f-exo").value = "";
     await refreshStatus();
   } catch {}
 }

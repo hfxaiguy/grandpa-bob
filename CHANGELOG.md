@@ -96,6 +96,27 @@ Checks: `npm run typecheck`, `npm --prefix web run typecheck`,
 `npm --prefix web run build`, `npm run test:read-json`, plus the app suites
 (browser, caller-list, contacts, email, enrich-profile, files, knit).
 
+## 2026-10-27 — board: the trunk dock's expand actually fills the board
+
+The dock's `⤢` toggle changed state but not size. `.tiles` is a flex column and
+the dock — a direct flex item — kept the default `flex-shrink: 1`, so flexbox
+squashed its authored height back to the space left after the square grid,
+flooring at `min-height: 280px`. On a tall board normal and expanded both
+rendered 280px; even the unexpanded 46vh dock had been collapsing to that floor
+since the square grid landed. The dock is now `flex: none`, so its height is
+honored in both states.
+
+Expanded, the dock is `height: 100%`: the percentage resolves against the tiles
+viewport (the containing block of this sticky child), so the home conversation
+fills the whole board flush under the toolbar while the grid scrolls entirely
+beneath the pinned dock. `⤡` restores the `min(46vh, 440px)` seat (56vh on a
+phone).
+
+Checks: `npm run test:ui`, plus a headless Chromium measurement pass (short and
+tall grids × normal/expanded × desktop and phone widths) asserting the dock is
+46vh (56vh on a phone) unexpanded even when the grid is taller than the board,
+exactly the tiles viewport when expanded, and that the toggle round-trips.
+
 ## 2026-10-27 — web: service settings own the account and keys; seed bindings only name the seed
 
 The BobSwap dialog (`Sync…` → `BobSwap…`) is now the only place to enter the
@@ -148,6 +169,38 @@ persists in `gpb.tiled.layout` like the rest of the layout. Pin and wide stay
 hidden on the trunk — it has no grid seat to pin and already spans every
 column.
 
+## 2026-10-26 — web: a reloaded tab restores its paused session instead of re-seeding it
+
+Refreshing the page used to silently drop the conversation's brain: the worker
+kept each chat's checkpoint only in memory, so the first turn after a reload
+knitted a fresh tree — a new run id and `conversation` re-initialized to `[]` —
+while the chat still showed the whole history. "try again" then
+correctly-but-uselessly replied that the thread started with those words.
+
+The browser logger now shadows checkpoints into the run log's `checkpoints`
+table through grandma-kat's portable `createSessionLogStore` (host drivers:
+`web/src/agent/logger.ts` over `web/src/agent/log-store.ts`). On the first turn
+of a cold worker the host resolves the session's pause from its last turn
+marker (`resumableCheckpoint`), hydrates the paused run's replay window, and
+takes the real `resume()` path — same run id, same conversation memory. A
+missing or torn checkpoint still drops to a fresh tree (logged), and a delete
+tombstone is never resurrected. Restore stays browser-storage only for now:
+a desktop-bridge tab shares the Node agent's log, whose policy owns that DB.
+
+Each turn records how it entered its tree (`runMode`: resumed / restored /
+fresh; `contextLost` when a fresh tree follows a pause). The chat prints
+"↺ continued the paused session from before the reload" on a restore, and a
+warning when prior context was lost — the state the old bug hid.
+
+Tests: `npm run test:web-restore` (paused → a new logger over the same log →
+same run resumed, consumed checkpoint gone, delete tombstone honoured, torn
+flush refused) and the browser smoke's "first turn after a reload restores the
+paused run" assertion (bundled mock LLM, fresh CDP port). `web-turns`,
+`web-memory`, `sessions`, `memory-track`, `runlog-boot/tiers/retention/read-runs`,
+both typechecks and both builds stay green. The schema now comes from
+grandma-kat's `LOG_TABLES` (no mirrored DDL); run-log retention already reads
+and deletes `checkpoints`, so replay pins keep working.
+
 ## 2026-10-26 — settings: the .env editor reads what dotenv reads
 
 The "All .env keys" editor and the bot were looking at different files: the bot
@@ -174,6 +227,114 @@ up as "(no keys — add one below)" — saving from that state looked broken.
 Tests: `npm run test:env-editor` (BOM/CRLF/export/lowercase parse + rewrite
 round-trip, and the real settings script in a VM for the paste split, hints,
 validation and both success toasts), plus `test:pages` and both typechecks.
+
+## 2026-10-25 — web: a wedged OPFS degrades the run log instead of killing it
+
+A FireDragon profile whose OPFS writes all failed with Gecko's bare
+`UnknownError: Unknown failure` turned into a cascade: the `opfs-sahpool` VFS
+could not install, the run log fell back to the whole-file engine, and building
+`idx_calls_kind` there hit `SQLITE_NOMEM` (`rc=7`) on a 20 KB, zero-row log —
+the tab's wasm heap was already exhausted. Because the DDL ran as one statement
+list, that failure rejected the log's first open and every read/turn behind it
+for the rest of the session. Four changes break the cascade:
+
+- **The pool install is retried.** Only a successful install is cached; a
+  failed one is retried on a later log open (30 s cooldown), so recovering OPFS
+  stops forcing the legacy engine until the next reload.
+- **The schema is staged.** Tables are created first, the kind index is a
+  separate best-effort statement, and a failed build logs a warning and
+  continues with full scans; the next boot retries it. The tables and the index
+  still ship together as `RUN_LOG_DDL` for tools/tests.
+- **NOMEM names its cause.** SQLITE_NOMEM from any db/statement op is rewritten
+  to say the run log could not stream and had to fit in the wasm heap, with the
+  remedy (close tabs/reload, trim or move the file), instead of a bare "not
+  enough memory" that reads like a broken query.
+- **OPFS write failures are attributed.** A persist failure now says the SQL
+  *was applied in memory* but the file could not be saved (Gecko's raw error
+  appended), and a rejected `sqlite3_deserialize` surfaces at open instead of
+  later as "file is not a database".
+
+Tests: `npm run test:runlog-boot` (index build fails → log still opens, marker
+writes/reads work, index reported absent, next open creates it), plus
+`test:runlog-retention`, `test:runlog-tiers`, `test:read-runs-handle` and both
+typechecks.
+
+## 2026-10-24 — run log: age tiers keep old sessions recallable for a fraction of the bytes
+
+The run-log trim only knew one move: delete whole engine runs once the file
+passed its size budget. That made an old session an all-or-nothing choice —
+keep its full prompts/transcripts, or lose the chat entirely. The log now has
+three tiers:
+
+- **Tier 1** — sessions active within `hotDays` (14): untouched.
+- **Tier 2** — tombstoned or older than `hotDays` (and not holding a live
+  checkpoint): they keep their markers, emits, human rows, tree/scope rows and
+  the *final* memory write per slot, while model rounds, tool transcripts and
+  plain child results are dropped. The session picker, turn summaries, the
+  memory panel and session restore all still work, because `memory-track`
+  keeps only the last value per `(scope_id, child)` anyway; tree rows survive
+  so app attribution does not collapse to `trunk`. Only `read_runs`
+  expanded/deps recall loses the dropped trace.
+- **Tier 3** — older than `deleteDays` (90): deleted whole, checkpoint and
+  all (a three-month-old paused run is not resumable in practice).
+
+A live checkpoint pins its session until the deletion horizon. Markers with no
+timestamp have an unknown age and are left to the size policy, so legacy or
+hand-written rows never age out by accident. Only `definition_id = 'web'`
+sessions are touched: a browser attached to a shared desktop log (bridge mode)
+never compacts Telegram history. Tier compaction runs before the size trim
+(then throttled with it at turn boundaries), does a droppable-rows pre-check
+so an already-compacted pass issues no writes, and only VACUUMs after a delete.
+
+Tests: `npm run test:runlog-tiers` (recent untouched, trace dropped while
+retained rows survive, last-value-only memory rows, panel payload byte-equal
+before/after, checkpoints pinned, unknown age untouched, >90d sessions and
+their checkpoints deleted, second pass a true no-op), plus
+`test:runlog-retention`, `test:web-memory`, `test:memory-track`,
+`test:browser-tools` and the web build.
+
+## 2026-10-24 — web: `read_runs` reuses the run log's one connection
+
+The browser's `read_runs` opened a fresh read-only connection on every call:
+before the log streamed, that meant loading the whole file into wasm memory
+(the `Failed to allocate 119787520 bytes` insight-run failure), and after the
+`opfs-sahpool` switch it still created an extra connection to the pooled log
+per read. The tool now runs its SELECTs through log-store's cached,
+serial-queued handle, like every other reader of the log: one open per
+session, no per-call close, and buffered event flushes still land before the
+read.
+
+Tests: `npm run test:read-runs-handle` (one open reused across reads, one
+prepared SELECT per read).
+
+## 2026-10-23 — web: a truncated `profiles.json` no longer forgets profiles
+
+`profiles.json` is rewritten on boot (for `lastUsedAt`) and on every profile
+change. In Gecko a `createWritable()` can be torn down by a reload between
+the truncate and the close, leaving a zero-byte file; `bootProfiles()` read
+that as "no registry" and recreated a default-only installation, dropping
+every other profile and its seed binding. The registry now keeps a mirror in
+`localStorage` (`bob:profile-registry`), written *before* the OPFS file and
+used when the file is missing or unparsable. Boot also rebuilds a lost
+registry from the `/profiles/` directories (which carry the names, while the
+mirror restores `seed`/`lastUsedAt`), so an empty registry repairs itself
+instead of silently resetting. Pre-profile and interrupted-migration
+installs still take the migration path first, unchanged.
+
+## 2026-10-23 — run log: the legacy `memory` row kind is retired
+
+Grandma-kat used to log memory writes with their own kind (`memory`); record
+rows with `op` `memory`/`memoryUpdate` replaced that encoding on 2026-09-21.
+The engine's resume path kept a legacy branch reading the old kind — now the
+desktop logger converts those rows once on open (op + `patch: true`, replay
+semantics unchanged) and the branch is gone. On the bot side the mirrored
+readers stop accepting the old kind: `WebLog.memoryRows` and
+`log-store.memoryRows` filter `kind = 'record'`, and `memory-track.track`
+expects the current encoding. The browser log store runs the same one-time
+conversion on open (guarded by an index seek), so a profile seeded by an
+older bundle is converted too. Tests: `npm run test:memory-track`,
+`test:web-memory`, `test:sessions`, `test:runs-table`, `test:provenance`,
+plus grandma-kat's full suite.
 
 ## 2026-10-24 — web: the run log streams through OPFS instead of loading whole
 
@@ -216,6 +377,24 @@ Tests: `npm run test:runlog-retention`, `web/scripts/runlog-smoke.mjs`
 (legacy import, session visible after reload, writes served by the pool, old
 file untouched), `web/scripts/browser-smoke.mjs` (turn logged, sessions and
 refs survive reload).
+
+## 2026-10-23 — web: a refused seed-binding save no longer kills the seed dialog
+
+Checking a seed saved the binding first, so a browser storage backend that
+refused the registry write (Gecko's wedged OPFS reports a bare
+`UnknownError: Unknown failure`) turned the check's rejection into an
+unhandled promise: the console pointed at the button handler, and the dialog
+said nothing. Checking is a read, so it now validates the form into a binding,
+tries the save, warns `binding not saved: … — checking the fields as typed…`
+when the write is refused, and carries on; the result line gains
+`· binding not saved`, and Apply retries the save (`save failed: …` if it is
+still refused). Apply and Publish resolve their binding through the same
+guarded save, so no click ends in an unhandled rejection.
+
+Tests: `npm --prefix web run build`, `npm --prefix web run smoke:profiles`
+(seed-binding persistence), plus a headless run with `createWritable` faked to
+throw the Gecko exception: Check still reported the remote version and raised
+no unhandled exception.
 
 ## 2026-10-23 — ui: tile modals portal out so they cover the viewport
 

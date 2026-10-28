@@ -220,13 +220,90 @@ async function writeJsonFile(
   await writable.close();
 }
 
+/**
+ * `profiles.json` is tiny but is rewritten on boot (lastUsedAt) and on every
+ * profile change. In Gecko a `createWritable()` can wedge or be torn down by a
+ * reload between the truncate and the close, leaving a zero-byte file — which
+ * reads as "no registry" and silently drops every profile (and its seed
+ * binding). localStorage is atomic, so the registry keeps a mirror there:
+ * written before the file, used when the file is missing/corrupt, and the
+ * trigger for repairing the file on the next boot.
+ */
+const REGISTRY_MIRROR_KEY = "bob:profile-registry";
+
+function readRegistryMirror(): ProfileRegistry | null {
+  try {
+    const raw = localStorage.getItem(REGISTRY_MIRROR_KEY);
+    return raw ? parseProfileRegistry(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeRegistryMirror(registry: ProfileRegistry): void {
+  try {
+    localStorage.setItem(REGISTRY_MIRROR_KEY, JSON.stringify(registry));
+  } catch {
+    /* private mode / quota: the OPFS file is still the primary copy */
+  }
+}
+
+/** The registry as stored in OPFS, without the localStorage fallback. */
+async function readRegistryFile(): Promise<ProfileRegistry | null> {
+  const raw = await readJsonFile(await originRoot(), REGISTRY_FILE);
+  if (raw === null) return null;
+  try {
+    return parseProfileRegistry(raw);
+  } catch {
+    // A corrupt file must not read as a pre-profile install (that would drop
+    // every registered profile); the mirror/directory scan recovers instead.
+    return null;
+  }
+}
+
+/**
+ * Rebuild a registry from the profile directories when both the file and the
+ * mirror are unusable. Names survive; seed bindings cannot be recovered.
+ */
+async function registryFromDirs(): Promise<ProfileRegistry | null> {
+  let root: FileSystemDirectoryHandle;
+  let profilesDir: FileSystemDirectoryHandle;
+  try {
+    root = await originRoot();
+    profilesDir = await root.getDirectoryHandle(PROFILE_DIR);
+  } catch {
+    return null;
+  }
+  const names: string[] = [];
+  for await (const [name, handle] of (profilesDir as unknown as IterableDirHandle).entries()) {
+    if (handle.kind === "directory" && isValidProfileName(name) && !names.includes(name)) {
+      names.push(name);
+    }
+  }
+  if (!names.length) return null;
+  if (!names.includes(DEFAULT_PROFILE)) names.unshift(DEFAULT_PROFILE);
+  const mirror = readRegistryMirror();
+  return {
+    version: 1,
+    profiles: names.map(
+      (name) =>
+        mirror?.profiles.find((profile) => profile.name === name) ?? {
+          name,
+          createdAt: new Date().toISOString(),
+        },
+    ),
+  };
+}
+
 /** Read the registry, or null when the installation predates profiles. */
 export async function readRegistry(): Promise<ProfileRegistry | null> {
-  const raw = await readJsonFile(await originRoot(), REGISTRY_FILE);
-  return raw === null ? null : parseProfileRegistry(raw);
+  return (await readRegistryFile()) ?? readRegistryMirror();
 }
 
 export async function writeRegistry(registry: ProfileRegistry): Promise<void> {
+  // Mirror first: if the OPFS write is interrupted, the next boot still knows
+  // every profile and can put the file back.
+  writeRegistryMirror(registry);
   await writeJsonFile(await originRoot(), REGISTRY_FILE, registry);
 }
 
@@ -446,6 +523,8 @@ async function summarizeRoot(names: string[]): Promise<{ files: number; bytes: n
  *
  * - existing registry: returned as-is (default guaranteed by the parser);
  * - pre-profile data: moved into `/profiles/default/` (guarded, resumable);
+ * - missing/corrupt registry after migration: rebuilt from the profile
+ *   directories and the localStorage mirror (never silently reset);
  * - fresh install: an empty `default` profile is registered.
  */
 export async function bootProfiles(): Promise<{
@@ -453,12 +532,15 @@ export async function bootProfiles(): Promise<{
   migrated: boolean;
   resumed: boolean;
 }> {
-  const existing = await readRegistry();
-  if (existing) {
+  const onDisk = await readRegistryFile();
+  if (onDisk) {
     await profileHandle(DEFAULT_PROFILE);
-    return { registry: existing, migrated: false, resumed: false };
+    return { registry: onDisk, migrated: false, resumed: false };
   }
 
+  // A pre-profile installation (or an interrupted migration) must still take
+  // the migration path; only once the origin root is clean can the profile
+  // directories be trusted as the recovered registry.
   const marker = await readMarker();
   const rootNames = await rootEntryNames();
   if (marker || rootNames.length > 0) {
@@ -467,6 +549,22 @@ export async function bootProfiles(): Promise<{
       marker ?? { version: 1, startedAt: new Date().toISOString(), copied: [] },
     );
     return { registry, migrated: true, resumed: marker !== null };
+  }
+
+  // Missing/corrupt registry with migrated data: rebuild it from the profile
+  // directories (and the mirror, for seed bindings) instead of treating the
+  // installation as fresh. Losing the file must not lose the profiles.
+  const recovered = (await registryFromDirs()) ?? readRegistryMirror();
+  if (recovered) {
+    await profileHandle(DEFAULT_PROFILE);
+    try {
+      await writeRegistry(recovered);
+    } catch (err) {
+      // Boot with the recovered registry; the mirror still carries it and the
+      // next boot retries the file.
+      console.warn("could not repair profiles.json", err);
+    }
+    return { registry: recovered, migrated: false, resumed: false };
   }
 
   const registry: ProfileRegistry = {

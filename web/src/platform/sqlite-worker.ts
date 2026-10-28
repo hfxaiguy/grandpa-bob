@@ -136,39 +136,70 @@ async function loadInto(db: Any, path: string): Promise<void> {
   }
   const flags =
     sqlite3.capi.SQLITE_DESERIALIZE_FREEONCLOSE | sqlite3.capi.SQLITE_DESERIALIZE_RESIZEABLE;
-  sqlite3.capi.sqlite3_deserialize(db.pointer, "main", ptr, bytes.length, bytes.length, flags);
+  const rc = sqlite3.capi.sqlite3_deserialize(
+    db.pointer,
+    "main",
+    ptr,
+    bytes.length,
+    bytes.length,
+    flags,
+  );
+  if (rc) {
+    // FREEONCLOSE means SQLite already freed ptr on this failure path (see
+    // sqlite3_deserialize's docs) — do not free it again.
+    // A torn write (an interrupted OPFS writable can leave a partial file)
+    // would otherwise surface much later as a bare "file is not a database".
+    throw new Error(`could not load ${path} into memory (sqlite3_deserialize rc=${rc})`);
+  }
 }
 
 // ── streaming run log (opfs-sahpool) ────────────────────────────────────────
 
+/** The installed pool, kept only after a successful install. */
+let pool: Any | null = null;
 let poolPromise: Promise<Any | null> | null = null;
+/** A failed install is retried no sooner than this (the next log open, usually). */
+let poolRetryAt = 0;
+const SAH_RETRY_MS = 30_000;
 
 /**
- * Install the run log's pool VFS once per worker. The directory is scoped to
- * the active profile (the VFS's root is the OPFS origin root, not our profile
- * subdirectory), so profiles never share sync access handles.
+ * Install the run log's pool VFS, retrying a failed install on a later open.
+ * The directory is scoped to the active profile (the VFS's root is the OPFS
+ * origin root, not our profile subdirectory), so profiles never share sync
+ * access handles.
+ *
+ * Only success is cached: when the browser's OPFS backend wedges (Gecko
+ * reports it as a bare `UnknownError: Unknown failure`), the legacy whole-file
+ * engine must not be forced for the rest of the worker's life once storage
+ * recovers.
  */
 async function ensureSahPool(): Promise<Any | null> {
-  if (!poolPromise) {
-    poolPromise = (async () => {
+  if (pool) return pool;
+  if (poolPromise) return poolPromise;
+  if (Date.now() < poolRetryAt) return null;
+  poolPromise = (async () => {
+    try {
       await ensureInit();
       const directory = [...OPFS_PREFIX, STREAM_DIR].filter(Boolean).join("/");
-      try {
-        return await sqlite3.installOpfsSAHPoolVfs({
-          name: STREAM_VFS,
-          directory,
-          initialCapacity: STREAM_CAPACITY,
-          // A transient OPFS failure on first try must not poison the profile.
-          forceReinitIfPreviouslyFailed: true,
-          // 3.53 deletes the whole pool when init fails — never risk the log.
-          preserveOnInitFailure: true,
-        });
-      } catch (err) {
-        console.error("[sqlite-worker] could not install", STREAM_VFS, ":", err);
-        return null;
-      }
-    })();
-  }
+      pool = await sqlite3.installOpfsSAHPoolVfs({
+        name: STREAM_VFS,
+        directory,
+        initialCapacity: STREAM_CAPACITY,
+        // A transient OPFS failure on first try must not poison the profile.
+        forceReinitIfPreviouslyFailed: true,
+        // 3.53 deletes the whole pool when init fails — never risk the log.
+        preserveOnInitFailure: true,
+      });
+      poolRetryAt = 0;
+      return pool;
+    } catch (err) {
+      poolRetryAt = Date.now() + SAH_RETRY_MS;
+      console.error("[sqlite-worker] could not install", STREAM_VFS, ":", err);
+      return null;
+    } finally {
+      poolPromise = null;
+    }
+  })();
   return poolPromise;
 }
 
@@ -229,10 +260,21 @@ async function persist(rec: DbRecord): Promise<void> {
   // A streaming database writes its own pages; a read-only one never persists.
   if (rec.readOnly || rec.scratch || rec.stream) return;
   const bytes = sqlite3.capi.sqlite3_js_db_export(rec.db.pointer) as Uint8Array;
-  const handle = await fileHandleFor(rec.path);
-  const writable = await handle.createWritable();
-  await writable.write(bytes as Parameters<typeof writable.write>[0]);
-  await writable.close();
+  try {
+    const handle = await fileHandleFor(rec.path);
+    const writable = await handle.createWritable();
+    await writable.write(bytes as Parameters<typeof writable.write>[0]);
+    await writable.close();
+  } catch (err) {
+    // The SQL already ran; only the OPFS write failed. Without this note the
+    // caller sees Gecko's bare `UnknownError: Unknown failure` and cannot tell
+    // an applied-but-unsaved change from a rejected one.
+    throw new Error(
+      `the change was applied in memory but could not be saved to ${rec.path}: ` +
+        `${err instanceof Error ? err.message : String(err)}. ` +
+        `The profile's OPFS storage is failing; reload once it recovers.`,
+    );
+  }
 }
 
 /** Does the streaming pool already hold files? (If so, the legacy file is stale.) */
@@ -307,8 +349,65 @@ function columnsOf(stmt: Any): Array<{ name: string }> {
   }
 }
 
+/** sqlite3's rc for a failed allocation (the tab's wasm heap, not the browser). */
+const SQLITE_NOMEM = 7;
+
+function isOutOfMemory(err: unknown): boolean {
+  if ((err as { resultCode?: number } | null)?.resultCode === SQLITE_NOMEM) return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return /SQLITE_NOMEM|sqlite3_step\(\) rc=\s*7\b|out of memory/i.test(message);
+}
+
+/** The record a failed operation belongs to, from a db handle or a statement. */
+function recordForMessage(msg: Any): DbRecord | undefined {
+  const dbId = Number(msg.dbId);
+  if (Number.isFinite(dbId)) {
+    const rec = dbs.get(dbId);
+    if (rec) return rec;
+  }
+  const stmtId = Number(msg.stmtId);
+  if (Number.isFinite(stmtId)) {
+    const owner = stmts.get(stmtId);
+    if (owner) return dbs.get(owner.dbId);
+  }
+  return undefined;
+}
+
+/**
+ * SQLITE_NOMEM usually reaches the page as a bare rc=7 right after a failed
+ * `opfs-sahpool` install, when the whole-file engine has to hold the run log
+ * in the tab's fixed wasm heap. Name the cause and the remedy instead of
+ * letting "not enough memory" read like a broken query.
+ */
+function explainError(err: unknown, msg: Any): unknown {
+  if (!isOutOfMemory(err)) return err;
+  const rec = recordForMessage(msg);
+  const path = rec?.path ?? (typeof msg.path === "string" ? msg.path : "");
+  const detail = err instanceof Error ? err.message : String(err);
+  if (isRunLogPath(path) && (!rec || !rec.stream)) {
+    return new Error(
+      `the run log ${path} ran out of the tab's WebAssembly memory (SQLITE_NOMEM). ` +
+        `Streaming storage (${STREAM_VFS}) is unavailable — see the "could not install ` +
+        `${STREAM_VFS}" error — so the whole log has to fit in memory. Close other tabs and ` +
+        `reload; if it keeps failing, trim or move ${path} before opening it again. [${detail}]`,
+    );
+  }
+  return new Error(
+    `the database ${path || "(unknown)"} ran out of the tab's WebAssembly memory ` +
+      `(SQLITE_NOMEM). Close other tabs and reload, or move or trim the file. [${detail}]`,
+  );
+}
+
 async function handle(op: string, msg: Any): Promise<unknown> {
   await ensureInit();
+  try {
+    return await dispatch(op, msg);
+  } catch (err) {
+    throw explainError(err, msg);
+  }
+}
+
+async function dispatch(op: string, msg: Any): Promise<unknown> {
   switch (op) {
     case "init":
       return true;

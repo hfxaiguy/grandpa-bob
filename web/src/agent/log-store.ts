@@ -23,8 +23,9 @@ import type { MemoryWrite } from "../../../src/memory-track";
 import { sanitizeEvent, type SanitizedEvent } from "../../../src/sanitize";
 import { newTurnApps, tagEventApp } from "../../../src/app-attribution";
 import { listAppTrees } from "../../../src/tree-sources";
+import { LOG_TABLES } from "grandma-kat";
 import type { KatEvent } from "./logger";
-import { mib, trimRunLog } from "./runlog-retention";
+import { mib, trimRunLog, trimSessionTiers } from "./runlog-retention";
 
 export const MARKER_TURN = "web_turn_end";
 export const MARKER_LABEL = "web_session_label";
@@ -37,24 +38,38 @@ export const MAX_TURNS = 20;
 /** Events kept per turn in a response (matches src/web-log.ts). */
 export const MAX_TURN_EVENTS = 500;
 
-// Mirrors grandma-kat's SqliteLogger schema and src/web-log.ts's marker rows.
-export const RUN_LOG_DDL = `
-CREATE TABLE IF NOT EXISTS calls (
-  run_id TEXT NOT NULL,
-  definition_id TEXT NOT NULL,
-  seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  branch_path TEXT,
-  iteration INTEGER,
-  scope_id INTEGER,
-  kind TEXT NOT NULL,
-  content TEXT
-);
-CREATE TABLE IF NOT EXISTS checkpoints (
-  id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL,
-  seq INTEGER NOT NULL,
-  resume_positions TEXT NOT NULL
-)`;
+// The engine's call + checkpoint schema comes from grandma-kat (the same DDL
+// its SqliteLogger creates), so the browser log cannot drift from the Node
+// logger's tables.
+export const RUN_LOG_TABLES = LOG_TABLES;
+
+/**
+ * Keeps whole-log kind filters off a full scan; retried on the next boot.
+ * Separate on purpose: building it is the schema's only allocation-heavy step,
+ * and when the streaming VFS is unavailable that build runs in the whole-file
+ * engine, where an old log can exhaust the wasm heap. A deferred index must
+ * not stop the log opening.
+ */
+export const RUN_LOG_INDEX = "CREATE INDEX IF NOT EXISTS idx_calls_kind ON calls(kind)";
+
+/** The complete schema, for tests and tools that want it in one step. */
+export const RUN_LOG_DDL = `${RUN_LOG_TABLES}
+${RUN_LOG_INDEX}`;
+
+// Legacy rows: memory writes used to be logged with their own kind
+// ('memory') before record rows carried an op flag (2026-09-21). The Node
+// logger converts them once on open; a browser profile seeded by an older
+// web bundle can still carry them, so the shared log store converts them
+// too — kind 'record', op 'memory' (or 'memoryUpdate' for a legacy truthy
+// `update` flag), patch: true so replay semantics are unchanged (the slot
+// is set, no prev/raw entry is pushed).
+const LEGACY_MEMORY_ROWS = `
+  UPDATE calls SET kind = 'record', content = json_remove(json_set(content,
+    '$.op', CASE WHEN json_extract(content, '$.update') IS NOT NULL
+                      AND json_extract(content, '$.update') != 0
+                 THEN 'memoryUpdate' ELSE 'memory' END,
+    '$.patch', json('true')), '$.update')
+  WHERE kind = 'memory'`;
 
 export interface SessionSummary extends StoredSession {
   awaiting?: string | null;
@@ -101,6 +116,16 @@ async function maybeTrim(platform: Platform, db: Db, force = false): Promise<voi
   if (!force && now - (lastTrimAt.get(key) ?? 0) < TRIM_INTERVAL_MS) return;
   lastTrimAt.set(key, now);
   try {
+    // Tier compaction first: it keeps the picker, turn summaries and memory
+    // restore intact while reclaiming the trace, so the size-driven trim
+    // below only has to delete whole runs when that still is not enough.
+    const tiered = await trimSessionTiers(db);
+    if (tiered) {
+      console.info(
+        `[runlog] compacted ${tiered.compacted} session(s), deleted ${tiered.deleted}: ` +
+          `${mib(tiered.beforeBytes)} → ${mib(tiered.afterBytes)} (${tiered.rows} rows)`,
+      );
+    }
     const result = await trimRunLog(db);
     if (result) {
       console.info(
@@ -120,7 +145,20 @@ async function dbFor(platform: Platform): Promise<Db> {
     pending = (async () => {
       await platform.fs.mkdir(platform.path.dirname(path), { recursive: true }).catch(() => {});
       const db = await platform.sqlite.open(path, { readOnly: false });
-      await db.exec(RUN_LOG_DDL);
+      await db.exec(RUN_LOG_TABLES);
+      // Separate from the tables so a failed build degrades to full scans
+      // instead of wedging every log read and turn. The next boot (or the
+      // retention pass below) retries it.
+      try {
+        await db.exec(RUN_LOG_INDEX);
+      } catch (err) {
+        console.warn("[runlog] could not build idx_calls_kind; continuing without it:", err);
+      }
+      // With the index built this guard is an index seek: an already-converted
+      // profile costs one lookup per open.
+      if ((await (await db.prepare("SELECT 1 x FROM calls WHERE kind = 'memory' LIMIT 1")).get())) {
+        await db.exec(LEGACY_MEMORY_ROWS);
+      }
       // First open of the session: an oversized log gets its one trim now,
       // before reads start paying for it.
       await maybeTrim(platform, db, true);
@@ -307,6 +345,115 @@ export async function ensureOpen(platform: Platform, key: string, label = ""): P
   });
 }
 
+// ── checkpoints ─────────────────────────────────────────────────────────
+// The engine pauses by saving a checkpoint; this store shadows it into the
+// same table the Node logger uses (grandma-kat's `checkpoints`), so a reloaded
+// worker can restore. Rows are tiny: resume positions + run/seq. The KAT log
+// store component orders a checkpoint write after every call row it depends on
+// (see `createSessionLogStore`), so a row on disk always has its replay window.
+
+export interface CheckpointRow {
+  id: string;
+  run_id: string;
+  seq: number;
+  resume_positions: string;
+}
+
+function normalizeCheckpointRow(row: unknown): CheckpointRow | null {
+  const r = row as Record<string, unknown> | null;
+  if (!r) return null;
+  const seq = Number(r.seq);
+  if (typeof r.id !== "string" || typeof r.run_id !== "string" || !Number.isFinite(seq)) {
+    return null;
+  }
+  return {
+    id: r.id,
+    run_id: r.run_id,
+    seq,
+    resume_positions: typeof r.resume_positions === "string" ? r.resume_positions : "[]",
+  };
+}
+
+export async function saveCheckpointRow(platform: Platform, row: CheckpointRow): Promise<void> {
+  await withLogDb(platform, async (db) => {
+    const stmt = await db.prepare(
+      "INSERT OR REPLACE INTO checkpoints (id, run_id, seq, resume_positions) VALUES (?, ?, ?, ?)",
+    );
+    await stmt.run(row.id, row.run_id, row.seq, row.resume_positions);
+  });
+}
+
+export async function deleteCheckpointRow(platform: Platform, id: string): Promise<void> {
+  await withLogDb(platform, async (db) => {
+    const stmt = await db.prepare("DELETE FROM checkpoints WHERE id = ?");
+    await stmt.run(id);
+  });
+}
+
+export async function loadCheckpointRow(
+  platform: Platform,
+  id: string,
+): Promise<CheckpointRow | null> {
+  return withLogDb(platform, async (db) => {
+    const row = await (
+      await db.prepare("SELECT id, run_id, seq, resume_positions FROM checkpoints WHERE id = ?")
+    ).get(id);
+    return normalizeCheckpointRow(row);
+  });
+}
+
+async function latestCheckpointRow(db: Db, runId: string): Promise<CheckpointRow | null> {
+  const row = await (
+    await db.prepare(
+      "SELECT id, run_id, seq, resume_positions FROM checkpoints WHERE run_id = ? ORDER BY rowid DESC LIMIT 1",
+    )
+  ).get(runId);
+  return normalizeCheckpointRow(row);
+}
+
+export interface ResumableCheckpoint {
+  checkpoint: CheckpointRow;
+  runId: string;
+}
+
+/**
+ * The checkpoint a session should resume after a restart, or null.
+ *
+ * Policy (the host's): the latest turn's run is the resumable one, and only
+ * while that run still has a checkpoint row — a finished run deletes its
+ * checkpoint, so "latest marker + checkpoint" is exactly "paused". An explicit
+ * delete marker after the pause tombstones the conversation.
+ */
+export async function resumableCheckpoint(
+  platform: Platform,
+  key: string,
+): Promise<ResumableCheckpoint | null> {
+  return withLogDb(platform, async (db) => {
+    const markerRow = (await (
+      await db.prepare(
+        "SELECT seq, content FROM calls WHERE run_id = ? AND kind = ? ORDER BY seq DESC LIMIT 1",
+      )
+    ).get(key, MARKER_TURN)) as { seq?: number; content?: string } | undefined;
+    const marker = parseJson(markerRow?.content) as TurnMarker | null;
+    if (!marker || typeof marker.runId !== "string" || !marker.runId) return null;
+
+    const deletedRow = (await (
+      await db.prepare(
+        "SELECT seq, content FROM calls WHERE run_id = ? AND kind = ? ORDER BY seq DESC LIMIT 1",
+      )
+    ).get(key, MARKER_DELETE)) as { seq?: number; content?: string } | undefined;
+    if (deletedRow && Number(deletedRow.seq) > Number(markerRow?.seq)) {
+      // An explicit delete after the pause tombstones the conversation (seq
+      // order, not wall-clock: markers are appended in log order).
+      return null;
+    }
+
+    const checkpoint = await latestCheckpointRow(db, marker.runId);
+    if (!checkpoint) return null;
+    return { checkpoint, runId: marker.runId };
+  });
+}
+
 // ── reads ────────────────────────────────────────────────────────────────
 
 function parseJson(raw: unknown): unknown {
@@ -345,6 +492,34 @@ export async function readRow(platform: Platform, seq: number): Promise<LogRow |
       ...(row as unknown as Omit<LogRow, "content">),
       content: parseJson(row.content),
     } as LogRow;
+  });
+}
+
+/**
+ * A run's event rows, oldest first (optionally only up to a checkpoint seq) —
+ * the replay window `createSessionLogStore.restore()` hydrates.
+ */
+export async function loadRunEvents(
+  platform: Platform,
+  runId: string,
+  upToSeq?: number,
+): Promise<LogRow[]> {
+  return withLogDb(platform, async (db) => {
+    const bounded = typeof upToSeq === "number";
+    const rows = (await (
+      await db.prepare(
+        bounded
+          ? "SELECT * FROM calls WHERE run_id = ? AND seq <= ? ORDER BY seq"
+          : "SELECT * FROM calls WHERE run_id = ? ORDER BY seq",
+      )
+    ).all(...(bounded ? [runId, upToSeq] : [runId]))) as { content: string | null }[];
+    return rows.map(
+      (row) =>
+        ({
+          ...(row as unknown as Omit<LogRow, "content">),
+          content: parseJson(row.content),
+        }) as LogRow,
+    );
   });
 }
 
@@ -475,6 +650,8 @@ export async function getTurns(
         buttons: m.buttons ?? null,
         fallback: m.fallback ?? null,
         awaiting: m.awaiting ?? null,
+        runMode: m.runMode,
+        contextLost: m.contextLost,
         events: [],
       };
       if (opts.withEvents && m.runId && m.fromSeq != null && m.toSeq != null) {
@@ -613,7 +790,7 @@ async function memoryRows(
   const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })), appNames);
   const rows = (await (
     await db.prepare(
-      `SELECT seq, kind, branch_path, scope_id, content FROM calls WHERE ${bounds} AND kind IN ('memory','record') ORDER BY seq`,
+      `SELECT seq, kind, branch_path, scope_id, content FROM calls WHERE ${bounds} AND kind = 'record' ORDER BY seq`,
     )
   ).all(runId, fromSeq, toSeq)) as {
     seq: number;
@@ -626,7 +803,7 @@ async function memoryRows(
   for (const r of rows) {
     const content = (parseJson(r.content) as Record<string, unknown> | null) ?? null;
     const op = content?.op;
-    const memWrite = r.kind === "memory" || (r.kind === "record" && (op === "memory" || op === "memoryUpdate"));
+    const memWrite = op === "memory" || op === "memoryUpdate";
     if (!memWrite) continue;
     out.push({
       seq: r.seq,

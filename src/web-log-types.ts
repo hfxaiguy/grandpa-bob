@@ -37,6 +37,13 @@ export interface TurnMarker {
   buttons?: EmitButton[] | null;
   fallback?: EmitButton[] | null;
   awaiting?: string | null;
+  /** How the turn entered its tree: continued the in-memory checkpoint,
+   *  restored a paused run from the run log after a reload, or knitted fresh.
+   *  Absent on turns from before the field. */
+  runMode?: "resumed" | "restored" | "fresh";
+  /** A fresh run although the previous turn paused (its context was lost —
+   *  the reload case). Absent when the question does not apply. */
+  contextLost?: boolean;
   /** Model tokens the turn used; absent on turns from before metering, or
    *  when the endpoint reported no usage. */
   tokens?: TurnTokens | null;
@@ -61,6 +68,8 @@ export interface DerivedTurn {
   buttons?: EmitButton[] | null;
   fallback?: EmitButton[] | null;
   awaiting?: string | null;
+  runMode?: "resumed" | "restored" | "fresh";
+  contextLost?: boolean;
   tokens?: TurnTokens | null;
   events: SanitizedEvent[];
 }

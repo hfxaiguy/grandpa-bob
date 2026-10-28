@@ -10,6 +10,8 @@ export interface AgentRunResult {
   result: unknown;
   events: unknown[];
   emits: unknown[];
+  /** How the turn entered its tree (see the worker's RunMode). */
+  mode?: "resumed" | "restored" | "fresh";
 }
 
 /** A run promise that knows its message id (the turn marker targets it). */
@@ -57,6 +59,7 @@ interface Pending {
   events: unknown[];
   emits: unknown[];
   hooks?: AgentRunHooks;
+  mode?: "resumed" | "restored" | "fresh";
 }
 
 export class AgentClient {
@@ -80,6 +83,7 @@ export class AgentClient {
         error?: string;
         ok?: boolean;
         stopped?: boolean;
+        mode?: "resumed" | "restored" | "fresh";
       };
       if (msg.type === "log-result") {
         const lp = this.logPending.get(msg.id);
@@ -99,7 +103,7 @@ export class AgentClient {
         p.hooks?.onEmit?.(msg.value);
       } else if (msg.type === "result") {
         this.pending.delete(msg.id);
-        p.resolve({ result: msg.result, events: p.events, emits: p.emits });
+        p.resolve({ result: msg.result, events: p.events, emits: p.emits, mode: msg.mode });
       } else if (msg.type === "error") {
         this.pending.delete(msg.id);
         p.reject(

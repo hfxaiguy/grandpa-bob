@@ -1,7 +1,8 @@
 /**
  * Browser settings: environment values used for models.json `${ENV}` key
  * interpolation. Stored in localStorage (a personal-app key store); never sent
- * anywhere except the configured LLM endpoint.
+ * anywhere except the configured LLM endpoint — and, when `exa_search` runs,
+ * the Exa search endpoint.
  */
 const KEY = "bob:env";
 

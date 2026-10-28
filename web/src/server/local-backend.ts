@@ -66,6 +66,12 @@ interface TurnRecord {
   emitApps: string[];
   awaiting: string | null;
   buttons: unknown[];
+  /** How the turn entered its tree: continued the in-memory checkpoint,
+   *  restored a paused run from the log after a reload, or knitted fresh. */
+  runMode?: "resumed" | "restored" | "fresh";
+  /** A fresh tree although the previous turn paused — the context a reload
+   *  should have restored was not available. */
+  contextLost?: boolean;
   /** Summed `llm_call` usage for the turn; absent when the endpoint (or a
    *  mock) reported none. */
   tokens?: TurnTokens | null;
@@ -447,6 +453,8 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
             emitApps: record.emitApps,
             buttons: record.buttons,
             awaiting: record.awaiting,
+            runMode: record.runMode,
+            contextLost: record.contextLost,
             tokens: record.tokens ?? null,
             startedAt: record.startedAt,
             endedAt: record.endedAt,
@@ -513,10 +521,14 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
 
   async function runTurn(turnId: string, text: string, keyOverride?: string): Promise<TurnRecord> {
     const key = keyOverride ?? (await ensureSession());
+    // The slot the user is replying to (the previous turn's pause). Its
+    // presence is also how a fresh run after a reload is recognised as a
+    // context loss rather than a new conversation.
+    const awaitingBefore = await awaitingFor(key);
     const record: TurnRecord = {
       turnId,
       input: text,
-      inputApp: (await awaitingFor(key)) ?? "trunk",
+      inputApp: awaitingBefore ?? "trunk",
       startedAt: Date.now(),
       endedAt: null,
       status: "running",
@@ -585,8 +597,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     activeRuns.set(key, { turnId, runId: running.runId });
     broadcast({ type: "turn_start", turnId, session: key, input: text, inputApp: record.inputApp ?? "trunk", ts: record.startedAt, awaiting: null });
     try {
-      const { result, emits } = await running;
+      const { result, emits, mode } = await running;
       record.status = "done";
+      record.runMode = mode;
+      record.contextLost = mode === "fresh" && awaitingBefore != null;
       const last = emits.length ? emits[emits.length - 1] : result;
       const lastText = emitValue(last).text;
       if (!record.output && lastText) record.output = lastText;
@@ -601,7 +615,8 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       broadcast({
         type: "turn_end", turnId, status: "done", error: null, output: record.output,
         buttons: record.buttons, emits: record.emits, levels: record.levels, emitApps: record.emitApps,
-        awaiting: record.awaiting, tokens: record.tokens ?? null, ts: record.endedAt,
+        awaiting: record.awaiting, runMode: record.runMode, contextLost: record.contextLost,
+        tokens: record.tokens ?? null, ts: record.endedAt,
       });
     } catch (err) {
       if (err instanceof AgentStoppedError || isAgentStopped(err)) {

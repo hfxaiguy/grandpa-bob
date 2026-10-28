@@ -270,6 +270,40 @@ await waitFor(
 const back = await evaluate(`localStorage.getItem("bob:profile")`);
 assert(back === "default", "profile switch persists");
 
+// 6. A zero-byte profiles.json (Gecko can leave one after a torn write) must
+//    not be read as "no profiles": the mirror + directories repair it.
+await evaluate(`(async () => {
+  const root = await navigator.storage.getDirectory();
+  const handle = await root.getFileHandle("profiles.json");
+  const writable = await handle.createWritable();
+  await writable.write("");
+  await writable.close();
+  return "truncated";
+})()`);
+await send("Page.reload");
+await waitFor(
+  `document.readyState === "complete" && (document.getElementById("status")?.textContent || "").includes("browser")`,
+  "boot after a truncated registry",
+);
+const repaired = await evaluate(`(async () => {
+  const root = await navigator.storage.getDirectory();
+  const raw = await (await (await root.getFileHandle("profiles.json")).getFile()).text();
+  const options = [...document.querySelectorAll("#profile-select option")].map((o) => o.value);
+  return JSON.stringify({ raw, options, mirror: localStorage.getItem("bob:profile-registry") });
+})()`);
+const r = JSON.parse(repaired);
+const repairedRegistry = JSON.parse(r.raw || "{}");
+assert(
+  (repairedRegistry.profiles || []).some((p) => p.name === "travel"),
+  "a truncated registry is repaired from the mirror/directories",
+);
+assert(
+  repairedRegistry.profiles?.find((p) => p.name === "travel")?.seed?.seedName === "trunk",
+  "the repaired registry keeps the seed binding",
+);
+assert(r.options.includes("travel"), "the picker still lists the recovered profile");
+assert(!!r.mirror, "the localStorage registry mirror is written");
+
 if (exceptions.length) {
   cleanup(1, `runtime exceptions:\n${exceptions.join("\n")}`);
 }

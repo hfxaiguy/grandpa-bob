@@ -1,16 +1,42 @@
 // Minimal headless check that the OPFS storage mode still boots and writes.
 // Requires the admin (npm run dev at the repo root) and a Chromium binary.
+// It starts the bundled mock LLM (web/mock-llm.mjs) and points the tab's model
+// settings at it, so a chat turn reaches the engine without a real provider.
 //   node scripts/browser-smoke.mjs
 import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 
-const PORT = Number(process.env.CDP_PORT ?? 9224);
+// A taken CDP port silently serves /json/* from an older browser whose OPFS
+// still holds its own handles — always drive a fresh one unless pinned.
+const PORT = process.env.CDP_PORT
+  ? Number(process.env.CDP_PORT)
+  : await new Promise((resolve) => {
+      const server = net.createServer();
+      server.listen(0, "127.0.0.1", () => {
+        const { port } = server.address();
+        server.close(() => resolve(port));
+      });
+    });
 const TARGET = process.argv[2] ?? process.env.WEB_URL ?? "http://localhost:8080/?storage=browser";
 const CHROME = process.env.CHROME_BIN ?? "chromium";
 const PROFILE = path.join(os.tmpdir(), `bob-browser-smoke-${PORT}-${process.pid}`);
+const MOCK_PORT = Number(process.env.MOCK_LLM_PORT ?? 8789);
+const MOCK_URL = `http://127.0.0.1:${MOCK_PORT}/v1`;
+const MODELS_JSON = JSON.stringify({
+  strong: { baseURL: MOCK_URL, model: "mock-model", apiKey: "test-key" },
+  cheap: { baseURL: MOCK_URL, model: "mock-model", apiKey: "test-key" },
+  default: { baseURL: MOCK_URL, model: "mock-model", apiKey: "test-key" },
+});
+
+const mockLlm = spawn(process.execPath, [fileURLToPath(new URL("./mock-llm.mjs", import.meta.url))], {
+  env: { ...process.env, MOCK_LLM_PORT: String(MOCK_PORT) },
+  stdio: "ignore",
+});
 
 const chrome = spawn(
   CHROME,
@@ -30,6 +56,7 @@ const chrome = spawn(
 
 function cleanup(code) {
   try { chrome.kill("SIGKILL"); } catch {}
+  try { mockLlm.kill("SIGKILL"); } catch {}
   try { rmSync(PROFILE, { recursive: true, force: true }); } catch {}
   process.exit(code);
 }
@@ -75,6 +102,18 @@ async function evaluate(expression) {
 
 await send("Runtime.enable");
 await send("Page.enable");
+// Every document boot (including the reload below) talks to the mock LLM.
+await send("Page.addScriptToEvaluateOnNewDocument", {
+  source: `try { localStorage.setItem("bob:models-json", ${JSON.stringify(MODELS_JSON)}); } catch (e) {}`,
+});
+for (let i = 0; i < 100; i++) {
+  try {
+    if ((await fetch(`${MOCK_URL}/models`)).ok) break;
+  } catch {
+    /* not up yet */
+  }
+  await sleep(100);
+}
 await send("Page.navigate", { url: TARGET });
 
 let status = "";
@@ -311,6 +350,52 @@ if (!String(restored).startsWith("restored:")) {
   cleanup(5);
 }
 console.log("✓ sessions survive a reload (workspace KAT log)");
+
+// The paused run must resume after the reload, not re-seed the conversation:
+// the browser logger shadowed the checkpoint, and the cold worker restored it
+// before choosing knit-vs-resume (the "try again" regression).
+const resumed = await evaluate(`(async () => {
+  const backend = window.__bobBackend;
+  await backend.ready;
+  const sent = await backend.request("POST", "/api/chat", new URLSearchParams(),
+    JSON.stringify({ text: "continue after reload" }));
+  if (sent.status !== 200) return "chat " + sent.status;
+  for (let i = 0; i < 120; i++) {
+    const r = await backend.request("GET", "/api/turns", new URLSearchParams(), null);
+    const turns = r.body?.turns || [];
+    const last = turns[turns.length - 1];
+    if (last && (last.status === "done" || last.status === "error")) {
+      return JSON.stringify({
+        status: last.status,
+        error: last.error ?? null,
+        runMode: last.runMode ?? null,
+        contextLost: last.contextLost ?? null,
+        turns: turns.length,
+      });
+    }
+    await new Promise((res) => setTimeout(res, 250));
+  }
+  return "turn timeout";
+})()`);
+let second = null;
+try {
+  second = JSON.parse(String(resumed));
+} catch {
+  /* reported below */
+}
+if (!second || second.status !== "done" || second.runMode !== "restored" || second.contextLost) {
+  const probe = await evaluate(
+    `fetch("${MOCK_URL}/models").then((r) => "ok:" + r.status).catch((e) => "err:" + e.message)`,
+  ).catch((e) => "eval:" + e.message);
+  console.error("the reloaded worker did not restore the paused session:", resumed, {
+    mockExit: mockLlm.exitCode,
+    mockSignal: mockLlm.signalCode,
+    probe,
+  });
+  console.log(exceptions.join("\n"));
+  cleanup(5);
+}
+console.log("✓ the first turn after a reload restores the paused run (runMode restored)");
 
 // Memory rebuilds from the same log after the reload: the page-local tracker
 // starts empty, so /api/tree/memory must replay the raw memory-slot rows (the
