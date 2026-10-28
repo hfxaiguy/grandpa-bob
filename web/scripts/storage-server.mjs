@@ -5,9 +5,16 @@
 // Exposes the real workspace (files + git) over loopback HTTP with CORS, so
 // the browser can use the desktop's storage instead of OPFS. Sandboxed to the
 // workspace root. Loopback-only; add auth before exposing it.
+//
+// Opt-in STT pass-through: start with BOB_STT=1 (WHISPER_URL, default
+// http://127.0.0.1:8178) to expose POST /stt — raw audio bytes in, transcript
+// out. The tab can then use the desktop's whisper instead of downloading an
+// in-tab model; voice notes parked by the Telegram channel are transcribed
+// there directly, not through this route.
 import http from "node:http";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
@@ -15,6 +22,9 @@ import { DatabaseSync } from "node:sqlite";
 const execFileAsync = promisify(execFile);
 const ROOT = path.resolve(process.argv[2] ?? process.env.WORKSPACE_DIR ?? process.cwd());
 const PORT = Number(process.env.STORAGE_PORT ?? 8795);
+/** STT pass-through: off unless explicitly enabled. */
+const STT_ENABLED = process.env.BOB_STT === "1";
+const WHISPER_URL = (process.env.WHISPER_URL ?? "http://127.0.0.1:8178").replace(/\/$/, "");
 
 const cors = {
   "access-control-allow-origin": "*",
@@ -33,6 +43,74 @@ function resolveIn(rel) {
 async function git(args) {
   const { stdout, stderr } = await execFileAsync("git", args, { cwd: ROOT, maxBuffer: 16 * 1024 * 1024 });
   return { stdout: stdout.trim(), stderr: stderr.trim() };
+}
+
+// ── STT pass-through (BOB_STT=1) ─────────────────────────────────────────
+
+/** POST raw audio bytes to the whisper-server; returns its `text`. */
+async function whisperInference(wavPath, language) {
+  const fields = [
+    ["response_format", "json"],
+    ["temperature", "0"],
+  ];
+  if (language && language !== "auto") fields.push(["language", language]);
+  const boundary = `bob-stt-${Math.random().toString(36).slice(2)}`;
+  const parts = [];
+  for (const [name, value] of fields) {
+    parts.push(
+      Buffer.from(
+        `--${boundary}\r\ncontent-disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+      ),
+    );
+  }
+  const wav = await fs.readFile(wavPath);
+  parts.push(
+    Buffer.from(
+      `--${boundary}\r\ncontent-disposition: form-data; name="file"; filename="audio.wav"\r\ncontent-type: audio/wav\r\n\r\n`,
+    ),
+    wav,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  );
+  const body = Buffer.concat(parts);
+  const res = await fetch(`${WHISPER_URL}/inference`, {
+    method: "POST",
+    headers: {
+      "content-type": `multipart/form-data; boundary=${boundary}`,
+      "content-length": String(body.length),
+    },
+    body,
+  });
+  if (!res.ok) throw new Error(`whisper-server ${res.status}`);
+  const data = (await res.json()) as { text?: string };
+  return (data.text ?? "").trim();
+}
+
+/** POST /stt: raw audio body → ffmpeg → 16 kHz WAV → whisper-server. */
+async function handleStt(req, res, send, query) {
+  if (!STT_ENABLED) {
+    send(501, { error: "stt not enabled — start the bridge with BOB_STT=1" });
+    return;
+  }
+  const ext = (query.get("ext") ?? ".webm").replace(/[^.a-z0-9]/gi, "").slice(0, 8) || ".webm";
+  const language = query.get("language") ?? "";
+  const tmpIn = path.join(os.tmpdir(), `bob-stt-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+  const tmpOut = tmpIn.replace(/\.[^.]+$/, ".wav");
+  try {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    await fs.writeFile(tmpIn, Buffer.concat(chunks));
+    await execFileAsync("ffmpeg", [
+      "-hide_banner", "-loglevel", "error",
+      "-i", tmpIn,
+      "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+      tmpOut,
+    ]);
+    const text = await whisperInference(tmpOut, language);
+    send(200, { text });
+  } finally {
+    await fs.rm(tmpIn, { force: true }).catch(() => {});
+    await fs.rm(tmpOut, { force: true }).catch(() => {});
+  }
 }
 
 function openDb(p, opts) {
@@ -174,6 +252,16 @@ const server = http.createServer((req, res) => {
     return;
   }
   const [pathname, query = ""] = (req.url ?? "/").split("?");
+  const send = (status, body) => {
+    res.writeHead(status, { ...cors, "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  };
+  if (req.method === "POST" && pathname === "/stt") {
+    // Raw audio pass-through: the body is bytes, not JSON — handled before
+    // the JSON routes below.
+    void handleStt(req, res, send, new URLSearchParams(query));
+    return;
+  }
   let data = "";
   req.on("data", (c) => (data += c));
   req.on("end", async () => {

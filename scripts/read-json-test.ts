@@ -13,9 +13,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createNodePlatform } from "../src/platform/node.js";
-import { ToolRegistry } from "../src/tools/index.js";
+import { resolveInWorkspace } from "../src/util/paths.js";
+import { assembleGuides, HOST_GUIDES } from "../src/tool-guides.js";
 import {
   MAX_JSON_CHARS,
+  READ_JSON_DEFINITION,
   jsonPathSteps,
   parseJsonContent,
   readJsonValue,
@@ -71,13 +73,27 @@ function noFile(): Promise<string> {
   throw new Error("no file expected in this case");
 }
 
-// ── the Node registry: path source, sandbox, errors ──────────────────────
+// ── the browser-style dispatch: sandbox, error strings, ref ctx ──────────
 const workspace = await mkdtemp(path.join(os.tmpdir(), "grandpa-bob-json-"));
 const platform = createNodePlatform(workspace);
-const registry = new ToolRegistry(workspace, []);
 const abs = (name: string): string => platform.path.join(workspace, name);
-const call = (args: Record<string, unknown>, ctx?: { readRef?: (ref: string) => unknown }) =>
-  registry.dispatch("read_json", JSON.stringify(args), ctx);
+// The browser worker wires read_json with a sandboxed readFile (see
+// web/src/agent/browser-tools.ts); errors surface as "error: …" strings the
+// same way the registry used to wrap them.
+const readFile = async (rel: string): Promise<string> => {
+  const target = resolveInWorkspace(workspace, rel);
+  const st = await platform.fs.stat(target).catch(() => null);
+  if (!st) throw new Error(`not found: ${rel}`);
+  if (!st.isFile()) throw new Error(`not a file: ${rel}`);
+  return platform.fs.readFile(target, "utf8");
+};
+const call = async (args: Record<string, unknown>, ctx?: { readRef?: (ref: string) => unknown }) => {
+  try {
+    return await readJsonValue(args as never, { readFile, readRef: ctx?.readRef });
+  } catch (err) {
+    return `error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+};
 
 try {
   await platform.fs.writeFile(
@@ -87,12 +103,7 @@ try {
   await platform.fs.writeFile(abs("list.jsonl"), '{"a":1}\n{"a":2}\n');
   await platform.fs.writeFile(abs("broken.json"), '{"a":');
 
-  assert.ok(
-    registry.definitions.some(
-      (d) => d.type === "function" && d.function.name === "read_json",
-    ),
-    "read_json is in the tool schema list",
-  );
+  assert.ok(READ_JSON_DEFINITION.function.name === "read_json", "read_json ships its OpenAI schema");
 
   assert.deepEqual(await call({ path: "config.json" }), {
     json: { users: [{ email: "ada@example.com", tags: ["a", "b"] }], count: 1 },
@@ -155,9 +166,10 @@ try {
   assert.match(String(await call({ ref: "ref://tool_calls.9", at: "rows/9" }, { readRef })), /not found/);
 
   // read_json carries prompt guidance assembled by the shared module.
-  assert.match(registry.toolGuide(), /READING JSON/);
+  const guides = assembleGuides({ hostGuides: HOST_GUIDES, inScope: ["read_json"] });
+  assert.match(guides, /READING JSON/);
 
-  console.log("read_json: strict parsing, path/text/ref sources, at-walks and registry wiring OK");
+  console.log("read_json: strict parsing, path/text/ref sources, at-walks and browser wiring OK");
 } finally {
   await rm(workspace, { recursive: true, force: true });
 }

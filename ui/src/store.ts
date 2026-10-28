@@ -93,6 +93,50 @@ const MACHINE_KEY = "gpb.showMachine";
 const STREAM_KEY = "gpb.tiled.stream";
 const BRIDGE_KEY = "bob:telegram-bridge";
 
+/** Base URL of the storage bridge (the tab's STT pass-through target). */
+const SERVER_KEY = "bob:storage-server";
+const DEFAULT_SERVER = "http://127.0.0.1:8795";
+function bridgeUrl(): string {
+  try {
+    const raw = localStorage.getItem(SERVER_KEY) ?? "";
+    if (!raw) return DEFAULT_SERVER;
+    return new URL(raw.includes("://") ? raw : `http://${raw}`).origin;
+  } catch {
+    return DEFAULT_SERVER;
+  }
+}
+
+/** Base URL of the telegram channel (the tab's phone surface). */
+const TELEGRAM_KEY = "bob:telegram-channel";
+const DEFAULT_TELEGRAM = "http://127.0.0.1:8091";
+function telegramChannelUrl(): string {
+  try {
+    const raw = localStorage.getItem(TELEGRAM_KEY) ?? "";
+    if (!raw) return DEFAULT_TELEGRAM;
+    return new URL(raw.includes("://") ? raw : `http://${raw}`).origin;
+  } catch {
+    return DEFAULT_TELEGRAM;
+  }
+}
+
+/**
+ * The profile id this page hosts — the same derivation the local backend
+ * uses for mailbox claims. Kept in sync with web/src/main.ts.
+ */
+function profileId(): string {
+  const storage = localStorage.getItem("bob:storage") === "desktop" ? "desktop" : "browser";
+  if (storage === "desktop") {
+    return `desktop:${bridgeUrl()}`;
+  }
+  let profile = "default";
+  try {
+    profile = localStorage.getItem("bob:profile") || "default";
+  } catch {
+    /* private mode */
+  }
+  return `opfs:${profile}`;
+}
+
 /** The mobile breakpoint. styles.css repeats the same width: at or below it
  *  the stream folds away by default and opens as a bottom sheet. */
 export const SMALL_QUERY = "(max-width: 640px)";
@@ -443,51 +487,24 @@ export async function sendFile(file: File, caption: string): Promise<void> {
 }
 
 /**
- * Stream-transcribe an audio file via /api/transcribe-stream. The server sends
- * SSE frames (info → partial* → done | error); `handlers` receives the
- * progress, and the promise resolves with the final transcript.
+ * Transcribe an audio file through the storage bridge's STT pass-through
+ * (`POST /stt` — raw bytes in, transcript out; ffmpeg + whisper-server run on
+ * the desktop). The channel never sees the audio otherwise: the tab sends it,
+ * the desktop transcribes it, nothing is stored. The old streaming partials
+ * are gone with the admin; `onPartial` simply never fires.
  */
 export async function transcribeFileStream(
   file: File,
   handlers: TranscribeHandlers = {},
 ): Promise<string> {
-  const fd = new FormData();
-  fd.append("file", file);
-  const res = await fetch("/api/transcribe-stream", { method: "POST", body: fd });
-  if (!res.ok) {
-    const d = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(d.error || `HTTP ${res.status}`);
-  }
-  if (!res.body) throw new Error("no response stream");
-  const reader = res.body.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  let finalText = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buf.indexOf("\n\n")) >= 0) {
-      const chunk = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      for (const line of chunk.split("\n")) {
-        if (!line.startsWith("data: ")) continue;
-        let msg: { type?: string; duration?: number; text?: string; at?: number; error?: string };
-        try {
-          msg = JSON.parse(line.slice(6));
-        } catch {
-          continue;
-        }
-        if (msg.type === "info") handlers.onInfo?.(msg.duration ?? 0);
-        else if (msg.type === "partial") handlers.onPartial?.(msg.text ?? "", msg.at);
-        else if (msg.type === "done") finalText = msg.text ?? "";
-        else if (msg.type === "error") throw new Error(msg.error || "transcription failed");
-      }
-    }
-  }
-  if (!finalText) throw new Error("transcription came back empty");
-  return finalText;
+  handlers.onInfo?.(0);
+  const url = new URL("/stt", bridgeUrl());
+  url.searchParams.set("ext", file.name ? `.${file.name.split(".").pop() ?? "webm"}` : ".webm");
+  const res = await fetch(url, { method: "POST", body: file });
+  const d = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+  if (!res.ok) throw new Error(d.error || `transcription failed: HTTP ${res.status}`);
+  if (!d.text) throw new Error("transcription came back empty");
+  return d.text;
 }
 
 export async function selectSession(key: string): Promise<void> {
@@ -597,11 +614,54 @@ export async function clearConversation(): Promise<void> {
 /** Push the active session's transcript to the linked Telegram chat. */
 export async function sendToTelegram(): Promise<void> {
   try {
-    const d = await postJSON<{ key?: string; followWeb?: string | null }>("/api/send-to-telegram", {});
-    toast(
-      `sent to telegram${d.key ? ` (${d.key})` : ""}` +
-        (d.followWeb ? " — that chat now follows this session" : ""),
-    );
+    // The linked chat is the freshest chat bound to this profile on the
+    // telegram channel (bindings form when a tab claims parked messages).
+    const channel = telegramChannelUrl();
+    const profile = profileId();
+    const bRes = await fetch(`${channel}/api/bindings?profile=${encodeURIComponent(profile)}`);
+    const bData = (await bRes.json().catch(() => ({}))) as {
+      bindings?: Array<{ conv: string; epoch: number }>;
+    };
+    const target = (bData.bindings ?? [])[0];
+    if (!bRes.ok || !target) {
+      toast("no telegram chat linked yet — message the bot on Telegram first", true);
+      return;
+    }
+    const tRes = await fetch("/api/turns", { headers: { accept: "application/json" } });
+    const tData = (await tRes.json().catch(() => ({}))) as {
+      turns?: Array<{ input?: string; status?: string; error?: string; output?: string }>;
+      session?: string;
+    };
+    const turns = tData.turns ?? [];
+    if (!turns.length) {
+      toast("this session has no turns to send yet", true);
+      return;
+    }
+    // Plain-text transcript: one block per turn, errors kept as ⚠️ lines.
+    const session = tData.session ?? "session";
+    const lines: string[] = [
+      `📋 transcript · ${session} (${turns.length} turn${turns.length === 1 ? "" : "s"})`,
+    ];
+    for (const t of turns) {
+      lines.push("", "—— you ——", t.input || "(empty)");
+      lines.push("—— bob ——", t.status === "error" ? `⚠️ ${t.error ?? "error"}` : t.output || "(no reply)");
+    }
+    const rRes = await fetch(`${channel}/api/relay`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: target.conv, text: lines.join("\n"), epoch: target.epoch, profile }),
+    });
+    if (!rRes.ok) throw new Error(`relay failed: HTTP ${rRes.status}`);
+    // The phone now follows this session (the channel's binding owns the
+    // routing; the pin keeps the browser answers flowing there).
+    try {
+      localStorage.setItem(BRIDGE_KEY, "1");
+      if (state.active) localStorage.setItem(`${BRIDGE_KEY}-session`, state.active);
+    } catch {
+      /* private mode */
+    }
+    setState("bridgeOn", true);
+    toast("sent to telegram — that chat now follows this session");
   } catch (e) {
     toast(e instanceof Error ? e.message : "send to telegram failed", true);
   }

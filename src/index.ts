@@ -1,223 +1,256 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-// @ts-ignore — grandma-kat ships no .d.ts files.
-import { createLogger, runLogTools } from "grandma-kat";
+/**
+ * Telegram channel — the standalone-only entry point.
+ *
+ * Two jobs, no brain:
+ *   1. grammY long-polls Telegram (auth gate, forum topics), transcribes
+ *      voice channel-side, and *parks* every message in the mailbox file
+ *      (src/telegram-bridge.ts). Node never runs the agent.
+ *   2. A loopback HTTP API for the browser tab: the tab announces which
+ *      profile owns which chats, heartbeats, drains parked messages, and
+ *      relays completed turn text back to the phone.
+ *
+ * With no tab connected, messages wait in the mailbox — they survive channel
+ * restarts. The relay drops text carrying a stale epoch, so a suspended old
+ * tab cannot answer after another profile claimed the chat.
+ *
+ * Endpoints (loopback only; CORS is an origin allow-list):
+ *   GET  /healthz                 {ok, bot}
+ *   POST /api/host/announce       {profile, chats}    → claim chats
+ *   POST /api/host/beat           {profile, chats}    → refresh liveness
+ *   GET  /api/inbox?profile=P     parked messages for P's chats (+ answered ids)
+ *   POST /api/ack                 {conv, ids}         → drained
+ *   POST /api/relay               {key, text, epoch}  → phone
+ *   POST /api/typing              {key}               → chat action
+ */
+import http, { type OutgoingHttpHeaders } from "node:http";
 import { config } from "./config.js";
-import { ensureRepo, ensureWorkspaceGitignore, defaultRemoteName } from "./tools/git.js";
-import { ToolRegistry } from "./tools/index.js";
-import { Agent, checkLlmEntry } from "./agent.js";
-import { loadModels } from "./models.js";
-import { createBot } from "./bot.js";
+import { createBot, sendChannelText } from "./bot.js";
 import { checkStt } from "./stt.js";
 import { telegramHtml, telegramRichHtml } from "./util/telegram-text.js";
-import { startAdmin, getSelectedPattern, telegramFollowKey, telegramChatKey, newTelegramSession, remoteTurnStart, remoteTurnEvent, remoteTurnEnd, isAdminBusy } from "./admin.js";
-import { createNodePlatform } from "./platform/node.js";
-import { createAppStore } from "./app-store.js";
-import { createAutoSync, DEFAULT_INTERVAL_MS, MIN_INTERVAL_MS } from "./auto-sync.js";
-import type { Bot } from "grammy";
-import { loadAppTools } from "./app-tools.js";
-import { SecretsStore } from "./secrets.js";
-import { makeTreeContext } from "./tree-context.js";
+import {
+  BRIDGE_LINKED_TEXT,
+  beatProfile,
+  bindingProfile,
+  bindingsFor,
+  bridgeEpoch,
+  claimPending,
+  startSweep,
+  ackMessages,
+  answeredIds,
+} from "./telegram-bridge.js";
 
-async function main(): Promise<void> {
-  await fs.mkdir(config.workspaceDir, { recursive: true });
-  await fs.mkdir(config.tmpDir, { recursive: true });
-  await ensureRepo(config.workspaceDir);
-  // The grandma-kat SQLite log lives under the workspace, not the project
-  // root — it contains user prompts/responses. Create the dir up front and
-  // exclude it from the workspace's git history.
-  await fs.mkdir(path.join(config.workspaceDir, "logs"), { recursive: true });
-  await ensureWorkspaceGitignore(config.workspaceDir, [
-    "logs/grandma-kat.db*",
-    "logs/sessions.json",
-    "logs/web-turns.json*",
-    "logs/web-settings.json",
-    "assets/inbox/",
-  ]);
+const PORT = Number(process.env.BOB_TELEGRAM_PORT || "8091");
+const HOST = "127.0.0.1";
+/** Browser origins allowed to call the channel API (comma-separated). */
+const ALLOWED_ORIGINS = (process.env.BOB_APP_ORIGINS ?? "http://localhost:8080,http://127.0.0.1:8080")
+  .split(",")
+  .map((s) => s.trim().replace(/\/$/, ""))
+  .filter(Boolean);
 
-  const secrets = new SecretsStore(config.secretsDb);
-  // App code asks the host for its database; it must be in place before the
-  // app tool modules are imported (their DB handles are lazy). The same store
-  // is handed to the SQL tools below so sql_write and app code share one
-  // writable connection per file (see SqliteTools.write).
-  const appStore = createAppStore(createNodePlatform(config.workspaceDir));
-  globalThis.__BOB_STORE__ = appStore;
-  const appTools = [
-    ...(await loadAppTools(config.workspaceDir, secrets)),
-    // KAT's own run-log reader, so a tree can recall what happened in past
-    // sessions (grandma-kat/src/runlog.mjs). Same DB as katLogger below.
-    ...runLogTools(path.join(config.workspaceDir, "logs", "grandma-kat.db")),
-  ];
-  console.log(`[app-tools] loaded ${appTools.length} tool(s) from workspace apps`);
-  const tools = new ToolRegistry(
-    config.workspaceDir,
-    config.allowedCommands,
-    config.exaApiKey,
-    config.sqliteLockPath || undefined,
-    appTools,
-    appStore,
-  );
-  const models = await loadModels();
-  // Shared SQLite + console logger. Passing a logger object (instead of the
-  // db path string) lets Agent.run() wrap it per-run so the web UI can
-  // stream tree events live.
-  const katLogger = createLogger(path.join(config.workspaceDir, "logs/grandma-kat.db"), "info");
-  // patternName is a getter so the admin UI's selector can switch the active
-  // tree for NEW sessions at runtime; running sessions stay pinned to the tree
-  // they opened on.
-  // Host context for tree registers (grandma-kat runtime.context): an app tree
-  // reaches the app-secrets store through it, so an app can expose only a tree.
-  const treeContext = {
-    secret: (app: string, name: string) => secrets.get(app, name)?.content ?? null,
-    secretText: (app: string, name: string) =>
-      secrets.get(app, name)?.content?.toString("utf8") ?? null,
-    requireSecret: (app: string, name: string) => {
-      const bytes = secrets.get(app, name)?.content;
-      if (!bytes) {
-        throw new Error(
-          `secret "${name}" for app "${app}" is missing — upload it in the WebUI: settings page → App secrets`,
-        );
+const MAX_BODY = 1024 * 1024;
+
+function readBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_BODY) {
+        reject(new Error("body too large"));
+        req.destroy();
+        return;
       }
-      return bytes.toString("utf8");
-    },
-    listSecrets: (app: string) =>
-      secrets.list(app).map((s) => ({ name: s.name, updatedAt: s.updatedAt, size: s.size })),
-    trees: makeTreeContext(config.workspaceDir),
-  };
-  const agent = new Agent({ models, workspace: config.workspaceDir, tools, logger: katLogger, patternName: getSelectedPattern, context: treeContext, maxToolResultChars: config.maxToolResultChars });
-
-  // Periodic two-way git sync (pull then push). On by default when the
-  // workspace has a remote; set AUTO_SYNC=0 to disable, AUTO_SYNC_INTERVAL_MS
-  // to change the interval (min 15s).
-  const autoSyncRemote = await defaultRemoteName(config.workspaceDir);
-  if (autoSyncRemote && process.env.AUTO_SYNC !== "0") {
-    const intervalMs = Math.max(MIN_INTERVAL_MS, Number(process.env.AUTO_SYNC_INTERVAL_MS ?? "") || DEFAULT_INTERVAL_MS);
-    const autoSync = createAutoSync({
-      platform: createNodePlatform(config.workspaceDir),
-      remote: () => autoSyncRemote,
-      isBusy: () => isAdminBusy(),
-      intervalMs,
-      log: (m, r) => console.log(`[auto-sync] ${m}${r?.error ? `: ${r.error}` : ""}`),
+      chunks.push(chunk);
     });
-    autoSync.start();
-    console.log(`[auto-sync] every ${Math.round(intervalMs / 1000)}s via '${autoSyncRemote}'`);
-  }
-
-  const modelReachable = await Promise.all(
-    Object.entries(models).map(async ([name, m]) => [name, await checkLlmEntry(m.baseURL, m.apiKey, m.protocol)] as const),
-  );
-  for (const [name, ok] of modelReachable) {
-    if (!ok) {
-      console.warn(
-        `[warn] LLM "${name}" (${models[name].model} @ ${models[name].baseURL}) not reachable.`,
-      );
-    }
-  }
-
-  const sttUrl = config.sttBackend === "sherpa" ? config.sherpaUrl : config.whisperUrl;
-  const sttOk = await checkStt(config.sttBackend, config.whisperUrl, config.sherpaUrl);
-  if (!sttOk) {
-    console.warn(
-      `[warn] ${config.sttBackend}-server not reachable at ${sttUrl} — voice messages will fail.`,
-    );
-  }
-
-  // Serve the browser UI on ADMIN_PORT. The admin API — chat, settings API,
-  // Telegram bridge, monitors — is opt-in via BOB_WEB=1; the default (and
-  // `npm run dev`) is a static-only listener, so the page boots its in-browser
-  // backend and the settings page is answered entirely client-side. Dev mode
-  // still gets Vite HMR on that listener; only the API is absent.
-  // projectDir/envPath/workspaceDir must come from the RUNNING config —
-  // admin's HOME-based defaults break on hosts where the checkout isn't
-  // at ~/grandpa-bob-bot (env editor, models probe and health would read
-  // nonexistent files).
-  const adminPort = parseInt(process.env.ADMIN_PORT || "8080", 10);
-  const adminMode = process.env.BOB_WEB === "1" ? "api" : "static";
-  const envPath = config.envFile;
-  // Late-bound Telegram handle: the admin is constructed before the bot,
-  // but a webui-run turn into a Telegram conversation must reach the phone.
-  let telegramBot: Bot | undefined;
-  startAdmin({
-    mode: adminMode,
-    port: adminPort,
-    agent,
-    telegramNotify: async (key, text) => {
-      const [chatId, threadId] = key.split(":");
-      const opts = threadId && threadId !== "0" ? { message_thread_id: Number(threadId) } : {};
-      // Same two-step the bot's reply path uses: a rich message first, so
-      // phone numbers and emails render as real links, with a classic HTML
-      // send as the fallback if the API rejects the payload.
-      try {
-        await telegramBot?.api.sendRichMessage(
-          Number(chatId),
-          { html: telegramRichHtml(text) },
-          opts,
-        );
-      } catch (err) {
-        console.warn(
-          "[admin] rich notify failed, sending classic:",
-          err instanceof Error ? err.message : err,
-        );
-        try {
-          await telegramBot?.api.sendMessage(Number(chatId), telegramHtml(text), {
-            ...opts,
-            parse_mode: "HTML",
-          });
-        } catch (err2) {
-          console.warn("[admin] telegram notify failed:", err2);
-        }
-      }
-    },
-    projectDir: process.cwd(),
-    envPath,
-    workspaceDir: config.workspaceDir,
-    secrets,
-    stt: {
-      backend: config.sttBackend,
-      whisperUrl: config.whisperUrl,
-      sherpaUrl: config.sherpaUrl,
-      tmpDir: config.tmpDir,
-      language: config.sttLanguage || undefined,
-    },
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
   });
+}
 
+function parseJson(raw: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (value && typeof value === "object") return value as Record<string, unknown>;
+  } catch {
+    /* fall through */
+  }
+  throw new Error("invalid JSON body");
+}
+
+/** Split "chatId:threadId" (thread optional). */
+function parseConvKey(key: string): { chatId: number; threadId: number } | null {
+  const m = /^(-?\d+)(?::(\d+))?$/.exec(key.trim());
+  if (!m) return null;
+  return { chatId: Number(m[1]), threadId: m[2] ? Number(m[2]) : 0 };
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function asNumberArray(value: unknown): number[] {
+  return Array.isArray(value) ? value.filter((v): v is number => typeof v === "number") : [];
+}
+
+function main(): void {
   const bot = createBot({
     token: config.telegramToken,
-    turnRecorder: { start: remoteTurnStart, event: remoteTurnEvent, end: remoteTurnEnd },
     allowedUserIds: config.allowedUserIds,
-    workspace: config.workspaceDir,
-    envPath,
     tmpDir: config.tmpDir,
     sttBackend: config.sttBackend,
     whisperUrl: config.whisperUrl,
     sherpaUrl: config.sherpaUrl,
     sttLanguage: config.sttLanguage,
-    models,
-    agent,
-    telegramFollowKey,
-    telegramChatKey,
-    newTelegramSession,
   });
 
-  telegramBot = bot;
-  process.once("SIGINT", () => bot.stop());
-  process.once("SIGTERM", () => bot.stop());
+  const server = http.createServer(async (req, res) => {
+    const origin = req.headers.origin ?? "";
+    const allowed = ALLOWED_ORIGINS.includes(origin.replace(/\/$/, ""));
+    const headers: OutgoingHttpHeaders = {
+      "content-type": "application/json",
+      "access-control-allow-methods": "GET,POST,OPTIONS",
+      "access-control-allow-headers": "content-type",
+    };
+    if (allowed) headers["access-control-allow-origin"] = origin;
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, headers);
+      res.end();
+      return;
+    }
+    const finish = (status: number, body: unknown): void => {
+      res.writeHead(status, headers);
+      res.end(JSON.stringify(body));
+    };
+    const fail = (status: number, error: string): void => finish(status, { error });
 
-  await bot.start({
-    onStart: (me) => {
-      console.log(`grandpa-bob-bot up as @${me.username}`);
-      console.log(`workspace : ${config.workspaceDir} (git auto-commit on)`);
-      for (const [name, m] of Object.entries(models)) {
-        const reachable = modelReachable.find(([n]) => n === name)?.[1];
-        console.log(`llm ${name.padEnd(6)} : ${m.model} @ ${m.baseURL} ${reachable ? "(reachable)" : "(NOT reachable)"}`);
+    try {
+      const url = new URL(req.url ?? "/", `http://${HOST}:${PORT}`);
+      const pathname = url.pathname;
+
+      if (req.method === "GET" && pathname === "/healthz") {
+        let botName: string | null = null;
+        try {
+          const me = await bot.api.getMe();
+          botName = `@${me.username}`;
+        } catch {
+          botName = null; // Telegram down or token invalid; channel still serves
+        }
+        return finish(200, { ok: true, bot: botName });
       }
-      console.log(`stt       : ${config.sttBackend} @ ${sttUrl} ${sttOk ? "(reachable)" : "(NOT reachable)"}`);
-      console.log(`users     : ${[...config.allowedUserIds].join(", ")}`);
+
+      if (req.method === "GET" && pathname === "/api/inbox") {
+        const profile = asString(url.searchParams.get("profile"));
+        if (!profile) return fail(400, "profile required");
+        const claim = await claimPending(profile);
+        // Tell the phone once per newly claimed chat that the tab took over.
+        for (const conv of claim.claimed) {
+          const parts = parseConvKey(conv);
+          if (!parts) continue;
+          await sendChannelText(bot, parts.chatId, parts.threadId, BRIDGE_LINKED_TEXT).catch(() => {});
+        }
+        return finish(200, claim);
+      }
+
+      if (req.method === "POST" && pathname === "/api/host/beat") {
+        const body = parseJson(await readBody(req));
+        const profile = asString(body.profile);
+        if (!profile) return fail(400, "profile required");
+        await beatProfile(profile);
+        return finish(200, { ok: true });
+      }
+
+      if (req.method === "GET" && pathname === "/api/bindings") {
+        const profile = asString(url.searchParams.get("profile"));
+        if (!profile) return fail(400, "profile required");
+        return finish(200, { bindings: await bindingsFor(profile) });
+      }
+
+      if (req.method === "POST" && pathname === "/api/ack") {
+        const body = parseJson(await readBody(req));
+        const conv = asString(body.conv);
+        const ids = asNumberArray(body.ids);
+        if (!conv) return fail(400, "conv required");
+        await ackMessages(conv, ids);
+        return finish(200, { ok: true });
+      }
+
+      if (req.method === "POST" && pathname === "/api/relay") {
+        const body = parseJson(await readBody(req));
+        const key = asString(body.key);
+        const text = asString(body.text);
+        const epoch = typeof body.epoch === "number" ? body.epoch : null;
+        const profile = asString(body.profile);
+        if (!key) return fail(400, "key required");
+        if (text == null) return fail(400, "text required");
+        const parts = parseConvKey(key);
+        if (!parts) return fail(400, "key must be chatId:threadId");
+        // Ownership + epoch guards: a chat re-claimed by a different profile
+        // bumps its epoch; a suspended old tab relaying late would duplicate
+        // answers the new owner already gave.
+        if (profile) {
+          const owner = await bindingProfile(key);
+          if (owner && owner !== profile) {
+            return finish(200, { ok: false, dropped: "chat moved to another profile" });
+          }
+        }
+        if (epoch !== null && epoch < (await bridgeEpoch(key))) {
+          return finish(200, { ok: false, dropped: "stale epoch" });
+        }
+        await sendChannelText(bot, parts.chatId, parts.threadId, text);
+        return finish(200, { ok: true });
+      }
+
+      if (req.method === "POST" && pathname === "/api/typing") {
+        const body = parseJson(await readBody(req));
+        const key = asString(body.key);
+        if (!key) return fail(400, "key required");
+        const parts = parseConvKey(key);
+        if (!parts) return fail(400, "key must be chatId:threadId");
+        const opts = parts.threadId ? { message_thread_id: parts.threadId } : {};
+        await bot.api.sendChatAction(parts.chatId, "typing", opts).catch(() => {});
+        return finish(200, { ok: true });
+      }
+
+      return fail(404, "not found");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (res.headersSent) {
+        console.warn("[channel] request failed after headers:", msg);
+        res.end();
+        return;
+      }
+      return fail(400, msg);
+    }
+  });
+
+  server.listen(PORT, HOST, () => {
+    console.log(`[channel] telegram API on http://${HOST}:${PORT} (loopback only)`);
+    console.log(`[channel] allowed origins: ${ALLOWED_ORIGINS.join(", ")}`);
+  });
+
+  startSweep();
+
+  process.once("SIGINT", () => {
+    bot.stop();
+    server.close();
+  });
+  process.once("SIGTERM", () => {
+    bot.stop();
+    server.close();
+  });
+
+  void bot.start({
+    onStart: (me) => {
+      console.log(`[channel] telegram up as @${me.username} — parking messages, no agent`);
+      void checkStt(config.sttBackend, config.whisperUrl, config.sherpaUrl).then((ok) => {
+        if (!ok) {
+          console.warn(
+            `[channel] ${config.sttBackend}-server not reachable at ${config.whisperUrl} — voice messages will fail`,
+          );
+        }
+      });
     },
   });
 }
 
-main().catch((err) => {
-  console.error("fatal:", err);
-  process.exit(1);
-});
+main();

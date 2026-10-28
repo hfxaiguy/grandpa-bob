@@ -24,6 +24,7 @@ import {
   loadRemote,
   loadStorage,
   loadStorageServer,
+  loadTelegramChannel,
   loadModelsJson,
   loadCdp,
   saveCdp,
@@ -970,6 +971,9 @@ async function main(): Promise<void> {
     serverModels,
     cdp: configuredCdp,
     beforeTurn,
+    telegramUrl: loadTelegramChannel(),
+    telegramProfile: () =>
+      storageMode === "browser" ? `opfs:${activeProfile}` : `desktop:${storageServer}`,
   });
 
   hostUi(backend, appEl, { page: "chat", port: 8080 });

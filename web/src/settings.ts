@@ -169,3 +169,28 @@ export function saveStorageServer(url: string): void {
     // ignore
   }
 }
+
+// ── telegram channel ─────────────────────────────────────────────────────
+
+const TELEGRAM_KEY = "bob:telegram-channel";
+/** Default loopback address of the telegram channel (src/index.ts). */
+const DEFAULT_TELEGRAM = "http://127.0.0.1:8091";
+
+/** Same normalization rules as the storage bridge; empty → the default port. */
+export function loadTelegramChannel(): string {
+  try {
+    const raw = localStorage.getItem(TELEGRAM_KEY) ?? "";
+    return raw ? normalizeStorageServer(raw) : DEFAULT_TELEGRAM;
+  } catch {
+    return DEFAULT_TELEGRAM;
+  }
+}
+
+export function saveTelegramChannel(url: string): void {
+  const normalized = normalizeStorageServer(url);
+  try {
+    localStorage.setItem(TELEGRAM_KEY, normalized);
+  } catch {
+    // ignore
+  }
+}

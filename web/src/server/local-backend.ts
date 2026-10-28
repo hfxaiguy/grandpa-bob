@@ -57,6 +57,10 @@ export interface BackendOptions {
    * tree while another tab holds the workspace.
    */
   beforeTurn?: () => Promise<string | null>;
+  /** Base URL of the telegram channel (src/index.ts). */
+  telegramUrl?: string;
+  /** The profile id this page hosts (claims parked chats under it). */
+  telegramProfile?: () => string;
 }
 
 interface TurnRecord {
@@ -1367,16 +1371,21 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     return { status: 404, body: { error: "not found" } };
   }
 
-  // ── two-way Telegram bridge (server half: src/telegram-bridge.ts) ─────
-  // The tab is the conversation's brain: this loop only relays messages to
-  // and from the admin. XHR is used because the fetch shim routes `/api/*`
-  // straight back into this backend. Nothing here touches the server's log,
-  // sessions, or follow bindings — the OPFS session stays in this page.
+  // ── two-way Telegram bridge (browser half of src/telegram-bridge.ts) ──
+  // The tab is the conversation's brain: this loop drains the telegram
+  // channel's mailbox (parked messages survive channel restarts), runs each
+  // message as a turn in this page's session, and relays the reply back.
+  // Absolute fetches — the fetch shim only intercepts same-origin /api/*.
+  // Nothing here touches a server-side log, session, or follow binding.
   const BRIDGE_KEY = "bob:telegram-bridge";
   const BRIDGE_SESSION_KEY = "bob:telegram-bridge-session";
   const BRIDGE_SEEN_KEY = "bob:telegram-bridge-seen";
   let bridgeWasOn = false;
   let bridgeChain: Promise<void> = Promise.resolve();
+
+  const telegramUrl = (): string =>
+    opts.telegramUrl ?? "http://127.0.0.1:8091";
+  const telegramProfile = (): string => opts.telegramProfile?.() ?? "browser";
 
   const lstore = {
     read(key: string): string {
@@ -1406,8 +1415,29 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   const bridgeDelay = (): number =>
     typeof document !== "undefined" && document.visibilityState === "hidden" ? 10_000 : 4_000;
 
-  /** Answer one phone message in the OPFS session, then relay the reply. */
-  async function runBridgeMessage(msg: { id: number; text: string }, epoch: number): Promise<void> {
+  interface ChannelMessage {
+    conv: string;
+    id: number;
+    text: string;
+    arrivedAt: number;
+  }
+  interface Claim {
+    messages: ChannelMessage[];
+    claimed: string[];
+    epochs: Record<string, number>;
+    answered: Record<string, number[]>;
+  }
+
+  async function channelPost(pathname: string, body: unknown): Promise<Response> {
+    return fetch(`${telegramUrl()}${pathname}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  /** Answer one parked message in this page's session, then relay the reply. */
+  async function runBridgeMessage(msg: ChannelMessage, epoch: number): Promise<void> {
     // Pinned when the bridge was switched on: switching browser chats does
     // not silently re-target the phone thread.
     const key = lstore.read(BRIDGE_SESSION_KEY) || (await ensureSession());
@@ -1417,44 +1447,55 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       record.status === "error"
         ? `Something went wrong: ${record.error ?? "error"}`
         : record.output || "(no reply)";
-    const sent = await adminPost("/api/telegram/relay", { text, replyTo: msg.id, epoch });
-    if (sent.status !== 200) console.warn("[bridge] relay failed:", sent.status, sent.data);
+    const sent = await channelPost("/api/relay", {
+      key: msg.conv,
+      text,
+      epoch,
+      profile: telegramProfile(),
+    });
+    if (!sent.ok) console.warn("[bridge] relay failed:", sent.status);
+    await channelPost("/api/ack", { conv: msg.conv, ids: [msg.id] });
   }
 
-  /** Heartbeat → inbox → run → relay. Reschedules itself (visibility-aware). */
+  /** Claim (inbox) → run → relay → ack. Reschedules itself (visibility-aware). */
   async function bridgeTick(): Promise<void> {
     try {
-      if (!opts.serverModels || lstore.read(BRIDGE_KEY) !== "1") {
-        if (bridgeWasOn) {
-          bridgeWasOn = false;
-          await adminPost("/api/telegram/bridge", { enabled: false });
-        }
+      if (lstore.read(BRIDGE_KEY) !== "1") {
+        if (bridgeWasOn) bridgeWasOn = false;
         return;
       }
-      const beat = await adminPost("/api/telegram/bridge", { enabled: true });
-      if (beat.status !== 200) {
+      // Claim: parked messages for unclaimed chats (bound to this profile
+      // now) plus chats already bound to it. The channel drops chats whose
+      // binding still belongs to another live profile.
+      const res = await fetch(`${telegramUrl()}/api/inbox?profile=${encodeURIComponent(telegramProfile())}`);
+      if (!res.ok) {
         bridgeWasOn = false;
-        return; // server gone or no linked chat: nothing to relay
+        return; // channel down: park & forward holds the messages
       }
       bridgeWasOn = true;
-      const inbox = await adminGet("/api/telegram/inbox");
-      if (!inbox || inbox.bridged !== true) return;
-      const pending = Array.isArray(inbox.pending) ? (inbox.pending as Array<Record<string, unknown>>) : [];
-      const answered = new Set(Array.isArray(inbox.answeredIds) ? (inbox.answeredIds as number[]) : []);
+      void channelPost("/api/host/beat", { profile: telegramProfile() });
+      const claim = (await res.json()) as Partial<Claim>;
+      const pending = Array.isArray(claim.messages) ? claim.messages : [];
+      const answered = new Set(
+        Object.values(claim.answered ?? {}).flatMap((ids) => (Array.isArray(ids) ? ids : [])),
+      );
       const seen = new Set(bridgeSeen());
-      const epoch = typeof inbox.epoch === "number" ? inbox.epoch : 0;
       const fresh = pending
-        .filter((m): m is { id: number; text: string } => typeof m.id === "number" && typeof m.text === "string")
+        .filter((m) => typeof m.id === "number" && typeof m.text === "string" && typeof m.conv === "string")
         .filter((m) => !seen.has(m.id) && !answered.has(m.id));
       if (!fresh.length) return;
       // Remember before running: a reload mid-turn must not run the message
-      // twice. If the tab dies before answering, the server's sweep takes over.
+      // twice. If the tab dies before answering, the message stays parked in
+      // the mailbox and the next connection re-runs it.
       lstore.write(BRIDGE_SEEN_KEY, JSON.stringify([...seen, ...fresh.map((m) => m.id)].slice(-300)));
       for (const m of fresh) {
+        const epoch = claim.epochs?.[m.conv] ?? 0;
         bridgeChain = bridgeChain
           .then(() => runBridgeMessage(m, epoch))
           .catch((err) => console.warn("[bridge] turn failed:", err));
       }
+    } catch {
+      bridgeWasOn = false; // channel unreachable
     } finally {
       const timer = setTimeout(() => void bridgeTick(), bridgeDelay());
       (timer as { unref?: () => void }).unref?.();
