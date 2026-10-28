@@ -50,6 +50,13 @@ export interface BackendOptions {
   serverModels?: boolean;
   /** Browser-level CDP socket for the browser_* tools (?cdp=…). */
   cdp?: string;
+  /**
+   * Gate before every agent turn (chat message, upload). Returns a
+   * user-facing error message, or null to allow the turn. The single-host
+   * lease (`host-lease.ts`) uses this so a secondary tab never runs the
+   * tree while another tab holds the workspace.
+   */
+  beforeTurn?: () => Promise<string | null>;
 }
 
 interface TurnRecord {
@@ -881,12 +888,16 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       return { status: 200, body: { ok: true, stopped: Boolean(active) } };
     }
     if (pathname === "/api/chat" && method === "POST") {
+      const guard = await opts.beforeTurn?.().catch(() => null) ?? null;
+      if (guard) return { status: 503, body: { error: guard } };
       const text = (parseBody(body) as { text?: string }).text ?? "";
       const turnId = crypto.randomUUID();
       void runTurn(turnId, text);
       return { status: 200, body: { turnId, queued: false } };
     }
     if (pathname === "/api/chat/upload" && method === "POST") {
+      const guard = await opts.beforeTurn?.().catch(() => null) ?? null;
+      if (guard) return { status: 503, body: { error: guard } };
       if (!(body instanceof FormData)) return { status: 400, body: { error: "multipart required" } };
       const file = body.get("file");
       if (!(file instanceof File)) return { status: 400, body: { error: "no file" } };

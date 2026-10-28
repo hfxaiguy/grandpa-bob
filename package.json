@@ -66,6 +66,7 @@
     "test:secrets": "tsx scripts/secrets-test.ts",
     "test:shell": "tsx scripts/shell-sandbox-test.ts",
     "test:paths": "tsx scripts/path-shim-test.ts",
+    "test:lease": "tsx scripts/host-lease-test.ts",
     "test:workspace-transfer": "tsx scripts/workspace-transfer-test.ts",
     "test:profiles": "tsx scripts/profiles-test.ts",
     "test:pattern-path": "tsx scripts/pattern-path-test.ts",
