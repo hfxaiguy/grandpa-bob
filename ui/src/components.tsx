@@ -481,7 +481,7 @@ export function RefModal() {
   return (
     <Show when={refView()}>
       {(t) => (
-        <div class="mem-modal" onClick={(ev) => ev.target === ev.currentTarget && closeRef()}>
+        <div class="mem-modal ref-modal" onClick={(ev) => ev.target === ev.currentTarget && closeRef()}>
           <div class="mem-modal-card">
             <div class="mem-modal-head">
               <span class="mem-modal-path">ref://{t().seq}{t().path ? `/${t().path}` : ""}</span>

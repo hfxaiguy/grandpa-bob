@@ -436,6 +436,11 @@ body.dragging-tile { user-select: none !important; }
 .mem-val { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .mem-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 60; display: flex; align-items: center; justify-content: center; padding: 4vh 4vw; }
+/* The ref inspector opens from inside other modals (event, memory inspector,
+   provenance). Those either portal into <body> or sit before it in the DOM, so
+   at the shared z-index they would paint above it; keep the ref modal a layer
+   higher so a clicked handle always comes to the front. */
+.ref-modal { z-index: 65; }
 .mem-modal-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; width: min(720px, 92vw); max-height: 88vh; display: flex; flex-direction: column; }
 .mem-modal-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .mem-modal-path { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

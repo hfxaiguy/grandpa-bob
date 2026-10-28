@@ -2,6 +2,19 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-27 — ui: ref handles open the inspector above any modal
+
+Clicking a `ref://…` handle inside a modal could open the ref inspector
+*behind* it: every overlay shares one `z-index: 60`, and the memory inspector
+and provenance modal render through a `<Portal>` into `<body>` — after the app
+root that hosts the ref modal — so document order put them on top. The event
+modal only sorted correctly by luck (it is mounted before `<RefModal />` in the
+same root). The ref overlay now carries `ref-modal` with `z-index: 65`, so a
+clicked handle always comes to the front; closing it reveals the originating
+modal, still open, beneath.
+
+Checks: `npm run test:ui` and `npm run build`.
+
 ## 2026-10-27 — seed updates: watcher, visible progress, loud failures
 
 A published seed never announced itself to an open tab: `checkSeedUpdate` ran
