@@ -42,7 +42,7 @@ import {
   profileHandle,
   profileSegmentsFor,
   recordSeedVersion,
-  resolveActiveProfileName,
+  resolveActiveForMode,
   touchProfile,
   type ProfileRegistry,
   type SeedBinding,
@@ -882,28 +882,36 @@ async function beforeTurn(): Promise<string | null> {
 let bootStage = "start";
 
 async function main(): Promise<void> {
+  // The profile registry is shared by both storage kinds: `opfs` profiles
+  // keep their workspace in the origin's OPFS; `desktop` profiles point at a
+  // folder root registered on the storage bridge. Each mode resolves its own
+  // active profile.
+  bootStage = "bootProfiles";
+  const boot = await bootProfiles();
+  profileRegistry = boot.registry;
+  const wantedMode: "browser" | "desktop" = storageMode;
+  activeProfile = resolveActiveForMode(profileRegistry, wantedMode);
+  activeProfileSegments = profileSegmentsFor(activeProfile);
+
   if (storageMode === "desktop") {
+    const record = profileRegistry.profiles.find((profile) => profile.name === activeProfile);
+    const rootName = record?.kind === "desktop" ? record.folder ?? "default" : "default";
     bootStage = "desktop: initSqlite";
-    await initSqlite([]);
-    platform = createDesktopPlatform("/", storageServer);
+    await profileHandle(activeProfile); // the OPFS dir carries this profile's run log
+    await initSqlite(activeProfileSegments);
+    platform = createDesktopPlatform("/", storageServer, { rootName });
     setActiveFs(platform.fs);
     bootStage = "desktop: buildFsIndex";
     await buildFsIndex(platform);
-    statusBase = "desktop";
+    statusBase = `desktop${rootName === "default" ? "" : `:${rootName}`}`;
     try {
       const health = await fetch(`${storageServer}/health`).then((r) => r.json());
-      statusBase = `desktop: ${health.root}`;
+      statusBase = `desktop${rootName === "default" ? "" : `:${rootName}`}: ${health.root}`;
     } catch {
       statusBase = `desktop bridge unreachable at ${storageServer}`;
     }
   } else {
-    // Profiles: move pre-profile OPFS data into /profiles/default once, then
-    // bind every layer (fs, sqlite worker, agent worker) to the active profile.
-    bootStage = "bootProfiles";
-    const boot = await bootProfiles();
-    profileRegistry = boot.registry;
-    activeProfile = resolveActiveProfileName(profileRegistry);
-    activeProfileSegments = profileSegmentsFor(activeProfile);
+    // Bind every layer (fs, sqlite worker, agent worker) to the active profile.
     setOpfsRootSegments(activeProfileSegments);
     bootStage = "initSqlite";
     await initSqlite(activeProfileSegments);

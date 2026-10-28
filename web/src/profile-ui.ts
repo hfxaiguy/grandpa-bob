@@ -9,6 +9,7 @@
 import {
   DEFAULT_PROFILE,
   activateProfile,
+  createDesktopProfile,
   createProfile,
   deleteProfile,
   isValidProfileName,
@@ -20,6 +21,7 @@ import {
   type ProfileRegistry,
   type SeedBinding,
 } from "./profiles";
+import { loadStorage, saveStorage, type StorageMode } from "./settings";
 import {
   activeSwapService,
   DEFAULT_SWAP_SERVICE_URL,
@@ -129,6 +131,32 @@ function fillServiceFields(service: SwapService | null): void {
 
 // ── profile picker + manager ─────────────────────────────────────────────
 
+/** Base URL of the storage bridge (folders register there). */
+const SERVER_KEY = "bob:storage-server";
+const DEFAULT_SERVER = "http://127.0.0.1:8795";
+function bridgeUrl(): string {
+  try {
+    const raw = localStorage.getItem(SERVER_KEY) ?? "";
+    if (!raw) return DEFAULT_SERVER;
+    return new URL(raw.includes("://") ? raw : `http://${raw}`).origin;
+  } catch {
+    return DEFAULT_SERVER;
+  }
+}
+
+/**
+ * Where a new desktop profile's folder lives on this machine: under
+ * `~/.grandpa-bob/folders/<name>` — the bridge expands the leading `~` so
+ * the browser never needs to know the desktop's home path.
+ */
+function homeFolder(name: string): string {
+  return `~/.grandpa-bob/folders/${name}`;
+}
+
+function currentStorage(): StorageMode {
+  return loadStorage();
+}
+
 function renderProfileSelect(): void {
   const select = el<HTMLSelectElement>("profile-select");
   if (!select) return;
@@ -138,11 +166,17 @@ function renderProfileSelect(): void {
     ...registry.profiles.map((profile) => {
       const option = document.createElement("option");
       option.value = profile.name;
-      option.textContent = profile.name === DEFAULT_PROFILE ? "default" : profile.name;
+      const kind = profile.kind === "desktop" ? ` (desktop: ${profile.folder})` : "";
+      option.textContent = `${profile.name === DEFAULT_PROFILE ? "default" : profile.name}${kind}`;
       return option;
     }),
   );
   select.value = ui.activeProfile();
+}
+
+/** Kind of a profile record ("opfs" is the implicit default). */
+function kindOf(profile: ProfileRecord): "opfs" | "desktop" {
+  return profile.kind ?? "opfs";
 }
 
 async function renderProfileList(): Promise<void> {
@@ -177,6 +211,10 @@ async function renderProfileList(): Promise<void> {
     if (!isActive) {
       actions.append(
         actionButton("Switch", () => {
+          // Cross-kind switching also moves the storage mode; the reload
+          // applies both.
+          const mode = kindOf(profile) === "desktop" ? "desktop" : "browser";
+          if (mode !== currentStorage()) saveStorage(mode);
           activateProfile(profile.name);
           ui.reload();
         }),
@@ -201,6 +239,12 @@ async function renderProfileList(): Promise<void> {
     row.append(info, actions);
     list.append(row);
 
+    if (kindOf(profile) === "desktop") {
+      // The workspace lives on the bridge: the OPFS dir only carries the run
+      // log, so a file count would mislead. Name the folder instead.
+      details.textContent = ` · desktop folder: ${profile.folder}`;
+      continue;
+    }
     void summarizeWorkspace(await profileHandle(profile.name))
       .then((summary) => {
         details.textContent = ` · ${summary.files} files · ${formatBytes(summary.bytes)}`;
@@ -244,24 +288,51 @@ function wireProfileManager(): void {
   el<HTMLButtonElement>("profile-close")?.addEventListener("click", () => dialog?.close());
 
   const form = el<HTMLFormElement>("profile-create");
+  const sourceSelect = el<HTMLSelectElement>("profile-new-source");
+  const folderLabel = el<HTMLElement>("profile-new-folder-label");
+  sourceSelect?.addEventListener("change", () => {
+    if (folderLabel) folderLabel.hidden = sourceSelect.value !== "desktop";
+  });
   form?.addEventListener("submit", (event) => {
     event.preventDefault();
     const ui = getHooks();
     const name = el<HTMLInputElement>("profile-new-name")?.value.trim() ?? "";
     const source = el<HTMLSelectElement>("profile-new-source")?.value ?? "blank";
+    const folder = el<HTMLInputElement>("profile-new-folder")?.value.trim() ?? "";
     const switchNow = el<HTMLInputElement>("profile-new-switch")?.checked ?? true;
     if (!isValidProfileName(name)) {
       ui.flash("profile names use lowercase letters, digits, dot, dash or underscore", 8000);
       return;
     }
+    if (source === "desktop" && !isValidProfileName(folder)) {
+      ui.flash("folder names use lowercase letters, digits, dot, dash or underscore", 8000);
+      return;
+    }
     void (async () => {
       try {
-        const duplicate =
-          source === "duplicate"
-            ? { kind: "duplicate" as const, from: await profileHandle(ui.activeProfile()) }
-            : { kind: "blank" as const };
-        await createProfile(name, duplicate);
+        if (source === "desktop") {
+          // Register the folder on the bridge first; the registry record
+          // binds the profile name to that root afterwards.
+          const res = await fetch(`${bridgeUrl()}/roots`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: folder, dir: homeFolder(folder) }),
+          });
+          if (!res.ok) {
+            const d = (await res.json().catch(() => ({}))) as { error?: string };
+            throw new Error(d.error ?? `bridge rejected the folder: HTTP ${res.status}`);
+          }
+          await createDesktopProfile(name, folder);
+        } else {
+          const duplicate =
+            source === "duplicate"
+              ? { kind: "duplicate" as const, from: await profileHandle(ui.activeProfile()) }
+              : { kind: "blank" as const };
+          await createProfile(name, duplicate);
+        }
         if (switchNow) {
+          const mode = source === "desktop" ? "desktop" : "browser";
+          if (mode !== currentStorage()) saveStorage(mode);
           activateProfile(name);
           ui.reload();
           return;

@@ -125,7 +125,7 @@
 
     <dialog id="profile-dialog">
       <h3>Workspace profiles</h3>
-      <p class="muted">Separate OPFS workspaces in this browser. Switching reloads the tab.</p>
+      <p class="muted">Separate workspaces in this browser (OPFS) or in folders on this machine's bridge. Switching reloads the tab.</p>
       <div id="profile-list"></div>
       <form id="profile-create">
         <label>New profile name
@@ -135,7 +135,11 @@
           <select id="profile-new-source">
             <option value="blank">fresh workspace (seeded on first boot)</option>
             <option value="duplicate">copy of the current profile</option>
+            <option value="desktop">desktop folder (this machine's bridge)</option>
           </select>
+        </label>
+        <label id="profile-new-folder-label" hidden>Folder root name on the bridge
+          <input id="profile-new-folder" placeholder="work" autocomplete="off" />
         </label>
         <label class="inline"><input id="profile-new-switch" type="checkbox" checked /> switch to it after creating</label>
         <div class="row-actions"><button type="submit">Create profile</button></div>

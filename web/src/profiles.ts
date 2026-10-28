@@ -54,6 +54,15 @@ export interface ProfileRecord {
   createdAt: string;
   lastUsedAt?: string;
   seed?: SeedBinding;
+  /**
+   * Where this profile's workspace lives. `opfs` (the default, undefined for
+   * old registries) is a directory under `/profiles/<name>/` in the origin's
+   * OPFS; `desktop` is a folder on the machine running the storage bridge —
+   * `folder` names a root registered there (`POST /roots` on the bridge),
+   * resolved by the bridge per request via the `x-bob-root` header.
+   */
+  kind?: "opfs" | "desktop";
+  folder?: string;
 }
 
 export interface ProfileRegistry {
@@ -127,6 +136,17 @@ export function parseProfileRegistry(raw: unknown): ProfileRegistry {
     if (typeof entry.lastUsedAt === "string") record.lastUsedAt = entry.lastUsedAt;
     const binding = validSeedBinding(entry.seed);
     if (binding) record.seed = binding;
+    if (entry.kind === "desktop") {
+      // A desktop profile's workspace is a bridge folder, not OPFS storage:
+      // the OPFS directory (if any) only holds this profile's run log.
+      if (!isValidProfileName(entry.folder)) {
+        throw new Error(`profile entry ${index}: desktop profile needs a valid folder name`);
+      }
+      record.kind = "desktop";
+      record.folder = entry.folder;
+    } else if (entry.kind === "opfs") {
+      record.kind = "opfs";
+    }
     return record;
   });
   if (!seen.has(DEFAULT_PROFILE)) {
@@ -618,6 +638,48 @@ export async function createProfile(
   const next: ProfileRegistry = { version: 1, profiles: [...registry.profiles, record] };
   await writeRegistry(next);
   return record;
+}
+
+/**
+ * Register a desktop profile: a bridge folder root bound to a profile name.
+ * The folder must already be registered on the bridge (`POST /roots`); this
+ * only writes the registry record. The OPFS directory is created too — it
+ * carries this profile's run log (the sqlite worker's pool lives there even
+ * when the workspace is on the bridge).
+ */
+export async function createDesktopProfile(name: string, folder: string): Promise<ProfileRecord> {
+  if (!isValidProfileName(name)) {
+    throw new Error("profile names use lowercase letters, digits, dot, dash or underscore (max 64)");
+  }
+  if (!isValidProfileName(folder)) {
+    throw new Error("folder names use lowercase letters, digits, dot, dash or underscore (max 64)");
+  }
+  const registry = await loadRegistry();
+  if (registry.profiles.some((profile) => profile.name === name)) {
+    throw new Error(`profile already exists: ${name}`);
+  }
+  await profileHandle(name);
+  const record: ProfileRecord = { name, createdAt: new Date().toISOString(), kind: "desktop", folder };
+  const next: ProfileRegistry = { version: 1, profiles: [...registry.profiles, record] };
+  await writeRegistry(next);
+  return record;
+}
+
+/**
+ * The active profile for one storage mode. `resolveActiveProfileName` may
+ * name a profile of the other kind; when that happens, fall back to the
+ * first profile of the requested kind (default guaranteed by the parser).
+ */
+export function resolveActiveForMode(registry: ProfileRegistry, mode: "browser" | "desktop"): string {
+  const wanted = mode === "desktop" ? "desktop" : "opfs";
+  const active = resolveActiveProfileName(registry);
+  const record = registry.profiles.find((profile) => profile.name === active);
+  const kindOf = (p: ProfileRecord | undefined): "opfs" | "desktop" => p?.kind ?? "opfs";
+  if (record && kindOf(record) === wanted) return active;
+  const fallback =
+    registry.profiles.find((profile) => kindOf(profile) === wanted) ??
+    registry.profiles.find((profile) => profile.name === DEFAULT_PROFILE);
+  return fallback?.name ?? DEFAULT_PROFILE;
 }
 
 /** Delete a non-default, non-active profile and its workspace directory. */
