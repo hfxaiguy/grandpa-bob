@@ -3,7 +3,7 @@
  * target). Run: `npm run test:models`.
  */
 import assert from "node:assert/strict";
-import { parseModels, BUILTIN_TRANSFORMS } from "../src/model-config.js";
+import { parseModels, BUILTIN_TRANSFORMS } from "../web/src/model-config.js";
 
 const registry = parseModels(
   JSON.stringify({

@@ -16,7 +16,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createNodePlatform } from "../src/platform/node.js";
-import type { Platform } from "../src/platform/types";
+import type { Platform } from "../web/src/platform/types";
 import {
   listSessions,
   RUN_LOG_DDL,

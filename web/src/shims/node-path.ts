@@ -3,7 +3,7 @@
  * existing NodeNext modules that `import path from "node:path"` bundle and
  * run in the browser unchanged.
  */
-import { posixPath } from "../../../src/platform/paths";
+import { posixPath } from "../platform/paths";
 
 export default posixPath;
 export const sep = posixPath.sep;

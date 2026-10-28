@@ -7,7 +7,7 @@ Description=grandpa-bob telegram channel (park & forward, no agent)
 After=default.target
 
 [Service]
-ExecStart=/usr/bin/env node --dns-result-order=ipv4first %h/grandpa-bob-bot/dist/index.js
+ExecStart=/usr/bin/env node --dns-result-order=ipv4first %h/grandpa-bob-bot/dist/src/index.js
 WorkingDirectory=%h/grandpa-bob-bot
 Environment=BOB_TELEGRAM_PORT=8091
 Restart=on-failure

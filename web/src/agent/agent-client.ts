@@ -3,7 +3,7 @@
  * request/stream split: `run()` resolves with the final result and collects
  * streamed events and emits.
  */
-import { AgentStoppedError } from "../../../src/stop-error";
+import { AgentStoppedError } from "../stop-error";
 import { encodeOpfsPrefix } from "../platform/opfs-root";
 
 export interface AgentRunResult {

@@ -3,8 +3,8 @@
  * run_command. Run: `npm run test:coreutils`.
  */
 import assert from "node:assert/strict";
-import { createCoreutilsShell, runCommand } from "../src/platform/coreutils.js";
-import { createMemoryPlatform } from "../src/platform/memory.js";
+import { createCoreutilsShell, runCommand } from "../web/src/platform/coreutils.js";
+import { createMemoryPlatform } from "../web/src/platform/memory.js";
 
 const platform = createMemoryPlatform({ root: "/workspace" });
 const deps = { fs: platform.fs, path: platform.path, workspaceRoot: platform.workspaceRoot };

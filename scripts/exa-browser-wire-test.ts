@@ -21,7 +21,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { browserTools, STUB_TOOL_NAMES } from "../web/src/agent/browser-tools.js";
-import { EXA_SEARCH_DEFINITION } from "../src/tools/websearch.js";
+import { EXA_SEARCH_DEFINITION } from "../web/src/tools/websearch.js";
 import { createNodePlatform } from "../src/platform/node.js";
 
 const workspace = await mkdtemp(path.join(os.tmpdir(), "grandpa-bob-exa-wire-"));

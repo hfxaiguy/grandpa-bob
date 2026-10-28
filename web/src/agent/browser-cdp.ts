@@ -24,7 +24,7 @@
 import { BrowserCdp } from "./cdp";
 import { createModuleLoader } from "./module-loader";
 import type { KatTool } from "./browser-tools";
-import type { Platform } from "../../../src/platform/types";
+import type { Platform } from "../platform/types";
 
 const NOT_CONNECTED =
   "browser tools are not connected. Run `npm run chrome` in the grandpa-bob repo and open " +

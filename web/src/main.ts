@@ -50,14 +50,14 @@ import {
 import { fetchLatestSeed, fetchLatestSeedMeta, resolveSwapService, type RemoteSeedMeta } from "./swap";
 import { wireProfileUi } from "./profile-ui";
 import { cloneWorkspace } from "./platform/git-opfs";
-import { applyDatabaseDumps } from "../../src/db-sync";
-import { createAutoSync, DEFAULT_INTERVAL_MS } from "../../src/auto-sync";
-import { listTreeSources } from "../../src/tree-sources";
-import { resolveTreeEntry } from "../../src/tree-files";
+import { applyDatabaseDumps } from "./db-sync";
+import { createAutoSync, DEFAULT_INTERVAL_MS } from "./auto-sync";
+import { listTreeSources } from "./tree-sources";
+import { resolveTreeEntry } from "./tree-files";
 import { patternLabel } from "./agent/pattern-path";
 import { createHostLease } from "./host-lease";
 import { parseSeedMeta, seedFreshness, SEED_CLOCK_TOLERANCE_MS, type SeedMeta } from "./seed-version";
-import type { Platform } from "../../src/platform/types";
+import type { Platform } from "./platform/types";
 
 const params = new URLSearchParams(location.search);
 const requestedStorage = params.get("storage");

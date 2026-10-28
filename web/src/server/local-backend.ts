@@ -10,21 +10,21 @@
  * sync, log, env) return a 501 with a clear message; the UI degrades.
  */
 import type { AgentClient } from "../agent/agent-client";
-import type { Platform } from "../../../src/platform/types";
-import { listAppTrees, listPatterns, listTreeSources } from "../../../src/tree-sources";
-import { resolveTreeEntry } from "../../../src/tree-files";
-import { serializeTree } from "../../../src/tree-serialize";
-import { newTurnApps, tagEventApp, type TurnApps } from "../../../src/app-attribution";
-import { createMemoryTracker, type MemoryWrite } from "../../../src/memory-track";
-import { emitValue } from "../../../src/util/emit-text";
-import type { TurnTokens } from "../../../src/web-log-types";
+import type { Platform } from "../platform/types";
+import { listAppTrees, listPatterns, listTreeSources } from "../tree-sources";
+import { resolveTreeEntry } from "../tree-files";
+import { serializeTree } from "../tree-serialize";
+import { newTurnApps, tagEventApp, type TurnApps } from "../app-attribution";
+import { createMemoryTracker, type MemoryWrite } from "../memory-track";
+import { emitValue } from "../util/emit-text";
+import type { TurnTokens } from "../web-log-types";
 import { createModuleLoader } from "../agent/module-loader";
 import { patternLabel } from "../agent/pattern-path";
 import { loadEnv, saveEnv, saveModelsJson } from "../settings";
-import { parseModels, type ModelRegistry } from "../../../src/model-config";
-import { refTargetFromRow } from "../../../src/ref-target";
-import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "../../../src/db-sync";
-import { AgentStoppedError, isAgentStopped } from "../../../src/stop-error";
+import { parseModels, type ModelRegistry } from "../model-config";
+import { refTargetFromRow } from "../ref-target";
+import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "../db-sync";
+import { AgentStoppedError, isAgentStopped } from "../stop-error";
 import type { SessionSummary } from "../agent/log-store";
 
 export interface BackendResponse {

@@ -34,7 +34,7 @@ import {
   writeDelete,
   writeTurnEnd,
 } from "../web/src/agent/log-store.ts";
-import type { Platform } from "../src/platform/types.ts";
+import type { Platform } from "../web/src/platform/types.ts";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-web-restore-"));
 await fs.mkdir(path.join(ws, "logs"), { recursive: true });

@@ -5,10 +5,10 @@
  * Files, git, and SQLite go to the desktop; the session log reads and writes
  * `logs/grandma-kat.db` through the bridge like any other DB.
  */
-import { posixPath } from "../../../src/platform/paths";
-import { sha256hex } from "../../../src/platform/sha256";
-import { createCoreutilsShell } from "../../../src/platform/coreutils";
-import type { CryptoOps, DirEntry, FileSystem, GitOps, Platform, SqliteFactory } from "../../../src/platform/types";
+import { posixPath } from "./paths";
+import { sha256hex } from "./sha256";
+import { createCoreutilsShell } from "./coreutils";
+import type { CryptoOps, DirEntry, FileSystem, GitOps, Platform, SqliteFactory } from "./types";
 
 function toBase64(bytes: Uint8Array): string {
   let binary = "";

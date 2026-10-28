@@ -19,7 +19,7 @@
  * The caller owns the connection's serialization (log-store's queue); this
  * module issues plain SQL and assumes it is the only writer while it runs.
  */
-import type { SqliteDatabase } from "../../../src/platform/types";
+import type { SqliteDatabase } from "../platform/types";
 
 export interface RunLogPolicy {
   /** Trim when the database exceeds this many bytes. */

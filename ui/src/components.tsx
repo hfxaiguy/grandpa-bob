@@ -41,7 +41,7 @@ import {
   transcribeFileStream,
 } from "./store";
 import type { AppInfo, ProvPiece, ProvWriter, Provenance, RefTarget, Turn, TurnTokens } from "./types";
-import { newTurnApps, tagEventApp } from "../../src/app-attribution";
+import { newTurnApps, tagEventApp } from "../../web/src/app-attribution";
 import { Markdown } from "./markdown";
 
 const trunkOf = (a?: string | null) => a || "trunk";

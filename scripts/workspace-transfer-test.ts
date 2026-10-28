@@ -15,8 +15,8 @@ import {
   validateWorkspaceArchive,
   type WorkspaceArchive,
 } from "../web/src/workspace-transfer.js";
-import { posixPath } from "../src/platform/paths.js";
-import type { Platform } from "../src/platform/types.js";
+import { posixPath } from "../web/src/platform/paths.js";
+import type { Platform } from "../web/src/platform/types.js";
 
 // ── base64 (binary-safe, chunked) ────────────────────────────────────────
 assert.equal(toBase64(new Uint8Array()), "");

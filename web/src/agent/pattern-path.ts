@@ -10,8 +10,8 @@
  * filename — passing the name straight to the module loader opened
  * `<workspace>/context_manager`, which does not exist.
  */
-import type { Platform } from "../../../src/platform/types";
-import { resolveTreeEntry } from "../../../src/tree-files";
+import type { Platform } from "../platform/types";
+import { resolveTreeEntry } from "../tree-files";
 
 export const DEFAULT_PATTERN_PATH = "patterns/trunk.prod.mjs";
 

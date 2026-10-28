@@ -13,8 +13,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createNodePlatform } from "../src/platform/node.js";
-import { resolveInWorkspace } from "../src/util/paths.js";
-import { assembleGuides, HOST_GUIDES } from "../src/tool-guides.js";
+import { resolveInWorkspace } from "../web/src/util/paths.js";
+import { assembleGuides, HOST_GUIDES } from "../web/src/tool-guides.js";
 import {
   MAX_JSON_CHARS,
   READ_JSON_DEFINITION,
@@ -22,7 +22,7 @@ import {
   parseJsonContent,
   readJsonValue,
   walkJson,
-} from "../src/tools/json.js";
+} from "../web/src/tools/json.js";
 
 // ── parser ───────────────────────────────────────────────────────────────
 {

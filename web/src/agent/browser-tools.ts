@@ -2,19 +2,19 @@
  * grandma-kat tools over the browser Platform, mirroring grandpa-bob's tool
  * names/behavior: file tools, sql tools, and the virtual coreutils shell.
  */
-import { FileTools } from "../../../src/tools/files";
-import { SqliteTools } from "../../../src/tools/sqlite";
-import { ownedDbApp, ownedDbError } from "../../../src/tools/app-dbs";
-import { CsvTools, CSV_QUERY_DEFINITION } from "../../../src/tools/csv";
-import { ExaSearchTools, EXA_SEARCH_DEFINITION } from "../../../src/tools/websearch";
-import { READ_JSON_DEFINITION, readJsonValue } from "../../../src/tools/json";
-import { runCommand } from "../../../src/platform/coreutils";
-import { writeDatabaseDumps } from "../../../src/db-sync";
+import { FileTools } from "../tools/files";
+import { SqliteTools } from "../tools/sqlite";
+import { ownedDbApp, ownedDbError } from "../tools/app-dbs";
+import { CsvTools, CSV_QUERY_DEFINITION } from "../tools/csv";
+import { ExaSearchTools, EXA_SEARCH_DEFINITION } from "../tools/websearch";
+import { READ_JSON_DEFINITION, readJsonValue } from "../tools/json";
+import { runCommand } from "../platform/coreutils";
+import { writeDatabaseDumps } from "../db-sync";
 import { createSqliteWasm } from "../platform/sqlite-wasm";
 import { withLogDb } from "./log-store";
 import { runLogToolFromQuery } from "grandma-kat";
-import type { Platform } from "../../../src/platform/types";
-import type { AppStore } from "../../../src/app-store";
+import type { Platform } from "../platform/types";
+import type { AppStore } from "../app-store";
 
 type Args = Record<string, unknown>;
 /** The engine's per-call context, as far as a host tool needs it. */

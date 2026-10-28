@@ -15,9 +15,9 @@ import { existsSync, statSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { applyDatabaseDumps, writeDatabaseDumps } from "../src/db-sync.js";
+import { applyDatabaseDumps, writeDatabaseDumps } from "../web/src/db-sync.js";
 import { createNodePlatform } from "../src/platform/node.js";
-import type { SqliteDatabase } from "../src/platform/types.js";
+import type { SqliteDatabase } from "../web/src/platform/types.js";
 
 const workspace = await mkdtemp(path.join(os.tmpdir(), "grandpa-bob-dbsync-"));
 const platform = createNodePlatform(workspace);

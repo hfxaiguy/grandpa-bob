@@ -5,7 +5,7 @@
  * storage mode is "desktop". Shared modules (tree-sources, tree-files) that
  * `import fs from "node:fs"` therefore follow the selected storage mode.
  */
-import type { DirEntry, FileSystem } from "../../../src/platform/types";
+import type { DirEntry, FileSystem } from "../platform/types";
 import { opfsFs } from "../platform/corefs";
 
 let activeFs: FileSystem = opfsFs;

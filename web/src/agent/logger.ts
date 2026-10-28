@@ -11,7 +11,7 @@
  * queue. After a reload a fresh worker calls `restore()` to hydrate the
  * replica from the same run log before deciding knit-vs-resume.
  */
-import type { Platform } from "../../../src/platform/types";
+import type { Platform } from "../platform/types";
 import {
   createSessionLogStore,
   type SessionLogCheckpoint,
