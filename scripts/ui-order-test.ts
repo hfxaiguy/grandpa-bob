@@ -12,7 +12,7 @@
  */
 import assert from "node:assert/strict";
 
-const { state, setState, orderedApps, hiddenApps, togglePinned, toggleHidden, moveTile, handleSSE, toggleSub, subApps, openSubApps } = await import(
+const { state, setState, orderedApps, hiddenApps, togglePinned, toggleHidden, moveTile, handleSSE, toggleSub, subApps, openSubApps, parkAllExcept } = await import(
   "../ui/src/store.ts"
 );
 
@@ -100,4 +100,25 @@ handleSSE({ type: "emit", turnId: "t1", app: "gamma", text: "hello" });
 assert.ok(state.activity.gamma > state.activity.beta, "an emit bumps its app");
 assert.equal(order()[1], "gamma", "the emitting app floats up");
 
-console.log("ui-order: pinned-first order, activity ranking, rail order and live bumps ok");
+// ── a new session opens on a quiet board ────────────────────────────────
+// New session parks every board tile except trunk, contacts and files. The
+// keep list wins over earlier parking (contacts comes back); parented apps
+// stay out of the board rail either way.
+setState("apps", [
+  ...apps,
+  { name: "contacts", description: "" },
+  { name: "files", description: "" },
+  { name: "email", description: "" },
+  { name: "files.sub", description: "", parent: "files" },
+]);
+setState("layout", "hidden", ["contacts", "beta", "email"]);
+parkAllExcept();
+assert.deepEqual(
+  [...state.layout.hidden].sort(),
+  ["alpha", "beta", "email", "gamma"],
+  "every app except contacts and files parks in the rail",
+);
+assert.deepEqual(order(), ["trunk", "contacts", "files"], "trunk, contacts and files stay on the board");
+assert.ok(!rail().includes("files.sub"), "a parented app never parks on the board rail");
+
+console.log("ui-order: pinned-first order, activity ranking, rail order, live bumps and the new-session board ok");

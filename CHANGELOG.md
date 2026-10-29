@@ -2,6 +2,23 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-29 — a new session opens on a quiet board: trunk, contacts, files
+
+`newSession()` now parks every board tile in the hidden rail except trunk,
+`contacts` and `files` (`parkAllExcept()` in `ui/src/store.ts`, keep list
+`NEW_SESSION_KEEP`). Trunk is always kept; sub-apps stay in their parent's
+rail, so they are never parked on the board's.
+
+- **The board resets on every new session.** The hidden list wins over earlier
+  manual parking: a tile on the keep list comes back, everything else parks.
+  The layout still persists in `gpb.tiled.layout`, so the collapse holds until
+  a tile is reopened — and repeats on the next new session.
+- **A failed start leaves the board alone.** The park runs after
+  `POST /api/session {new:true}` succeeds, inside the same `try` that toasts
+  the failure.
+- Tests: `npm run test:ui-order` covers the park (contacts restored when it was
+  hidden, parented apps never on the board rail).
+
 ## 2026-10-29 — a new workspace must name its seed
 
 **Profiles… → New profile** no longer creates a workspace that is silently

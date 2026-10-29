@@ -97,6 +97,9 @@ export interface UiState {
 }
 
 const LAYOUT_KEY = "gpb.tiled.layout";
+/** Apps a brand-new session keeps on the board, besides trunk (the
+ *  conversation itself). Everything else parks in the hidden rail. */
+const NEW_SESSION_KEEP = ["contacts", "files"];
 const MACHINE_KEY = "gpb.showMachine";
 const STREAM_KEY = "gpb.tiled.stream";
 const BRIDGE_KEY = "bob:telegram-bridge";
@@ -538,6 +541,10 @@ export async function selectSession(key: string): Promise<void> {
 export async function newSession(): Promise<void> {
   try {
     await postJSON("/api/session", { new: true });
+    // A fresh chat opens quiet: trunk, contacts and files on the board, every
+    // other tile parked in the rail. The layout persists until a tile is
+    // reopened, so this resets by design on every new session.
+    parkAllExcept();
     await refreshSession();
   } catch (e) {
     toast(e instanceof Error ? e.message : "could not start a session", true);
@@ -841,6 +848,21 @@ export function toggleHidden(name: string): void {
   setState("layout", "hidden", (h) => (h.includes(name) ? h.filter((x) => x !== name) : [...h, name]));
   saveLayout();
 }
+
+/** Park every board tile except trunk and `keep`, restoring any of those that
+ *  were parked before. Starting a session uses this so a fresh chat opens on a
+ *  quiet board; the rail still lists everything else. Parented apps are left
+ *  alone — their seat is the parent's rail, never the board's. */
+export function parkAllExcept(keep: readonly string[] = NEW_SESSION_KEEP): void {
+  const shown = new Set(["trunk", ...keep]);
+  setState(
+    "layout",
+    "hidden",
+    state.apps.filter((a) => !a.parent && !shown.has(a.name)).map((a) => a.name),
+  );
+  saveLayout();
+}
+
 export function toggleExpanded(name: string): void {
   setState("layout", "expanded", (h) => (h.includes(name) ? h.filter((x) => x !== name) : [...h, name]));
   saveLayout();
