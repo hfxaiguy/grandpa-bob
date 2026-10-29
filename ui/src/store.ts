@@ -37,7 +37,15 @@ export interface Layout {
 }
 
 export interface UiState {
+  /** Boot finished: the catalogs and the session are loaded and the live
+   *  stream is open. The app shell shows its splash until this flips. */
   ready: boolean;
+  /** What boot is doing right now ("restoring your last session…"). Shown on
+   *  the splash, so a slow load reads as progress instead of a stuck page. */
+  bootStatus: string;
+  /** Boot progress 0–100. Step-weighted (each fetch phase has a fixed share),
+   *  not a byte counter — the point is honest movement, not exact timing. */
+  bootProgress: number;
   apps: AppInfo[];
   sessions: SessionInfo[];
   active: string | null;
@@ -166,6 +174,8 @@ function loadShowMachine(): boolean {
 
 export const [state, setState] = createStore<UiState>({
   ready: false,
+  bootStatus: "starting…",
+  bootProgress: 0,
   apps: [],
   sessions: [],
   active: null,
@@ -308,7 +318,12 @@ function updateSessionUrl(key: string | null): void {
   }
 }
 
-export async function refreshSession(): Promise<void> {
+export async function refreshSession(
+  /** Boot-only hook: reports the two slow phases ("turns" arrived, then
+   *  "memory" + models), so the splash's bar advances instead of freezing.
+   *  Ordinary session switches pass nothing. */
+  onStep?: (step: "turns" | "memory") => void,
+): Promise<void> {
   const d = await getJSON<{
     active: string | null;
     label: string;
@@ -339,7 +354,9 @@ export async function refreshSession(): Promise<void> {
   updateSessionUrl(d.active);
   setState("models", reconcile(d.models || {}));
   syncLastError(d.turns || []);
+  onStep?.("turns");
   await Promise.all([refreshMemory(), refreshModels()]);
+  onStep?.("memory");
 }
 
 /** Reload just the active session's turns (after a turn ends / on follow). */
@@ -1055,10 +1072,18 @@ export function handleSSE(msg: any): void {
 /** Boot the UI: load catalogs, resume the chat named in the URL (else open a
  *  fresh one), then follow the live stream. */
 export async function init(): Promise<void> {
+  // The splash follows these two signals. Progress is deliberately
+  // step-weighted rather than measured: the boot is a handful of fetches with
+  // wildly different costs, and a bar that moves per phase is what tells the
+  // user the last session is coming back.
+  const boot = (bootStatus: string, bootProgress?: number) =>
+    setState(bootProgress === undefined ? { bootStatus } : { bootStatus, bootProgress });
+
   // Which host is this page on? The admin answers {admin:true}; the in-browser
   // backend mirrors the boot-time servedByAdmin() signal and the static-only
   // listener answers 503 — either way, false means "no server": the Telegram
   // controls and audio transcription stay visible but disabled.
+  boot("checking the server…", 0);
   try {
     const r = await fetch("/api/capabilities");
     const caps = r.ok ? await r.json() : null;
@@ -1069,7 +1094,9 @@ export async function init(): Promise<void> {
   } catch {
     setState("adminOnline", false);
   }
+  boot("loading apps and models…", 10);
   await Promise.all([refreshApps(), refreshPatterns(), refreshModels()]);
+  boot("loading apps and models…", 25);
   // The URL carries the open chat. A reload is an explicit pick, so
   // `?session=<key>` resumes that conversation — restoring its turns, memory
   // and tree continuation, and surviving a server restart (the server starts
@@ -1084,6 +1111,7 @@ export async function init(): Promise<void> {
   }
   let resumed = false;
   if (wanted) {
+    boot("restoring your last session…", 30);
     try {
       await postJSON("/api/session", { key: wanted });
       resumed = true;
@@ -1099,14 +1127,19 @@ export async function init(): Promise<void> {
   // `new: true` also ends the Telegram-follow (same as clicking "new chat");
   // re-enable it in settings when wanted.
   if (!resumed) {
+    boot("starting a new chat…", 30);
     try {
       await postJSON("/api/session", { new: true });
     } catch (e) {
       console.warn("session:", e);
     }
   }
+  boot("loading the conversation…", 40);
   try {
-    await refreshSession();
+    await refreshSession((step) => {
+      if (step === "turns") boot("loading memory…", 70);
+      else boot("connecting to the live stream…", 90);
+    });
   } catch (e) {
     console.warn("session:", e);
   }
@@ -1126,5 +1159,5 @@ export async function init(): Promise<void> {
     }
   }
   openLiveStream();
-  setState("ready", true);
+  setState({ ready: true, bootStatus: "", bootProgress: 100 });
 }

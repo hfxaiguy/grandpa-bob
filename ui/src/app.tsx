@@ -119,23 +119,46 @@ export function App() {
       </Show>
 
       <Show
-        when={state.active}
+        when={state.ready}
         fallback={
-          <div class="empty-state">
+          <div class="boot-splash">
             <img class="empty-logo" src={logo} alt="grandpa-bob" />
-            <p>No session selected.</p>
-            <button onClick={() => setShowSession(true)}>open a session</button>
+            <div class="boot-status" role="status" aria-live="polite">
+              <span class="spinner" aria-hidden="true" />
+              <span class="boot-text">{state.bootStatus || "starting…"}</span>
+              <span class="boot-pct">{state.bootProgress}%</span>
+            </div>
+            <div
+              class="boot-bar"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={state.bootProgress}
+            >
+              <div class="boot-bar-fill" style={{ width: `${state.bootProgress}%` }} />
+            </div>
           </div>
         }
       >
-        <div class="body">
-          <HiddenRail />
-          <main class="tiles">
-            <Tiles apps={apps()} trunk={trunk()} />
-          </main>
-          <GlobalStream />
-          <RailCard />
-        </div>
+        <Show
+          when={state.active}
+          fallback={
+            <div class="empty-state">
+              <img class="empty-logo" src={logo} alt="grandpa-bob" />
+              <p>No session selected.</p>
+              <button onClick={() => setShowSession(true)}>open a session</button>
+            </div>
+          }
+        >
+          <div class="body">
+            <HiddenRail />
+            <main class="tiles">
+              <Tiles apps={apps()} trunk={trunk()} />
+            </main>
+            <GlobalStream />
+            <RailCard />
+          </div>
+        </Show>
       </Show>
 
       <Show when={showSession()}>

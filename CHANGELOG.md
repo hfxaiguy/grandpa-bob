@@ -23,6 +23,20 @@ Checks: `npm run test:live-tool-row`, `npm run test:ui-describe`,
 `npm run test:app-attribution`, `npm --prefix ui run typecheck`,
 `npm run build:ui`.
 
+## 2026-10-28 — ui: boot splash with progress while the session restores
+
+A slow boot showed the "No session selected." empty state for the whole
+capabilities → catalogs → session → conversation fetch chain, because the
+`ready` flag existed but nothing read it. The shell now renders a splash until
+`ready` flips: logo, spinner, a live status line ("checking the server…",
+"restoring your last session…", "loading memory…") and a step-weighted 0–100
+bar, so a slow restore reads as progress instead of a broken page. The
+"No session selected." card only appears after boot, when it is true.
+`refreshSession` takes an optional boot-only callback to report its turns and
+memory phases; ordinary session switches are unchanged.
+
+Checks: `npm run test:ui` and `npm run typecheck`.
+
 ## 2026-10-27 — ui: ref handles open the inspector above any modal
 
 Clicking a `ref://…` handle inside a modal could open the ref inspector
