@@ -16,14 +16,30 @@
 // code and that block are edited together, and git is the version history.
 // There is no draft copy, no version snapshot, and no separate `.spec.md`.
 // An app's agent-facing `## Guide` lives in its README.
+//
+// A child module is any existing `.mjs` inside an app folder (site_walk.mjs,
+// tools.mjs, src/*.mjs). It is ordinary JavaScript the tree imports, not a
+// tree: it has no notation spec and cannot be loaded as a target. Editing one
+// is a confined write — the resolved path must stay inside that app's folder
+// (symlinks resolved), and nested `app/` folders belong to sub-apps, not to
+// the parent. See modulePathFor/resolveModuleEntry/listModuleFiles below.
 
-import { access, readdir } from "node:fs/promises";
+import { access, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 export const PATTERNS_DIR = "patterns";
 export const APP_DIR = "app";
 export const TREE_FILE = "tree";
 export const PROD_SUFFIX = ".prod.mjs";
+
+/** A child module: ordinary JavaScript inside an app folder, imported by its
+ *  tree. Only `.mjs` files are addressable — config, JSON and assets are not
+ *  authoring targets. */
+export const MODULE_SUFFIX = ".mjs";
+
+/** One path segment of a child module. Rejects "", "." and ".." (so `..`
+ *  traversal is impossible by construction) and hidden segments. */
+const MODULE_SEGMENT_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 
 export type TreeKind = "pattern" | "app";
 
@@ -183,4 +199,103 @@ async function collectAppTreeNames(
   } catch {
     // no nested app folder
   }
+}
+
+// ── child modules: ordinary .mjs inside one app folder ─────────────────────
+//
+// A target names the app, never a path: `enrich-profile` + `site_walk` (the
+// module is relative: `site_walk.mjs`, `src/site_walk.mjs`). The rules here are
+// the whole safety surface for module edits, so they are strict:
+//   - `.mjs` only, and the file must already exist (edits, not new files);
+//   - every segment must be safe (no `..`, no hidden, no absolute paths);
+//   - the resolved path must stay inside the app's own folder, symlinks
+//     resolved, so a link planted in the app cannot reach outside it;
+//   - nested `app/` folders belong to sub-apps and are not the parent's modules.
+
+/** The app folder of a logical name, relative to the workspace root. */
+function appFolderFor(logical: string): string {
+  return appDirFor(logical) ?? path.join(APP_DIR, logical);
+}
+
+/**
+ * Relative path of a child module, or null when the name is not addressable.
+ * `module` is relative to the app folder and must end in `.mjs`.
+ */
+export function modulePathFor(logical: string, module: string): string | null {
+  if (!/^[A-Za-z0-9._-]+$/.test(logical)) return null;
+  const rel = String(module ?? "").trim().replace(/\\/g, "/");
+  if (!rel || path.isAbsolute(rel) || !rel.endsWith(MODULE_SUFFIX)) return null;
+  if (rel.endsWith(PROD_SUFFIX)) return null; // a tree file is not a child module
+  const segments = rel.split("/");
+  if (segments.some((s) => !MODULE_SEGMENT_RE.test(s))) return null;
+  if (segments.some((s) => s === "node_modules" || s === APP_DIR)) return null;
+  return path.join(appFolderFor(logical), ...segments);
+}
+
+/** A child module resolved from an app's logical name. */
+export interface ResolvedModule {
+  logical: string;
+  /** Relative to the app folder, e.g. `site_walk.mjs` or `src/ingest.mjs`. */
+  module: string;
+  /** Relative to the workspace root. */
+  file: string;
+  /** Real (symlink-resolved) absolute path. */
+  abs: string;
+}
+
+/**
+ * Resolve an existing child module. Null when the name is malformed, the file
+ * does not exist, or its real path escapes the app's folder.
+ */
+export async function resolveModuleEntry(
+  workspaceDir: string,
+  logical: string,
+  module: string,
+): Promise<ResolvedModule | null> {
+  const rel = modulePathFor(logical, module);
+  if (!rel) return null;
+  try {
+    const appRoot = await realpath(path.join(workspaceDir, appFolderFor(logical)));
+    const abs = await realpath(path.join(workspaceDir, rel));
+    if (!abs.startsWith(appRoot + path.sep)) return null;
+    const info = await stat(abs);
+    if (!info.isFile()) return null;
+    return {
+      logical,
+      module: String(module).trim().replace(/\\/g, "/"),
+      file: path.relative(workspaceDir, abs),
+      abs,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every existing child module of an app, relative to the app folder, sorted.
+ * Skips hidden files, `node_modules`, and nested `app/` folders (sub-apps).
+ */
+export async function listModuleFiles(workspaceDir: string, logical: string): Promise<string[]> {
+  const files: string[] = [];
+  async function walk(dirAbs: string, prefix: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(dirAbs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (entry.name === APP_DIR) continue; // a sub-app is its own target
+        await walk(path.join(dirAbs, entry.name), rel);
+      } else if (entry.isFile() && entry.name.endsWith(MODULE_SUFFIX)) {
+        if (entry.name.endsWith(PROD_SUFFIX)) continue; // the tree itself
+        if (MODULE_SEGMENT_RE.test(entry.name)) files.push(rel);
+      }
+    }
+  }
+  await walk(path.join(workspaceDir, appFolderFor(logical)), "");
+  return files.sort();
 }

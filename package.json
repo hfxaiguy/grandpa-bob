@@ -33,6 +33,7 @@
     "test:spec-lint": "tsx scripts/spec-lint-test.ts",
     "test:stop": "tsx scripts/stop-test.ts",
     "test:trees": "tsx scripts/tree-tools-test.ts",
+    "test:tree-modules": "tsx scripts/tree-modules-test.ts",
     "test:tree": "tsx scripts/tree-serialize-test.ts",
     "test:seed-freshness": "tsx scripts/seed-freshness-test.ts",
     "test:tree-pinning": "tsx scripts/tree-pinning-test.ts",

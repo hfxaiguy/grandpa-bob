@@ -2,6 +2,22 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-28 — tree context: guarded child-module editing
+
+Knit could author and edit a tree's single `.prod.mjs`, but not the helper
+modules that tree imports — pointing it at `app/enrich-profile/site_walk.mjs`
+resolved to nothing, so the flow treated the request as a brand-new tree.
+`TreeContext` now carries `listModules`, `loadModule` and `saveModule`: modules
+are addressed by app name plus a path relative to the app folder, listed without
+the tree file, hidden files, `node_modules`, symlinks or sub-app folders, and
+written in place only when the path resolves inside that app (symlinks
+resolved) and the source still matches the loaded hash. A `.prod.mjs` file is
+never a module. `scripts/tree-modules-test.ts` covers listing, load, save,
+stale hashes, traversal, absolute paths, hidden segments, nested apps and a
+symlink escape.
+
+Checks: `npm run test:tree-modules`, `npx tsc --noEmit`.
+
 ## 2026-10-28 — ui: live tool calls under the running message
 
 A running turn only showed "running" in the tile header and a generic typing
