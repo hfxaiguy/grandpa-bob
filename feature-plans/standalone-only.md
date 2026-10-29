@@ -270,6 +270,42 @@ intentionally removed with a note.
 Run when the work claims to be finished. Every gate must pass or the gap must
 be documented in this file.
 
+**Status after the implementation session (2026-10-29):**
+
+| Gate | State |
+|---|---|
+| 1. typechecks (src, web, ui) | **PASS** |
+| 2. `build` + `build:web` + `web:standalone` boots | **PASS** (boot asserted by the browser smokes' serving path; profile/browser interactive smokes ran headless-only — see gaps) |
+| 3. boundary gate (`test:standalone`) | **PASS** — 90 files clean |
+| 4. two-tab lease interactive check | **PARTIAL** — unit-gated in `test:lease` (contention, staleness, takeover); the two-real-tabs browser smoke is a gap |
+| 5. telegram channel tests | **PASS** — mailbox park/claim/ack/answered, restart survival, handover epoch (`test:telegram-bridge`); text/audio framing (`test:telegram-text`, `test:telegram-audio`) |
+| 6. loopback-only bridge | **PASS** — `127.0.0.1` bind unchanged; no storage LAN flag exists |
+| 7. sync tests | **NOT MET** (documented below) |
+| 8. no `@huggingface/transformers` | **PASS** — dep removed, no references |
+| 9. remaining `test:*` pass | **PASS with 3 documented failures** — `test:tree` and `test:cdp` fail identically on `main` (pre-existing, grandma-kat API drift / environment); `test:sync` is experimental (gate 7) |
+| 10. seed flows | **PARTIAL** — `test:seed-freshness` + `test:workspace-transfer` + `test:profiles` pass; live seed-apply onto a desktop profile lacked an end-to-end check (gap) |
+| 11. docs match reality | **PARTIAL** — README banner + `.env.example` + CHANGELOG rewritten; the deeper README/web README sections still carry pre-refactor prose (marked) |
+| 12. `main` stayed green | **PASS** — phase 0 committed the WIP + plan to `main` first; all work on `standalone-only` |
+
+**Gate 7 (sync) — what is NOT met and what was learned.** The transports
+(BroadcastChannel same-origin; WebRTC datachannel with BobSwap-REST + manual
+paste, verification phrase) are in place and the engine speaks one envelope;
+the reconcile protocol fails its offline suite under concurrency. Concrete
+findings (each fixed in code but the composition is still not convergence-
+stable under all orderings): (a) per-replica seq counters cannot order
+writes across replicas — replaced by a **Lamport-clock journal** with a
+deterministic replica-id tie-break; (b) "absent from my snapshot" must not
+mean "I deleted it" — only the journal authorizes tombstones (an asymmetric
+snapshot was manufacturing deletes that beat real writes; fixed); (c)
+diff-pushes must push the content the journal vouches for — a file changed
+between map and push now defers (`hash === lastOp.hash` check; fixed); (d)
+equal-lamport pushes need a single decision point — the apply-side tie-break
+and the reconcile-side diff must agree or the loser's bytes become conflict
+copies twice. Next work: reorder rounds so exactly one side diffs per
+exchange (the responder), then re-run `test:sync` to green, then wire the
+boot hookup out of `?sync=1`. The transports and journal survive unchanged;
+no workspace bytes leave the replicas in any mode.
+
 1. `npm run typecheck`, `npm --prefix web run typecheck`, `npm --prefix ui run
    typecheck` — all green.
 2. `npm run build` and `npm run build:web` succeed; `npm run web:standalone`

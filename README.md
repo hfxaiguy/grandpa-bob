@@ -2,42 +2,65 @@
 
 _BOB = **B**etter **O**rganizational **B**ot_
 
+> **Standalone-only (2026-10)** — the browser app (`web/` + `ui/`) is the only
+> UI and the only agent host. Node processes are **pass-through channels**:
+> the **telegram channel** (grammY long-poll; messages are *parked* in a
+> file-backed mailbox and answered by your browser tab — Node never runs the
+> agent), the **storage bridge** (`web/scripts/storage-server.mjs` — real
+> folders on disk for **desktop profiles**, plus opt-in STT with `BOB_STT=1`),
+> and **BobSwap** (seeds + zero-storage relay). The shared core lives in
+> `web/src` now; `web/` imports nothing outside `web/` + `ui/`
+> (`npm run test:standalone` is the gate).
+>
+> Run:
+> ```sh
+> npm run web:standalone   # the app — http://localhost:8080
+> npm run dev              # the telegram channel (:8091) — parked messages
+> npm run storage-server   # desktop folders + STT bridge (:8795)
+> npm run whisper:up       # voice transcription service
+> ```
+>
+> Work progressed against `feature-plans/standalone-only.md` — read it for the
+> target architecture, the verification gates and current gaps. The sections
+> below still describe parts of the pre-refactor harness where the refactor
+> did not reach; where they disagree with this banner, the banner wins.
+
 A local agent harness you chat with from Telegram — text, voice, photos, or files. It can
 read, write and organize files on this machine inside a sandboxed workspace, and
 every change it makes is **git-committed automatically**.
 
 - **Telegram**: long polling via grammY. Works in DMs and in **forum-topic groups** —
-  each topic is an independent conversation with its own history.
-- **Web UI** — the main interface at `http://<host>:8080`: the browser target
-  (`web/`) runs the agent in the tab and serves chat, settings (credentials,
-  sync, logs, patterns, files) and the tree view. It operates on storage chosen
-  in the header:
+  each topic is an independent conversation with its own history. In the
+  standalone-only model the channel **parks** messages (including locally
+  transcribed voice notes — `heard: "…"` never needs a browser tab) and your
+  browser tab drains them: no tab connected means messages simply wait in the
+  mailbox, surviving channel restarts.
+- **Web UI** — the only interface, served by `npm run web:standalone` at
+  `http://<host>:8080` (loopback static server; every `/api/*` call runs the
+  **in-browser backend**). Storage chosen in the header:
   - **Browser (OPFS)** — a private sandbox in the tab, seeded from the workspace,
     with toolbar **Export**/**Import** for a whole-workspace JSON backup;
     **profiles** keep separate OPFS workspaces (switchable in the toolbar, each
     with its own chats, patterns, log and git history), and a profile can be
-    bound to a **BobSwap seed** for updates — and **Send…/Receive…** passes a
-    workspace copy to another open tab through the zero-storage BobSwap relay
-    (fresh pairing per share; nothing stored).
-  - **Desktop (local server)** — the loopback storage bridge, for the real
-    workspace on disk (and the only mode Firefox can use).
-  The header's **upload** button puts files from a normal OS picker into any
-  workspace folder (asked per upload, remembered next time). The server on
-  `:8080` **always** serves the UI; the admin API is opt-in with `BOB_WEB=1`.
-  Without it the same port is a static-only listener, every `/api/*` answers
-  `503 {"admin": false}`, and the page runs its in-browser backend — settings
-  included. The server-only controls (Telegram bridge, service health, restart,
-  bot logs) stay visible but disabled, with a **browser only** chip. To run the
-  UI with no BOB process at all, use `npm run web:standalone` (loopback static
-  server on `:8080`; see `web/README.md` → "Standalone").
-- **Voice → text**: Telegram voice notes use the local Vulkan whisper-server;
-  the web UI transcribes in the tab with whisper (Transformers.js, WebGPU/WASM),
-  so no server is needed there.
+    bound to a **BobSwap seed** for updates.
+  - **Desktop (bridge)** — the loopback storage bridge serving real folders;
+    **desktop profiles** bind one folder per profile (registered on the bridge,
+    `~/.grandpa-bob/channels.json`), each with its own chat history and run log.
+  A **single-host lease** guarantees only one tab runs the agent per workspace
+  (a second tab is read-only, with a *take over* button). A tab can also answer
+  Telegram: the "bridge" toggle drains the channel's mailbox against a web
+  session — `send to telegram` pushes a session transcript to the linked chat.
+- **Voice → text**: Telegram voice notes are transcribed **channel-side** (the
+  Vulkan whisper-server); the web UI routes its recordings through the bridge's
+  opt-in `/stt` (no in-tab model download) — the Transformers.js path is not
+  built.
 - **Brain**: any OpenAI-compatible endpoint (default: Hugging Face router running
-  Gemma 4), switchable via `.env`.
-- **Attachments**: Telegram documents and non-audio web uploads are stored under
-  `assets/inbox/` and passed to the tree as workspace-relative paths. They are
-  excluded from workspace Git history.
+  Gemma 4), switchable via the browser settings; keys live per-browser
+  (localStorage), never in the workspace.
+- **Attachments**: web uploads are stored under `assets/inbox/` and passed to
+  the tree as workspace-relative paths (excluded from git history). Telegram
+  attachments are text-only in v1 — the phone is told to send them in the web
+  chat.
 - **Tools**: sandboxed file tools + an allowlist of shell commands.
 
 ## Architecture
