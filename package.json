@@ -31,6 +31,7 @@
     "test:read-runs-handle": "tsx scripts/read-runs-handle-test.ts",
     "test:runlog-retention": "tsx scripts/runlog-retention-test.ts",
     "test:web-restore": "tsx scripts/web-session-restore-test.ts",
+    "test:resume-guard": "tsx scripts/resume-guard-test.ts",
     "test:memory-race": "tsx scripts/memory-race-test.ts",
     "test:telegram-text": "tsx scripts/telegram-text-test.ts",
     "test:telegram-audio": "tsx scripts/telegram-audio-test.ts",

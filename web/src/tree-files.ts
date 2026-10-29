@@ -142,6 +142,26 @@ export async function resolveTreeEntry(
   return null;
 }
 
+/**
+ * Resolve a tree by the name a checkpoint stores. The engine records the
+ * tree's internal `name(...)`, which may spell a dashed app folder with an
+ * underscore (`caller_list` for `app/caller-list`), or vice versa. Try the
+ * name as given first, then its dash/underscore variant.
+ */
+export async function resolveTreeEntryByName(
+  workspaceDir: string,
+  name: string,
+): Promise<ResolvedTree | null> {
+  const direct = await resolveTreeEntry(workspaceDir, name);
+  if (direct) return direct;
+  const variant = name.includes("_")
+    ? name.replace(/_/g, "-")
+    : name.includes("-")
+      ? name.replace(/-/g, "_")
+      : null;
+  return variant ? resolveTreeEntry(workspaceDir, variant) : null;
+}
+
 /** Every logical name that resolves to a tree file, both kinds, at any depth. */
 export async function listTreeNames(workspaceDir: string): Promise<string[]> {
   const names = new Set<string>();

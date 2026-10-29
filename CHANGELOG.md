@@ -2,6 +2,54 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-29 — a new workspace must name its seed
+
+**Profiles… → New profile** no longer creates a workspace that is silently
+seeded later. Source `fresh workspace` requires an explicit seed pick:
+the bundled snapshot, or any seed listed by `GET /api/v1/<account>/seeds` on a
+configured BobSwap service (`listSeeds()` in `web/src/swap.ts`, parsed by
+`parseSeedList`). The select starts on a disabled "pick a seed…" placeholder,
+so Create is blocked until something is chosen.
+
+- **Remote seeds are pulled at creation.** `createProfile()` grew a
+  `{kind:"seed"}` source that overlays the archive into the new profile's
+  directory (`importWorkspace(archive, profileHandle(name))`), writes
+  `.seeded`/`.seed-sha`, and stores the binding with its `lastVersion`. The
+  fetch and archive validation run *before* the registry write; a failed pull
+  removes the partial directory, so no half-seeded profile can be recovered.
+- **No silent shipped seed for new profiles.** Picking the bundled snapshot
+  keeps the old first-boot overlay; a remote-seeded profile boots with markers
+  in place, so `seedWorkspace()` never overlays it. The auto-created `default`
+  profile on a fresh browser still seeds from the bundle — that path is the
+  installation, not a new workspace.
+- **`duplicate` and desktop-folder sources are unchanged** (they don't claim a
+  seed). `createProfile({kind:"blank"})` stays as the internal default.
+- Tests: `test:seed-freshness` covers `parseSeedList`; the browser
+  `smoke:profiles` submits without a pick (refused) and then picks the bundled
+  snapshot.
+
+## 2026-10-29 — a bridged message resumes a stale pause by starting fresh, not erroring
+
+The standalone-only refactor deleted the Node agent host and with it the
+`isDroppableContinuationError` guard. The browser worker — now the only host,
+and the one that answers Telegram-bridged messages — resumed without it: a
+checkpoint whose paused stack could not be rebuilt surfaced as
+`agent run failed: cannot resume: tree 'caller_list' is not registered (call
+.name() to register)` in the chat. (`caller_list` is the internal name the
+engine stores; the app folder is `caller-list`.)
+
+Two layers, both pinned by `npm run test:resume-guard`:
+
+- **Name variants resolve.** `resolveTreeEntryByName()` (`web/src/tree-files.ts`)
+  tries the name as given, then its dash/underscore variant. `loadTreeRef` in
+  the worker uses it, so a pause inside `app/caller-list` rebuilds from the
+  checkpoint's `caller_list`.
+- **Dead pauses start fresh.** `web/src/agent/resume-guard.ts` restores the
+  predicate (`checkpoint` / `cannot resume`); `handleRun` catches those on
+  resume, clears the continuation, emits the "Heads up — dropped the saved
+  position" line into the turn (so the phone sees it), and grows a fresh tree
+  that still delivers the message. Genuine failures still propagate.
+
 ## 2026-10-29 — standalone-only: the web app is the only host; Node becomes channels
 
 The refactor lands on the `standalone-only` branch, verified against
@@ -55,6 +103,27 @@ Checks: `npm run typecheck`, `npm --prefix web run typecheck`,
 `npm run test:standalone`, `npm run test:sync`, and the suite in
 `package.json` (`test:*`). Two pre-existing failures are unrelated (they fail
 identically on `main`): `test:tree`, `test:cdp`.
+
+## 2026-10-28 — web: bridged web-chat turns reach the phone
+
+The session drawer's *bridge this chat to Telegram while the tab is open*
+toggle only worked phone → browser: `runBridgeMessage` relayed answers to
+parked Telegram messages, but a turn typed in the web chat broadcast
+`turn_end` and never left the tab. `runTurn` now resolves the profile's phone
+binding (`GET /api/bindings`, freshest first) when the bridge is on and
+pinned to the running session, and relays the finished answer through the
+channel's `/api/relay` — output only, after the tab has the turn, chained on
+the same queue as phone replies so ordering holds. Bridge-originated turns
+pass `{fromBridge: true}` (their answer is already relayed) and stopped turns
+stay silent. Bindings expire 15 s after the tab goes away and only form from
+parked messages, so the tab also remembers the chat it last drained
+(`bob:telegram-bridge-conv:<profile>`, also written by the ✈ push) and falls
+back to it, epoch-less, when no live binding exists — otherwise a reopened
+tab would relay into nothing until the phone spoke first. Stale epochs after
+a tab handover still drop channel-side; relay failures only warn. Docs:
+`web/README.md`'s bridge section rewritten for the channel architecture.
+
+Checks: `npm --prefix web run typecheck`, `npm run build:web`.
 
 ## 2026-10-28 — web: splash covers the pre-UI boot; the cat jitters
 

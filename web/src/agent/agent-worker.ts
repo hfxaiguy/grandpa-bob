@@ -17,7 +17,7 @@ import { browserCdpTools } from "./browser-cdp";
 import { createAppStore } from "../app-store";
 import { setActiveFs, setFsIndex } from "../shims/node-fs-promises";
 import { listAppTrees } from "../tree-sources";
-import { resolveTreeEntry } from "../tree-files";
+import { resolveTreeEntryByName } from "../tree-files";
 import { assembleGuides, HOST_GUIDES } from "../tool-guides";
 import { createWorkspaceLogger, type MemoryLogger, type WorkspaceLogger, type KatEvent } from "./logger";
 import {
@@ -46,6 +46,7 @@ import {
   throwIfStopped,
 } from "../stop-error";
 import { resolvePatternPath } from "./pattern-path";
+import { isDroppableContinuationError } from "./resume-guard";
 import { loadBrowserModels } from "./models";
 import { parseModels, type ModelRegistry } from "../model-config";
 
@@ -363,13 +364,21 @@ function warnTreeFailure(platform: Platform, name: string, err: unknown): void {
   console.warn(`[app-trees] ${message}`);
 }
 
-/** Resolve + load a tree by logical name from the workspace. */
+/**
+ * Resolve + load a tree by logical name from the workspace.
+ *
+ * Resume asks for the tree by the name stored in its checkpoint — the tree's
+ * internal `name(...)`, which may spell a dashed app folder with underscores
+ * (`caller_list` for `app/caller-list`). A fresh call uses the folder name.
+ * `resolveTreeEntryByName` tries both spellings so a pause inside a dashed
+ * app can always be rebuilt.
+ */
 async function loadTreeRef(platform: Platform, name: string): Promise<unknown> {
   const key = `${platform.workspaceRoot}|${name}`;
   let pending = treeCache.get(key);
   if (!pending) {
     pending = (async () => {
-      const entry = await resolveTreeEntry(platform.workspaceRoot, name);
+      const entry = await resolveTreeEntryByName(platform.workspaceRoot, name);
       const file = entry?.file ?? `app/${name}/tree.prod.mjs`;
       const mod = await createModuleLoader(platform).load(file);
       return (mod as { default?: unknown }).default ?? mod;
@@ -622,42 +631,71 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   };
 
   let res: { result?: unknown; status?: string; continuation?: string; humanSlot?: unknown };
-  if (session.continuation) {
-    throwIfStopped(signal);
-    res = (await withModelContext(models, () =>
-      resume(session.continuation, {
-        ...runtime,
-        memory: { guide },
-        humanInput: task,
-      }),
-    )) as typeof res;
-  } else {
+
+  /** Knit a fresh tree and deliver this turn's message into its first pause. */
+  const runFresh = async (): Promise<typeof res | null> => {
     throwIfStopped(signal);
     const pattern = await loadPattern(platform, patternPath);
-    res = (await withModelContext(models, () =>
+    let out = (await withModelContext(models, () =>
       knit(pattern, { ...runtime, memory: { guide } }),
     )) as typeof res;
-    if (res.status === "waiting") {
+    if (out.status === "waiting") {
       if (task) {
         throwIfStopped(signal);
-        res = (await withModelContext(models, () =>
-          resume(res.continuation!, { ...runtime, humanInput: task }),
+        out = (await withModelContext(models, () =>
+          resume(out.continuation!, { ...runtime, humanInput: task }),
         )) as typeof res;
       } else {
         throwIfStopped(signal);
-        session.continuation = res.continuation!;
+        session.continuation = out.continuation!;
         runs.delete(opts.id);
         post({
           id: opts.id,
           type: "result",
-          result: { status: "waiting", humanSlot: res.humanSlot },
+          result: { status: "waiting", humanSlot: out.humanSlot },
           eventCount: 0,
           mode: runMode,
         });
         void session.logger.flush();
-        return;
+        return null; // the waiting result is already posted
       }
     }
+    return out;
+  };
+
+  if (session.continuation) {
+    throwIfStopped(signal);
+    try {
+      res = (await withModelContext(models, () =>
+        resume(session.continuation, {
+          ...runtime,
+          memory: { guide },
+          humanInput: task,
+        }),
+      )) as typeof res;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // A pause point that can no longer be rebuilt is a dead checkpoint, not
+      // a failed request: drop it, say so, and answer this message from a
+      // fresh tree. Anything else is real and must surface unchanged.
+      if (!isDroppableContinuationError(message)) throw err;
+      console.warn(`[session ${chatKey}] stale continuation (${message}) — starting fresh`);
+      const reason = /cannot resume/i.test(message)
+        ? "its saved position could not be restored (the tree changed or a sub-tree is gone)"
+        : "its saved checkpoint is no longer in the run log";
+      session.continuation = "";
+      runMode = "fresh";
+      onEmit({
+        text: `Heads up: I dropped the saved position for this conversation — ${reason} — so this message starts fresh.`,
+      });
+      const out = await runFresh();
+      if (!out) return;
+      res = out;
+    }
+  } else {
+    const out = await runFresh();
+    if (!out) return;
+    res = out;
   }
 
   throwIfStopped(signal);
