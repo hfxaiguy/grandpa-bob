@@ -1405,7 +1405,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   let bridgeChain: Promise<void> = Promise.resolve();
 
   const telegramUrl = (): string =>
-    opts.telegramUrl ?? "http://127.0.0.1:8091";
+    opts.telegramUrl ?? "http://127.0.0.1:8795";
   const telegramProfile = (): string => opts.telegramProfile?.() ?? "browser";
 
   const lstore = {

@@ -13,14 +13,17 @@ Every `/api/*` call is answered by the in-browser backend
 (`web/src/server/local-backend.ts`). Settings, credentials (localStorage, per
 browser), models, profiles and the tiled app all run client-side.
 
-Companion channels (optional, each loopback-only):
+Companion channels — one process, one port (`npm run bob`, loopback only):
 
-| Channel | Command | What it does |
+| Channel | Route | What it does |
 |---|---|---|
-| Telegram | `npm run dev` (`src/index.ts`, `:8091`) | grammY long-poll; parks text + channel-side voice transcripts in a file mailbox (`~/.bobkat/telegram/`); the tab claims and answers them |
-| Storage bridge | `npm run storage-server` (`:8795`) | real folders as desktop profiles; `POST /roots` registers them, requests select one with `x-bob-root`; also hosts the git/sqlite passthrough |
-| STT | `BOB_STT=1 npm run storage-server` | `POST /stt` — raw audio bytes to ffmpeg → whisper-server → transcript (used by the composer) |
+| Telegram | `:8795` `/api/*` | grammY long-poll; parks text + channel-side voice transcripts in a file mailbox (`~/.bobkat/telegram/`); the tab claims and answers them |
+| Storage bridge | `:8795` `/roots`, `/fs/*`, `/git`, `/sql/*` | real folders as desktop profiles; `POST /roots` registers them, requests select one with `x-bob-root` |
+| STT | `:8795` `/stt` (`BOB_STT=1`) | raw audio bytes → ffmpeg → whisper-server → transcript (used by the composer) |
 | Whisper | `npm run whisper:up` (`:8178`) | the transcription backend both paths call |
+
+The same modules keep their standalone CLIs (`npm run storage-server`,
+`npm run web:standalone`) for debugging a listener in isolation.
 
 Same-origin tabs sync live (BroadcastChannel); cross-device pairs through the
 Sync… → Live sync dialog (WebRTC; BobSwap REST or manual paste).
@@ -82,7 +85,7 @@ notes and hand-offs visible without mixing them into the normal reply stream.
 The session drawer's *bridge this chat to Telegram while the tab is open*
 toggle connects the OPFS conversation to a Telegram chat two ways. The tab is
 the brain: turns run against the OPFS continuation and memory, and the
-telegram channel (`src/index.ts`, loopback `:8091`) only parks and forwards
+telegram channel (`src/index.ts`, loopback `:8795`) only parks and forwards
 text (inbox, ack, relay, host heartbeat; state under `~/.bobkat/telegram`).
 Nothing is stored in the workspace — no session adoption, no log writes; the
 OPFS session never exists outside the page.
@@ -195,9 +198,9 @@ over OPFS, proving the alias approach.
 
 ## Run
 
-The browser target is normally served by grandpa-bob's admin (`npm run dev` in
-the repo root → `http://localhost:8080`, or `ADMIN_PORT`). To run it with the
-admin stopped, see [Standalone](#standalone-no-admin).
+The browser target is served by the combined process (`npm run bob` in the
+repo root → `http://localhost:8080`), or by `npm run web:standalone` when you
+want the app alone. See [Standalone](#standalone-no-admin).
 
 ```sh
 cd web

@@ -9,15 +9,6 @@ import os from "node:os";
 import path from "node:path";
 import { resolveEnvFile } from "./env-file.js";
 
-function required(name: string): string {
-  const v = process.env[name];
-  if (!v || !v.trim()) {
-    console.error(`FATAL: missing required env var ${name} (see .env.example)`);
-    process.exit(1);
-  }
-  return v.trim();
-}
-
 const root = process.cwd();
 
 // Precedence: ENV_FILE override > ~/.bobkat/.env > <project>/.env.
@@ -27,9 +18,11 @@ dotenv.config({ path: envFile });
 export const config = {
   // One source of truth for the config file (editor, docs, tests).
   envFile,
-  telegramToken: required("TELEGRAM_BOT_TOKEN"),
+  // Optional: the combined process always boots; without a token the bot
+  // stays off and only the mailbox/bridge API is served.
+  telegramToken: (process.env.TELEGRAM_BOT_TOKEN ?? "").trim(),
   allowedUserIds: new Set(
-    required("ALLOWED_USER_IDS")
+    (process.env.ALLOWED_USER_IDS ?? "")
       .split(",")
       .map((s) => parseInt(s.trim(), 10))
       .filter((n) => Number.isFinite(n)),

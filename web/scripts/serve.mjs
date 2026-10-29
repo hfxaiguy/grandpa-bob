@@ -13,7 +13,7 @@
 import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "dist");
@@ -68,7 +68,7 @@ async function indexHtml() {
   return readFileOrNull(path.join(root, "index.html"));
 }
 
-const server = http.createServer(async (req, res) => {
+async function handleStatic(req, res) {
   if (req.method !== "GET" && req.method !== "HEAD") {
     return sendJson(res, 405, { error: "method not allowed" });
   }
@@ -123,25 +123,60 @@ const server = http.createServer(async (req, res) => {
     }
   }
   return sendJson(res, 404, { error: `not found: ${pathname}` });
-});
+}
 
-server.on("error", (err) => {
-  if (err.code === "EADDRINUSE") {
-    console.error(`standalone: port ${port} is already in use.`);
-    console.error("  Is the grandpa-bob admin running? Stop it, or use another origin:");
-    console.error(`    PORT=${port + 1} npm run web:standalone`);
-    process.exit(1);
-  }
-  throw err;
-});
+/** The app server as a plain http.Server (no listen), for the combined entry. */
+export function createStaticServer() {
+  return http.createServer(handleStatic);
+}
 
-server.listen(port, host, async () => {
-  if (!(await indexHtml())) {
-    console.error(`standalone: ${path.join(root, "index.html")} is missing.`);
-    console.error("  Build the browser target first: npm run build:web");
-    server.close();
-    process.exit(1);
-  }
-  console.log(`standalone: http://localhost:${port} (admin API off)`);
-  console.log("  models come from this browser's Settings; keys never leave the tab");
-});
+/** True when web/dist/index.html exists (the build is present). */
+export async function staticIndexAvailable() {
+  return !!(await indexHtml());
+}
+
+/**
+ * Start serving the built app. Resolves once listening; rejects on EADDRINUSE
+ * or a bad port so the combined entry can degrade without exiting.
+ */
+export function startStaticServer({
+  port = Number(process.env.PORT ?? 8080),
+  host = process.env.HOST ?? "127.0.0.1",
+} = {}) {
+  return new Promise((resolve, reject) => {
+    const server = createStaticServer();
+    server.once("error", (err) => {
+      server.close();
+      reject(err);
+    });
+    server.listen(port, host, () => {
+      server.off("error", reject);
+      resolve({ server, port, host });
+    });
+  });
+}
+
+// ── CLI: `npm run web:standalone` ────────────────────────────────────────
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  startStaticServer({ port, host })
+    .then(async ({ server }) => {
+      if (!(await indexHtml())) {
+        console.error(`standalone: ${path.join(root, "index.html")} is missing.`);
+        console.error("  Build the browser target first: npm run build:web");
+        server.close();
+        process.exit(1);
+      }
+      console.log(`standalone: http://localhost:${port} (admin API off)`);
+      console.log("  models come from this browser's Settings; keys never leave the tab");
+    })
+    .catch((err) => {
+      if (err?.code === "EADDRINUSE") {
+        console.error(`standalone: port ${port} is already in use.`);
+        console.error("  Something already serves it (npm run bob?) — stop it, or use another origin:");
+        console.error(`    PORT=${port + 1} npm run web:standalone`);
+        process.exit(1);
+      }
+      throw err;
+    });
+}

@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "NODE_OPTIONS=--dns-result-order=ipv4first tsx src/index.ts",
+    "bob": "NODE_OPTIONS=--dns-result-order=ipv4first tsx src/index.ts",
     "chrome": "node web/scripts/chrome.mjs",
     "build": "tsc && npm run build:web",
     "build:web": "npm --prefix web run build",

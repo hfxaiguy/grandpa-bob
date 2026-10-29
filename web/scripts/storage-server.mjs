@@ -17,11 +17,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 const execFileAsync = promisify(execFile);
-const ROOT = path.resolve(process.argv[2] ?? process.env.WORKSPACE_DIR ?? process.cwd());
-const PORT = Number(process.env.STORAGE_PORT ?? 8795);
+// The default root can be replaced by the combined entry (`npm run bob`) or
+// by the standalone CLI (`node storage-server.mjs [root]`).
+let ROOT = path.resolve(process.env.WORKSPACE_DIR ?? process.cwd());
 
 // Desktop profiles: named folder roots served by this one bridge. The
 // registry lives outside any workspace (~/.bobkat/channels.json); the
@@ -299,7 +301,8 @@ const routes = {
   },
 };
 
-const server = http.createServer((req, res) => {
+/** The bridge request handler; mountable on the combined channel server. */
+export function handleStorageRequest(req, res) {
   if (req.method === "OPTIONS") {
     res.writeHead(204, cors);
     res.end();
@@ -332,6 +335,46 @@ const server = http.createServer((req, res) => {
       send(400, { error: err instanceof Error ? err.message : String(err) });
     }
   });
-});
+}
 
-server.listen(PORT, "127.0.0.1", () => console.log(`storage bridge on http://127.0.0.1:${PORT}  root=${ROOT}`));
+/** Point the bridge at a workspace root (the "default" x-bob-root folder). */
+export function configureStorageBridge(root = process.env.WORKSPACE_DIR ?? process.cwd()) {
+  ROOT = path.resolve(root);
+  return ROOT;
+}
+
+/** The bridge as a plain http.Server (no listen), for the combined entry. */
+export function createStorageBridgeServer() {
+  return http.createServer(handleStorageRequest);
+}
+
+/** Start the bridge standalone. Resolves once listening; rejects on EADDRINUSE. */
+export function startStorageBridge({
+  root = process.env.WORKSPACE_DIR ?? process.cwd(),
+  port = Number(process.env.STORAGE_PORT ?? 8795),
+  host = "127.0.0.1",
+} = {}) {
+  configureStorageBridge(root);
+  return new Promise((resolve, reject) => {
+    const server = createStorageBridgeServer();
+    server.once("error", reject);
+    server.listen(port, host, () => {
+      server.off("error", reject);
+      resolve({ server, root: ROOT, port, host });
+    });
+  });
+}
+
+// ── CLI: `npm run storage-server` (standalone bridge, for debugging) ─────
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+if (isMain) {
+  startStorageBridge({ root: process.argv[2] ?? process.env.WORKSPACE_DIR ?? process.cwd() })
+    .then(({ port, root }) => console.log(`storage bridge on http://127.0.0.1:${port}  root=${root}`))
+    .catch((err) => {
+      if (err?.code === "EADDRINUSE") {
+        console.error(`storage bridge: port ${process.env.STORAGE_PORT ?? 8795} is already in use.`);
+        process.exit(1);
+      }
+      throw err;
+    });
+}

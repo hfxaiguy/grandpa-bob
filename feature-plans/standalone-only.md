@@ -357,3 +357,12 @@ workspace bytes leave the replicas in any mode.
 - `feature-plans/storage-swap.md` — archive container v1/v2, DB snapshot
   policy, seed/boot flows.
 - `feature-plans/kat-async-log-store.md` — the WIP committed in phase 0.
+
+## Channels are one process
+
+Since 2026-10-29 `npm run bob` serves the app (`:8080`) and both channel APIs
+(`:8795`, storage bridge + telegram mailbox + opt-in `/stt`) from a single
+loopback process. `web:standalone` and `storage-server` remain as isolated
+listeners for tests/debugging. `BOB_TELEGRAM_PORT` is replaced by
+`BOB_CHANNEL_PORT`.
+

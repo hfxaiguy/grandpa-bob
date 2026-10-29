@@ -1,15 +1,15 @@
-# User service for the telegram channel (src/index.ts): grammY long-poll +
-# the loopback mailbox API the browser tab drains. Voice transcription needs
-# whisper.service running (npm run whisper:up). Requires .env with
-# TELEGRAM_BOT_TOKEN + ALLOWED_USER_IDS.
+# User service for the combined channel process (src/index.ts): app :8080 +
+# storage bridge + telegram mailbox API on :8795. The bot only starts when a
+# TELEGRAM_BOT_TOKEN is configured; voice transcription needs whisper.service
+# running (npm run whisper:up).
 [Unit]
-Description=grandpa-bob telegram channel (park & forward, no agent)
+Description=grandpa-bob channels (app, storage bridge, telegram park & forward)
 After=default.target
 
 [Service]
 ExecStart=/usr/bin/env node --dns-result-order=ipv4first %h/grandpa-bob-bot/dist/src/index.js
 WorkingDirectory=%h/grandpa-bob-bot
-Environment=BOB_TELEGRAM_PORT=8091
+Environment=BOB_CHANNEL_PORT=8795
 Restart=on-failure
 RestartSec=3
 

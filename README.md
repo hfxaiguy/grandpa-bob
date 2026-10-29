@@ -12,13 +12,15 @@ _BOB = **B**etter **O**rganizational **B**ot_
 > `web/src` now; `web/` imports nothing outside `web/` + `ui/`
 > (`npm run test:standalone` is the gate).
 >
-> Run:
+> Run one command:
 > ```sh
-> npm run web:standalone   # the app — http://localhost:8080
-> npm run dev              # the telegram channel (:8091) — parked messages
-> npm run storage-server   # desktop folders + STT bridge (:8795)
-> npm run whisper:up       # voice transcription service
+> npm run bob              # app :8080 + storage bridge/telegram :8795
+> npm run whisper:up       # optional voice backend (:8178)
 > ```
+> `npm run bob` serves the built app and both channel APIs from **one
+> process**; a missing `TELEGRAM_BOT_TOKEN` only leaves the bot off. The old
+> single-purpose commands (`web:standalone`, `storage-server`) still work for
+> debugging a listener in isolation.
 >
 > Work progressed against `feature-plans/standalone-only.md` — read it for the
 > target architecture, the verification gates and current gaps. The sections
@@ -70,11 +72,12 @@ every change it makes is **git-committed automatically**.
 │  web/ + ui/  ·  agent tree runs here (worker)  ·  profiles: OPFS | desktop  │
 └──────┬───────────────────┬──────────────────────────┬──────────────────────┘
        │                   │                          │
-  desktop channel       telegram channel          sync channel (peer-to-peer)
-  storage-server.mjs    src/index.ts              BroadcastChannel (same origin)
-   · folders (profiles)  · grammY long-poll        WebRTC DataChannel (cross-device;
-   · /stt (BOB_STT=1)    · park & forward mailbox   BobSwap REST or manual-paste
-   · loopback only       · no agent                 signaling; 6-word verify)
+  channels: one process (`npm run bob`)
+  :8795  storage bridge  ·  telegram mailbox API  sync channel (peer-to-peer)
+   · folders (profiles)    · grammY long-poll      BroadcastChannel (same origin)
+   · /stt (BOB_STT=1)      · park & forward mailbox WebRTC DataChannel (cross-device;
+   · loopback only         · no agent               BobSwap REST or manual-paste
+                                                    signaling; 6-word verify)
 ```
 
 Everything is a **pass-through channel**: small loopback processes with no UI
@@ -133,7 +136,8 @@ Tree.name("agent")
 
 ```
 src/                 Node channels only (never the agent)
-  index.ts           telegram channel: grammY + mailbox/bindings HTTP API (:8091)
+  index.ts           combined entry: app :8080 + channel APIs :8795
+                     (grammY long-poll, mailbox/bindings; bridge mounted)
   bot.ts             telegram glue: auth gate, topics, channel-side STT, parking
   telegram-bridge.ts the file mailbox + chat→profile bindings (Lamport-free)
   stt.ts             whisper/sherpa transcription for the channel
@@ -315,9 +319,10 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    get your numeric user id from @userinfobot. `cp .env.example .env` and fill
    in `TELEGRAM_BOT_TOKEN` + `ALLOWED_USER_IDS`. The channel prefers
    `~/.bobkat/.env` when present; `ENV_FILE=/path` overrides.
-   `npm run dev` starts it (loopback API on `:8091`).
-4. **Desktop storage (optional)**: `npm run storage-server` serves
-   `$WORKSPACE_DIR` (default `~/grandma-workspace`) on `127.0.0.1:8795`.
+   `npm run bob` picks it up automatically (loopback API on `:8795`); without
+   a token the same process just leaves the bot off.
+4. **Desktop storage (optional)**: `npm run bob` serves `$WORKSPACE_DIR`
+   (default `~/grandma-workspace`) on `127.0.0.1:8795`.
    Register extra folders as desktop profiles with the app's
    Profiles… → *desktop folder* flow (the bridge stores the registry in
    `~/.bobkat/channels.json`). Start it with `BOB_STT=1` to expose the
@@ -348,10 +353,13 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
 ## Run
 
 ```sh
-npm run web:standalone   # the app — http://localhost:8080  (terminal 1)
-npm run dev              # the telegram channel — :8091       (terminal 2, optional)
-npm run storage-server   # desktop folders + STT bridge — :8795 (optional)
-npm run whisper:up       # voice transcription — :8178          (optional)
+npm run bob              # app :8080 + channels :8795   (everything)
+npm run whisper:up       # voice transcription — :8178  (optional)
+
+# isolation/debug only:
+npm run web:standalone   # app only — :8080
+npm run storage-server   # storage bridge only — :8795
+npm run dev              # alias of `bob`
 ```
 
 As user systemd services (survive crashes and reboots):
@@ -363,7 +371,8 @@ systemctl --user daemon-reload
 systemctl --user enable --now whisper.service telegram-channel.service
 ```
 
-The telegram unit runs the built channel (`npm run build` first). Logs:
+The telegram unit now runs the combined process (`npm run build` first):
+app, bridge and channel on :8080/:8795. Logs:
 `journalctl --user -u telegram-channel`.
 
 Useful checks: `npm run typecheck` (three packages), `npm run test:standalone`

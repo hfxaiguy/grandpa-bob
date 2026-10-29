@@ -13,6 +13,23 @@ certificate changes the remote fingerprints, so the phrases stop matching.
 Covered by `test:sync` (symmetric seed, six words, tamper detection) and the
 real-Chrome `smoke:pairing` (two live `RTCPeerConnection`s).
 
+## 2026-10-29 — one process, one channel port
+
+Running BOB no longer needs separate terminal jobs. `npm run bob` starts the
+built app and both channel APIs from a single loopback process:
+
+- `:8080` — the app (`web/dist`), unchanged.
+- `:8795` — the storage bridge **and** the telegram mailbox/bindings API on
+  the same port (their route tables are disjoint), plus opt-in `/stt`.
+- The telegram bot is optional: without `TELEGRAM_BOT_TOKEN` the process
+  still serves the app, bridge and mailbox; a bot loop that dies retries with
+  a 15 s backoff instead of taking the servers down.
+- `BOB_TELEGRAM_PORT` is gone; use `BOB_CHANNEL_PORT` (default `8795`). The
+  app's saved telegram URL migrates automatically from the old `:8091`
+  default.
+- `web:standalone` (app only) and `storage-server` (bridge only) remain for
+  debugging; `dev` is now an alias of `bob`.
+
 ## 2026-10-29 — sync pairing uses the service's ICE servers
 
 The BobSwap channel create/join responses carry `ice_servers` (STUN today,

@@ -173,14 +173,18 @@ export function saveStorageServer(url: string): void {
 // ── telegram channel ─────────────────────────────────────────────────────
 
 const TELEGRAM_KEY = "bob:telegram-channel";
-/** Default loopback address of the telegram channel (src/index.ts). */
-const DEFAULT_TELEGRAM = "http://127.0.0.1:8091";
+/** The telegram API shares the storage bridge's port (src/index.ts). */
+const DEFAULT_TELEGRAM = "http://127.0.0.1:8795";
+/** The pre-merge standalone channel port; saved settings migrate off it. */
+const LEGACY_TELEGRAM = "http://127.0.0.1:8091";
 
 /** Same normalization rules as the storage bridge; empty → the default port. */
 export function loadTelegramChannel(): string {
   try {
     const raw = localStorage.getItem(TELEGRAM_KEY) ?? "";
-    return raw ? normalizeStorageServer(raw) : DEFAULT_TELEGRAM;
+    if (!raw) return DEFAULT_TELEGRAM;
+    const normalized = normalizeStorageServer(raw);
+    return normalized === LEGACY_TELEGRAM ? DEFAULT_TELEGRAM : normalized;
   } catch {
     return DEFAULT_TELEGRAM;
   }

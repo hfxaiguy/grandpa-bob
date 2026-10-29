@@ -121,12 +121,16 @@ function bridgeUrl(): string {
 
 /** Base URL of the telegram channel (the tab's phone surface). */
 const TELEGRAM_KEY = "bob:telegram-channel";
-const DEFAULT_TELEGRAM = "http://127.0.0.1:8091";
+/** Shares the storage bridge's port (src/index.ts). */
+const DEFAULT_TELEGRAM = "http://127.0.0.1:8795";
+/** Pre-merge standalone channel port; saved settings migrate off it. */
+const LEGACY_TELEGRAM = "http://127.0.0.1:8091";
 function telegramChannelUrl(): string {
   try {
     const raw = localStorage.getItem(TELEGRAM_KEY) ?? "";
     if (!raw) return DEFAULT_TELEGRAM;
-    return new URL(raw.includes("://") ? raw : `http://${raw}`).origin;
+    const url = new URL(raw.includes("://") ? raw : `http://${raw}`).origin;
+    return url === LEGACY_TELEGRAM ? DEFAULT_TELEGRAM : url;
   } catch {
     return DEFAULT_TELEGRAM;
   }
