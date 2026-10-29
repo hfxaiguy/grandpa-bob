@@ -24,7 +24,7 @@ import osShim from "../shims/node-os";
 import utilShim from "../shims/node-util";
 import childProcessShim from "../shims/node-child-process";
 import sqliteShim from "../shims/node-sqlite";
-import type { Platform } from "../../../src/platform/types";
+import type { Platform } from "../platform/types";
 
 // Mirrors the Vite alias set, so a module behaves the same whether it is
 // bundled (shared code) or evaluated from the workspace at runtime. A missing

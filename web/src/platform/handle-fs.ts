@@ -12,7 +12,7 @@
  *   - no `stat`           -> resolve a handle and report its kind/size/mtime
  *   - no chmod/mtime      -> not modelled (the interface does not need them)
  */
-import type { DirEntry, FileSystem } from "../../../src/platform/types";
+import type { DirEntry, FileSystem } from "./types";
 
 function segments(absolutePath: string): string[] {
   return absolutePath.split("/").filter((s) => s.length > 0 && s !== ".");

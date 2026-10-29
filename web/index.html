@@ -73,11 +73,15 @@
       dialog label { display: block; margin: 0.35rem 0; color: var(--muted); }
       dialog label.inline { display: flex; align-items: center; gap: 0.4rem; }
       dialog label.inline input { display: inline; width: auto; margin: 0; }
-      dialog input, dialog select {
+      dialog input, dialog select, dialog textarea {
         display: block; width: 100%; margin-top: 0.2rem;
         font: inherit; font-size: 13px; color: var(--fg);
         background: var(--card); border: 1px solid var(--border);
         border-radius: 6px; padding: 0.35rem 0.5rem;
+      }
+      dialog textarea {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11.5px; resize: vertical;
       }
       dialog button {
         font: inherit; font-size: 13px; color: var(--fg);
@@ -188,7 +192,7 @@
 
     <dialog id="profile-dialog">
       <h3>Workspace profiles</h3>
-      <p class="muted">Separate OPFS workspaces in this browser. Switching reloads the tab.</p>
+      <p class="muted">Separate workspaces in this browser (OPFS) or in folders on this machine's bridge. Switching reloads the tab.</p>
       <div id="profile-list"></div>
       <form id="profile-create">
         <label>New profile name
@@ -198,7 +202,11 @@
           <select id="profile-new-source">
             <option value="blank">fresh workspace (seeded on first boot)</option>
             <option value="duplicate">copy of the current profile</option>
+            <option value="desktop">desktop folder (this machine's bridge)</option>
           </select>
+        </label>
+        <label id="profile-new-folder-label" hidden>Folder root name on the bridge
+          <input id="profile-new-folder" placeholder="work" autocomplete="off" />
         </label>
         <label class="inline"><input id="profile-new-switch" type="checkbox" checked /> switch to it after creating</label>
         <div class="row-actions"><button type="submit">Create profile</button></div>
@@ -286,6 +294,11 @@
         </div>
         <input id="ws-import-file" type="file" accept="application/json,.json" hidden />
       </section>
+      <h4>Live sync</h4>
+      <div class="sync-row">
+        <button id="live-pair" type="button" title="Pair this workspace with a tab on another device">Pair…</button>
+        <span class="muted">Same-origin tabs sync automatically. <span id="live-sync-status">checking…</span></span>
+      </div>
       <h4>BobSwap</h4>
       <div class="sync-row">
         <button id="swap-settings" type="button" title="Configure BobSwap services and keys">BobSwap…</button>
@@ -300,6 +313,46 @@
         <span class="muted">Receive a workspace copy from another device.</span>
       </div>
       <div class="row-actions"><button id="sync-close" type="button">Close</button></div>
+    </dialog>
+
+    <dialog id="pair-dialog">
+      <h3>Pair this workspace with another device</h3>
+      <p class="muted">
+        Cross-device sync is peer-to-peer: the pairing blobs only carry WebRTC
+        addressing, never workspace content. Same-origin tabs need nothing here.
+      </p>
+      <h4>Manual (no service)</h4>
+      <div class="row-actions">
+        <button id="pair-offer" type="button">Create an offer</button>
+        <button id="pair-join" type="button">Join with an offer</button>
+      </div>
+      <label>Paste the other device's blob here
+        <textarea id="pair-input" rows="3" placeholder="paste the offer or answer blob"></textarea>
+      </label>
+      <div class="row-actions">
+        <button id="pair-answer" type="button">Finish pairing (use the answer)</button>
+      </div>
+      <label>Blob to hand to the other device
+        <textarea id="pair-output" rows="3" readonly placeholder="your offer or answer appears here"></textarea>
+      </label>
+      <p>Verification phrase <strong id="pair-verify">—</strong>
+        <span class="muted">(must match on both devices before trusting the link)</span></p>
+      <p id="pair-status" class="muted">idle</p>
+
+      <h4>BobSwap (automatic, needs a live service)</h4>
+      <div class="row-actions">
+        <button id="pair-swap-offer" type="button">Create a channel</button>
+        <button id="pair-swap-join" type="button">Join a channel</button>
+      </div>
+      <p class="muted">Channel <code id="pair-swap-channel">—</code> · code <strong id="pair-swap-code">—</strong></p>
+      <div class="grid">
+        <label>Channel id<input id="pair-swap-channel-input" placeholder="sc_…" autocomplete="off" /></label>
+        <label>Pairing code<input id="pair-swap-code-input" placeholder="ABCD-2345" autocomplete="off" /></label>
+      </div>
+      <div class="row-actions">
+        <button id="pair-unpair" type="button">Close cross-device pairing</button>
+        <button id="pair-close" type="button">Close</button>
+      </div>
     </dialog>
 
     <script type="module" src="/src/main.ts"></script>

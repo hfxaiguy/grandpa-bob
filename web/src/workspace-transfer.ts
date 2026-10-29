@@ -8,8 +8,8 @@
  * this after confirming with the user, then reloads so the platform, the fs
  * index and the sqlite worker re-read the restored files.
  */
-import { posixPath as path } from "../../src/platform/paths";
-import type { FileSystem, Platform } from "../../src/platform/types";
+import { posixPath as path } from "./platform/paths";
+import type { FileSystem, Platform } from "./platform/types";
 
 export interface WorkspaceArchive {
   version: 1;

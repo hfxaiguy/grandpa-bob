@@ -11,7 +11,7 @@ import git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
 import OPFS from "@componentor/opfs-fs";
 import { Buffer } from "buffer";
-import type { GitOps } from "../../../src/platform/types";
+import type { GitOps } from "./types";
 import "../shims/process";
 
 // isomorphic-git expects Node's Buffer in the global scope.

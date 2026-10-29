@@ -7,9 +7,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { SqliteTools } from "../src/tools/sqlite.js";
+import { SqliteTools } from "../web/src/tools/sqlite.js";
 import { createNodePlatform } from "../src/platform/node.js";
-import { createAppStore } from "../src/app-store.js";
+import { createAppStore } from "../web/src/app-store.js";
 
 const workspace = await mkdtemp(path.join(os.tmpdir(), "grandpa-bob-sqlite-"));
 const platform = createNodePlatform(workspace);

@@ -17,12 +17,12 @@
  * mutation, so two overlapping writers (event flush + turn marker) would lose
  * rows.
  */
-import type { Platform } from "../../../src/platform/types";
-import type { DerivedTurn, StoredSession, TurnMarker } from "../../../src/web-log-types";
-import type { MemoryWrite } from "../../../src/memory-track";
-import { sanitizeEvent, type SanitizedEvent } from "../../../src/sanitize";
-import { newTurnApps, seedPausedApp, tagEventApp } from "../../../src/app-attribution";
-import { listAppTrees } from "../../../src/tree-sources";
+import type { Platform } from "../platform/types";
+import type { DerivedTurn, StoredSession, TurnMarker } from "../web-log-types";
+import type { MemoryWrite } from "../memory-track";
+import { sanitizeEvent, type SanitizedEvent } from "../sanitize";
+import { newTurnApps, seedPausedApp, tagEventApp } from "../app-attribution";
+import { listAppTrees } from "../tree-sources";
 import { LOG_TABLES } from "grandma-kat";
 import type { KatEvent } from "./logger";
 import { mib, trimRunLog, trimSessionTiers } from "./runlog-retention";

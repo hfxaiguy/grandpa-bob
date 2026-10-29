@@ -8,10 +8,10 @@
  *   git     -> isomorphic-git over OPFS (local commits)
  *   sqlite  -> sqlite-wasm in a worker, persisted to OPFS
  */
-import { posixPath } from "../../../src/platform/paths";
-import { sha256hex } from "../../../src/platform/sha256";
-import { createCoreutilsShell } from "../../../src/platform/coreutils";
-import type { CryptoOps, Platform, SqliteFactory } from "../../../src/platform/types";
+import { posixPath } from "./paths";
+import { sha256hex } from "./sha256";
+import { createCoreutilsShell } from "./coreutils";
+import type { CryptoOps, Platform, SqliteFactory } from "./types";
 import { opfsFs } from "./corefs";
 import { createSqliteWasm, initSqlite } from "./sqlite-wasm";
 import { createOpfsGit } from "./git-opfs";

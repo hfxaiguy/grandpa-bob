@@ -20,7 +20,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createNodePlatform } from "../src/platform/node.js";
-import { createMemoryTracker } from "../src/memory-track.js";
+import { createMemoryTracker } from "../web/src/memory-track.js";
 import { memoryWrites, withLogDb } from "../web/src/agent/log-store.ts";
 import { trimSessionTiers } from "../web/src/agent/runlog-retention.ts";
 

@@ -1,38 +1,34 @@
-# web/ — browser target
+# web/ — the app
 
-A second target for grandpa-bob that runs **entirely in a browser tab**: no
-server, sandboxed virtual filesystem (OPFS), WASM SQLite, workspace persisted
-in browser storage.
+The browser target is **the product**: the only UI and the only agent host.
+`src/` now contains pass-through channels only (telegram mailbox, storage
+bridge, STT) — there is no admin server, no `BOB_WEB`, and no Node agent.
 
-> **Additive.** The Node target (`src/`, `npm start`) is unchanged and keeps
-> Telegram, the real shell, native SQLite, the git CLI, `opencode`, and
-> the HTTP admin server. This directory only *adds* a browser build.
+```
+npm run build:web        # vite build -> web/dist
+npm run web:standalone   # static loopback server on :8080 (PORT/HOST override)
+```
 
-See the design plan: `~/.opencode/plan/bob-in-browser.md`.
+Every `/api/*` call is answered by the in-browser backend
+(`web/src/server/local-backend.ts`). Settings, credentials (localStorage, per
+browser), models, profiles and the tiled app all run client-side.
 
-## Serving modes (`BOB_WEB`)
+Companion channels (optional, each loopback-only):
 
-`npm start` serves this build at `:8080` in one of two modes:
+| Channel | Command | What it does |
+|---|---|---|
+| Telegram | `npm run dev` (`src/index.ts`, `:8091`) | grammY long-poll; parks text + channel-side voice transcripts in a file mailbox (`~/.grandpa-bob/telegram/`); the tab claims and answers them |
+| Storage bridge | `npm run storage-server` (`:8795`) | real folders as desktop profiles; `POST /roots` registers them, requests select one with `x-bob-root`; also hosts the git/sqlite passthrough |
+| STT | `BOB_STT=1 npm run storage-server` | `POST /stt` — raw audio bytes to ffmpeg → whisper-server → transcript (used by the composer) |
+| Whisper | `npm run whisper:up` (`:8178`) | the transcription backend both paths call |
 
-- **static — default** (`BOB_WEB` unset or `0`): the port serves only
-  `web/dist`, and every `/api/*` answers `503 {"admin": false}`. The tab boots
-  the in-browser backend (`web/src/server/local-backend.ts`), so chat **and the
-  settings page** run client-side. The settings page probes
-  `/api/capabilities` once and keeps server-only controls (restart, Telegram
-  follow, bot logs, service health) visible but disabled, with a *browser only*
-  chip. A direct `/settings` hit redirects to `/` — the settings page is an
-  in-page iframe there.
-- **api** (`BOB_WEB=1`): the full admin server on the same
-  port — chat SSE, the settings API against the real `.env`/secrets, the
-  Telegram bridge and the monitors. `npm run dev` stays in static mode but
-  keeps Vite HMR; use `npm run dev:with-server` for dev + admin.
+Same-origin tabs sync live (BroadcastChannel); cross-device pairs through the
+Sync… → Live sync dialog (WebRTC; BobSwap REST or manual paste).
 
-To run the UI with no BOB process at all, use `npm run web:standalone`
-(`web/scripts/serve.mjs`; `PORT`/`HOST` overridable).
+> The sections below grew with the milestones and are kept as the record of
+> how the browser target reached parity — the *current* contract is the one
+> above plus the root `README.md` and `feature-plans/standalone-only.md`.
 
-Shortcuts for the admin mode: `npm run start:with-server` (built `dist/`) and
-`npm run dev:with-server` (tsx + Vite HMR) export `BOB_WEB=1` before starting.
-`npm run dev` alone is already in api mode — `BOB_DEV=1` implies it.
 
 ## Status — milestone 1 (virtual FS / platform seam)
 
@@ -448,8 +444,8 @@ open tabs through a BobSwap relay:
   dialog for other deployments. See `/docs/agents` on the service for the
   authoritative API reference.
 
-## Standalone (no admin)
-
+## Standalone (historical: there is no admin to stop)
+The standalone-vs-admin split is gone — `npm run web:standalone` is simply *the* run command. The notes below describe the old mode boundary and stay for the record:
 The browser target can run with grandpa-bob's admin completely stopped:
 
 ```sh

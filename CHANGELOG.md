@@ -2,6 +2,60 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-29 — standalone-only: the web app is the only host; Node becomes channels
+
+The refactor lands on the `standalone-only` branch, verified against
+`feature-plans/standalone-only.md` (read it for gates still open). What holds
+today:
+
+- **One UI, one host.** `web/` + `ui/` serve and run everything; the shared
+  core moved out of `src/` into `web/src/` (31 modules), and
+  `scripts/web-standalone-test.ts` fails if `web/` ever imports outside
+  `web/` + `ui/` again. The root boundary gate is permanent.
+- **Telegram channel.** `npm run dev` is now a pass-through channel
+  (`src/index.ts`): grammY long-poll, auth gate, forum topics, channel-side
+  transcription (`heard: "…"` needs no browser), and a **file-backed mailbox**
+  (`~/.grandpa-bob/telegram/`) — messages parked with no tab connected
+  survive channel restarts. Bindings form when a tab drains (`claim`), a
+  handover between profiles bumps a per-chat epoch so a suspended old tab's
+  late relays drop. Loopback-only (`:8091`), CORS allow-list, no agent.
+- **Desktop profiles.** The storage bridge serves one folder per profile
+  (e2e: `npm run test:desktop-profile` imports a seed archive into a
+  registered root and checks per-root sandboxing):
+  a folder registry (`~/.grandpa-bob/channels.json`, `POST /roots`,
+  `~/`-paths expanded bridge-side) selected per request via `x-bob-root`;
+  the picker creates desktop profiles, and the old single-root setup is the
+  implicit `default`. The bridge stays loopback-bound.
+- **Single-host lease.** `web/src/host-lease.ts`: Web Locks with a
+  localStorage-heartbeat fallback; a second tab on the same workspace is
+  read-only with a cooperative *take over* (`npm run test:lease`, and
+  `smoke:lease` in real Chrome: primary → read-only + 503 → auto-promotion).
+- **STT channel.** `BOB_STT=1` on the bridge exposes `POST /stt` (ffmpeg →
+  whisper-server); the UI's transcription points there. The unused
+  `@huggingface/transformers` dep was dropped; the Node agent host
+  (`src/agent.ts`, `admin.ts`, its registry and tests) is removed.
+- **Sync.** `web/src/sync/` converges workspaces between replicas:
+  pull-only reconciliation (both sides compute the same per-path winner —
+  higher origin Lamport stamp, ties by replica id — and only the loser
+  pulls), a journal that keeps the originator's stamp on applied mirrors, a
+  hash-verified pull guard, and explicit tombstones in the map exchange.
+  Same-origin tabs (an OPFS profile and a desktop-folder profile on this
+  machine) reconcile live by default for the lease holder; WebRTC transports
+  with BobSwap-REST and manual-paste signaling ship with the engine but have
+  the Sync… → Live sync dialog pairs cross-device peers (WebRTC; manual
+  paste with a 6-word verification phrase, or BobSwap REST channels when the
+  service implements them). No workspace bytes leave the replicas in any
+  mode. `npm run test:sync` is the gate.
+
+Deps: `openai` dropped (the browser calls endpoints directly); `grammy` and
+`dotenv` stay (channels). `npm run dev` / `start` target the channel;
+`npm run web:standalone` is the app.
+
+Checks: `npm run typecheck`, `npm --prefix web run typecheck`,
+`npm run test:standalone`, `npm run test:sync`, and the suite in
+`package.json` (`test:*`). Two pre-existing failures are unrelated (they fail
+identically on `main`): `test:tree`, `test:cdp`.
+
 ## 2026-10-28 — web: splash covers the pre-UI boot; the cat jitters
 
 In the standalone web app the chat UI (and its splash) only mounted at the
@@ -93,6 +147,7 @@ bar, so a slow restore reads as progress instead of a broken page. The
 memory phases; ordinary session switches are unchanged.
 
 Checks: `npm run test:ui` and `npm run typecheck`.
+
 
 ## 2026-10-27 — ui: ref handles open the inspector above any modal
 

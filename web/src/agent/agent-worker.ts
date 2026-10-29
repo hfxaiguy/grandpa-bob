@@ -11,14 +11,14 @@ import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { setSqliteOpfsPrefix } from "../platform/sqlite-wasm";
 import { parseOpfsPrefix, setOpfsRootSegments } from "../platform/opfs-root";
 import { createDesktopPlatform } from "../platform/desktop";
-import type { Platform } from "../../../src/platform/types";
+import type { Platform } from "../platform/types";
 import { browserTools, STUB_TOOL_NAMES } from "./browser-tools";
 import { browserCdpTools } from "./browser-cdp";
-import { createAppStore } from "../../../src/app-store";
+import { createAppStore } from "../app-store";
 import { setActiveFs, setFsIndex } from "../shims/node-fs-promises";
-import { listAppTrees } from "../../../src/tree-sources";
-import { resolveTreeEntry } from "../../../src/tree-files";
-import { assembleGuides, HOST_GUIDES } from "../../../src/tool-guides";
+import { listAppTrees } from "../tree-sources";
+import { resolveTreeEntry } from "../tree-files";
+import { assembleGuides, HOST_GUIDES } from "../tool-guides";
 import { createWorkspaceLogger, type MemoryLogger, type WorkspaceLogger, type KatEvent } from "./logger";
 import {
   getTurns,
@@ -36,7 +36,7 @@ import {
   writeLabel,
   writeTurnEnd,
 } from "./log-store";
-import type { TurnMarker } from "../../../src/web-log-types";
+import type { TurnMarker } from "../web-log-types";
 import { createModuleLoader } from "./module-loader";
 import {
   AgentStoppedError,
@@ -44,10 +44,10 @@ import {
   mergeSignals,
   raceWithStop,
   throwIfStopped,
-} from "../../../src/stop-error";
+} from "../stop-error";
 import { resolvePatternPath } from "./pattern-path";
 import { loadBrowserModels } from "./models";
-import { parseModels, type ModelRegistry } from "../../../src/model-config";
+import { parseModels, type ModelRegistry } from "../model-config";
 
 /**
  * Active profile segments, passed by AgentClient as the worker name. A worker

@@ -24,6 +24,7 @@ import {
   loadRemote,
   loadStorage,
   loadStorageServer,
+  loadTelegramChannel,
   loadModelsJson,
   loadCdp,
   saveCdp,
@@ -41,7 +42,7 @@ import {
   profileHandle,
   profileSegmentsFor,
   recordSeedVersion,
-  resolveActiveProfileName,
+  resolveActiveForMode,
   touchProfile,
   type ProfileRegistry,
   type SeedBinding,
@@ -49,13 +50,16 @@ import {
 import { fetchLatestSeed, fetchLatestSeedMeta, resolveSwapService, type RemoteSeedMeta } from "./swap";
 import { wireProfileUi } from "./profile-ui";
 import { cloneWorkspace } from "./platform/git-opfs";
-import { applyDatabaseDumps } from "../../src/db-sync";
-import { createAutoSync, DEFAULT_INTERVAL_MS } from "../../src/auto-sync";
-import { listTreeSources } from "../../src/tree-sources";
-import { resolveTreeEntry } from "../../src/tree-files";
+import { applyDatabaseDumps } from "./db-sync";
+import { createAutoSync, DEFAULT_INTERVAL_MS } from "./auto-sync";
+import { listTreeSources } from "./tree-sources";
+import { resolveTreeEntry } from "./tree-files";
 import { patternLabel } from "./agent/pattern-path";
+import { createHostLease } from "./host-lease";
+import { startSync, activeSync } from "./sync";
+import { wireSyncUi } from "./sync-ui";
 import { parseSeedMeta, seedFreshness, SEED_CLOCK_TOLERANCE_MS, type SeedMeta } from "./seed-version";
-import type { Platform } from "../../src/platform/types";
+import type { Platform } from "./platform/types";
 
 const params = new URLSearchParams(location.search);
 const requestedStorage = params.get("storage");
@@ -189,6 +193,13 @@ storageServerInput?.addEventListener("change", applyStorage);
 let platform: Platform;
 /** Set once the agent worker exists; workspace export asks it for the log snapshot. */
 let archiveAgent: AgentClient | null = null;
+
+/**
+ * The single-host lease: exactly one tab runs turns per workspace (an OPFS
+ * profile, or a desktop folder through the bridge). Created during boot,
+ * before the backend, so every turn can be gated by it.
+ */
+let lease: ReturnType<typeof createHostLease> | null = null;
 
 /** The platform selected at boot; all callers share it (and its handles). */
 function activePlatform(): Platform {
@@ -513,6 +524,13 @@ function wireWorkspaceTransfer(): void {
   const importInput = document.getElementById("ws-import-file") as HTMLInputElement | null;
   if (!exportButton || !importButton || !importInput) return;
 
+  // A secondary tab must not write the workspace while another tab holds it.
+  if (lease && lease.status() !== "primary") {
+    exportButton.disabled = true;
+    importButton.disabled = true;
+    return;
+  }
+
   // Smoke hook: the browser smoke drives export/import without a download dialog
   // or a reload. Like `__bobBackend`, it is only a test surface.
   (window as unknown as { __bobWorkspaceTransfer?: unknown }).__bobWorkspaceTransfer = {
@@ -834,6 +852,60 @@ async function applyBoundSeedUpdate(binding: SeedBinding, version?: string): Pro
   setTimeout(() => location.reload(), 1500);
 }
 
+// ── single-host lease (one tab runs turns per workspace) ─────────────────
+
+/**
+ * A fixed banner while this tab is secondary, with a cooperative takeover
+ * button. `pagehide` releases voluntarily (unless the page is being kept
+ * alive by the back/forward cache) so the heartbeat fallback frees instantly.
+ */
+function wireLeaseUi(hostLease: NonNullable<typeof lease>): void {
+  let banner: HTMLElement | null = null;
+  const removeBanner = (): void => {
+    banner?.remove();
+    banner = null;
+  };
+  const showBanner = (): void => {
+    if (banner) return;
+    banner = document.createElement("div");
+    banner.id = "bob-lease-banner";
+    banner.style.cssText =
+      "position:fixed;top:0;left:0;right:0;z-index:9999;display:flex;gap:12px;" +
+      "align-items:center;justify-content:center;padding:8px 16px;" +
+      "background:#fdf3d7;color:#5c4400;font:13px/1.4 system-ui,sans-serif;" +
+      "border-bottom:1px solid #e8d48a;";
+    const text = document.createElement("span");
+    text.textContent = "This workspace is open in another tab — read-only here.";
+    const button = document.createElement("button");
+    button.textContent = "take over";
+    button.addEventListener("click", () => {
+      button.disabled = true;
+      button.textContent = "taking over…";
+      void hostLease.takeOver().then((ok) => {
+        if (!ok) {
+          button.disabled = false;
+          button.textContent = "take over";
+        }
+      });
+    });
+    banner.append(text, button);
+    document.body.appendChild(banner);
+  };
+  hostLease.subscribe((status) => {
+    if (status === "primary") removeBanner();
+    else if (status === "secondary") showBanner();
+  });
+  window.addEventListener("pagehide", (event) => {
+    if (!(event as PageTransitionEvent).persisted) hostLease.release();
+  });
+}
+
+/** The turn gate passed to the backend: a secondary tab never runs the tree. */
+async function beforeTurn(): Promise<string | null> {
+  if (!lease || lease.status() === "primary") return null;
+  return "this workspace is open in another tab — take over there (or use “take over” above) to run turns here";
+}
+
 // ── boot ─────────────────────────────────────────────────────────────────
 
 /**
@@ -844,31 +916,38 @@ async function applyBoundSeedUpdate(binding: SeedBinding, version?: string): Pro
 let bootStage = "start";
 
 async function main(): Promise<void> {
+  // The profile registry is shared by both storage kinds: `opfs` profiles
+  // keep their workspace in the origin's OPFS; `desktop` profiles point at a
+  // folder root registered on the storage bridge. Each mode resolves its own
+  // active profile.
+  bootStage = "bootProfiles";
+  const boot = await bootProfiles();
+  profileRegistry = boot.registry;
+  const wantedMode: "browser" | "desktop" = storageMode;
+  activeProfile = resolveActiveForMode(profileRegistry, wantedMode);
+  activeProfileSegments = profileSegmentsFor(activeProfile);
+
   if (storageMode === "desktop") {
     bootProgress("starting the local database…", 10);
+    const record = profileRegistry.profiles.find((profile) => profile.name === activeProfile);
+    const rootName = record?.kind === "desktop" ? record.folder ?? "default" : "default";
     bootStage = "desktop: initSqlite";
-    await initSqlite([]);
-    platform = createDesktopPlatform("/", storageServer);
+    await profileHandle(activeProfile); // the OPFS dir carries this profile's run log
+    await initSqlite(activeProfileSegments);
+    platform = createDesktopPlatform("/", storageServer, { rootName });
     setActiveFs(platform.fs);
     bootProgress("indexing the workspace…", 40);
     bootStage = "desktop: buildFsIndex";
     await buildFsIndex(platform);
-    statusBase = "desktop";
+    statusBase = `desktop${rootName === "default" ? "" : `:${rootName}`}`;
     try {
       const health = await fetch(`${storageServer}/health`).then((r) => r.json());
-      statusBase = `desktop: ${health.root}`;
+      statusBase = `desktop${rootName === "default" ? "" : `:${rootName}`}: ${health.root}`;
     } catch {
       statusBase = `desktop bridge unreachable at ${storageServer}`;
     }
   } else {
-    // Profiles: move pre-profile OPFS data into /profiles/default once, then
-    // bind every layer (fs, sqlite worker, agent worker) to the active profile.
-    bootProgress("preparing profiles…", 10);
-    bootStage = "bootProfiles";
-    const boot = await bootProfiles();
-    profileRegistry = boot.registry;
-    activeProfile = resolveActiveProfileName(profileRegistry);
-    activeProfileSegments = profileSegmentsFor(activeProfile);
+    // Bind every layer (fs, sqlite worker, agent worker) to the active profile.
     setOpfsRootSegments(activeProfileSegments);
     bootProgress("starting the database…", 20);
     bootStage = "initSqlite";
@@ -911,10 +990,45 @@ async function main(): Promise<void> {
   }
 
   bootProgress("starting the agent…", 80);
+  // Single-host lease: exactly one tab runs turns against this workspace.
+  // Created before the backend so /api/chat can gate on it.
+  bootStage = "hostLease";
+  lease = createHostLease(
+    storageMode === "desktop" ? `desktop:${storageServer}` : `opfs:${activeProfile}`,
+  );
+  wireLeaseUi(lease);
+  await lease.whenSettled();
+
   bootStage = "detectPattern";
   const pattern = await detectPattern(platform);
   const agent = new AgentClient(activeProfileSegments);
   archiveAgent = agent;
+
+  // Real-time sync: journal + BroadcastChannel transports (same-origin tabs
+  // reconcile live — an OPFS profile and a desktop-folder profile on this
+  // machine converge with nothing to set up). Cross-device peers pair through
+  // Sync… → Live sync. Only the lease holder syncs, so a read-only tab never
+  // writes the workspace.
+  bootStage = "startSync";
+  if (lease?.status() === "primary") {
+    const syncIdKey = `bob:sync-id:${storageMode}:${activeProfile}`;
+    let syncId = "";
+    try {
+      syncId = localStorage.getItem(syncIdKey) ?? "";
+      if (!syncId) {
+        syncId = crypto.randomUUID();
+        localStorage.setItem(syncIdKey, syncId);
+      }
+    } catch {
+      syncId = crypto.randomUUID();
+    }
+    const syncHandle = await startSync(platform, {
+      id: syncId,
+      channelName: `bob-sync:${storageMode}:${activeProfile}`,
+    });
+    (window as unknown as { __bobSync?: unknown }).__bobSync = syncHandle;
+  }
+  wireSyncUi(() => activeSync());
   // When the admin serves this page, use ITS models.json (and /api/llm proxy)
   // so the browser, the chat UI and Telegram all share one model config.
   bootStage = "servedByAdmin";
@@ -931,6 +1045,10 @@ async function main(): Promise<void> {
     modelsJson: loadModelsJson(),
     serverModels,
     cdp: configuredCdp,
+    beforeTurn,
+    telegramUrl: loadTelegramChannel(),
+    telegramProfile: () =>
+      storageMode === "browser" ? `opfs:${activeProfile}` : `desktop:${storageServer}`,
   });
 
   // Hand the splash over to the chat app at the same progress, so the bar

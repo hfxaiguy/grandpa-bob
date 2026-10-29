@@ -8,10 +8,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { parseCsv } from "../src/platform/csv.js";
-import { CsvTools } from "../src/tools/csv.js";
+import { parseCsv } from "../web/src/platform/csv.js";
+import { CsvTools } from "../web/src/tools/csv.js";
 import { createNodePlatform } from "../src/platform/node.js";
-import type { Platform } from "../src/platform/types.js";
+import type { Platform } from "../web/src/platform/types.js";
 
 // ── parser ───────────────────────────────────────────────────────────────
 {

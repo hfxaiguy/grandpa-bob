@@ -19,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { browserTools } from "../web/src/agent/browser-tools.ts";
 import { createNodePlatform } from "../src/platform/node.js";
-import type { SqliteDatabase, SqliteFactory } from "../src/platform/types.js";
+import type { SqliteDatabase, SqliteFactory } from "../web/src/platform/types.js";
 
 const workspace = await mkdtemp(path.join(os.tmpdir(), "grandpa-bob-readruns-"));
 const base = createNodePlatform(workspace);

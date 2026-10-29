@@ -1,3 +1,9 @@
+/**
+ * Channel configuration — the standalone-only process reads only what a
+ * pass-through channel needs: the Telegram token/allowlist, STT backends and
+ * the .env location. Workspace/shell/tool config died with the Node agent
+ * host; the browser configures itself (settings page, workspace models.json).
+ */
 import dotenv from "dotenv";
 import os from "node:os";
 import path from "node:path";
@@ -15,19 +21,11 @@ function required(name: string): string {
 const root = process.cwd();
 
 // Precedence: ENV_FILE override > ~/.grandpa-bob/.env > <project>/.env.
-// The chosen file is also what the admin's editor writes to.
 const envFile = resolveEnvFile({ root, home: os.homedir(), override: process.env.ENV_FILE });
 dotenv.config({ path: envFile });
 
-const DEFAULT_COMMANDS = [
-  "ls", "cat", "head", "tail", "wc", "find", "rg", "grep", "pwd",
-  "git", "mkdir", "touch", "date", "file", "stat", "du", "df",
-  "diff", "which", "echo", "sort", "uniq",
-  "comms",
-];
-
 export const config = {
-  // One source of truth for the config file (admin editor, docs, tests).
+  // One source of truth for the config file (editor, docs, tests).
   envFile,
   telegramToken: required("TELEGRAM_BOT_TOKEN"),
   allowedUserIds: new Set(
@@ -35,15 +33,6 @@ export const config = {
       .split(",")
       .map((s) => parseInt(s.trim(), 10))
       .filter((n) => Number.isFinite(n)),
-  ),
-  workspaceDir: path.resolve(root, process.env.WORKSPACE_DIR ?? "workspace"),
-  /**
-   * Secret config store for workspace apps. Deliberately OUTSIDE the
-   * workspace: that tree syncs over git, goes through file tools and
-   * backups, and would leak credentials. Override with SECRETS_DB.
-   */
-  secretsDb: path.resolve(
-    process.env.SECRETS_DB ?? path.join(os.homedir(), ".grandpa-bob", "secrets.db"),
   ),
   tmpDir: path.resolve(root, "tmp"),
   /** STT backend: "whisper" (whisper.cpp), "sherpa" (sherpa-onnx online websocket), or "parakeet" (sherpa-onnx offline websocket + NeMo parakeet). */
@@ -55,37 +44,6 @@ export const config = {
   sherpaUrl: (process.env.SHERPA_URL ?? "http://127.0.0.1:8178").replace(/\/$/, ""),
   /** Spoken language for STT (e.g. "en", "de", "auto"). Empty = server default ("en"). */
   sttLanguage: process.env.STT_LANGUAGE ?? process.env.WHISPER_LANGUAGE ?? "",
-  /** Exa Search API key for the exa_search web search tool (optional — tool errors if unset). */
-  exaApiKey: process.env.EXO_API_KEY ?? "",
-  /**
-   * Absolute path to a single SQLite database the agent's sql tools
-   * (sql_query read-only, sql_write read-write) are locked to. When set, the
-   * agent can only touch that one file and can never reach any other
-   * database. Leave empty for free choice of any .db inside the workspace
-   * (sql_query is always read-only regardless).
-   */
-  sqliteLockPath: process.env.SQLITE_LOCK_PATH ? path.resolve(process.env.SQLITE_LOCK_PATH) : "",
-  allowedCommands: (process.env.ALLOWED_COMMANDS ?? DEFAULT_COMMANDS.join(","))
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean),
-  maxToolIterations: 12,
-  /**
-   * Max characters of a tool result shown to the model (grandma-kat
-   * `runtime.maxToolResultChars`). Full results are always kept for tree logic
-   * and the run log; only the model's view is capped. 0 disables the cap.
-   * Absent/invalid → grandma-kat's default (4000).
-   */
-  maxToolResultChars: (() => {
-    const raw = process.env.MAX_TOOL_RESULT_CHARS;
-    if (raw === undefined || !raw.trim()) return undefined;
-    const n = Number(raw.trim());
-    if (!Number.isFinite(n) || n < 0) {
-      console.warn(`[config] MAX_TOOL_RESULT_CHARS='${raw}' is not a non-negative number — using the default`);
-      return undefined;
-    }
-    return Math.floor(n);
-  })(),
 };
 
 export type Config = typeof config;

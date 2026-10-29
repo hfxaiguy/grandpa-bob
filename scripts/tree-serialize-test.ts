@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 // @ts-ignore — grandma-kat ships no .d.ts files.
 import { Tree, when, goto, max } from "grandma-kat";
-import { serializeTree, fnSnippet } from "../src/tree-serialize.js";
+import { serializeTree, fnSnippet } from "../web/src/tree-serialize.js";
 
 const isYes = (v: unknown) => typeof v === "string" && /^\s*yes\b/i.test(v.trim());
 

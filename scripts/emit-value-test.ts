@@ -9,7 +9,7 @@
  * Run: npm run test:emit-value
  */
 import assert from "node:assert/strict";
-import { emitText, emitValue } from "../src/util/emit-text.js";
+import { emitText, emitValue } from "../web/src/util/emit-text.js";
 
 // ── 1. null/undefined have no text ──
 assert.deepEqual(emitValue(null), { text: "" });

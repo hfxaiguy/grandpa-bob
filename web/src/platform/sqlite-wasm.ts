@@ -4,7 +4,7 @@
  *
  * Call `initSqlite()` once before opening (it boots the worker).
  */
-import type { SqliteColumn, SqliteDatabase, SqliteFactory, SqliteStatement } from "../../../src/platform/types";
+import type { SqliteColumn, SqliteDatabase, SqliteFactory, SqliteStatement } from "./types";
 import { encodeOpfsPrefix } from "./opfs-root";
 
 interface Pending {

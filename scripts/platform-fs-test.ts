@@ -4,8 +4,8 @@
  * will run over OPFS in the browser. Run: `npm run test:platform`.
  */
 import assert from "node:assert/strict";
-import { FileTools } from "../src/tools/files.js";
-import { createMemoryPlatform } from "../src/platform/memory.js";
+import { FileTools } from "../web/src/tools/files.js";
+import { createMemoryPlatform } from "../web/src/platform/memory.js";
 
 const commits: Array<{ paths: string[]; message: string }> = [];
 const platform = createMemoryPlatform({

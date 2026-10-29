@@ -9,7 +9,7 @@
  * adapter. The root is not always the origin root: `./opfs-root.ts` holds the
  * active profile segments, so switching profiles only rebinds the root.
  */
-import { posixPath as path } from "../../../src/platform/paths";
+import { posixPath as path } from "./paths";
 import { createHandleFs, type HandleFileSystem } from "./handle-fs";
 import { resolveOpfsRoot } from "./opfs-root";
 

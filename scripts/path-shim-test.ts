@@ -8,8 +8,8 @@
 import nodePath from "node:path";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { posixPath } from "../src/platform/paths.js";
-import { sha256hex } from "../src/platform/sha256.js";
+import { posixPath } from "../web/src/platform/paths.js";
+import { sha256hex } from "../web/src/platform/sha256.js";
 
 const P = nodePath.posix;
 

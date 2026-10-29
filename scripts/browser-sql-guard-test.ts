@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { browserTools } from "../web/src/agent/browser-tools.js";
 import { createNodePlatform } from "../src/platform/node.js";
-import { createAppStore } from "../src/app-store.js";
+import { createAppStore } from "../web/src/app-store.js";
 
 const workspace = await mkdtemp(path.join(os.tmpdir(), "grandpa-bob-web-sql-"));
 const platform = createNodePlatform(workspace);

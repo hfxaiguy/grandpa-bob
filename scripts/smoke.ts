@@ -6,11 +6,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { FileTools } from "../src/tools/files.js";
+import { FileTools } from "../web/src/tools/files.js";
 import { createNodePlatform } from "../src/platform/node.js";
 import { ShellTools } from "../src/tools/shell.js";
 import { ensureRepo, git } from "../src/tools/git.js";
-import { ExaSearchTools } from "../src/tools/websearch.js";
+import { ExaSearchTools } from "../web/src/tools/websearch.js";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "grandma-smoke-"));
 await ensureRepo(ws);
@@ -119,7 +119,9 @@ assert.equal(body.contents.highlights, true);
 assert.equal((body.contents as { text: { maxCharacters: number } }).text.maxCharacters, 8000);
 assert.equal("useAutoprompt" in body, false, "deprecated params must not be sent");
 
-const parsed = JSON.parse(searchOut) as {
+// `search()` returns the shaped result object directly (the browser target
+// consumes it without a JSON round-trip — the old string form is gone).
+const parsed = searchOut as unknown as {
   query: string;
   count: number;
   results: Array<{ title: string; url: string; publishedDate: string | null; highlights: string[]; text: string | null }>;

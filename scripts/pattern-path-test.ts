@@ -9,9 +9,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Platform } from "../src/platform/types";
+import type { Platform } from "../web/src/platform/types";
 import { createNodePlatform } from "../src/platform/node";
-import { listTreeSources } from "../src/tree-sources";
+import { listTreeSources } from "../web/src/tree-sources";
 import { resolvePatternPath } from "../web/src/agent/pattern-path";
 
 async function main(): Promise<void> {

@@ -8,7 +8,7 @@
  *
  * Kept free of Solid and DOM so the fold can be exercised from a script test.
  */
-import { newTurnApps, tagEventApp } from "../../src/app-attribution";
+import { newTurnApps, tagEventApp } from "../../web/src/app-attribution";
 import type { SanitizedEvent, Turn } from "./types";
 
 export interface LiveToolCall {

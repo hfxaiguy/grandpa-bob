@@ -9,7 +9,7 @@ import fs from "node:fs/promises";
 import nodePath from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { posixPath } from "./paths.js";
+import { posixPath } from "../../web/src/platform/paths.js";
 import type {
   CryptoOps,
   DirEntry,
@@ -20,7 +20,7 @@ import type {
   Shell,
   SqliteDatabase,
   SqliteFactory,
-} from "./types.js";
+} from "../../web/src/platform/types.js";
 import { ShellTools } from "../tools/shell.js";
 import {
   autoCommit,

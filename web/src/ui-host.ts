@@ -7,7 +7,7 @@
  * same-origin iframe (with the shim). Links between "/" and "/settings" swap
  * the two instead of navigating away.
  */
-import { buildSettingsHtml } from "../../src/ui/pages";
+import { buildSettingsHtml } from "./ui/pages";
 import { installShim, SHIM_SCRIPT } from "./server/shim";
 import { mountApp } from "../../ui/src/mount";
 import type { LocalBackend } from "./server/local-backend";
