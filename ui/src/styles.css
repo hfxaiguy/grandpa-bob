@@ -595,7 +595,26 @@ body.dragging-tile { user-select: none !important; }
 /* Boot splash: shown until the session and live stream are in, so a slow
    restore reads as progress rather than the "No session selected" flash. */
 .boot-splash { margin: auto; width: min(420px, 80vw); text-align: center; color: var(--muted); }
-.boot-splash .empty-logo { width: min(300px, 64vw); }
+.boot-splash .empty-logo {
+  width: min(300px, 64vw);
+  /* Same subtle wander as the web shell's pre-UI splash, so the handover
+     between the two does not visibly stop the cat. */
+  animation: logo-jitter 4.2s ease-in-out infinite;
+}
+@keyframes logo-jitter {
+  0%   { transform: translate(0, 0) rotate(0deg); }
+  12%  { transform: translate(1.5px, -1px) rotate(0.45deg); }
+  25%  { transform: translate(-1px, 1.5px) rotate(-0.5deg); }
+  37%  { transform: translate(1px, 0.5px) rotate(0.3deg); }
+  50%  { transform: translate(-1.5px, -1px) rotate(-0.35deg); }
+  62%  { transform: translate(0.5px, 1.5px) rotate(0.4deg); }
+  75%  { transform: translate(-0.5px, -1.5px) rotate(-0.45deg); }
+  87%  { transform: translate(1.5px, 1px) rotate(0.2deg); }
+  100% { transform: translate(0, 0) rotate(0deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot-splash .empty-logo { animation: none; }
+}
 .boot-status { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 20px; margin-bottom: 10px; font-size: 13px; }
 .boot-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .boot-pct { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; flex: none; }

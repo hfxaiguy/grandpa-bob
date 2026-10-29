@@ -1076,8 +1076,22 @@ export async function init(): Promise<void> {
   // step-weighted rather than measured: the boot is a handful of fetches with
   // wildly different costs, and a bar that moves per phase is what tells the
   // user the last session is coming back.
+  // The browser target runs a long pre-mount boot (profiles, OPFS, seeding,
+  // git clone) behind its own splash and sets `__bobBootFloor`; start there so
+  // the bar continues from the handover instead of resetting to 0.
+  const floor =
+    typeof window === "undefined"
+      ? 0
+      : Math.min(
+          99,
+          Math.max(0, Number((window as unknown as { __bobBootFloor?: number }).__bobBootFloor) || 0),
+        );
   const boot = (bootStatus: string, bootProgress?: number) =>
-    setState(bootProgress === undefined ? { bootStatus } : { bootStatus, bootProgress });
+    setState(
+      bootProgress === undefined
+        ? { bootStatus }
+        : { bootStatus, bootProgress: Math.round(floor + (bootProgress * (100 - floor)) / 100) },
+    );
 
   // Which host is this page on? The admin answers {admin:true}; the in-browser
   // backend mirrors the boot-time servedByAdmin() signal and the static-only

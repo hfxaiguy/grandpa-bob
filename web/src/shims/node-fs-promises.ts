@@ -113,6 +113,18 @@ export async function rename(from: string, to: string): Promise<void> {
   return activeFs.rename(from, to);
 }
 
+/** `fs.realpath` — the browser FS has no symlinks, so normalize and verify. */
+export async function realpath(path: string): Promise<string> {
+  await activeFs.stat(path);
+  const parts: string[] = [];
+  for (const part of path.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") parts.pop();
+    else parts.push(part);
+  }
+  return `/${parts.join("/")}`;
+}
+
 export default {
   readFile,
   writeFile,
@@ -123,6 +135,7 @@ export default {
   rm,
   unlink,
   rename,
+  realpath,
   existsSync,
   readdirSync,
   statSync,

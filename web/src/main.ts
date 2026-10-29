@@ -80,6 +80,38 @@ const setStatus = (text: string): void => {
   statusEl.textContent = text;
 };
 
+/**
+ * The static pre-UI splash in index.html. It covers the boot shown here — the
+ * chat app only mounts at the end of main(), and its own splash then restores
+ * the session. `hostUi` replaces #app's children, so no explicit teardown.
+ */
+const splashEl = document.getElementById("boot-splash");
+const splashTextEl = document.getElementById("boot-text");
+const splashPctEl = document.getElementById("boot-pct");
+const splashBarEl = document.getElementById("boot-bar");
+const splashBarFillEl = document.getElementById("boot-bar-fill");
+
+/** Where the chat app's splash picks up (see store.init), so the bar never resets. */
+const CHAT_BOOT_FLOOR = 90;
+
+/** Report a boot stage: toolbar one-liner + the splash's text, percent and bar. */
+function bootProgress(text: string, percent: number): void {
+  setStatus(text);
+  if (splashTextEl) splashTextEl.textContent = text;
+  if (splashPctEl) splashPctEl.textContent = `${percent}%`;
+  if (splashBarFillEl) splashBarFillEl.style.width = `${percent}%`;
+  if (splashBarEl) splashBarEl.setAttribute("aria-valuenow", String(percent));
+}
+
+/** Leave the splash up, but make it read as a failure instead of a stuck boot. */
+function bootFailure(text: string): void {
+  splashEl?.classList.add("errored");
+  if (splashTextEl) splashTextEl.textContent = text;
+  if (splashPctEl) splashPctEl.textContent = "!";
+  if (splashBarFillEl) splashBarFillEl.style.width = "100%";
+  if (splashBarEl) splashBarEl.setAttribute("aria-valuenow", "100");
+}
+
 /** Storage-specific half of the status line (set once the backend is ready). */
 let statusBase: string = storageMode;
 
@@ -335,22 +367,22 @@ async function prepareBrowserWorkspace(): Promise<void> {
     const gitDir = platform.path.join(root, ".git");
     const hasRepo = await isFile(gitDir);
     if (!hasRepo || params.has("reclone")) {
-      setStatus(`cloning ${configuredRemote}…`);
+      bootProgress(`cloning ${configuredRemote}…`, 30);
       if (await isFile(root)) await platform.fs.rm(root);
       await cloneWorkspace(root, configuredRemote);
     }
     await applyDatabaseDumps(platform, { onlyMissing: true }).catch((err) => {
       console.warn("database dumps could not be applied:", err);
     });
-    setStatus("workspace ready");
+    bootProgress("workspace ready", 45);
     return;
   }
-  setStatus("seeding workspace…");
+  bootProgress("seeding the workspace…", 30);
   await seedWorkspace(root);
   await applyDatabaseDumps(platform, { onlyMissing: true }).catch((err) => {
     console.warn("database dumps could not be applied:", err);
   });
-  setStatus("workspace ready");
+  bootProgress("workspace ready", 45);
 }
 
 /** The auto-generated mock registry older browser profiles booted with. */
@@ -813,10 +845,12 @@ let bootStage = "start";
 
 async function main(): Promise<void> {
   if (storageMode === "desktop") {
+    bootProgress("starting the local database…", 10);
     bootStage = "desktop: initSqlite";
     await initSqlite([]);
     platform = createDesktopPlatform("/", storageServer);
     setActiveFs(platform.fs);
+    bootProgress("indexing the workspace…", 40);
     bootStage = "desktop: buildFsIndex";
     await buildFsIndex(platform);
     statusBase = "desktop";
@@ -829,12 +863,14 @@ async function main(): Promise<void> {
   } else {
     // Profiles: move pre-profile OPFS data into /profiles/default once, then
     // bind every layer (fs, sqlite worker, agent worker) to the active profile.
+    bootProgress("preparing profiles…", 10);
     bootStage = "bootProfiles";
     const boot = await bootProfiles();
     profileRegistry = boot.registry;
     activeProfile = resolveActiveProfileName(profileRegistry);
     activeProfileSegments = profileSegmentsFor(activeProfile);
     setOpfsRootSegments(activeProfileSegments);
+    bootProgress("starting the database…", 20);
     bootStage = "initSqlite";
     await initSqlite(activeProfileSegments);
     bootStage = "touchProfile";
@@ -842,10 +878,13 @@ async function main(): Promise<void> {
 
     platform = createBrowserPlatform("/workspace");
     setActiveFs(platform.fs);
+    bootProgress("preparing the workspace…", 25);
     bootStage = "prepareBrowserWorkspace";
     await prepareBrowserWorkspace();
+    bootProgress("indexing the workspace…", 55);
     bootStage = "buildFsIndex";
     await buildFsIndex(platform);
+    bootProgress("checking the models…", 70);
     bootStage = "ensureModels";
     await ensureModels(platform);
     statusBase = `${seedStatus()} · ${activeProfile}`;
@@ -871,6 +910,7 @@ async function main(): Promise<void> {
     }).start();
   }
 
+  bootProgress("starting the agent…", 80);
   bootStage = "detectPattern";
   const pattern = await detectPattern(platform);
   const agent = new AgentClient(activeProfileSegments);
@@ -893,6 +933,10 @@ async function main(): Promise<void> {
     cdp: configuredCdp,
   });
 
+  // Hand the splash over to the chat app at the same progress, so the bar
+  // keeps moving instead of resetting when it mounts and restores the session.
+  (window as unknown as { __bobBootFloor?: number }).__bobBootFloor = CHAT_BOOT_FLOOR;
+  bootProgress("loading the chat…", CHAT_BOOT_FLOOR);
   hostUi(backend, appEl, { page: "chat", port: 8080 });
   if (storageMode === "browser") wireWorkspaceTransfer();
   wireProfileUi({
@@ -925,4 +969,5 @@ main().catch((err) => {
   console.error(`boot failed [stage: ${bootStage}]`, err);
   const label = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
   setStatus(`error: ${label} (${bootStage})`);
+  bootFailure(`boot failed: ${label} (stage: ${bootStage})`);
 });

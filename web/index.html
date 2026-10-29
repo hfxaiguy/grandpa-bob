@@ -99,6 +99,55 @@
       .profile-row:last-child { border-bottom: 0; }
       #share-code { font-size: 28px; letter-spacing: 0.25em; color: var(--accent); }
       #share-check { font-size: 20px; letter-spacing: 0.15em; color: var(--accent); }
+      /* Pre-UI boot splash. The web target prepares the workspace (profiles,
+         OPFS, seeding, git clone, file index) before the chat app mounts and
+         replaces #app's children. Same look as the chat app's own splash so
+         the handover is seamless. */
+      .boot-splash {
+        height: 100%; box-sizing: border-box; padding: 24px;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        color: var(--muted); text-align: center;
+      }
+      .boot-logo {
+        display: block; width: min(300px, 64vw); height: auto; margin: 0 auto 16px;
+        border: 1px solid var(--border); border-radius: 12px;
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45); opacity: 0.96;
+        animation: logo-jitter 4.2s ease-in-out infinite;
+      }
+      /* A small, smooth wander so a slow boot reads as alive, not frozen. */
+      @keyframes logo-jitter {
+        0%   { transform: translate(0, 0) rotate(0deg); }
+        12%  { transform: translate(1.5px, -1px) rotate(0.45deg); }
+        25%  { transform: translate(-1px, 1.5px) rotate(-0.5deg); }
+        37%  { transform: translate(1px, 0.5px) rotate(0.3deg); }
+        50%  { transform: translate(-1.5px, -1px) rotate(-0.35deg); }
+        62%  { transform: translate(0.5px, 1.5px) rotate(0.4deg); }
+        75%  { transform: translate(-0.5px, -1.5px) rotate(-0.45deg); }
+        87%  { transform: translate(1.5px, 1px) rotate(0.2deg); }
+        100% { transform: translate(0, 0) rotate(0deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-logo { animation: none; }
+      }
+      .boot-panel { width: min(420px, 80vw); }
+      .boot-status {
+        display: flex; align-items: center; justify-content: center; gap: 8px;
+        min-height: 20px; margin-bottom: 10px; font-size: 13px;
+      }
+      .boot-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .boot-pct { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; flex: none; }
+      .boot-bar { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+      .boot-bar-fill { height: 100%; width: 0; border-radius: 2px; background: var(--accent); transition: width 0.25s ease; }
+      .spinner {
+        width: 12px; height: 12px; flex: none;
+        border: 2px solid var(--border); border-top-color: var(--accent);
+        border-radius: 50%; animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .boot-splash.errored .spinner { display: none; }
+      .boot-splash.errored .boot-text { white-space: normal; color: #ffd7d7; }
+      .boot-splash.errored .boot-pct { color: #ffd7d7; }
+      .boot-splash.errored .boot-bar-fill { background: #7f3b46; }
       @media (max-width: 620px) { dialog .grid { grid-template-columns: 1fr; } }
     </style>
   </head>
@@ -121,7 +170,21 @@
       <button id="sync-menu" type="button" title="Profiles, workspace transfer and BobSwap services">Sync…</button>
       <span id="status">starting…</span>
     </div>
-    <div id="app"></div>
+    <div id="app">
+      <div id="boot-splash" class="boot-splash" role="status" aria-live="polite">
+        <img class="boot-logo" src="/logo-mark.webp" alt="" aria-hidden="true" />
+        <div class="boot-panel">
+          <div class="boot-status">
+            <span class="spinner" aria-hidden="true"></span>
+            <span class="boot-text" id="boot-text">starting…</span>
+            <span class="boot-pct" id="boot-pct">0%</span>
+          </div>
+          <div class="boot-bar" id="boot-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="boot-bar-fill" id="boot-bar-fill"></div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <dialog id="profile-dialog">
       <h3>Workspace profiles</h3>

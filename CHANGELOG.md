@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-28 — web: splash covers the pre-UI boot; the cat jitters
+
+In the standalone web app the chat UI (and its splash) only mounted at the
+*end* of `main()`, so the actual heavy boot — profiles, OPFS, seeding or git
+clone, database dumps, the workspace file index, model checks — showed nothing
+but the toolbar's one-line status. `web/index.html` now carries a static splash
+(logo, spinner, stage text, percent, step-weighted bar) that `web/src/main.ts`
+drives through the same phases (`preparing profiles… 10` → `database 20` →
+`workspace 25` → `seeding/cloning 30` → `ready 45` → `indexing 55` → `models
+70` → `agent 80` → `loading the chat… 90`); `hostUi()`'s `replaceChildren`
+removes it when the chat mounts. A failed boot turns the splash red and names
+the failing stage instead of leaving a frozen loader. `window.__bobBootFloor`
+lets the chat splash resume at the handover percent, so the bar no longer jumps
+back to zero mid-boot. The cat logo now wanders a little (≤1.5px translate,
+≤0.5° rotate, 4.2s loop) in both splash phases, disabled under
+`prefers-reduced-motion`. The logo is served from `web/public/logo-mark.webp`
+so the static shell can reference it unhashed. Also added the missing
+`realpath` export to the browser `node:fs/promises` shim — `src/tree-files.ts`
+imports it, which broke `npm run build:web`.
+
+Checks: `npx tsc --noEmit`, `npm run build:web`, `npm run test:web-static`,
+`npm --prefix ui run typecheck`, headless-Chromium screenshots of the splash.
+
 ## 2026-10-28 — ui: hidden-rail mini tiles show app icons behind translucent initials
 
 The left hidden rail and a parent tile's parked sub-app rail were blank,
