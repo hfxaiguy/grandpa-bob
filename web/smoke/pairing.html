@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>pairing smoke</title>
+  </head>
+  <body>
+    <pre id="out">running…</pre>
+    <script type="module">
+      // Real-RTCPeerConnection check of the short authentication string (SAS):
+      // two peers complete a local offer/answer exchange and must derive the
+      // same six words; swapping a certificate fingerprint (the relay-MITM
+      // case) must change them.
+      import { pairingPhrase, verifyPhrase } from "/src/sync/transport-webrtc.ts";
+
+      async function handshake() {
+        const offerer = new RTCPeerConnection();
+        const answerer = new RTCPeerConnection();
+        offerer.createDataChannel("bob-sync");
+        await offerer.setLocalDescription(await offerer.createOffer());
+        await answerer.setRemoteDescription(offerer.localDescription);
+        await answerer.setLocalDescription(await answerer.createAnswer());
+        await offerer.setRemoteDescription(answerer.localDescription);
+        return { offerer, answerer };
+      }
+
+      try {
+        const { offerer, answerer } = await handshake();
+        const phraseOfferer = verifyPhrase(offerer);
+        const phraseAnswerer = verifyPhrase(answerer);
+        const offerSdp = offerer.localDescription?.sdp ?? "";
+        const answerSdp = answerer.localDescription?.sdp ?? "";
+        const tamperedAnswer = answerSdp.replace(
+          /a=fingerprint:sha-256 \S+/,
+          "a=fingerprint:sha-256 00:00:00",
+        );
+        const result = {
+          ok: phraseOfferer === phraseAnswerer && /^[a-z]+(-[a-z]+){5}$/.test(phraseOfferer),
+          phrase: phraseOfferer,
+          symmetric: phraseOfferer === phraseAnswerer,
+          tamperChanges: pairingPhrase(offerSdp, tamperedAnswer) !== phraseOfferer,
+          fingerprintAttributes: (offerSdp.match(/a=fingerprint:/g) ?? []).length,
+        };
+        document.getElementById("out").textContent = JSON.stringify(result);
+        window.__sas = JSON.stringify(result);
+      } catch (err) {
+        window.__sas = JSON.stringify({ ok: false, error: String(err) });
+      }
+    </script>
+  </body>
+</html>

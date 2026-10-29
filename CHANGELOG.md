@@ -2,6 +2,17 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-29 — pairing phrase binds both certificates
+
+The WebRTC pairing verification phrase (SAS) is now derived from **both**
+DTLS certificate fingerprints — the local one and the peer's — deduped and
+sorted so each side hashes the same input. Before, each side hashed only its
+own certificate, so the two phrases could never match. Both devices now show
+the same six words, and a signaling relay that substitutes its own
+certificate changes the remote fingerprints, so the phrases stop matching.
+Covered by `test:sync` (symmetric seed, six words, tamper detection) and the
+real-Chrome `smoke:pairing` (two live `RTCPeerConnection`s).
+
 ## 2026-10-29 — sync pairing uses the service's ICE servers
 
 The BobSwap channel create/join responses carry `ice_servers` (STUN today,

@@ -256,14 +256,27 @@ export class BobSwapSignaling implements SignalingProvider {
   close(): void {}
 }
 
-/** The 6-word verification phrase from the DTLS fingerprints (both sides show it). */
-export function verifyPhrase(pc: RTCPeerConnection): string {
-  const fp = (pc.localDescription?.sdp ?? "")
-    .split("\n")
+/** Every `a=fingerprint:` value in an SDP, normalized so both sides agree. */
+function fingerprints(sdp: string): string[] {
+  return sdp
+    .split(/\r?\n/)
     .filter((line) => line.startsWith("a=fingerprint:"))
-    .map((line) => line.replace("a=fingerprint:", "").trim());
+    .map((line) => line.slice("a=fingerprint:".length).trim().toUpperCase())
+    .filter((value) => value.length > 0);
+}
+
+/**
+ * The 6-word short authentication string (SAS) for a pair of endpoints.
+ *
+ * Seeded from BOTH SDPs' DTLS certificate fingerprints — the local one and the
+ * peer's — deduped and sorted, so each side hashes the exact same input. A
+ * signaling relay that substitutes its own certificate changes the remote
+ * fingerprints, so the two phrases stop matching — which is the point: the
+ * phrase is what makes the untrusted relay detectable.
+ */
+export function pairingPhrase(localSdp: string, remoteSdp: string): string {
+  const seed = [...new Set([...fingerprints(localSdp), ...fingerprints(remoteSdp)])].sort().join("|");
   const words = ["anchor", "basil", "cedar", "delta", "ember", "fjord", "granite", "harbor", "igloo", "jasper"];
-  const seed = fp.join("|");
   let h = 2166136261;
   for (let i = 0; i < seed.length; i++) {
     h ^= seed.charCodeAt(i);
@@ -275,6 +288,11 @@ export function verifyPhrase(pc: RTCPeerConnection): string {
     out.push(words[Math.abs(h) % words.length]);
   }
   return out.join("-");
+}
+
+/** The 6-word verification phrase for an open connection (both sides show it). */
+export function verifyPhrase(pc: RTCPeerConnection): string {
+  return pairingPhrase(pc.localDescription?.sdp ?? "", pc.remoteDescription?.sdp ?? "");
 }
 
 /** Wire the data channel + signaling into a SyncPeer. */

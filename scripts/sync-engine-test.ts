@@ -18,7 +18,7 @@ import path from "node:path";
 import { createNodePlatform } from "../src/platform/node.js";
 import { SyncEngine, type SyncEnvelope, type SyncPeer } from "../web/src/sync/engine";
 import { Journal } from "../web/src/sync/journal";
-import { toIceServers } from "../web/src/sync/transport-webrtc";
+import { pairingPhrase, toIceServers } from "../web/src/sync/transport-webrtc";
 
 /** An in-memory wire: deliveries land on whichever handler is registered. */
 class FakePeer implements SyncPeer {
@@ -229,6 +229,28 @@ try {
     toIceServers([{ urls: [] }, { urls: [1, null] }, "nonsense", null, 42]),
     [],
     "malformed entries are dropped, never thrown",
+  );
+
+  // Short authentication string: both sides derive the same six words from
+  // the pair of DTLS certificate fingerprints, and a substituted certificate
+  // (the relay-MITM case) changes the phrase.
+  const sdpA = "v=0\r\na=fingerprint:sha-256 AA:11:BB:22\r\n";
+  const sdpB = "v=0\r\na=fingerprint:sha-256 CC:33:DD:44\r\n";
+  assert.equal(
+    pairingPhrase(sdpA, sdpB),
+    pairingPhrase(sdpB, sdpA),
+    "the SAS is symmetric across the two sides",
+  );
+  assert.match(
+    pairingPhrase(sdpA, sdpB),
+    /^[a-z]+(-[a-z]+){5}$/,
+    "the SAS renders six words",
+  );
+  const tampered = sdpB.replace("CC:33:DD:44", "EE:55:FF:66");
+  assert.notEqual(
+    pairingPhrase(sdpA, sdpB),
+    pairingPhrase(sdpA, tampered),
+    "a substituted certificate changes the phrase",
   );
 
   console.log("sync engine: converge, LWW, conflict copy, tombstones OK");

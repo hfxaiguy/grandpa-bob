@@ -343,6 +343,12 @@ seed-binding persistence) and `npm run smoke:seed-update` (banner, apply, run-lo
 preservation and version recording against a fake BobSwap service). Both accept
 `CHROME_BIN` like the other smokes.
 
+The pairing phrase (short authentication string) has its own check that needs
+no app build or server: `npm run smoke:pairing` starts a throwaway Vite dev
+server, completes a real two-peer WebRTC offer/answer in headless Chromium, and
+asserts both sides derive the same six words and that a substituted certificate
+fingerprint changes them.
+
 The LLM smoke also needs the mock endpoint: `npm run mock-llm` (port 8787) in a
 second terminal, plus a registry that points at it. On the standalone server
 paste the three `:8787` mock slots into Settings → Models JSON (Settings
