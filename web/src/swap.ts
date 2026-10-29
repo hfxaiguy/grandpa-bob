@@ -16,7 +16,7 @@
  */
 import type { WorkspaceArchive } from "./workspace-transfer";
 import { parseSeedMeta, type SeedMeta } from "./seed-version";
-import { seedVersionTag } from "./profiles";
+import { isValidSeedName, seedVersionTag } from "./profiles";
 import type { DeviceIdentity } from "./device-keys";
 
 // ── service configuration (localStorage) ─────────────────────────────────
@@ -265,6 +265,69 @@ export interface FetchedSeed {
   sha256: string;
   size: number;
   meta: RemoteSeedMeta | null;
+}
+
+/** One seed on the shelf, as listed by `GET /{account}/seeds`. */
+export interface ListedSeed {
+  name: string;
+  /** Newest version label the service resolved, when it publishes one. */
+  latest?: string;
+  /** Version labels, newest first, when the service lists them. */
+  versions: string[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/**
+ * Validate a seeds-listing payload. The documented shape lists version labels
+ * as strings; entries with unusable names are dropped so one bad row cannot
+ * hide the whole shelf from the picker.
+ */
+export function parseSeedList(raw: unknown): ListedSeed[] {
+  if (!isRecord(raw)) throw new Error("seed list is malformed (expected a JSON object)");
+  if (!Array.isArray(raw.seeds)) throw new Error("seed list is malformed (expected a seeds array)");
+  const seen = new Set<string>();
+  const seeds: ListedSeed[] = [];
+  for (const entry of raw.seeds) {
+    if (!isRecord(entry) || typeof entry.name !== "string") continue;
+    const name = entry.name.trim();
+    if (!isValidSeedName(name) || seen.has(name)) continue;
+    seen.add(name);
+    const latest =
+      typeof entry.latest === "string" && entry.latest.trim() ? entry.latest.trim() : undefined;
+    const versions = Array.isArray(entry.versions)
+      ? entry.versions
+          .filter((version): version is string => typeof version === "string")
+          .map((version) => version.trim())
+          .filter(Boolean)
+      : [];
+    seeds.push(latest ? { name, latest, versions } : { name, versions });
+  }
+  return seeds.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * List the seeds under an account (read scope). This is what the new-workspace
+ * picker enumerates; `/latest` alone can only read a name the caller already
+ * knows.
+ */
+export async function listSeeds(
+  service: SwapService,
+  account: string,
+): Promise<ListedSeed[]> {
+  const key = requireKey(service, "read");
+  const url = `${apiBase(service)}/${encodeURIComponent(account)}/seeds?key=${encodeURIComponent(key)}`;
+  const res = await fetch(url, { cache: "no-cache", headers: { accept: "application/json" } });
+  if (!res.ok) throw await apiError(res);
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error("seed list is not valid JSON");
+  }
+  return parseSeedList(body);
 }
 
 /**

@@ -15,7 +15,12 @@
  * progress marker so an interrupted boot resumes instead of duplicating or
  * losing files, and it never deletes the originals before the copy verifies.
  */
-import { summarizeWorkspace } from "./workspace-transfer";
+import {
+  importWorkspace,
+  summarizeWorkspace,
+  validateWorkspaceArchive,
+  type WorkspaceArchive,
+} from "./workspace-transfer";
 
 export const DEFAULT_PROFILE = "default";
 export const PROFILE_DIR = "profiles";
@@ -237,6 +242,18 @@ async function writeJsonFile(
   const handle = await dir.getFileHandle(name, { create: true });
   const writable = await handle.createWritable();
   await writable.write(`${JSON.stringify(value, null, 2)}\n`);
+  await writable.close();
+}
+
+/** Write a raw text file through a directory handle (no fs binding). */
+async function writeTextFile(
+  dir: FileSystemDirectoryHandle,
+  name: string,
+  text: string,
+): Promise<void> {
+  const handle = await dir.getFileHandle(name, { create: true });
+  const writable = await handle.createWritable();
+  await writable.write(text);
   await writable.close();
 }
 
@@ -618,7 +635,40 @@ async function copyTree(
 
 export type NewProfileSource =
   | { kind: "blank" }
-  | { kind: "duplicate"; from: FileSystemDirectoryHandle };
+  | { kind: "duplicate"; from: FileSystemDirectoryHandle }
+  | {
+      /**
+       * Seed the new profile immediately. The caller fetches and validates the
+       * archive first, so a failed pull cannot leave a half-created profile;
+       * this branch overlays it and stamps the workspace as seeded.
+       */
+      kind: "seed";
+      archive: WorkspaceArchive;
+      sha256: string;
+      /** Persisted with the profile so update offers work from the start. */
+      binding: SeedBinding;
+    };
+
+/** Freshness markers live next to the workspace (`<profile>/workspace`). */
+const SEED_STAMP_FILE = ".seeded";
+const SEED_SHA_FILE = ".seed-sha";
+
+/**
+ * Write a seed's freshness markers into a profile that is not the active one.
+ * The boot seeder uses `/workspace` paths while this runs before a switch, so
+ * it writes through the profile's directory handle instead.
+ */
+async function stampSeededProfile(
+  dest: FileSystemDirectoryHandle,
+  archive: WorkspaceArchive,
+  sha256: string,
+): Promise<void> {
+  const workspace = await dest.getDirectoryHandle("workspace", { create: true });
+  const raw = typeof archive.createdAt === "string" ? archive.createdAt : "";
+  const stamp = raw && !Number.isNaN(Date.parse(raw)) ? raw : new Date().toISOString();
+  await writeTextFile(workspace, SEED_STAMP_FILE, stamp);
+  await writeTextFile(workspace, SEED_SHA_FILE, sha256.toLowerCase());
+}
 
 /** Create a profile directory and registry entry (does not switch to it). */
 export async function createProfile(
@@ -632,9 +682,28 @@ export async function createProfile(
   if (registry.profiles.some((profile) => profile.name === name)) {
     throw new Error(`profile already exists: ${name}`);
   }
-  const dest = await profileHandle(name);
+  let dest = await profileHandle(name);
   if (source.kind === "duplicate") await copyTree(source.from, dest);
+  if (source.kind === "seed") {
+    try {
+      // Start from an empty directory: a leftover from a crash must not merge
+      // its files into the seed.
+      const profiles = await (await originRoot()).getDirectoryHandle(PROFILE_DIR);
+      await profiles.removeEntry(name, { recursive: true }).catch(() => undefined);
+      dest = await profileHandle(name);
+      const archive = validateWorkspaceArchive(source.archive);
+      await importWorkspace(archive, dest);
+      await stampSeededProfile(dest, archive, source.sha256);
+    } catch (err) {
+      // The registry is not written yet. Drop the partial directory so a
+      // later directory scan cannot recover a half-seeded profile.
+      const profiles = await (await originRoot()).getDirectoryHandle(PROFILE_DIR);
+      await profiles.removeEntry(name, { recursive: true }).catch(() => undefined);
+      throw err;
+    }
+  }
   const record: ProfileRecord = { name, createdAt: new Date().toISOString() };
+  if (source.kind === "seed") record.seed = source.binding;
   const next: ProfileRegistry = { version: 1, profiles: [...registry.profiles, record] };
   await writeRegistry(next);
   return record;

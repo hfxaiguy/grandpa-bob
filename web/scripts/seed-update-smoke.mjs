@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -17,10 +17,22 @@ const CDP = Number(process.env.CDP_PORT ?? 9226);
 const PROFILE = path.join(os.tmpdir(), `bob-seed-smoke-${process.pid}`);
 const READ_KEY = "bsk_live_read";
 
+// A published seed carries the workspace's real trunk tree; reuse the bundled
+// snapshot's entry so boot's "trunk is on disk" check passes exactly as it
+// would for any real publish.
+const bundled = JSON.parse(
+  readFileSync(new URL("../public/seed/workspace.json", import.meta.url), "utf8"),
+);
+const trunkFile = bundled.files.find((f) => f.path === "workspace/patterns/trunk.prod.mjs") ?? {
+  path: "workspace/patterns/trunk.prod.mjs",
+  base64: Buffer.from("export default { name: 'trunk' };").toString("base64"),
+};
+
 const archive = {
   version: 1,
   createdAt: "2027-01-02T03:04:05.000Z",
   files: [
+    trunkFile,
     {
       path: "workspace/patterns/updated-by-seed.mjs",
       base64: Buffer.from("export default { updated: true };").toString("base64"),
@@ -62,6 +74,21 @@ const server = createServer((req, res) => {
   res.setHeader("access-control-allow-origin", "*");
   res.setHeader("access-control-expose-headers", "etag, x-seed-version");
   const now = current();
+  if (url.pathname === "/api/v1/personal/seeds") {
+    if (url.searchParams.get("key") !== READ_KEY) {
+      res.statusCode = 401;
+      res.end('{"error":"key required"}');
+      return;
+    }
+    res.setHeader("content-type", "application/json");
+    res.end(
+      JSON.stringify({
+        account: "personal",
+        seeds: [{ name: "trunk", latest: now.version, versions: [now.version] }],
+      }),
+    );
+    return;
+  }
   if (url.pathname === "/api/v1/personal/trunk/latest/meta") {
     if (url.searchParams.get("key") !== READ_KEY) {
       res.statusCode = 401;
@@ -266,6 +293,60 @@ await waitFor(
 const label2 = await evaluate(`document.getElementById("ws-reseed").textContent`);
 assert(String(label2).includes("Seed update: trunk"), `hash-only banner names the seed (got: ${label2})`);
 
+// Phase 2b: a new workspace is created from a listed seed. The picker must
+// offer the shelf listing, the archive is pulled at creation, and the new
+// profile boots with the seed's files — the bundled snapshot must not overlay
+// it on first boot.
+await evaluate(`(() => {
+  document.getElementById("profile-manage").click();
+  document.getElementById("profile-new-name").value = "fromseed";
+  document.getElementById("profile-new-source").value = "blank";
+  document.getElementById("profile-new-source").dispatchEvent(new Event("change"));
+  return "opened";
+})()`);
+await waitFor(
+  `[...document.querySelectorAll("#profile-new-seed option")].some((o) => o.value.endsWith("|personal|trunk"))`,
+  "the listed seed appears in the new-workspace picker",
+);
+await evaluate(`(() => {
+  window.__smokeBeforeReload = true;
+  const select = document.getElementById("profile-new-seed");
+  select.value = [...select.options].find((o) => o.value.endsWith("|personal|trunk")).value;
+  document.querySelector("#profile-create button[type=submit]").click();
+  return "submitting";
+})()`);
+await waitFor(
+  `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && !window.__smokeBeforeReload && localStorage.getItem("bob:profile") === "fromseed"`,
+  "boot of the seed-created profile",
+  90_000,
+);
+const created = JSON.parse(await evaluate(`(async () => {
+  const root = await navigator.storage.getDirectory();
+  const registry = JSON.parse(await (await (await root.getFileHandle("profiles.json")).getFile()).text());
+  const record = registry.profiles.find((p) => p.name === "fromseed");
+  const ws = await (await (await root.getDirectoryHandle("profiles")).getDirectoryHandle("fromseed")).getDirectoryHandle("workspace");
+  const patterns = await ws.getDirectoryHandle("patterns");
+  const pulled = await (await (await patterns.getFileHandle("updated-again.mjs")).getFile()).text();
+  const shipped = await (async () => {
+    try {
+      await (await ws.getDirectoryHandle("app")).getFileHandle("README.md");
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  const seeded = await (await ws.getFileHandle(".seeded")).getFile().then((f) => f.text()).catch(() => "");
+  const seedSha = await (await ws.getFileHandle(".seed-sha")).getFile().then((f) => f.text()).catch(() => "");
+  return JSON.stringify({ seed: record?.seed, pulled, shipped, seeded, seedSha });
+})()`));
+assert(created.pulled.includes("updated: 'again'"), "the chosen seed's files are on disk at creation");
+assert(!created.shipped, "the bundled snapshot must not overlay a seed-created workspace");
+assert(created.seeded === current().archive.createdAt, "the new profile records the seed's createdAt");
+assert(created.seedSha === current().sha256, "the new profile records the seed's content hash");
+assert(created.seed?.account === "personal" && created.seed?.seedName === "trunk", "the binding is stored with the profile");
+assert(created.seed?.lastVersion?.sha256 === current().sha256, "the pulled version is recorded on the binding");
+assert(requests.some((r) => r.includes("/api/v1/personal/seeds") && r.includes("key=")), "the shelf listing was fetched with the read key");
+
 // Phase 3: malformed shelf metadata must surface a failure, not "current".
 phase = 3;
 await send("Page.navigate", { url: `${BASE}/?storage=browser&seedpoll=1000` });
@@ -297,6 +378,6 @@ await waitFor(
 if (exceptions.length) cleanup(1, `runtime exceptions:\n${exceptions.join("\n")}`);
 console.log(
   "seed-update smoke: banner, apply, log preservation, version record, hash-only re-pack, " +
-    "watcher offer and malformed-metadata reporting all passed",
+    "watcher offer, new-workspace creation from the listed seed and malformed-metadata reporting all passed",
 );
 cleanup(0);

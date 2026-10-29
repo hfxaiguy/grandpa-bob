@@ -28,6 +28,7 @@ import {
   defaultSwapService,
   fetchLatestSeed,
   fetchLatestSeedMeta,
+  listSeeds,
   listSwapServices,
   loadSwapStore,
   publishSeed,
@@ -283,6 +284,7 @@ function wireProfileManager(): void {
   open?.addEventListener("click", () => {
     if (!dialog) return;
     void renderProfileList();
+    void refreshSeedChoices();
     dialog.showModal();
   });
   el<HTMLButtonElement>("profile-close")?.addEventListener("click", () => dialog?.close());
@@ -290,9 +292,15 @@ function wireProfileManager(): void {
   const form = el<HTMLFormElement>("profile-create");
   const sourceSelect = el<HTMLSelectElement>("profile-new-source");
   const folderLabel = el<HTMLElement>("profile-new-folder-label");
-  sourceSelect?.addEventListener("change", () => {
-    if (folderLabel) folderLabel.hidden = sourceSelect.value !== "desktop";
-  });
+  const seedLabel = el<HTMLElement>("profile-new-seed-label");
+  const syncSourceFields = (): void => {
+    const source = sourceSelect?.value ?? "blank";
+    if (folderLabel) folderLabel.hidden = source !== "desktop";
+    if (seedLabel) seedLabel.hidden = source !== "blank";
+  };
+  sourceSelect?.addEventListener("change", syncSourceFields);
+  syncSourceFields();
+
   form?.addEventListener("submit", (event) => {
     event.preventDefault();
     const ui = getHooks();
@@ -308,7 +316,14 @@ function wireProfileManager(): void {
       ui.flash("folder names use lowercase letters, digits, dot, dash or underscore", 8000);
       return;
     }
+    const seedChoice = source === "blank" ? selectedSeedChoice() : null;
+    if (source === "blank" && !seedChoice) {
+      ui.flash("pick a seed to seed this workspace from", 8000);
+      return;
+    }
     void (async () => {
+      const hint = el<HTMLElement>("profile-create-hint");
+      const submit = form?.querySelector<HTMLButtonElement>('button[type="submit"]') ?? null;
       try {
         if (source === "desktop") {
           // Register the folder on the bridge first; the registry record
@@ -323,12 +338,40 @@ function wireProfileManager(): void {
             throw new Error(d.error ?? `bridge rejected the folder: HTTP ${res.status}`);
           }
           await createDesktopProfile(name, folder);
+        } else if (source === "duplicate") {
+          await createProfile(name, { kind: "duplicate", from: await profileHandle(ui.activeProfile()) });
+        } else if (seedChoice?.kind === "remote") {
+          // Fetch before creating anything: a failed pull must not leave a
+          // half-seeded profile behind.
+          if (submit) submit.disabled = true;
+          if (hint) hint.textContent = `fetching seed ${seedChoice.account}/${seedChoice.seedName}…`;
+          const service = resolveSwapService(seedChoice.baseUrl);
+          if (!service) throw new Error(`seed service ${seedChoice.baseUrl} is not configured`);
+          const account = service.account || seedChoice.account;
+          const fetched = await fetchLatestSeed(service, account, seedChoice.seedName);
+          const binding: SeedBinding = {
+            baseUrl: service.baseUrl,
+            account,
+            seedName: seedChoice.seedName,
+            lastVersion: {
+              version: fetched.version ?? fetched.sha256.slice(0, 12),
+              sha256: fetched.sha256,
+              createdAt: fetched.archive.createdAt,
+              checkedAt: new Date().toISOString(),
+            },
+          };
+          if (hint) hint.textContent = `seeding ${fetched.archive.files.length} files…`;
+          await createProfile(name, {
+            kind: "seed",
+            archive: fetched.archive,
+            sha256: fetched.sha256,
+            binding,
+          });
+          if (hint) hint.textContent = "";
+          ui.flash(`workspace seeded from ${account}/${seedChoice.seedName}`, 6000);
         } else {
-          const duplicate =
-            source === "duplicate"
-              ? { kind: "duplicate" as const, from: await profileHandle(ui.activeProfile()) }
-              : { kind: "blank" as const };
-          await createProfile(name, duplicate);
+          // The bundled snapshot: first boot overlays `/seed/workspace.json`.
+          await createProfile(name, { kind: "blank" });
         }
         if (switchNow) {
           const mode = source === "desktop" ? "desktop" : "browser";
@@ -343,9 +386,100 @@ function wireProfileManager(): void {
         ui.flash(`profile "${name}" created`, 5000);
       } catch (err) {
         ui.flash(`create failed: ${errorText(err)}`, 8000);
+      } finally {
+        if (submit) submit.disabled = false;
+        if (hint) hint.textContent = "";
       }
     })();
   });
+}
+
+// ── new-workspace seed picker ────────────────────────────────────────────
+
+/** The bundled snapshot is a pick like any other seed, never a default. */
+const SHIPPED_SEED_VALUE = "shipped";
+
+type NewWorkspaceSeedChoice =
+  | { kind: "shipped" }
+  | { kind: "remote"; baseUrl: string; account: string; seedName: string };
+
+function newOption(label: string, value: string, disabled = false): HTMLOptionElement {
+  const option = document.createElement("option");
+  option.textContent = label;
+  option.value = value;
+  if (disabled) option.disabled = true;
+  return option;
+}
+
+/** `value` for a listed BobSwap seed; the parts are validated path segments. */
+function seedChoiceValue(baseUrl: string, account: string, seedName: string): string {
+  return `${baseUrl}|${account}|${seedName}`;
+}
+
+function selectedSeedChoice(): NewWorkspaceSeedChoice | null {
+  const value = el<HTMLSelectElement>("profile-new-seed")?.value ?? "";
+  if (!value) return null;
+  if (value === SHIPPED_SEED_VALUE) return { kind: "shipped" };
+  const [baseUrl, account, seedName] = value.split("|");
+  if (!baseUrl || !account || !seedName) return null;
+  return { kind: "remote", baseUrl, account, seedName };
+}
+
+/**
+ * Fill the new-workspace seed picker: the bundled snapshot plus every seed
+ * listed by a configured BobSwap service. Nothing is preselected — creating a
+ * profile requires an explicit pick. A service that cannot list (no account or
+ * read key, offline, rejected key) shows why instead of failing the dialog.
+ */
+async function refreshSeedChoices(): Promise<void> {
+  const select = el<HTMLSelectElement>("profile-new-seed");
+  if (!select) return;
+  const previous = select.value;
+  const placeholder = newOption("pick a seed…", "", true);
+  const shipped = newOption("bundled snapshot (shipped seed)", SHIPPED_SEED_VALUE);
+  const loading = newOption("loading seeds…", "", true);
+  select.replaceChildren(placeholder, shipped, loading);
+
+  const services = listSwapServices();
+  const groups: HTMLOptGroupElement[] = [];
+  if (services.length > 0) {
+    const results = await Promise.allSettled(
+      services.map(async (service) => {
+        const account = service.account ?? "";
+        if (!ACCOUNT_RE.test(account)) throw new Error("no valid account configured");
+        if (!service.readKey) throw new Error("no read key configured");
+        return { service, account, seeds: await listSeeds(service, account) };
+      }),
+    );
+    results.forEach((result, index) => {
+      const service = services[index];
+      const group = document.createElement("optgroup");
+      group.label = service.account ? `${service.baseUrl} · ${service.account}` : service.baseUrl;
+      if (result.status === "fulfilled") {
+        const { account, seeds } = result.value;
+        if (seeds.length === 0) group.append(newOption("(no seeds published)", "", true));
+        for (const seed of seeds) {
+          group.append(
+            newOption(
+              seed.latest ? `${seed.name} · ${seed.latest}` : seed.name,
+              seedChoiceValue(service.baseUrl, account, seed.name),
+            ),
+          );
+        }
+      } else {
+        group.append(newOption(`(unavailable: ${errorText(result.reason)})`, "", true));
+      }
+      groups.push(group);
+    });
+  }
+
+  select.replaceChildren(placeholder, shipped, ...groups);
+  if (services.length === 0) {
+    select.append(newOption("add a BobSwap service in Sync… → BobSwap… for more seeds", "", true));
+  }
+  // Keep the user's pick across a refresh; a vanished seed falls back to the
+  // placeholder so Create stays blocked instead of silently using another seed.
+  select.value = [...select.options].some((option) => option.value === previous) ? previous : "";
 }
 
 // ── seed source dialog ───────────────────────────────────────────────────

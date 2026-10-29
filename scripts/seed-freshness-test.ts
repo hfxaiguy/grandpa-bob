@@ -2,6 +2,7 @@
 // the comparison that decides whether the toolbar offers a workspace update.
 import assert from "node:assert/strict";
 import { parseSeedMeta, seedFreshness, SEED_CLOCK_TOLERANCE_MS } from "../web/src/seed-version.ts";
+import { parseSeedList } from "../web/src/swap.ts";
 
 const seed = (createdAt: unknown) => parseSeedMeta({ version: 1, createdAt, fileCount: 3 });
 
@@ -118,3 +119,36 @@ assert.equal(
 );
 
 console.log("seed-freshness: all assertions passed");
+
+// ── seed listing (the new-workspace picker) ──────────────────────────────
+assert.deepEqual(
+  parseSeedList({
+    account: "personal",
+    seeds: [
+      { name: "trunk", latest: "abc123def456-20261023T010000Z", versions: ["v1", "v2"] },
+      { name: "notes" },
+    ],
+  }),
+  [
+    { name: "notes", versions: [] },
+    { name: "trunk", latest: "abc123def456-20261023T010000Z", versions: ["v1", "v2"] },
+  ],
+  "documented shape is sorted and normalized",
+);
+assert.deepEqual(
+  parseSeedList({
+    seeds: [
+      { name: "trunk", latest: 7, versions: [1, " ok ", ""] },
+      { name: "latest", latest: "reserved" },
+      { name: "Bad Name" },
+      { name: "trunk" },
+      null,
+      "x",
+    ],
+  }),
+  [{ name: "trunk", versions: ["ok"] }],
+  "unusable names/rows are dropped, duplicates collapse",
+);
+assert.throws(() => parseSeedList(null), /seed list/);
+assert.throws(() => parseSeedList({}), /seeds array/);
+

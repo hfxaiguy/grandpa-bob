@@ -200,14 +200,20 @@
         </label>
         <label>Source
           <select id="profile-new-source">
-            <option value="blank">fresh workspace (seeded on first boot)</option>
+            <option value="blank">fresh workspace (choose its seed)</option>
             <option value="duplicate">copy of the current profile</option>
             <option value="desktop">desktop folder (this machine's bridge)</option>
+          </select>
+        </label>
+        <label id="profile-new-seed-label">Seed
+          <select id="profile-new-seed">
+            <option value="" disabled selected>pick a seed…</option>
           </select>
         </label>
         <label id="profile-new-folder-label" hidden>Folder root name on the bridge
           <input id="profile-new-folder" placeholder="work" autocomplete="off" />
         </label>
+        <p id="profile-create-hint" class="muted"></p>
         <label class="inline"><input id="profile-new-switch" type="checkbox" checked /> switch to it after creating</label>
         <div class="row-actions"><button type="submit">Create profile</button></div>
       </form>

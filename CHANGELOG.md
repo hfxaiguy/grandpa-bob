@@ -41,9 +41,10 @@ so Create is blocked until something is chosen.
   installation, not a new workspace.
 - **`duplicate` and desktop-folder sources are unchanged** (they don't claim a
   seed). `createProfile({kind:"blank"})` stays as the internal default.
-- Tests: `test:seed-freshness` covers `parseSeedList`; the browser
-  `smoke:profiles` submits without a pick (refused) and then picks the bundled
-  snapshot.
+- Tests: `test:seed-freshness` covers `parseSeedList`; `smoke:profiles`
+  submits without a pick (refused) and then picks the bundled snapshot;
+  `smoke:seed-update` creates a workspace from the listed seed and checks the
+  pulled files, markers and stored binding.
 
 ## 2026-10-29 — a bridged message resumes a stale pause by starting fresh, not erroring
 

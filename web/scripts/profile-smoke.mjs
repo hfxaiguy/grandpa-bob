@@ -134,14 +134,31 @@ assert(m.names.includes("default"), "registry must contain default");
 assert(m.legacy.includes("legacy: true"), "legacy workspace file must survive migration");
 assert(m.options.includes("default"), "profile picker lists default");
 
-// 3. Create and switch to a new profile through the UI.
+// 3. Create and switch to a new profile through the UI. Creating a fresh
+//    workspace requires an explicit seed pick: the first submit must be
+//    refused, then the bundled snapshot is picked.
 await evaluate(`(async () => {
   document.getElementById("profile-manage").click();
   document.getElementById("profile-new-name").value = "travel";
   document.getElementById("profile-new-source").value = "blank";
   document.getElementById("profile-new-switch").checked = true;
   document.querySelector("#profile-create button[type=submit]").click();
-  return "submitted";
+  return "submitted without a seed";
+})()`);
+await waitFor(
+  `(document.getElementById("status")?.textContent || "").includes("pick a seed")`,
+  "the seed pick is mandatory",
+);
+const refused = await evaluate(`(async () => {
+  const root = await navigator.storage.getDirectory();
+  const registry = JSON.parse(await (await (await root.getFileHandle("profiles.json")).getFile()).text());
+  return registry.profiles.some((p) => p.name === "travel");
+})()`);
+assert(!refused, "a new profile must not be created without a chosen seed");
+await evaluate(`(async () => {
+  document.getElementById("profile-new-seed").value = "shipped";
+  document.querySelector("#profile-create button[type=submit]").click();
+  return "submitted with the bundled snapshot";
 })()`);
 await waitFor(
   `(document.getElementById("status")?.textContent || "").includes("travel") && !!window.__bobWorkspaceTransfer`,
