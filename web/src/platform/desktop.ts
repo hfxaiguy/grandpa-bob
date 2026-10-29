@@ -34,7 +34,7 @@ async function call<T>(
     headers: {
       "content-type": "application/json",
       // Desktop profiles: the bridge resolves this root name against its
-      // folder registry (~/.grandpa-bob/channels.json) and sandboxes every
+      // folder registry (~/.bobkat/channels.json) and sandboxes every
       // path inside it. Absent/`default` = the bridge's own workspace root.
       ...(rootName && rootName !== "default" ? { "x-bob-root": rootName } : {}),
     },

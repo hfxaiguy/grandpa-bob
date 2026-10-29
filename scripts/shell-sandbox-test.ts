@@ -31,7 +31,7 @@ await fs.writeFile(path.join(ws, "sub", "deep.txt"), "deep\n");
   const cases: [string, string[]][] = [
     ["cat /etc/passwd", ["cat", ["/etc/passwd"]]],
     ["cat ../../etc/passwd", ["cat", ["../../etc/passwd"]]],
-    ["cat ~/.grandpa-bob/.env", ["cat", ["~/.grandpa-bob/.env"]]],
+    ["cat ~/.bobkat/.env", ["cat", ["~/.bobkat/.env"]]],
     ["cat ~", ["cat", ["~"]]],
     ["find / -name x", ["find", ["/", "-name", "x"]]],
     ["git -C /tmp status", ["git", ["-C", "/tmp", "status"]]],

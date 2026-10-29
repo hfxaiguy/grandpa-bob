@@ -1,5 +1,5 @@
 /**
- * .env file precedence: ENV_FILE override > ~/.grandpa-bob/.env >
+ * .env file precedence: ENV_FILE override > ~/.bobkat/.env >
  * <projectDir>/.env. The resolved file is what config loads and what the
  * settings-page editor writes.
  *
@@ -10,11 +10,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { resolveEnvFile } from "../src/env-file.js";
+import { STATE_DIR_NAME } from "../src/state-dir.js";
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-env-"));
 const root = path.join(ws, "project");
 const home = path.join(ws, "home");
-const privateEnv = path.join(home, ".grandpa-bob", ".env");
+const privateEnv = path.join(home, STATE_DIR_NAME, ".env");
 const projectEnv = path.join(root, ".env");
 
 const none = (_p: string) => false;
@@ -33,5 +34,5 @@ assert.equal(
   "absolute ENV_FILE kept",
 );
 
-console.log("env-file: override > ~/.grandpa-bob/.env > project .env");
+console.log(`env-file: override > ~/${STATE_DIR_NAME}/.env > project .env`);
 console.log("env-file-test: all assertions passed");

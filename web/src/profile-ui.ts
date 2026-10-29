@@ -22,6 +22,7 @@ import {
   type SeedBinding,
 } from "./profiles";
 import { loadStorage, saveStorage, type StorageMode } from "./settings";
+import { STATE_HOME } from "./state-dir";
 import {
   activeSwapService,
   DEFAULT_SWAP_SERVICE_URL,
@@ -147,11 +148,11 @@ function bridgeUrl(): string {
 
 /**
  * Where a new desktop profile's folder lives on this machine: under
- * `~/.grandpa-bob/folders/<name>` — the bridge expands the leading `~` so
+ * `~/.bobkat/folders/<name>` — the bridge expands the leading `~` so
  * the browser never needs to know the desktop's home path.
  */
 function homeFolder(name: string): string {
-  return `~/.grandpa-bob/folders/${name}`;
+  return `${STATE_HOME}/folders/${name}`;
 }
 
 function currentStorage(): StorageMode {

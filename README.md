@@ -45,7 +45,7 @@ every change it makes is **git-committed automatically**.
     bound to a **BobSwap seed** for updates.
   - **Desktop (bridge)** — the loopback storage bridge serving real folders;
     **desktop profiles** bind one folder per profile (registered on the bridge,
-    `~/.grandpa-bob/channels.json`), each with its own chat history and run log.
+    `~/.bobkat/channels.json`), each with its own chat history and run log.
   A **single-host lease** guarantees only one tab runs the agent per workspace
   (a second tab is read-only, with a *take over* button). A tab can also answer
   Telegram: the "bridge" toggle drains the channel's mailbox against a web
@@ -116,7 +116,7 @@ Tree.name("agent")
    WAV, and POSTs it to whisper-server — transcription happens channel-side,
    so it works with no browser tab open.
 3. The channel replies `heard: "add milk to shopping.md"` in the topic and
-   **parks** the transcript in its file mailbox (`~/.grandpa-bob/telegram/`).
+   **parks** the transcript in its file mailbox (`~/.bobkat/telegram/`).
 4. Your browser tab claims the mailbox (the "bridge" toggle), runs the turn on
    its own workspace, and relays the answer back to the phone. No tab open?
    The message waits on disk until one connects.
@@ -314,13 +314,13 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
 3. **Telegram (optional)**: create a bot with @BotFather, copy the token, and
    get your numeric user id from @userinfobot. `cp .env.example .env` and fill
    in `TELEGRAM_BOT_TOKEN` + `ALLOWED_USER_IDS`. The channel prefers
-   `~/.grandpa-bob/.env` when present; `ENV_FILE=/path` overrides.
+   `~/.bobkat/.env` when present; `ENV_FILE=/path` overrides.
    `npm run dev` starts it (loopback API on `:8091`).
 4. **Desktop storage (optional)**: `npm run storage-server` serves
    `$WORKSPACE_DIR` (default `~/grandma-workspace`) on `127.0.0.1:8795`.
    Register extra folders as desktop profiles with the app's
    Profiles… → *desktop folder* flow (the bridge stores the registry in
-   `~/.grandpa-bob/channels.json`). Start it with `BOB_STT=1` to expose the
+   `~/.bobkat/channels.json`). Start it with `BOB_STT=1` to expose the
    `/stt` pass-through for in-tab voice transcription.
 5. **Voice (optional)**: the browser records are transcribed by the bridge
    (`BOB_STT=1`); Telegram voice notes are transcribed by the channel. Both
@@ -608,7 +608,7 @@ declares it in `app/<name>/secrets.json`:
 
 The settings page grows an **App secrets** section listing every declared
 file as missing or uploaded, with upload / replace / delete buttons. Bytes
-are stored **outside the workspace** — `~/.grandpa-bob/secrets.db`, override
+are stored **outside the workspace** — `~/.bobkat/secrets.db`, override
 with the `SECRETS_DB` env var — in a 0700 directory as a 0600 sqlite file.
 The workspace tree syncs over git, is readable by the bot's file tools and
 rides along in backups, so credentials must not live there; the store is
@@ -716,7 +716,7 @@ history, not enough to publish or destroy it.
 **Can the agent read my `.env` or the bot token?**
 Not with the defaults. File tools are sandboxed to the workspace, and
 `run_command` now rejects path-like ARGUMENTS that resolve outside it — `cat
-/etc/passwd`, `cat ~/.grandpa-bob/.env`, `git -C /tmp …` and `--file=/abs`
+/etc/passwd`, `cat ~/.bobkat/.env`, `git -C /tmp …` and `--file=/abs`
 forms all fail with "argument escapes the workspace" (conservative: any
 argument starting with `/` counts as a path, even a regex). It remains a
 guardrail, not a security boundary — be careful what you add to
@@ -762,7 +762,7 @@ a registered tree (e.g. a cheap-model condenser).
 - The allowlist is a guardrail, not a security boundary — run the bot as your own
   user, keep the workspace non-critical, and review `git log` if you're curious.
 - `.env` resolution prefers a private file — `ENV_FILE`, then
-  `~/.grandpa-bob/.env`, then `<project>/.env` — so credentials don't depend
+  `~/.bobkat/.env`, then `<project>/.env` — so credentials don't depend
   on a `.gitignore` line inside the checkout. The workspace dir is the only
   place the agent's file tools can touch, and `run_command` refuses
   path-like arguments outside it.

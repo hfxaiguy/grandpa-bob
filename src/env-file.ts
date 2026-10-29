@@ -4,13 +4,14 @@
 // checkout, so a private per-user file wins when present:
 //
 //   1. ENV_FILE=<path>            explicit override (relative to project root)
-//   2. ~/.grandpa-bob/.env        private config dir (0700 family)
+//   2. ~/.bobkat/.env             private config dir (0700 family)
 //   3. <projectDir>/.env          historical location, still the fallback
 //
-// Moving an existing install is a plain `mv .env ~/.grandpa-bob/.env`.
+// Moving an existing install is a plain `mv .env ~/.bobkat/.env`.
 
 import fs from "node:fs";
 import path from "node:path";
+import { STATE_DIR_NAME } from "./state-dir.js";
 
 export interface EnvFileOptions {
   root: string;
@@ -22,7 +23,7 @@ export interface EnvFileOptions {
 
 export function resolveEnvFile({ root, home, override, exists = fs.existsSync }: EnvFileOptions): string {
   if (override && override.trim()) return path.resolve(root, override.trim());
-  const privateEnv = path.join(home, ".grandpa-bob", ".env");
+  const privateEnv = path.join(home, STATE_DIR_NAME, ".env");
   if (exists(privateEnv)) return privateEnv;
   return path.join(root, ".env");
 }

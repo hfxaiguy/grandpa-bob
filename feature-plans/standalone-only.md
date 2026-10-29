@@ -129,7 +129,7 @@ killing the first tab lets the second take over.
 
 - [ ] **Telegram channel**: repurpose `bot.ts` + `telegram-bridge.ts` as a
       channel process (grammy long-poll, auth gate, forum-topic routing
-      unchanged). Mailbox: one JSONL file per chat under `~/.grandpa-bob/`
+      unchanged). Mailbox: one JSONL file per chat under `~/.bobkat/`
       (survives channel restarts; at-least-once delivery using the existing
       message ids). Push to connected tabs (WS or SSE) + drain-on-connect.
       Chat→profile route stored channel-side. Epoch logic preserved for tab
@@ -199,7 +199,7 @@ the boundary test is green; the smoke suite passes.
 
 - [ ] `ProfileRecord` gains `kind: "opfs" | "desktop"` (+ folder binding);
       `profiles.json` (`web/src/profiles.ts`) lists both kinds.
-- [ ] Bridge folder registry: `~/.grandpa-bob/channels.json` bindings
+- [ ] Bridge folder registry: `~/.bobkat/channels.json` bindings
       `{profile → folder}`; loopback-only; explicit allow-list (the browser
       can only bind profiles to registered folders).
 - [ ] Per-request root routing on the bridge (URL prefix or header) +

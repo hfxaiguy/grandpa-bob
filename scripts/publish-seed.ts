@@ -6,7 +6,7 @@
  * and the shelf copy cannot drift.
  *
  * First interactive run asks for the account, seed name and upload key, then
- * offers to save them in `~/.grandpa-bob/bobswap.json` (0600) so later runs
+ * offers to save them in `~/.bobkat/bobswap.json` (0600) so later runs
  * need no arguments:
  *
  *   npm run seed:ship
@@ -28,21 +28,21 @@
  *   --no-save          do not offer to remember interactive input
  *   --help
  *
- * Config path: `BOBSWAP_CONFIG` (default `~/.grandpa-bob/bobswap.json`).
+ * Config path: `BOBSWAP_CONFIG` (default `~/.bobkat/bobswap.json`).
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { seedVersionTag } from "../web/src/profiles.js";
+import { statePath } from "../src/state-dir.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
 const DEFAULT_URL = "https://bobswap.hfxaiguy.com";
 const RESERVED_LABELS = new Set(["latest", "versions", "meta", "link"]);
-const configPath = process.env.BOBSWAP_CONFIG ?? path.join(os.homedir(), ".grandpa-bob", "bobswap.json");
+const configPath = process.env.BOBSWAP_CONFIG ?? statePath("bobswap.json");
 const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 
 const argv = process.argv.slice(2);

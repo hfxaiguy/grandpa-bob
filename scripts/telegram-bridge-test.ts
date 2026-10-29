@@ -8,7 +8,7 @@
 //   handover                   → another profile claiming bumps the epoch;
 //                                late relays carrying it drop
 //
-// State goes to a temp BOB_STATE_DIR so the test never touches ~/.grandpa-bob.
+// State goes to a temp BOB_STATE_DIR so the test never touches ~/.bobkat.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -89,7 +89,7 @@ try {
   }
 } finally {
   await resetBridge();
-  await fs.rm(process.env.BOB_STATE_DIR!, { force: true }).catch(() => {});
+  await fs.rm(process.env.BOB_STATE_DIR!, { recursive: true, force: true }).catch(() => {});
 }
 
 // ── chunking (relay path) ────────────────────────────────────────────────

@@ -20,7 +20,7 @@ function required(name: string): string {
 
 const root = process.cwd();
 
-// Precedence: ENV_FILE override > ~/.grandpa-bob/.env > <project>/.env.
+// Precedence: ENV_FILE override > ~/.bobkat/.env > <project>/.env.
 const envFile = resolveEnvFile({ root, home: os.homedir(), override: process.env.ENV_FILE });
 dotenv.config({ path: envFile });
 

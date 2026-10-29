@@ -24,12 +24,14 @@ const ROOT = path.resolve(process.argv[2] ?? process.env.WORKSPACE_DIR ?? proces
 const PORT = Number(process.env.STORAGE_PORT ?? 8795);
 
 // Desktop profiles: named folder roots served by this one bridge. The
-// registry lives outside any workspace (~/.grandpa-bob/channels.json); the
+// registry lives outside any workspace (~/.bobkat/channels.json); the
 // bridge's own ROOT is always reachable as "default" (the pre-profiles
 // desktop setup migrates to it by simply staying put). A request selects its
 // root with the `x-bob-root` header; without one it lands on "default".
+// Keep in sync with src/state-dir.ts / web/src/state-dir.ts (this plain-node
+// file cannot import the TypeScript helper).
 const CHANNELS_FILE = path.join(
-  process.env.BOB_STATE_DIR ?? path.join(os.homedir(), ".grandpa-bob"),
+  process.env.BOB_STATE_DIR ?? path.join(os.homedir(), ".bobkat"),
   "channels.json",
 );
 let rootsRegistry = { roots: [] };

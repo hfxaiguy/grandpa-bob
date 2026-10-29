@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-29 — state lives in `~/.bobkat`: one config for every channel
+
+The private state directory moved from `~/.grandpa-bob` to `~/.bobkat`.
+
+- **One source of truth.** `src/state-dir.ts` exports `STATE_DIR_NAME`,
+  `stateBase()` (`BOB_STATE_DIR` or `~/.bobkat`) and `statePath(...)`; the
+  browser-side twin `web/src/state-dir.ts` exports `STATE_DIR_NAME` /
+  `STATE_HOME` (`~/…` form for bridge-expandable desktop paths). The
+  standalone boundary forbids `web/` importing `src/`, so the name is
+  deliberately mirrored in both trees.
+- **Every consumer uses it**: `.env` precedence tier (`src/env-file.ts`),
+  Telegram mailbox (`src/telegram-bridge.ts`), BobSwap credentials
+  (`scripts/publish-seed.ts`), the bridge's `channels.json`
+  (`web/scripts/storage-server.mjs` — inline literal, plain-node file) and
+  desktop profile folders (`web/src/profile-ui.ts`).
+- **`BOB_STATE_DIR` now means the base state dir.** The Telegram mailbox is
+  `$BOB_STATE_DIR/telegram` (previously the variable replaced the mailbox
+  root — set it one level up if you had it pointed at the mailbox).
+- **Existing installs**: `mv ~/.grandpa-bob ~/.bobkat` (or set
+  `BOB_STATE_DIR`). No file formats changed.
+- Tests: `test:env`, `test:shell`, `test:telegram-bridge`,
+  `test:desktop-profile`, `test:standalone`.
+
 ## 2026-10-29 — a new session opens on a quiet board: trunk, contacts, files
 
 `newSession()` now parks every board tile in the hidden rail except trunk,
@@ -81,14 +104,14 @@ today:
 - **Telegram channel.** `npm run dev` is now a pass-through channel
   (`src/index.ts`): grammY long-poll, auth gate, forum topics, channel-side
   transcription (`heard: "…"` needs no browser), and a **file-backed mailbox**
-  (`~/.grandpa-bob/telegram/`) — messages parked with no tab connected
+  (`~/.bobkat/telegram/`) — messages parked with no tab connected
   survive channel restarts. Bindings form when a tab drains (`claim`), a
   handover between profiles bumps a per-chat epoch so a suspended old tab's
   late relays drop. Loopback-only (`:8091`), CORS allow-list, no agent.
 - **Desktop profiles.** The storage bridge serves one folder per profile
   (e2e: `npm run test:desktop-profile` imports a seed archive into a
   registered root and checks per-root sandboxing):
-  a folder registry (`~/.grandpa-bob/channels.json`, `POST /roots`,
+  a folder registry (`~/.bobkat/channels.json`, `POST /roots`,
   `~/`-paths expanded bridge-side) selected per request via `x-bob-root`;
   the picker creates desktop profiles, and the old single-root setup is the
   implicit `default`. The bridge stays loopback-bound.
@@ -827,7 +850,7 @@ Three tile fixes, mostly fallout from the pinned/wide work:
 ## 2026-10-23 — seed:publish asks once, remembers, and seed:ship forwards flags
 
 `seed:publish` now prompts on a terminal for the account, seed name and upload
-key (hidden input) and offers to save them in `~/.grandpa-bob/bobswap.json`
+key (hidden input) and offers to save them in `~/.bobkat/bobswap.json`
 (0600; `BOBSWAP_CONFIG` overrides). The key is persisted only after the service
 accepted it — a dry run stores settings without the key, an auth failure stores
 nothing. Piped input is queued line-by-line (readline dropped lines that arrived

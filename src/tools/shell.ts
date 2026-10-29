@@ -22,7 +22,7 @@ function looksLikePath(value: string): boolean {
 /**
  * Reject path-like arguments that resolve outside the workspace. Commands
  * run with cwd=workspace, but execFile never sandboxes ARGUMENTS — without
- * this, `cat ~/.grandpa-bob/.env` or `cat /etc/passwd` reads whatever the
+ * this, `cat ~/.bobkat/.env` or `cat /etc/passwd` reads whatever the
  * allowlisted binary can reach. Conservative by design: a string starting
  * with "/" is treated as a path even if the command would read it as a
  * pattern. Symlink escapes are out of reach here because none of the

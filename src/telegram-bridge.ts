@@ -8,7 +8,7 @@
  * tab is connected, messages simply wait — the mailbox survives channel
  * restarts because it is on disk.
  *
- * State layout (BOB_STATE_DIR, default ~/.grandpa-bob/telegram):
+ * State layout (base: BOB_STATE_DIR, default ~/.bobkat; mailbox: <base>/telegram):
  *
  *   bindings.json          { [convKey]: { profile, epoch, lastBeat } }
  *   mailbox/<convKey>.jsonl  one JSON per line: {id, text, arrivedAt}
@@ -24,8 +24,8 @@
  * never touched; an expired chat simply becomes claimable again.
  */
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
+import { statePath } from "./state-dir.js";
 
 /** One-line marker sent on the phone when a tab claims a chat. */
 export const BRIDGE_LINKED_TEXT =
@@ -82,7 +82,7 @@ const SWEEP_MS = envMs("BRIDGE_SWEEP_MS", 3_000);
 /** How many answered ids to remember per chat (skip-on-reconnect). */
 const ANSWERED_KEEP = 100;
 
-const root = process.env.BOB_STATE_DIR ?? path.join(os.homedir(), ".grandpa-bob", "telegram");
+const root = statePath("telegram");
 const mailboxDir = path.join(root, "mailbox");
 const answeredDir = path.join(root, "answered");
 const bindingsFile = path.join(root, "bindings.json");

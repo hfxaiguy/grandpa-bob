@@ -17,7 +17,7 @@ Companion channels (optional, each loopback-only):
 
 | Channel | Command | What it does |
 |---|---|---|
-| Telegram | `npm run dev` (`src/index.ts`, `:8091`) | grammY long-poll; parks text + channel-side voice transcripts in a file mailbox (`~/.grandpa-bob/telegram/`); the tab claims and answers them |
+| Telegram | `npm run dev` (`src/index.ts`, `:8091`) | grammY long-poll; parks text + channel-side voice transcripts in a file mailbox (`~/.bobkat/telegram/`); the tab claims and answers them |
 | Storage bridge | `npm run storage-server` (`:8795`) | real folders as desktop profiles; `POST /roots` registers them, requests select one with `x-bob-root`; also hosts the git/sqlite passthrough |
 | STT | `BOB_STT=1 npm run storage-server` | `POST /stt` — raw audio bytes to ffmpeg → whisper-server → transcript (used by the composer) |
 | Whisper | `npm run whisper:up` (`:8178`) | the transcription backend both paths call |
@@ -83,7 +83,7 @@ The session drawer's *bridge this chat to Telegram while the tab is open*
 toggle connects the OPFS conversation to a Telegram chat two ways. The tab is
 the brain: turns run against the OPFS continuation and memory, and the
 telegram channel (`src/index.ts`, loopback `:8091`) only parks and forwards
-text (inbox, ack, relay, host heartbeat; state under `~/.grandpa-bob/telegram`).
+text (inbox, ack, relay, host heartbeat; state under `~/.bobkat/telegram`).
 Nothing is stored in the workspace — no session adoption, no log writes; the
 OPFS session never exists outside the page.
 
@@ -217,7 +217,7 @@ timestamp.
 To ship that packed seed to a BobSwap shelf without it drifting, publish the
 exact bytes (from the repo root). The first interactive run asks for the
 account, seed name and upload key (input hidden) and offers to save them in
-`~/.grandpa-bob/bobswap.json` (0600); the key is only remembered once the
+`~/.bobkat/bobswap.json` (0600); the key is only remembered once the
 service has accepted it, so later runs need no arguments:
 
 ```sh
