@@ -185,6 +185,11 @@ configureToolbar();
 const applyStorage = (): void => {
   if (storageSelect) saveStorage(storageSelect.value as StorageMode);
   if (storageServerInput) saveStorageServer(storageServerInput.value.trim());
+  console.error(`[reload-debug] applyStorage`, new Error().stack?.slice(0, 500));
+  location.reload();
+};
+const __debugReload = (reason: string, stack: string): void => {
+  console.error(`[reload-debug] ${reason}`, stack.slice(0, 500));
   location.reload();
 };
 storageSelect?.addEventListener("change", applyStorage);
@@ -894,6 +899,10 @@ function wireLeaseUi(hostLease: NonNullable<typeof lease>): void {
   hostLease.subscribe((status) => {
     if (status === "primary") removeBanner();
     else if (status === "secondary") showBanner();
+  });
+  (window as unknown as { __leaseState?: () => unknown }).__leaseState = () => hostLease.status();
+  window.addEventListener("pagehide", () => {
+    (window as unknown as { __leaseState?: () => unknown }).__leaseState = () => hostLease.status();
   });
   window.addEventListener("pagehide", (event) => {
     if (!(event as PageTransitionEvent).persisted) hostLease.release();

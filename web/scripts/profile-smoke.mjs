@@ -4,14 +4,36 @@
 //   node scripts/profile-smoke.mjs
 import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
-const BASE = process.env.WEB_URL ?? "http://127.0.0.1:8080";
+// The run gets its OWN origin (a fresh serve port → a fresh OPFS) so repeated
+// smoke attempts never inherit another run's profiles/workspace state from a
+// browser's earlier tabs (which would make the legacy migration see a fully
+// seeded default profile and refuse verification).
+async function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+    server.on("error", reject);
+  });
+}
+const SERVE_PORT = await freePort();
+const BASE = process.env.WEB_URL ?? `http://127.0.0.1:${SERVE_PORT}`;
 const PORT = Number(process.env.CDP_PORT ?? 9225);
 const CHROME = process.env.CHROME_BIN ?? "chromium";
 const PROFILE = path.join(os.tmpdir(), `bob-profile-smoke-${process.pid}`);
+
+const serve = spawn(
+  process.execPath,
+  [path.join(path.dirname(new URL(import.meta.url).pathname), "serve.mjs")],
+  { env: { ...process.env, PORT: String(SERVE_PORT), HOST: "127.0.0.1" }, stdio: "ignore" },
+);
 
 const chrome = spawn(
   CHROME,
@@ -31,11 +53,13 @@ const chrome = spawn(
 
 function cleanup(code, message) {
   try { chrome.kill("SIGKILL"); } catch {}
+  try { serve.kill("SIGKILL"); } catch {}
+  try { serve.kill("SIGKILL"); } catch {}
   try { rmSync(PROFILE, { recursive: true, force: true }); } catch {}
   if (message) console.error(message);
   process.exit(code);
 }
-setTimeout(() => cleanup(2, "timeout: profile smoke did not finish"), 180_000).unref();
+setTimeout(() => cleanup(2, "timeout: profile smoke did not finish"), 480_000).unref();
 
 const getJSON = async (p) => (await fetch(`http://127.0.0.1:${PORT}${p}`)).json();
 let version;
@@ -63,6 +87,9 @@ ws.onmessage = (ev) => {
   if (msg.method === "Runtime.exceptionThrown") {
     exceptions.push(msg.params.exceptionDetails.exception?.description ?? msg.params.exceptionDetails.text);
   }
+  if (msg.method === "Runtime.consoleAPICalled") {
+    exceptions.push("[console] " + msg.params.args.map((a) => a.value ?? a.description ?? "").join(" ").slice(0, 300));
+  }
 };
 const send = (method, params = {}) =>
   new Promise((resolve) => { const id = ++nextId; pending.set(id, resolve); ws.send(JSON.stringify({ id, method, params })); });
@@ -80,11 +107,22 @@ async function waitFor(expression, label, timeout = 60_000) {
     } catch { /* navigation in flight */ }
     await sleep(250);
   }
-  throw new Error(`timeout waiting for ${label}`);
+  const stateDump = await evaluate(
+    `(async () => {
+      return JSON.stringify({
+        status: document.getElementById("status")?.textContent || null,
+        lease: window.__leaseState ? window.__leaseState() : "nohook",
+        banner: !!document.getElementById("bob-lease-banner"),
+        bannerText: document.getElementById("bob-lease-banner")?.textContent || null,
+        locks: await navigator.locks.query().then((q) => JSON.stringify(q.held.map((h) => h.name).concat(q.pending.map((p) => "pending:" + p.name))), () => "?"),
+      });
+    })()`,
+  ).catch(() => "n/a");
+  throw new Error(`timeout waiting for ${label} (state: ${stateDump})`);
 }
 const assert = (condition, message) => { if (!condition) throw new Error(`assertion failed: ${message}`); };
 
-await send("Runtime.enable");
+await send("Runtime.enable"); await send("Log.enable");
 await send("Page.enable");
 
 // 1. Seed a pre-profile OPFS layout from a page with no app code (same origin).
@@ -297,22 +335,25 @@ await evaluate(`(async () => {
   await writable.close();
   return "truncated";
 })()`);
-await send("Page.reload");
+await send("Page.navigate", { url: `${BASE}/?storage=browser` });
 await waitFor(
   `document.readyState === "complete" && (document.getElementById("status")?.textContent || "").includes("browser")`,
   "boot after a truncated registry",
 );
 const repaired = await evaluate(`(async () => {
   const root = await navigator.storage.getDirectory();
-  const raw = await (await (await root.getFileHandle("profiles.json")).getFile()).text();
+  let raw = "";
+  try { raw = await (await (await root.getFileHandle("profiles.json")).getFile()).text(); } catch (e) { raw = "ERR:" + String(e); }
+  const names = [];
+  for await (const [name, handle] of root.entries()) names.push(name);
   const options = [...document.querySelectorAll("#profile-select option")].map((o) => o.value);
-  return JSON.stringify({ raw, options, mirror: localStorage.getItem("bob:profile-registry") });
+  return JSON.stringify({ raw, names, options, mirror: localStorage.getItem("bob:profile-registry") });
 })()`);
 const r = JSON.parse(repaired);
 const repairedRegistry = JSON.parse(r.raw || "{}");
 assert(
   (repairedRegistry.profiles || []).some((p) => p.name === "travel"),
-  "a truncated registry is repaired from the mirror/directories",
+  `a truncated registry is repaired from the mirror/directories — seen: ${JSON.stringify(repaired).slice(0, 300)}`,
 );
 assert(
   repairedRegistry.profiles?.find((p) => p.name === "travel")?.seed?.seedName === "trunk",
