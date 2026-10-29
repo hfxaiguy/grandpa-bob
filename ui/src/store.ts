@@ -100,6 +100,8 @@ const LAYOUT_KEY = "gpb.tiled.layout";
 const MACHINE_KEY = "gpb.showMachine";
 const STREAM_KEY = "gpb.tiled.stream";
 const BRIDGE_KEY = "bob:telegram-bridge";
+/** Remembered linked chat (per profile) — the backend's offline relay target. */
+const BRIDGE_CONV_KEY = "bob:telegram-bridge-conv";
 
 /** Base URL of the storage bridge (the tab's STT pass-through target). */
 const SERVER_KEY = "bob:storage-server";
@@ -674,6 +676,12 @@ export async function sendToTelegram(): Promise<void> {
     try {
       localStorage.setItem(BRIDGE_KEY, "1");
       if (state.active) localStorage.setItem(`${BRIDGE_KEY}-session`, state.active);
+      // Same key the in-browser backend reads: after the binding expires (tab
+      // closed >15 s) a reopened tab still knows which chat to mirror to.
+      localStorage.setItem(
+        `${BRIDGE_CONV_KEY}:${profile}`,
+        JSON.stringify({ conv: target.conv, epoch: target.epoch }),
+      );
     } catch {
       /* private mode */
     }

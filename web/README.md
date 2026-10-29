@@ -82,17 +82,21 @@ notes and hand-offs visible without mixing them into the normal reply stream.
 The session drawer's *bridge this chat to Telegram while the tab is open*
 toggle connects the OPFS conversation to a Telegram chat two ways. The tab is
 the brain: turns run against the OPFS continuation and memory, and the
-`/api/telegram/*` endpoints on the admin only relay text (heartbeat, inbox,
-relay). Nothing is stored server-side — no session adoption, no log writes,
-no follow binding; the OPFS session never exists outside the page.
+telegram channel (`src/index.ts`, loopback `:8091`) only parks and forwards
+text (inbox, ack, relay, host heartbeat; state under `~/.grandpa-bob/telegram`).
+Nothing is stored in the workspace — no session adoption, no log writes; the
+OPFS session never exists outside the page.
 
-While the tab heartbeats the bot defers that chat's messages to the browser.
-If the tab goes away (closed, asleep, or the toggle is turned off) the bot
-answers in its own session after 15 s, prefixing the first reply with a
-one-line marker — a fallback identity, not the same conversation. Relays that
-arrive after such a fallback are dropped. Text only for now: voice notes and
-photos still run server-side. The one-way *✈ telegram* push is hidden in this
-target (the bridge replaces it); it remains for server-served sessions.
+While the tab heartbeats, the channel binds its chat to this page's profile
+and parks new messages for it; the tab claims them, answers in this page's
+session, relays the reply, then acks. Turns typed in the web chat mirror
+their answer to the phone the same way — output only, in relay order, so the
+phone reads the same thread without echoing what the browser already shows.
+A second tab that takes the chat over bumps the epoch; relays carrying an
+older one (a suspended tab answering late) are dropped. Voice notes are
+transcribed channel-side and parked as text; photos and documents get a
+text-only reply. The one-way *✈ telegram* push dumps a transcript and pins
+the bridge to the session it was sent from.
 
 ### Session memory panels after reload / restart
 
@@ -382,10 +386,12 @@ reloads the tab).
   `/profiles/default/`. The move is marked in `/migration.json`, resumes if the
   tab closes mid-copy, verifies file count and total bytes, and only then removes
   the originals — a failed verification keeps both copies and refuses to boot.
-- The **Profiles…** entry in the toolbar's **Sync…** dialog creates a blank
-  profile (seeded on first boot) or a copy of the current one, and deletes
-  non-active profiles. Each profile has its own `workspace/`, run log, chats,
-  patterns and git history.
+- The **Profiles…** entry in the toolbar's **Sync…** dialog creates a new
+  workspace only after an explicit seed pick — the bundled snapshot or any seed
+  listed on a configured BobSwap service (a binding is stored and its archive is
+  pulled immediately). A copy of the current profile and desktop folder profiles
+  don't need a seed. Deleting non-active profiles is also there. Each profile
+  has its own `workspace/`, run log, chats, patterns and git history.
 - **Export**/**Import** and the BobSwap flows act on the **active** profile.
   Archive paths stay `workspace/...`, so the same file can be imported into any
   profile, any device, or packed by `make-seed`.
@@ -395,7 +401,12 @@ reloads the tab).
 ## Seed sources (BobSwap seed shelf)
 
 A profile can be bound to a seed on a BobSwap service, so updates can arrive
-later (`Sync…` → `Profiles…` → **Seed…**):
+later (`Sync…` → `Profiles…` → **Seed…**). New browser profiles pick their seed
+up front: **Profiles… → New profile** offers the bundled snapshot plus every
+seed returned by `GET /api/v1/<account>/seeds` on each configured service, and
+pulls the chosen archive before the profile is created (nothing is created if
+the pull fails). The pick has no default — Create stays blocked until a seed is
+chosen.
 
 - The **BobSwap…** dialog stores the service URL, realtime endpoint/key, account
   and API keys in this browser's localStorage (`bob:swap`); **Seed…** only asks

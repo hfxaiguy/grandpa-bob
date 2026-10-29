@@ -530,8 +530,17 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     }
   };
 
-  async function runTurn(turnId: string, text: string, keyOverride?: string): Promise<TurnRecord> {
+  async function runTurn(
+    turnId: string,
+    text: string,
+    keyOverride?: string,
+    o?: { fromBridge?: boolean },
+  ): Promise<TurnRecord> {
     const key = keyOverride ?? (await ensureSession());
+    // The phone chat this turn mirrors to, when the bridge is on and pinned
+    // to this session. Bridge-originated turns already reached the phone:
+    // their input came from there and runBridgeMessage relays the answer.
+    const relay = o?.fromBridge ? null : await bridgeRelayTarget(key);
     // The slot the user is replying to (the previous turn's pause). Its
     // presence is also how a fresh run after a reload is recognised as a
     // context loss rather than a new conversation.
@@ -633,6 +642,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         awaiting: record.awaiting, runMode: record.runMode, contextLost: record.contextLost,
         tokens: record.tokens ?? null, ts: record.endedAt,
       });
+      // Mirror the answered turn to the phone only after the tab has it: the
+      // phone is the second screen, not the source of truth. A stale epoch
+      // (another tab took the chat over mid-turn) is dropped channel-side.
+      if (relay) relayToPhone(relay, record.output || "(no reply)");
     } catch (err) {
       if (err instanceof AgentStoppedError || isAgentStopped(err)) {
         record.status = "stopped";
@@ -653,6 +666,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         record.endedAt = Date.now();
         await persistTurn(key, record, running.runId);
         broadcast({ type: "turn_end", turnId, status: "error", error: record.error, output: "", buttons: [], emits: [], awaiting: null, tokens: record.tokens ?? null, ts: record.endedAt });
+        if (relay) relayToPhone(relay, `Something went wrong: ${record.error ?? "error"}`);
       }
     } finally {
       if (activeRuns.get(key)?.turnId === turnId) activeRuns.delete(key);
@@ -1379,11 +1393,14 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   // The tab is the conversation's brain: this loop drains the telegram
   // channel's mailbox (parked messages survive channel restarts), runs each
   // message as a turn in this page's session, and relays the reply back.
+  // Turns typed in the web chat mirror their answer to the phone the same
+  // way (see bridgeRelayTarget / relayToPhone).
   // Absolute fetches — the fetch shim only intercepts same-origin /api/*.
   // Nothing here touches a server-side log, session, or follow binding.
   const BRIDGE_KEY = "bob:telegram-bridge";
   const BRIDGE_SESSION_KEY = "bob:telegram-bridge-session";
   const BRIDGE_SEEN_KEY = "bob:telegram-bridge-seen";
+  const BRIDGE_CONV_KEY = "bob:telegram-bridge-conv";
   let bridgeWasOn = false;
   let bridgeChain: Promise<void> = Promise.resolve();
 
@@ -1416,6 +1433,30 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       return [];
     }
   };
+  /**
+   * Remember the chat this profile last drained. Bindings expire 15 s after
+   * the tab goes away and only form from parked messages, so a tab reopened
+   * the next day has no live binding to target — but it can still mirror to
+   * the chat it was linked to. Namespaced by profile: localStorage is shared
+   * across the app's workspace profiles.
+   */
+  function rememberBridgeConv(conv: string, epoch: number): void {
+    lstore.write(`${BRIDGE_CONV_KEY}:${telegramProfile()}`, JSON.stringify({ conv, epoch }));
+  }
+  function savedBridgeConv(): { conv: string; epoch: number } | null {
+    try {
+      const saved = JSON.parse(lstore.read(`${BRIDGE_CONV_KEY}:${telegramProfile()}`) || "null") as unknown;
+      if (!saved || typeof saved !== "object") return null;
+      const conv = (saved as { conv?: unknown }).conv;
+      const epoch = (saved as { epoch?: unknown }).epoch;
+      if (typeof conv === "string" && /^-?\d+(?::\d+)?$/.test(conv)) {
+        return { conv, epoch: typeof epoch === "number" ? epoch : 0 };
+      }
+    } catch {
+      /* corrupt: ignore */
+    }
+    return null;
+  }
   const bridgeDelay = (): number =>
     typeof document !== "undefined" && document.visibilityState === "hidden" ? 10_000 : 4_000;
 
@@ -1440,13 +1481,72 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     });
   }
 
+  /**
+   * The phone chat a webui-typed turn mirrors to, or null. Only when the
+   * bridge is on and still pinned to this session: typing in another browser
+   * chat must not leak into the phone thread. The channel lists the profile's
+   * bindings freshest first, so [0] is the chat the user last spoke to.
+   */
+  async function bridgeRelayTarget(key: string): Promise<{ conv: string; epoch?: number } | null> {
+    if (lstore.read(BRIDGE_KEY) !== "1") return null;
+    if (lstore.read(BRIDGE_SESSION_KEY) !== key) return null;
+    try {
+      const res = await fetch(
+        `${telegramUrl()}/api/bindings?profile=${encodeURIComponent(telegramProfile())}`,
+      );
+      if (!res.ok) return null;
+      const data = (await res.json()) as { bindings?: unknown };
+      const list = Array.isArray(data.bindings) ? data.bindings : [];
+      for (const b of list) {
+        if (!b || typeof b !== "object") continue;
+        const conv = (b as { conv?: unknown }).conv;
+        const epoch = (b as { epoch?: unknown }).epoch;
+        if (typeof conv === "string" && typeof epoch === "number") {
+          rememberBridgeConv(conv, epoch); // keep the offline fallback current
+          return { conv, epoch };
+        }
+      }
+    } catch {
+      /* channel down: fall back to the remembered chat */
+    }
+    // No live binding (tab reopened after expiry, or channel restarted): the
+    // remembered chat still accepts relays — the channel drops them only when
+    // another profile owns it. No epoch: the remembered one may be stale, and
+    // an unbound chat would reject it as a false handover.
+    const saved = savedBridgeConv();
+    return saved ? { conv: saved.conv } : null;
+  }
+
+  /** Mirror one answered webui turn to the phone, serially with other relays. */
+  function relayToPhone(target: { conv: string; epoch?: number }, text: string): void {
+    bridgeChain = bridgeChain
+      .then(async () => {
+        const res = await channelPost("/api/relay", {
+          key: target.conv,
+          text,
+          epoch: target.epoch,
+          profile: telegramProfile(),
+        });
+        if (!res.ok) {
+          console.warn("[bridge] webui relay failed:", res.status);
+          return;
+        }
+        const data = (await res.json().catch(() => ({}))) as { dropped?: unknown };
+        if (data.dropped) console.warn("[bridge] webui relay dropped:", data.dropped);
+      })
+      .catch((err) => console.warn("[bridge] webui relay failed:", err));
+  }
+
   /** Answer one parked message in this page's session, then relay the reply. */
   async function runBridgeMessage(msg: ChannelMessage, epoch: number): Promise<void> {
     // Pinned when the bridge was switched on: switching browser chats does
     // not silently re-target the phone thread.
     const key = lstore.read(BRIDGE_SESSION_KEY) || (await ensureSession());
     await whenIdle(key);
-    const record = await runTurn(crypto.randomUUID(), msg.text, key);
+    // `fromBridge`: this turn's input came from the phone and its answer is
+    // relayed below — runTurn must not mirror it a second time.
+    const record = await runTurn(crypto.randomUUID(), msg.text, key, { fromBridge: true });
+    rememberBridgeConv(msg.conv, epoch);
     const text =
       record.status === "error"
         ? `Something went wrong: ${record.error ?? "error"}`
