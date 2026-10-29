@@ -44,6 +44,8 @@ export interface SyncHandle {
     id: string;
     roleToken: string;
     role: "offerer" | "answerer";
+    /** ICE servers from the channel create/join response (STUN/TURN). */
+    iceServers?: RTCIceServer[];
   }): Promise<string>;
   unpair(): void;
 }
@@ -104,7 +106,7 @@ export async function startSync(platform: Platform, opts: { id: string; channelN
         { baseUrl: channel.baseUrl, readKey: channel.readKey },
         { id: channel.id, roleToken: channel.roleToken, role: channel.role },
       );
-      const { peer, phrase } = await rtcPeer(provider, engine.id);
+      const { peer, phrase } = await rtcPeer(provider, engine.id, { iceServers: channel.iceServers });
       engine.attach(peer);
       return phrase;
     },

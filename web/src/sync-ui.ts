@@ -4,11 +4,13 @@
  * Same-origin tabs reconcile automatically (BroadcastChannel) — this dialog
  * exists for CROSS-DEVICE pairs. Manual pairing is the no-service path: one
  * blob per direction, exchanged by any means (a Telegram message works).
- * BobSwap pairing is automatic but needs a service that implements the sync
- * channel endpoints (`/api/v1/sync/channels…`); the default deployment may
- * not yet, in which case the dialog says so instead of hanging.
+ * BobSwap pairing is automatic: the service implements the sync channel
+ * endpoints (`/api/v1/sync/channels…`), pairing codes are single-use, and the
+ * signaling mailbox carries SDP/ICE only. The create/join responses supply the
+ * ICE servers the peer connection uses (STUN, plus TURN when configured).
  */
 import { activeSwapService, type SwapService } from "./swap";
+import { toIceServers } from "./sync/transport-webrtc";
 import type { SyncHandle } from "./sync";
 import type { SyncState } from "./sync/engine";
 
@@ -33,6 +35,7 @@ async function createSwapChannel(service: SwapService): Promise<{
   id: string;
   code: string;
   roleToken: string;
+  iceServers: RTCIceServer[];
 }> {
   const base = service.baseUrl.replace(/\/$/, "");
   const res = await fetch(`${base}/api/v1/sync/channels`, {
@@ -47,13 +50,19 @@ async function createSwapChannel(service: SwapService): Promise<{
     channel_id?: string;
     pairing_code?: string;
     role_token?: string;
+    ice_servers?: unknown;
     error?: string;
   };
   if (!res.ok) throw new Error(data.error ?? `service said HTTP ${res.status} (sync channels may not be deployed yet)`);
   if (!data.channel_id || !data.pairing_code || !data.role_token) {
     throw new Error("the service answered without a channel, pairing code or role token");
   }
-  return { id: data.channel_id, code: data.pairing_code, roleToken: data.role_token };
+  return {
+    id: data.channel_id,
+    code: data.pairing_code,
+    roleToken: data.role_token,
+    iceServers: toIceServers(data.ice_servers),
+  };
 }
 
 /** Join an existing sync channel (answerer side). */
@@ -61,7 +70,7 @@ async function joinSwapChannel(
   service: SwapService,
   id: string,
   code: string,
-): Promise<{ roleToken: string }> {
+): Promise<{ roleToken: string; iceServers: RTCIceServer[] }> {
   const base = service.baseUrl.replace(/\/$/, "");
   const res = await fetch(`${base}/api/v1/sync/channels/${encodeURIComponent(id)}/join`, {
     method: "POST",
@@ -71,10 +80,14 @@ async function joinSwapChannel(
     },
     body: JSON.stringify({ code }),
   });
-  const data = (await res.json().catch(() => ({}))) as { role_token?: string; error?: string };
+  const data = (await res.json().catch(() => ({}))) as {
+    role_token?: string;
+    ice_servers?: unknown;
+    error?: string;
+  };
   if (!res.ok) throw new Error(data.error ?? `join failed: HTTP ${res.status}`);
   if (!data.role_token) throw new Error("the service answered without a role token");
-  return { roleToken: data.role_token };
+  return { roleToken: data.role_token, iceServers: toIceServers(data.ice_servers) };
 }
 
 export function wireSyncUi(getSync: SyncGetter): void {
@@ -202,6 +215,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
           id: channel.id,
           roleToken: channel.roleToken,
           role: "offerer",
+          iceServers: channel.iceServers,
         });
         setVerify(phrase);
         setStatus("connected — both devices must show the same phrase");
@@ -232,6 +246,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
           id,
           roleToken: joined.roleToken,
           role: "answerer",
+          iceServers: joined.iceServers,
         });
         setVerify(phrase);
         setStatus("connected — both devices must show the same phrase");

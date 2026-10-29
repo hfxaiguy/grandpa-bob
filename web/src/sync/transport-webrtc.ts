@@ -17,7 +17,45 @@
  */
 import type { SyncEnvelope, SyncPeer } from "./engine";
 
+/**
+ * Fallback when a service supplies no ICE servers (or the manual-paste path,
+ * which never contacts a service). The BobSwap create/join responses carry
+ * their own `ice_servers` (STUN and, when deployed, TURN) — `toIceServers`
+ * normalizes those and `rtcPeer` uses them instead, so a deployment can add
+ * TURN without a client release.
+ */
 const STUN: RTCIceServer[] = [{ urls: ["stun:stun.l.google.com:19302"] }];
+
+/**
+ * Normalize a service's `ice_servers` field into RTCIceServer entries.
+ * Accepts `{ urls: string | string[], username?, credential?, credentialType? }`
+ * (a bare url string or list also works); invalid entries are dropped. An
+ * empty result means the caller should fall back to the built-in STUN list.
+ */
+export function toIceServers(raw: unknown): RTCIceServer[] {
+  type IceServer = RTCIceServer & { credentialType?: "password" | "oauth" };
+  const servers: IceServer[] = [];
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    if (entry === null || typeof entry !== "object") continue;
+    const record = entry as {
+      urls?: unknown;
+      username?: unknown;
+      credential?: unknown;
+      credentialType?: unknown;
+    };
+    const urls = Array.isArray(record.urls) ? record.urls : [record.urls];
+    const clean = urls.filter((url): url is string => typeof url === "string" && url.length > 0);
+    if (clean.length === 0) continue;
+    const server: IceServer = { urls: clean };
+    if (typeof record.username === "string") server.username = record.username;
+    if (typeof record.credential === "string") server.credential = record.credential;
+    if (record.credentialType === "password" || record.credentialType === "oauth") {
+      server.credentialType = record.credentialType;
+    }
+    servers.push(server);
+  }
+  return servers;
+}
 
 export interface SignalOffer {
   /** The pasted blob the OTHER side produced (offer for the joiner, answer for the offerer). */
@@ -243,11 +281,12 @@ export function verifyPhrase(pc: RTCPeerConnection): string {
 export async function rtcPeer(
   provider: SignalingProvider,
   engineId: string,
-  onState?: (text: string) => void,
+  opts: { iceServers?: RTCIceServer[]; onState?: (text: string) => void } = {},
 ): Promise<{ peer: SyncPeer; phrase: string }> {
-  const pc = new RTCPeerConnection({ iceServers: STUN });
+  const iceServers = opts.iceServers && opts.iceServers.length > 0 ? opts.iceServers : STUN;
+  const pc = new RTCPeerConnection({ iceServers });
   const channel = pc.createDataChannel("bob-sync", { ordered: true });
-  onState?.("signaling…");
+  opts.onState?.("signaling…");
   await provider.connect(pc);
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("data channel never opened")), 20_000);

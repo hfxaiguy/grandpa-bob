@@ -18,6 +18,7 @@ import path from "node:path";
 import { createNodePlatform } from "../src/platform/node.js";
 import { SyncEngine, type SyncEnvelope, type SyncPeer } from "../web/src/sync/engine";
 import { Journal } from "../web/src/sync/journal";
+import { toIceServers } from "../web/src/sync/transport-webrtc";
 
 /** An in-memory wire: deliveries land on whichever handler is registered. */
 class FakePeer implements SyncPeer {
@@ -195,6 +196,40 @@ try {
   await waitFor(() => fileGone(platformB, "todo.md"), "A's delete reaches B");
   const gone = await platformB.fs.stat(abs(platformB, "todo.md")).then(() => true).catch(() => false);
   assert.equal(gone, false, "A's delete reached B");
+
+  // ── service ICE servers ───────────────────────────────────────────────
+  // The BobSwap create/join responses carry ice_servers; the peer connection
+  // uses them (TURN included) instead of the hardcoded STUN fallback.
+  assert.deepEqual(
+    toIceServers([{ urls: ["stun:stun.example.org:443"] }]),
+    [{ urls: ["stun:stun.example.org:443"] }],
+    "a server STUN entry survives",
+  );
+  assert.deepEqual(
+    toIceServers([
+      {
+        urls: "turn:turn.example.org:443",
+        username: "user",
+        credential: "secret",
+        credentialType: "password",
+      },
+    ]),
+    [
+      {
+        urls: ["turn:turn.example.org:443"],
+        username: "user",
+        credential: "secret",
+        credentialType: "password",
+      },
+    ],
+    "a TURN entry keeps its credentials",
+  );
+  assert.deepEqual(toIceServers(undefined), [], "no field → empty (STUN fallback)");
+  assert.deepEqual(
+    toIceServers([{ urls: [] }, { urls: [1, null] }, "nonsense", null, 42]),
+    [],
+    "malformed entries are dropped, never thrown",
+  );
 
   console.log("sync engine: converge, LWW, conflict copy, tombstones OK");
 } catch (err) {

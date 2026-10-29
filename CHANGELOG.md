@@ -2,6 +2,21 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-29 — sync pairing uses the service's ICE servers
+
+The BobSwap channel create/join responses carry `ice_servers` (STUN today,
+TURN when the deployment adds it), but the client ignored the field and always
+dialed its own hardcoded STUN list.
+
+- `toIceServers()` normalizes the field (url-list or bare string, optional
+  `username`/`credential`/`credentialType`), drops malformed entries, and
+  returns empty when the service supplies nothing.
+- `rtcPeer()` takes `{ iceServers }` from the pairing response and falls back
+  to the built-in STUN list when the service provides none — behavior is
+  unchanged for the manual-paste path and for services without TURN.
+- Covered by `test:sync` (normalizer cases) and verified against the live
+  deployment: create and join both return the field, normalized intact.
+
 ## 2026-10-29 — OPFS workspaces ask to be persistent
 
 Browser workspaces are best-effort storage unless the origin is granted
