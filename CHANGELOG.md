@@ -2,6 +2,27 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-28 — ui: live tool calls under the running message
+
+A running turn only showed "running" in the tile header and a generic typing
+dot in Telegram; the actual tool activity was buried in the collapsible Events
+panel. The chat now keeps a live row under the last message for the tile the
+run is in: a pulsing **⟳ tool(args)** line for the call in flight (or
+**⟳ thinking…** between calls) and a muted **✓ / ✗ tool(args)** line for the
+most recently finished call. Rows vanish at turn end, where the token line and
+turn note already live; nested app runs stay on their own tile.
+
+The engine gained the event this needs: grandma-kat now logs `tool_start`
+before executing a call (auto-loop and `Call()` paths), so a tool is visible
+while it runs — previously `tool_call`/`tool_result` only landed after it
+finished. `ui/src/live-tool.ts` folds the turn's events into current/last-done
+per app using the same attribution stack as the server; `describeEvent` renders
+the new kind in the event logs too.
+
+Checks: `npm run test:live-tool-row`, `npm run test:ui-describe`,
+`npm run test:app-attribution`, `npm --prefix ui run typecheck`,
+`npm run build:ui`.
+
 ## 2026-10-27 — ui: ref handles open the inspector above any modal
 
 Clicking a `ref://…` handle inside a modal could open the ref inspector

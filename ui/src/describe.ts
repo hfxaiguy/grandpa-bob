@@ -117,6 +117,8 @@ function describeEventUncached(ev: SanitizedEvent): EventLine {
     }
     case "llm_error":
       return { ...base, badge: "llm!", text: s(c.error ?? c.message), cls: "err" };
+    case "tool_start":
+      return { ...base, badge: "tool…", text: `${s(c.tool)}(${s(c.args)}) — running`, cls: "tool" };
     case "tool_call":
       return { ...base, badge: "tool", text: `${s(c.tool)}(${s(c.args)})`, cls: "tool" };
     case "tool_result":

@@ -43,6 +43,7 @@ import {
 import type { AppInfo, ProvPiece, ProvWriter, Provenance, RefTarget, Turn, TurnTokens } from "./types";
 import { newTurnApps, tagEventApp } from "../../src/app-attribution";
 import { Markdown } from "./markdown";
+import { liveActivity, toolLabel } from "./live-tool";
 
 const trunkOf = (a?: string | null) => a || "trunk";
 
@@ -1059,12 +1060,23 @@ export function Tile(props: { app: AppInfo }) {
   // The app currently executing (shared with the hidden-tile rail).
   const running = createMemo(() => currentRunningApp() === name());
   const bubbles = createMemo(() => bubblesFor(name()));
+  // Live tool activity for this tile, folded from the running turn's events:
+  // the call executing now plus the one that finished most recently. Empty
+  // (and unrendered) unless this tile is the one the run is in.
+  const live = createMemo(() => {
+    if (!running()) return null;
+    const turn = state.turns.find((x) => x.status === "running");
+    if (!turn) return null;
+    const appNames = state.apps.length ? state.apps.map((a) => a.name) : undefined;
+    return liveActivity(turn, name(), appNames);
+  });
   const chatRef = { el: undefined as HTMLDivElement | undefined };
   // The bubble whose provenance panel is open (null = closed).
   const [prov, setProv] = createSignal<{ turnId: string; bubble: number; text: string } | null>(null);
 
   createEffect(() => {
     bubbles();
+    live();
     const el = chatRef.el;
     if (el) el.scrollTop = el.scrollHeight;
   });
@@ -1314,6 +1326,28 @@ export function Tile(props: { app: AppInfo }) {
                   </>
                 )}
               </For>
+            </Show>
+            {/* While the turn runs, its tool activity lives under the last
+                message: the call in flight, then the one that just finished.
+                Replaced at turn end by the token line / turn note above. */}
+            <Show when={live()}>
+              {(act) => (
+                <div class="turn-live">
+                  <div class="live-now">
+                    <span class="live-dot" />
+                    <Show when={act().current} fallback={<span class="live-text">{"\u27f3 thinking\u2026"}</span>}>
+                      {(cur) => <span class="live-text">{`\u27f3 ${toolLabel(cur().tool, cur().args)}`}</span>}
+                    </Show>
+                  </div>
+                  <Show when={act().lastDone}>
+                    {(done) => (
+                      <div class="live-done" classList={{ err: done().isError }}>
+                        {done().isError ? "\u2717" : "\u2713"} {toolLabel(done().tool, done().args)}
+                      </div>
+                    )}
+                  </Show>
+                </div>
+              )}
             </Show>
           </div>
           <Show when={showInput()}>

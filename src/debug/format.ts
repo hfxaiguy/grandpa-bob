@@ -32,6 +32,7 @@ const KIND_COLORS: Record<string, string> = {
 const KIND_LABELS: Record<string, string> = {
   llm_start: "llm…",
   llm_call: "llm",
+  tool_start: "tool…",
   tool_call: "tool",
   tool_result: "result",
   check: "check",
@@ -85,6 +86,12 @@ function formatContent(kind: string, c: Record<string, unknown>, path: string, i
           .join(", ");
         lines.push(`${C.yellow}    tool calls: ${calls}${C.reset}`);
       }
+      break;
+    }
+    case "tool_start": {
+      const tool = (c.tool as string) ?? (c.child as string) ?? "?";
+      const args = c.args ? `(${truncate(JSON.stringify(c.args), 60)})` : "";
+      lines.push(`${C.yellow}  tool…${C.reset}${path}: ${tool}${args} — running`);
       break;
     }
     case "tool_call": {
