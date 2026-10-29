@@ -421,13 +421,15 @@ button). A failed turn keeps a retry composer; the Stop button aborts the run.
 (`BOB_STT=1`, ffmpeg + whisper-server on the desktop); there is no in-tab
 model download. Browser mic access needs a secure context (`localhost`/HTTPS).
 
-**Sync.** Tabs of the same origin sync their workspace live through
-BroadcastChannel — an OPFS profile and a desktop-folder profile on one machine
-converge with no setup. Cross-device pairing (WebRTC; BobSwap REST mailbox or
-manual paste, with a 6-word verification phrase) is in the Sync… dialog under
-**Live sync → Pair…**; the BobSwap path needs a service that implements the
-sync-channel endpoints, and says so plainly when it does not. Sync never
-sends workspace bytes to a server: blobs carry only WebRTC addressing.
+**Sync.** Tabs of the same origin that share a workspace (same storage mode and
+profile) sync live through BroadcastChannel — no setup. Different workspaces
+(an OPFS profile vs a desktop-folder profile, or two profiles) pair through the
+dialog. Cross-device pairing (WebRTC; BobSwap REST mailbox or manual paste, with
+a 6-word verification phrase derived from both DTLS certificates) is in the
+Sync… dialog under **Live sync → Pair…**; the BobSwap path needs a service that
+implements the sync-channel endpoints, and says so plainly when it does not.
+Sync never sends workspace bytes to a server: blobs carry only WebRTC
+addressing. Full guide: [docs/pairing-and-sync.md](docs/pairing-and-sync.md).
 
 Telegram is wired through the channel: the session panel's **bridge** toggle
 drains the channel mailbox into the selected session, and **✈ send to
@@ -453,6 +455,9 @@ history and run logs stay per-replica).
 The old LAN git-daemon path (bare repo + `git://` pull/push on the phone) is
 retired for the app: it remains possible by hand on a desktop-folder profile
 (`git -C <folder> remote add …`), but the app no longer surfaces it.
+
+Step-by-step for both cases (same machine; server ↔ remote browser) and the
+troubleshooting table: [docs/pairing-and-sync.md](docs/pairing-and-sync.md).
 
 ## FAQ
 

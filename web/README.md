@@ -25,8 +25,12 @@ Companion channels — one process, one port (`npm run bob`, loopback only):
 The same modules keep their standalone CLIs (`npm run storage-server`,
 `npm run web:standalone`) for debugging a listener in isolation.
 
-Same-origin tabs sync live (BroadcastChannel); cross-device pairs through the
-Sync… → Live sync dialog (WebRTC; BobSwap REST or manual paste).
+Same-origin tabs sync live (BroadcastChannel) when they share a workspace —
+same storage mode and profile. Different profiles (including an OPFS profile
+vs a desktop-folder profile) are different workspaces and pair through the
+Sync… → Live sync dialog (WebRTC; BobSwap REST or manual paste). The full
+model — profiles, git vs replica sync, pairing, the verification phrase, and
+troubleshooting — is in [docs/pairing-and-sync.md](../docs/pairing-and-sync.md).
 
 > The sections below grew with the milestones and are kept as the record of
 > how the browser target reached parity — the *current* contract is the one

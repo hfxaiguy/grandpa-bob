@@ -2,6 +2,16 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-29 — pairing and sync guide
+
+`docs/pairing-and-sync.md` documents the full model: profile storage (OPFS vs
+desktop folders and the loopback bridge), git versus replica sync,
+same-workspace BroadcastChannel sync, cross-device pairing (BobSwap REST or
+manual paste), the two-certificate verification phrase, the server ↔
+remote-browser setup, and a troubleshooting table. README and web/README link
+to it, and the broadcast transport's header now states the real per-workspace
+channel scoping (`bob-sync:<storageMode>:<profile>`).
+
 ## 2026-10-29 — pairing phrase binds both certificates
 
 The WebRTC pairing verification phrase (SAS) is now derived from **both**

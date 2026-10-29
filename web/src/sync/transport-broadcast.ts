@@ -3,9 +3,10 @@
  *
  * The peers are already mutually authenticated by the origin — no pairing,
  * no signaling, no keys. Every message is structured-cloned (objects pass
- * whole), so the envelopes go over as-is. This is the day-one transport:
- * a tab running an OPFS profile and a tab running a desktop profile on the
- * same machine converge with nothing to set up.
+ * whole), so the envelopes go over as-is. Channels are scoped per workspace
+ * (`bob-sync:<storageMode>:<profile>`): tabs on the same workspace converge
+ * with nothing to set up, while different profiles — even on one machine —
+ * are different workspaces and pair through the WebRTC dialog.
  */
 import type { SyncEngine, SyncEnvelope, SyncPeer } from "./engine";
 
