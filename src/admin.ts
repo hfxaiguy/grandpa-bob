@@ -53,7 +53,7 @@ import { serializeTree } from "./tree-serialize.js";
 import { attachmentPrompt, saveAttachment, MAX_ATTACHMENT_BYTES } from "./attachments.js";
 import { createNodePlatform } from "./platform/node.js";
 import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "./db-sync.js";
-import { newTurnApps, tagEventApp as sharedTagEventApp, type TurnApps } from "./app-attribution.js";
+import { newTurnApps, seedPausedApp, tagEventApp as sharedTagEventApp, type TurnApps } from "./app-attribution.js";
 import { WebLog, MAX_TURNS } from "./web-log.js";
 import type { TurnTokens } from "./web-log-types.js";
 import { sanitizeEvent, type SanitizedEvent } from "./sanitize.js";
@@ -577,8 +577,12 @@ async function appNamesFor(workspaceDir: string): Promise<string[]> {
 }
 
 const turnApps = new Map<string, TurnApps>();
-function beginTurnApps(key: string, appNames?: Iterable<string>): TurnApps {
+function beginTurnApps(key: string, appNames?: Iterable<string>, pausedApp?: string | null): TurnApps {
   const st = newTurnApps(appNames);
+  // A resumed turn begins inside the app the previous turn paused in: the
+  // engine logs the human delivery (and the replayed prompt round) before the
+  // subtree's tree_enter, so those rows belong to the paused app's tile.
+  seedPausedApp(st, pausedApp);
   turnApps.set(key, st);
   return st;
 }
@@ -902,7 +906,7 @@ export function remoteTurnStart(key: string, input: string): void {
     turnId, input, inputApp, startedAt: now, endedAt: null, status: "running",
     error: null, output: null, events: [], runId: null, fromSeq: webLog.nextSeq(), toSeq: null,
   });
-  beginTurnApps(key, appNamesCache ?? undefined);
+  beginTurnApps(key, appNamesCache ?? undefined, inputApp);
   // Prime the set for this and later remote turns; the first turn after boot
   // may still tag with the legacy rule if the scan has not landed yet.
   if (!appNamesCache && appNamesWorkspaceDir) void appNamesFor(appNamesWorkspaceDir);
@@ -1140,8 +1144,9 @@ async function runTurn(agent: Agent, key: string, turnId: string, content: unkno
   };
   liveTurns.set(key, record);
   // Refresh the registry per turn: a newly knitted app must become a tile
-  // boundary without a restart.
-  beginTurnApps(key, appNamesWorkspaceDir ? await appNamesFor(appNamesWorkspaceDir) : appNamesCache ?? undefined);
+  // boundary without a restart. Seed the paused app too: a resumed walk's
+  // first rows (the human delivery) precede the subtree's tree_enter.
+  beginTurnApps(key, appNamesWorkspaceDir ? await appNamesFor(appNamesWorkspaceDir) : appNamesCache ?? undefined, record.inputApp);
   broadcast({ type: "turn_start", turnId, session: key, input: displayText, inputApp: record.inputApp ?? "trunk", ts: record.startedAt, awaiting: null });
 
   // A web-run turn that belongs to (or is followed by) a Telegram chat is

@@ -14,7 +14,7 @@ import type { Platform } from "../../../src/platform/types";
 import { listAppTrees, listPatterns, listTreeSources } from "../../../src/tree-sources";
 import { resolveTreeEntry } from "../../../src/tree-files";
 import { serializeTree } from "../../../src/tree-serialize";
-import { newTurnApps, tagEventApp, type TurnApps } from "../../../src/app-attribution";
+import { newTurnApps, seedPausedApp, tagEventApp, type TurnApps } from "../../../src/app-attribution";
 import { createMemoryTracker, type MemoryWrite } from "../../../src/memory-track";
 import { emitValue } from "../../../src/util/emit-text";
 import type { TurnTokens } from "../../../src/web-log-types";
@@ -550,6 +550,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     // turn so a newly knitted app is a boundary without a reload.
     const appNames = (await listAppTrees(platform.workspaceRoot).catch(() => [])).map((a) => a.name);
     const apps = newTurnApps(appNames);
+    // A resumed turn begins inside the app the previous turn paused in: the
+    // engine logs the human delivery before the subtree's tree_enter, so those
+    // rows belong to the paused app's tile (see seedPausedApp).
+    seedPausedApp(apps, record.inputApp);
     const running = agent.run(
       {
         task: text,

@@ -30,7 +30,7 @@ import os from "node:os";
 import path from "node:path";
 import events from "node:events";
 import { startAdmin } from "../src/admin.js";
-import { newTurnApps, tagEventApp, retagEvents } from "../src/app-attribution.js";
+import { newTurnApps, seedPausedApp, tagEventApp, retagEvents } from "../src/app-attribution.js";
 
 // ── 0. unit: the app stack walk ──
 {
@@ -150,7 +150,43 @@ import { newTurnApps, tagEventApp, retagEvents } from "../src/app-attribution.js
   );
   assert.deepEqual(r2.emitApps, ["enrich-profile", "contacts", "enrich-profile"], "emitApps carries the nested app");
 
-  console.log("0. unit: app stack walk (enter/exit/suspend + nested apps + retag)");
+  // A resumed turn starts inside the app it was paused in. The engine logs the
+  // delivered `human` row before the subtree re-enters, so without the seed it
+  // would land on the trunk tile; the seed also survives a nested app's exit
+  // and retires with the paused app's own invocation.
+  const st7 = newTurnApps(apps);
+  seedPausedApp(st7, "contacts");
+  assert.equal(
+    tagEventApp(st7, { kind: "human", content: { delivered: true, value: "left vm" } }),
+    "contacts",
+    "the delivered human row belongs to the paused app",
+  );
+  assert.equal(tagEventApp(st7, { kind: "tree_enter", content: { tool: "contacts" } }), "contacts", "the real re-entry stays on the app");
+  assert.equal(tagEventApp(st7, { kind: "tree_enter", content: { tool: "enrich-profile" } }), "enrich-profile", "a nested app keeps its own tile");
+  assert.equal(tagEventApp(st7, { kind: "llm_call" }), "enrich-profile", "the nested app's rows stay on its tile");
+  assert.equal(tagEventApp(st7, { kind: "tree_exit", content: { tool: "enrich-profile" } }), "enrich-profile");
+  assert.equal(tagEventApp(st7, { kind: "llm_call" }), "contacts", "after the nested app exits, still inside the resumed app");
+  assert.equal(tagEventApp(st7, { kind: "tree_exit", content: { tool: "contacts" } }), "contacts", "the walk's exit is its own completion");
+  assert.equal(tagEventApp(st7, { kind: "emit" }), "trunk", "once the walk closes, later events are the trunk's again");
+
+  // The real entry replaces the seed (no duplicate boundary); the exit retires
+  // it, so a completed walk leaves nothing behind.
+  const st8 = newTurnApps(apps);
+  seedPausedApp(st8, "contacts");
+  tagEventApp(st8, { kind: "tree_enter", content: { tool: "contacts" } });
+  assert.equal(st8.stack.length, 1, "the real entry replaces the seed");
+  tagEventApp(st8, { kind: "tree_exit", content: { tool: "contacts" } });
+  assert.equal(st8.stack.length, 0, "the walk's exit leaves no stale boundary");
+
+  // Only an app pause seeds; trunk (a fresh/complete session) and a missing
+  // pause seed nothing.
+  const st9 = newTurnApps(apps);
+  seedPausedApp(st9, "trunk");
+  seedPausedApp(st9, null);
+  seedPausedApp(st9, undefined);
+  assert.equal(st9.stack.length, 0, "trunk/absent pauses seed nothing");
+
+  console.log("0. unit: app stack walk (enter/exit/suspend + nested apps + retag + resume seed)");
 }
 
 const ws = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-app-attr-"));
@@ -355,6 +391,12 @@ await new Promise((r) => setTimeout(r, 150));
   }
   assert.equal(turns2.length, 2, "second turn recorded");
   assert.equal(turns2[1].inputApp, "contacts", "the reply is attributed to the paused app, not trunk");
+
+  // 7a. The resumed turn's rows before its tree_enter (the engine logs the
+  //     human delivery / replayed prompt round first) land on the paused app's
+  //     tile — live and on replay from the turn marker.
+  assert.equal(turns2[1].events[0]?.kind, "llm_call", "the resumed turn opens with its pre-entry row");
+  assert.equal(turns2[1].events[0]?.app, "contacts", "pre-re-entry rows belong to the paused app, not trunk");
 
   // 7b. A failed turn keeps the input on the app it was headed to (retryable),
   //     instead of clearing to nowhere.

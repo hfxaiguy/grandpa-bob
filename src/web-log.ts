@@ -27,7 +27,7 @@
  */
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { newTurnApps, tagEventApp } from "./app-attribution.js";
+import { newTurnApps, seedPausedApp, tagEventApp } from "./app-attribution.js";
 import { sanitizeEvent, type SanitizedEvent } from "./sanitize.js";
 import type { MemoryWrite } from "./memory-track.js";
 import type { EmitButton } from "./util/emit-text.js";
@@ -60,8 +60,14 @@ export type { DerivedTurn, StoredSession, TurnMarker } from "./web-log-types.js"
 function appLookup(
   treeEvents: { seq: number; kind: string; content: unknown }[],
   appNames?: Iterable<string>,
+  pausedApp?: string | null,
 ): (seq: number) => string {
   const st = newTurnApps(appNames);
+  // A resumed turn starts inside the app it was paused in: the engine logs the
+  // human delivery before the subtree's tree_enter, so the turn window's first
+  // rows would otherwise fall to the trunk.
+  seedPausedApp(st, pausedApp);
+  const seeded = st.current;
   const recs: { seq: number; app: string; after: string }[] = [];
   for (const ev of treeEvents) {
     const app = tagEventApp(st, ev);
@@ -73,7 +79,7 @@ function appLookup(
       const mid = (lo + hi) >> 1;
       if (recs[mid].seq <= seq) { ans = mid; lo = mid + 1; } else hi = mid - 1;
     }
-    if (ans < 0) return "trunk";
+    if (ans < 0) return seeded;
     const r = recs[ans];
     return r.seq === seq ? r.app : r.after;
   };
@@ -462,7 +468,7 @@ export class WebLog {
         events: [],
       };
       if (opts.withEvents && m.runId && m.fromSeq != null && m.toSeq != null) {
-        const replayed = this.turnEvents(m.runId, m.fromSeq, m.toSeq);
+        const replayed = this.turnEvents(m.runId, m.fromSeq, m.toSeq, m.inputApp);
         t.events = replayed.events;
         // The marker's emit tags were written under the old attribution rule.
         // The run log is authoritative when every stored bubble has one emit
@@ -479,7 +485,7 @@ export class WebLog {
    * not — so emitTags is queried separately and lines up with the marker's
    * stored emits one-to-one).
    */
-  private turnEvents(runId: string, fromSeq: number, toSeq: number): {
+  private turnEvents(runId: string, fromSeq: number, toSeq: number, pausedApp?: string | null): {
     events: SanitizedEvent[];
     emitApps: string[];
   } {
@@ -487,7 +493,7 @@ export class WebLog {
     const trees = this.db
       .prepare(`SELECT seq, kind, content FROM calls WHERE ${bounds} AND kind IN ('tree_enter','tree_exit','tree_suspend') ORDER BY seq`)
       .all(runId, fromSeq, toSeq) as { seq: number; kind: string; content: string }[];
-    const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })), this.appNames() ?? undefined);
+    const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })), this.appNames() ?? undefined, pausedApp);
     const emits = this.db
       .prepare(`SELECT seq FROM calls WHERE ${bounds} AND kind = 'emit' ORDER BY seq`)
       .all(runId, fromSeq, toSeq) as { seq: number }[];
@@ -521,18 +527,18 @@ export class WebLog {
     const out: MemoryWrite[] = [];
     for (const m of this.turnMarkers(key, true)) {
       if (!m.runId || m.fromSeq == null || m.toSeq == null) continue;
-      out.push(...this.memoryRows(m.runId, m.fromSeq, m.toSeq));
+      out.push(...this.memoryRows(m.runId, m.fromSeq, m.toSeq, m.inputApp));
     }
     return out.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
   }
 
   /** Raw memory-write rows in one turn's (fromSeq, toSeq], app-tagged. */
-  private memoryRows(runId: string, fromSeq: number, toSeq: number): MemoryWrite[] {
+  private memoryRows(runId: string, fromSeq: number, toSeq: number, pausedApp?: string | null): MemoryWrite[] {
     const bounds = "run_id = ? AND seq > ? AND seq <= ?";
     const trees = this.db
       .prepare(`SELECT seq, kind, content FROM calls WHERE ${bounds} AND kind IN ('tree_enter','tree_exit','tree_suspend') ORDER BY seq`)
       .all(runId, fromSeq, toSeq) as { seq: number; kind: string; content: string }[];
-    const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })), this.appNames() ?? undefined);
+    const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })), this.appNames() ?? undefined, pausedApp);
     const rows = this.db
       .prepare(`SELECT seq, kind, branch_path, scope_id, content FROM calls WHERE ${bounds} AND kind = 'record' ORDER BY seq`)
       .all(runId, fromSeq, toSeq) as { seq: number; kind: string; branch_path: string | null; scope_id: number | null; content: string | null }[];

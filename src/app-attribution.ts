@@ -34,6 +34,9 @@ export interface TurnAppEntry {
   name: string;
   /** This tree opens a tile — an app tree (or a tree marked `ownTile`). */
   boundary: boolean;
+  /** A synthetic entry seeded from the previous turn's pause (see
+   *  `seedPausedApp`), retired by the paused app's real enter/exit. */
+  seed?: boolean;
 }
 
 export interface TurnApps {
@@ -53,6 +56,32 @@ export function newTurnApps(appNames?: Iterable<string>): TurnApps {
     suspended: null,
     apps: appNames ? new Set(appNames) : null,
   };
+}
+
+/**
+ * Seed a fresh turn's attribution with the app a paused walk is resuming into.
+ *
+ * On resume the engine logs the delivered `human` row (and any other events of
+ * the replayed prompt round) BEFORE it re-enters the paused subtree — the
+ * subtree's `tree_enter` comes after. A fresh per-turn stack would tag those
+ * rows to the trunk, so the tile walk starts inside the paused app instead.
+ *
+ * The seed is a synthetic boundary on the stack, not just `current`: the
+ * resumed walk may enter a NESTED app (caller-list → contacts) straight away,
+ * and when that app exits, the walk is still inside caller-list — without the
+ * synthetic entry the fallback would jump to the trunk. `tagEventApp` retires
+ * the seed when the paused app's real entry arrives (and when its real
+ * invocation closes), so a walk that finishes mid-turn falls back to the
+ * trunk for the turn's remaining events.
+ *
+ * `suspended` is deliberately left alone: only a real `tree_suspend` marks a
+ * pause, so a resumed walk that completes does not claim the input box.
+ */
+export function seedPausedApp(st: TurnApps, app: string | null | undefined): void {
+  if (!app || app === "trunk") return;
+  if (st.apps && !st.apps.has(app)) return; // not an app tree — no tile to seed
+  st.stack.push({ name: app, boundary: true, seed: true });
+  st.current = app;
 }
 
 /** The app name carried by a tree_enter/exit/suspend event. */
@@ -99,6 +128,14 @@ export function tagEventApp(st: TurnApps, e: unknown): string {
   const name = appNameOf(e);
   let app = st.current;
   if (kind === "tree_enter" && name) {
+    // The real entry supersedes a resume seed of the same app: the walk has
+    // re-descended into it, so the synthetic boundary's job is done.
+    for (let i = st.stack.length - 1; i >= 0; i--) {
+      if (st.stack[i].seed && st.stack[i].name === name) {
+        st.stack.splice(i, 1);
+        break;
+      }
+    }
     st.stack.push({ name, boundary: isBoundary(st, e, name) });
     st.current = topBoundary(st.stack);
     app = st.current;
@@ -115,6 +152,18 @@ export function tagEventApp(st: TurnApps, e: unknown): string {
     const top = topBoundary(st.stack);
     app = leaving?.boundary ? leaving.name : top !== "trunk" ? top : name;
     if (i >= 0) st.stack.splice(i, 1);
+    // A resume seed survives nested apps' exits but must end with the paused
+    // app's own invocation: once no real entry for it remains, drop the seed
+    // so the turn's remaining (trunk-level) events tag the trunk again.
+    let seedIdx = -1;
+    let real = false;
+    for (let j = 0; j < st.stack.length; j++) {
+      const s = st.stack[j];
+      if (s.name !== name) continue;
+      if (s.seed) seedIdx = j;
+      else real = true;
+    }
+    if (seedIdx >= 0 && !real) st.stack.splice(seedIdx, 1);
     st.current = topBoundary(st.stack);
   } else if (kind === "tree_suspend" && name) {
     // A pause belongs to the app whose tile shows the input box: the topmost
