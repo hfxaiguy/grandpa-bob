@@ -56,6 +56,7 @@ import { listTreeSources } from "./tree-sources";
 import { resolveTreeEntry } from "./tree-files";
 import { patternLabel } from "./agent/pattern-path";
 import { createHostLease } from "./host-lease";
+import { startSync, activeSync } from "./sync";
 import { parseSeedMeta, seedFreshness, SEED_CLOCK_TOLERANCE_MS, type SeedMeta } from "./seed-version";
 import type { Platform } from "./platform/types";
 
@@ -962,6 +963,31 @@ async function main(): Promise<void> {
   const pattern = await detectPattern(platform);
   const agent = new AgentClient(activeProfileSegments);
   archiveAgent = agent;
+
+  // Real-time sync: journal + transports (BroadcastChannel same-origin; WebRTC
+  // peers pair through the Sync… dialog). Shared core, wire format and both
+  // transports are in place; the engine's reconcile protocol is experimental
+  // (its offline suite documents the open cases) — the shipped boot path does
+  // not enable it: pass ?sync=1 to develop it.
+  bootStage = "startSync";
+  if (params.has("sync")) {
+    const syncIdKey = `bob:sync-id:${storageMode}:${activeProfile}`;
+    let syncId = "";
+    try {
+      syncId = localStorage.getItem(syncIdKey) ?? "";
+      if (!syncId) {
+        syncId = crypto.randomUUID();
+        localStorage.setItem(syncIdKey, syncId);
+      }
+    } catch {
+      syncId = crypto.randomUUID();
+    }
+    const syncHandle = await startSync(platform, {
+      id: syncId,
+      channelName: `bob-sync:${storageMode}:${activeProfile}`,
+    });
+    void syncHandle;
+  }
   // When the admin serves this page, use ITS models.json (and /api/llm proxy)
   // so the browser, the chat UI and Telegram all share one model config.
   bootStage = "servedByAdmin";

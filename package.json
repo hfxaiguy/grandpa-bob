@@ -56,7 +56,8 @@
     "test:module-loader": "tsx scripts/module-loader-test.ts",
     "test:cdp": "tsx scripts/cdp-test.ts",
     "test:browser-tools": "tsx scripts/browser-tools-test.ts",
-    "test:ui-describe": "tsx scripts/ui-describe-test.ts"
+    "test:ui-describe": "tsx scripts/ui-describe-test.ts",
+    "test:sync": "tsx scripts/sync-engine-test.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
