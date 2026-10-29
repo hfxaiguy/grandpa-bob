@@ -95,7 +95,7 @@ export async function startSync(platform: Platform, opts: { id: string; channelN
     startManualPairing(role, onOutgoing) {
       const provider = new ManualSignaling(role);
       void provider.outgoing.then(onOutgoing).catch((err) => onOutgoing(`error: ${String(err)}`));
-      const done = rtcPeer(provider, engine.id).then(({ peer, phrase }) => {
+      const done = rtcPeer(provider, engine.id, { createChannel: role === "offerer" }).then(({ peer, phrase }) => {
         engine.attach(peer);
         return phrase;
       });
@@ -106,7 +106,10 @@ export async function startSync(platform: Platform, opts: { id: string; channelN
         { baseUrl: channel.baseUrl, readKey: channel.readKey },
         { id: channel.id, roleToken: channel.roleToken, role: channel.role },
       );
-      const { peer, phrase } = await rtcPeer(provider, engine.id, { iceServers: channel.iceServers });
+      const { peer, phrase } = await rtcPeer(provider, engine.id, {
+        iceServers: channel.iceServers,
+        createChannel: channel.role === "offerer",
+      });
       engine.attach(peer);
       return phrase;
     },

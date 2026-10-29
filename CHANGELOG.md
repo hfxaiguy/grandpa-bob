@@ -2,6 +2,34 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-29 — BobSwap signaling is live: contract fixes + a real-service smoke
+
+Matching the deployed sync-channel endpoints revealed three client defects,
+all fixed:
+
+- **Role-token auth**: the signal endpoints authenticate with the per-channel
+  `sct_` role token; the client was sending the account API key (`bsk_`)
+  everywhere, so the server answered "invalid role token".
+- **PUT, not POST**, for `PUT /api/v1/sync/channels/{id}/signal`.
+- **Trickled candidates were dropped**: candidates arriving before the peer's
+  SDP hit an `addIceCandidate` `InvalidStateError` (silently swallowed), and
+  candidates in the same feed batch *after* the SDP entry were skipped — the
+  connection then queued forever with ICE stuck on `new`. The signaling feed
+  is now drained continuously until the connection settles: per-side
+  candidates buffer until the remote description is applied, then everything
+  flows.
+
+Also: only the offer side creates the DataChannel now (the joiner attaches
+via `ondatachannel`) — both ends creating the channel collides during
+negotiation — and the signal feed parser accepts both response shapes
+(`{messages, cursor}` and the bare array).
+
+`smoke:pair-live` runs the full flow live: two real browsers, the real
+BobSwap service, the real UI (Sync… → Pair… → Create a channel / Join a
+channel), asserting channel create, join, the matching verification phrase
+on both devices and the DataChannel opening. Skips cleanly without
+`~/.bobkat/bobswap.json`. Verified against `https://bobswap.hfxaiguy.com`.
+
 ## 2026-10-29 — pairing and sync guide
 
 `docs/pairing-and-sync.md` documents the full model: profile storage (OPFS vs

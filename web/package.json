@@ -19,7 +19,8 @@
     "storage-server": "WORKSPACE_DIR=\"${WORKSPACE_DIR:-$HOME/grandma-workspace}\" node scripts/storage-server.mjs",
     "typecheck": "tsc --noEmit",
     "smoke:lease": "node scripts/lease-smoke.mjs",
-    "smoke:pairing": "node scripts/pairing-smoke.mjs"
+    "smoke:pairing": "node scripts/pairing-smoke.mjs",
+    "smoke:pair-live": "node scripts/pair-smoke.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

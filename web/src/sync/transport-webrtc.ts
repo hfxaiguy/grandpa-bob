@@ -78,6 +78,14 @@ interface IceBundle {
   candidates: RTCIceCandidateInit[];
 }
 
+/** One entry of the BobSwap signal feed. */
+interface SignalEntry {
+  seq: number;
+  from: string;
+  type: string;
+  payload: Record<string, unknown>;
+}
+
 /** Gather ALL candidates (non-trickle): the blob is complete in one paste. */
 async function gatherComplete(pc: RTCPeerConnection): Promise<void> {
   if (pc.iceGatheringState === "complete") return;
@@ -171,6 +179,8 @@ export class ManualSignaling implements SignalingProvider {
 // ── BobSwap REST mailbox (contract: /docs/agents → "Sync channels") ──────
 
 export class BobSwapSignaling implements SignalingProvider {
+  private stopped = false;
+
   constructor(
     private service: { baseUrl: string; readKey?: string },
     private channel: { id: string; roleToken: string; role: "offerer" | "answerer" },
@@ -181,80 +191,153 @@ export class BobSwapSignaling implements SignalingProvider {
     return `${this.service.baseUrl.replace(/\/$/, "")}${pathname}`;
   }
 
-  private headers(): Record<string, string> {
-    return {
-      "content-type": "application/json",
-      ...(this.service.readKey ? { authorization: `Bearer ${this.service.readKey}` } : {}),
-    };
+  /** The signal endpoints authenticate with the role token, not the API key. */
+  private signalHeaders(): Record<string, string> {
+    return { "content-type": "application/json", authorization: `Bearer ${this.channel.roleToken}` };
   }
 
-  private async post(pathname: string, body: unknown): Promise<Record<string, unknown>> {
-    const res = await fetch(this.url(pathname), {
-      method: "POST",
-      headers: this.headers(),
+  /** PUT is the contract's verb for signaling (POST is channel create/join). */
+  private async signal(body: unknown): Promise<Record<string, unknown>> {
+    const res = await fetch(this.url(`/api/v1/sync/channels/${this.channel.id}/signal`), {
+      method: "PUT",
+      headers: this.signalHeaders(),
       body: JSON.stringify(body),
     });
     const data = (await res.json().catch(() => ({}))) as { error?: string };
-    if (!res.ok) throw new Error(data.error ?? `BobSwap ${pathname}: HTTP ${res.status}`);
+    if (!res.ok) throw new Error(data.error ?? `BobSwap signal: HTTP ${res.status}`);
     return data;
   }
 
-  /** Poll the signal feed until the peer's offer/answer arrives. */
-  private async pollSignal(after: number): Promise<{ type: string; payload: Record<string, unknown> }> {
+  private async feed(after: number): Promise<{ entries: SignalEntry[]; cursor: number }> {
+    const res = await fetch(
+      this.url(`/api/v1/sync/channels/${this.channel.id}/signal?after=${after}`),
+      { headers: this.signalHeaders() },
+    );
+    if (!res.ok) throw new Error(`BobSwap signal poll: HTTP ${res.status}`);
+    const data = (await res.json()) as unknown;
+    // Both response shapes are accepted: {messages, cursor} and a bare array
+    // (the contract text says "Array of peer messages").
+    const entries: SignalEntry[] = Array.isArray(data)
+      ? (data as SignalEntry[])
+      : ((data as { messages?: SignalEntry[] }).messages ?? []);
+    const cursor = Array.isArray(data)
+      ? entries.reduce(
+          (max, m) => (typeof m?.seq === "number" ? Math.max(max, m.seq) : max),
+          after,
+        )
+      : ((data as { cursor?: number }).cursor ?? after);
+    return { entries, cursor };
+  }
+
+  /**
+   * Candidates pooled from the feed: ICE gathering starts immediately on both
+   * sides, so candidates often arrive BEFORE the peer's SDP — adding them
+   * prior to `setRemoteDescription` is an InvalidStateError, so they wait
+   * here until the remote description is applied.
+   */
+  private pending: unknown[] = [];
+
+  private async applyCandidates(pc: RTCPeerConnection, payload: unknown): Promise<void> {
+    const list = (payload as { candidates?: unknown[] }).candidates;
+    if (!Array.isArray(list)) return;
+    for (const c of list) {
+      if (c && typeof c === "object") await pc.addIceCandidate(c as RTCIceCandidateInit).catch(() => {});
+    }
+  }
+
+  /** Poll the feed; collect candidates and hold them until the peer's SDP arrives. */
+  private async awaitPeerSdp(
+    kind: "offer" | "answer",
+  ): Promise<{ sdp: string; cursor: number }> {
+    let cursor = 0;
     for (;;) {
-      const res = await fetch(
-        this.url(`/api/v1/sync/channels/${this.channel.id}/signal?after=${after}`),
-        { headers: this.headers() },
-      );
-      if (!res.ok) throw new Error(`BobSwap signal poll: HTTP ${res.status}`);
-      const data = (await res.json()) as {
-        messages?: Array<{ seq: number; from: string; type: string; payload: Record<string, unknown> }>;
-        cursor?: number;
-      };
-      after = data.cursor ?? after;
-      const hit = (data.messages ?? []).find((m) => m.from !== this.channel.role);
-      if (hit) return { type: hit.type, payload: hit.payload };
+      const { entries, cursor: next } = await this.feed(cursor);
+      let hit: { sdp: string } | null = null;
+      for (const m of entries) {
+        if (m.from === this.channel.role) continue;
+        if (m.type === kind && !hit) {
+          const sdp = (m.payload as { sdp?: unknown }).sdp;
+          if (typeof sdp !== "string" || sdp.length === 0) throw new Error(`peer sent an empty ${kind}`);
+          hit = { sdp };
+        } else if (m.type === "candidates") {
+          const list = (m.payload as { candidates?: unknown[] }).candidates;
+          if (Array.isArray(list)) this.pending.push(...list);
+        }
+      }
+      cursor = next;
+      if (hit) return { ...hit, cursor };
       this.onStatus?.("waiting for the peer's signal…");
-      await new Promise((r) => setTimeout(r, 2000));
+      if (this.stopped) throw new Error("signaling stopped while waiting for the peer");
+      await new Promise((r) => setTimeout(r, 1_000));
+    }
+  }
+
+  /** Apply SDP-dependent state that had to wait for the remote description. */
+  private async flushPending(pc: RTCPeerConnection): Promise<void> {
+    const buffered = this.pending.splice(0);
+    for (const c of buffered) {
+      if (c && typeof c === "object") await pc.addIceCandidate(c as RTCIceCandidateInit).catch(() => {});
+    }
+  }
+
+  /**
+   * Post-exchange candidate drain: SDP and ICE candidates trickle
+   * independently, so the feed must be read until the connection settles —
+   * missing a candidate queues the connection forever otherwise.
+   */
+  private async drainCandidates(pc: RTCPeerConnection, cursor: number): Promise<void> {
+    for (;;) {
+      const settled = ["connected", "failed", "closed"].includes(pc.connectionState);
+      if (this.stopped || settled) return;
+      try {
+        const { entries, cursor: next } = await this.feed(cursor);
+        cursor = next;
+        for (const m of entries) {
+          if (m.from === this.channel.role) continue;
+          if (m.type === "candidates") void this.applyCandidates(pc, m.payload);
+        }
+      } catch (err) {
+        if (this.stopped) return;
+        this.onStatus?.(`candidate drain: ${err instanceof Error ? err.message : String(err)} — retrying`);
+      }
+      await new Promise((r) => setTimeout(r, 1_000));
     }
   }
 
   async connect(pc: RTCPeerConnection): Promise<void> {
-    const candidates: RTCIceCandidateInit[] = [];
     pc.onicecandidate = (event) => {
       const candidate = event.candidate?.toJSON();
       if (candidate) {
-        candidates.push(candidate);
-        // Trickle: push each candidate as it arrives (small messages).
-        void this.post(`/api/v1/sync/channels/${this.channel.id}/signal`, {
-          type: "candidates",
-          payload: { candidates: [candidate] },
-        }).catch(() => {});
+        void this.signal({ type: "candidates", payload: { candidates: [candidate] } }).catch(() => {});
       }
     };
+    pc.addEventListener("connectionstatechange", () => {
+      if (pc.connectionState === "connected") this.onStatus?.("peer connection up");
+    });
     if (this.channel.role === "offerer") {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      await this.post(`/api/v1/sync/channels/${this.channel.id}/signal`, {
-        type: "offer",
-        payload: { sdp: pc.localDescription!.sdp, type: "offer" },
-      });
-      const answer = await this.pollSignal(0);
-      await pc.setRemoteDescription({ type: "answer", sdp: String(answer.payload.sdp) });
+      await this.signal({ type: "offer", payload: { sdp: pc.localDescription!.sdp, type: "offer" } });
+      const remote = await this.awaitPeerSdp("answer");
+      await pc.setRemoteDescription({ sdp: remote.sdp, type: "answer" });
+      await this.flushPending(pc);
+      void this.drainCandidates(pc, remote.cursor);
     } else {
-      const offer = await this.pollSignal(0);
-      await pc.setRemoteDescription({ type: "offer", sdp: String(offer.payload.sdp) });
+      const remote = await this.awaitPeerSdp("offer");
+      await pc.setRemoteDescription({ sdp: remote.sdp, type: "offer" });
+      await this.flushPending(pc);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      await this.post(`/api/v1/sync/channels/${this.channel.id}/signal`, {
-        type: "answer",
-        payload: { sdp: pc.localDescription!.sdp, type: "answer" },
-      });
+      await this.signal({ type: "answer", payload: { sdp: pc.localDescription!.sdp, type: "answer" } });
+      void this.drainCandidates(pc, remote.cursor);
     }
   }
 
-  close(): void {}
+  close(): void {
+    this.stopped = true;
+  }
 }
+
 
 /** Every `a=fingerprint:` value in an SDP, normalized so both sides agree. */
 function fingerprints(sdp: string): string[] {
@@ -295,33 +378,57 @@ export function verifyPhrase(pc: RTCPeerConnection): string {
   return pairingPhrase(pc.localDescription?.sdp ?? "", pc.remoteDescription?.sdp ?? "");
 }
 
-/** Wire the data channel + signaling into a SyncPeer. */
+/**
+ * Wire the data channel + signaling into a SyncPeer.
+ *
+ * Only the OFFER side creates the channel (it is negotiated in the offer's
+ * SDP); the joiner attaches to the peer's channel via `ondatachannel` — both
+ * ends calling `createDataChannel` for the same stream collides during
+ * negotiation.
+ */
 export async function rtcPeer(
   provider: SignalingProvider,
   engineId: string,
-  opts: { iceServers?: RTCIceServer[]; onState?: (text: string) => void } = {},
+  opts: { createChannel?: boolean; iceServers?: RTCIceServer[]; onState?: (text: string) => void } = {},
 ): Promise<{ peer: SyncPeer; phrase: string }> {
   const iceServers = opts.iceServers && opts.iceServers.length > 0 ? opts.iceServers : STUN;
   const pc = new RTCPeerConnection({ iceServers });
-  const channel = pc.createDataChannel("bob-sync", { ordered: true });
+  const awaitOpen = (channel: RTCDataChannel): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("data channel never opened")), 20_000);
+      if (channel.readyState === "open") {
+        clearTimeout(timer);
+        resolve();
+        return;
+      }
+      channel.onopen = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      channel.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error("data channel failed"));
+      };
+    });
   opts.onState?.("signaling…");
-  await provider.connect(pc);
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("data channel never opened")), 20_000);
-    if (channel.readyState === "open") {
-      clearTimeout(timer);
-      resolve();
-      return;
-    }
-    channel.onopen = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    channel.onerror = () => {
-      clearTimeout(timer);
-      reject(new Error("data channel failed"));
-    };
-  });
+  let channel: RTCDataChannel;
+  if (opts.createChannel === false) {
+    // Joiner: the channel arrives inside the offer/answer negotiation. The
+    // handler must be registered before the signaling transport touches the
+    // remote description.
+    channel = await new Promise<RTCDataChannel>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("the other side never opened a data channel")), 20_000);
+      pc.ondatachannel = (event) => {
+        clearTimeout(timer);
+        resolve(event.channel);
+      };
+      void provider.connect(pc).catch(reject);
+    });
+  } else {
+    channel = pc.createDataChannel("bob-sync", { ordered: true });
+    await provider.connect(pc);
+  }
+  await awaitOpen(channel);
   const peer: SyncPeer = {
     id: engineId,
     send(envelope: SyncEnvelope): void {
