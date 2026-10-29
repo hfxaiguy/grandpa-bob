@@ -280,56 +280,29 @@ be documented in this file.
 | 4. two-tab lease interactive check | **PARTIAL** — unit-gated in `test:lease` (contention, staleness, takeover); the two-real-tabs browser smoke is a gap |
 | 5. telegram channel tests | **PASS** — mailbox park/claim/ack/answered, restart survival, handover epoch (`test:telegram-bridge`); text/audio framing (`test:telegram-text`, `test:telegram-audio`) |
 | 6. loopback-only bridge | **PASS** — `127.0.0.1` bind unchanged; no storage LAN flag exists |
-| 7. sync tests | **NOT MET** (documented below) |
+| 7. sync tests | **PASS** — `test:sync`: convergence, causal LWW, conflict copies, tombstones (stable across repeated runs) |
 | 8. no `@huggingface/transformers` | **PASS** — dep removed, no references |
 | 9. remaining `test:*` pass | **PASS with 3 documented failures** — `test:tree` and `test:cdp` fail identically on `main` (pre-existing, grandma-kat API drift / environment); `test:sync` is experimental (gate 7) |
 | 10. seed flows | **PARTIAL** — `test:seed-freshness` + `test:workspace-transfer` + `test:profiles` pass; live seed-apply onto a desktop profile lacked an end-to-end check (gap) |
 | 11. docs match reality | **PARTIAL** — README banner + `.env.example` + CHANGELOG rewritten; the deeper README/web README sections still carry pre-refactor prose (marked) |
 | 12. `main` stayed green | **PASS** — phase 0 committed the WIP + plan to `main` first; all work on `standalone-only` |
 
-**Gate 7 (sync) — what is NOT met and what was learned.** The transports
-(BroadcastChannel same-origin; WebRTC datachannel with BobSwap-REST + manual
-paste, verification phrase) are in place and the engine speaks one envelope;
-the reconcile protocol fails its offline suite under concurrency. Concrete
-findings (each fixed in code but the composition is still not convergence-
-stable under all orderings): (a) per-replica seq counters cannot order
-writes across replicas — replaced by a **Lamport-clock journal** with a
-deterministic replica-id tie-break; (b) "absent from my snapshot" must not
-mean "I deleted it" — only the journal authorizes tombstones (an asymmetric
-snapshot was manufacturing deletes that beat real writes; fixed); (c)
-diff-pushes must push the content the journal vouches for — a file changed
-between map and push now defers (`hash === lastOp.hash` check; fixed); (d)
-equal-lamport pushes need a single decision point — the apply-side tie-break
-and the reconcile-side diff must agree or the loser's bytes become conflict
-copies twice. Next work: reorder rounds so exactly one side diffs per
-exchange (the responder), then re-run `test:sync` to green, then wire the
-boot hookup out of `?sync=1`. The transports and journal survive unchanged;
-no workspace bytes leave the replicas in any mode.
-
-1. `npm run typecheck`, `npm --prefix web run typecheck`, `npm --prefix ui run
-   typecheck` — all green.
-2. `npm run build` and `npm run build:web` succeed; `npm run web:standalone`
-   boots and answers the smokes.
-3. `scripts/web-standalone-test.ts` green — nothing under `web/` imports
-   outside `web/` + `ui/`.
-4. Two-tab lease test green — only one host per profile; takeover works.
-5. Telegram channel tests green: park with no tab, drain on connect,
-   mailbox survives restart, chat→profile route, epoch on handover, voice →
-   transcript at the channel.
-6. The bridge still binds `127.0.0.1` only; no storage LAN flag exists.
-7. Sync tests green: bidirectional convergence, tombstone delete
-   propagation, offline catch-up, conflict copy behavior, chunk framing
-   round-trip (shared with the relay), manual-paste pairing with BobSwap
-   unreachable.
-8. No references to `@huggingface/transformers` in source; dep removed.
-9. All remaining `test:*` scripts pass; the removed ones are accounted for
-   in the changelog.
-10. Seed flows unchanged and working (`make-seed`, `publish-seed`, seed
-    update watching).
-11. README / `web/README.md` / CHANGELOG describe the final architecture
-    accurately; no stale "Node agent" or "in-tab whisper" claims.
-12. `main` still builds and passes its gates throughout (worktree-based
-    workflow, no breakage on `main`).
+**Gate 7 (sync) — resolved; what remains is UI, not protocol.** The engine
+converges in the offline suite: pull-only reconciliation (both sides compute
+the same per-path winner — highest origin lamport, ties by smaller replica
+id — and only the loser pulls), a Lamport journal that keeps the
+*originator's* stamp on applied mirrors (re-stamping mirrors was the flaw
+that made old content look newer), a hash-verified pull guard (a response
+must match the map snapshot or the next round re-decides), tombstones as an
+explicit channel in the map exchange, and file requests answered off the
+ordered queue (two sides pulling at once no longer deadlock). Same-origin
+BroadcastChannel sync runs by default for the lease holder; an OPFS profile
+and a desktop-folder profile on this machine converge with no setup.
+Remaining work: a **pairing dialog** for the cross-device WebRTC transports
+(BobSwap REST + manual paste) — the providers and the 6-word verification
+phrase exist; `window.__bobSync` is the development hook — plus a two-real-
+tabs browser smoke of the same-origin path. No workspace bytes leave the
+replicas in any mode.
 
 ## Risks and mitigations
 

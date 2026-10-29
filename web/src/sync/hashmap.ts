@@ -9,7 +9,16 @@
  */
 import type { Platform } from "../platform/types";
 
-const EXCLUDED = [/^\.git\//, /^\.gpb-/, /^logs\//, /^assets\/inbox\//, /(^|\/)\.gpb-sync\//];
+const EXCLUDED = [
+  /^\.git\//,
+  /^\.gpb-/,
+  /^logs\//,
+  /^assets\/inbox\//,
+  /(^|\/)\.gpb-sync\//,
+  // Conflict copies are sync-generated: they must never round-trip (a copy
+  // of a copy of a copy) — the plan's rule, enforced here.
+  /\.conflict-[0-9T-]+$/,
+];
 
 function excluded(rel: string): boolean {
   return EXCLUDED.some((re) => re.test(rel));

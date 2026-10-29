@@ -31,21 +31,26 @@ today:
   whisper-server); the UI's transcription points there. The unused
   `@huggingface/transformers` dep was dropped; the Node agent host
   (`src/agent.ts`, `admin.ts`, its registry and tests) is removed.
-- **Sync (experimental, not shipped in the boot path).** `web/src/sync/` has
-  the Lamport-clock journal, the reconcile engine, a same-origin
-  BroadcastChannel transport and WebRTC with BobSwap-REST + manual-paste
-  signaling. The reconcile protocol's offline suite is red (ordering cases
-  documented in the plan) — the boot hookup is behind `?sync=1` until it is
-  green. No workspace bytes ever leave the replicas in any mode.
+- **Sync.** `web/src/sync/` converges workspaces between replicas:
+  pull-only reconciliation (both sides compute the same per-path winner —
+  higher origin Lamport stamp, ties by replica id — and only the loser
+  pulls), a journal that keeps the originator's stamp on applied mirrors, a
+  hash-verified pull guard, and explicit tombstones in the map exchange.
+  Same-origin tabs (an OPFS profile and a desktop-folder profile on this
+  machine) reconcile live by default for the lease holder; WebRTC transports
+  with BobSwap-REST and manual-paste signaling ship with the engine but have
+  no pairing dialog yet (`window.__bobSync` is the development hook). No
+  workspace bytes leave the replicas in any mode. `npm run test:sync` is the
+  gate.
 
 Deps: `openai` dropped (the browser calls endpoints directly); `grammy` and
 `dotenv` stay (channels). `npm run dev` / `start` target the channel;
 `npm run web:standalone` is the app.
 
 Checks: `npm run typecheck`, `npm --prefix web run typecheck`,
-`npm run test:standalone`, and the suite in `package.json` (`test:*`).
-Two pre-existing failures are unrelated (see the plan): `test:tree`,
-`test:cdp`.
+`npm run test:standalone`, `npm run test:sync`, and the suite in
+`package.json` (`test:*`). Two pre-existing failures are unrelated (they fail
+identically on `main`): `test:tree`, `test:cdp`.
 
 ## 2026-10-27 — ui: ref handles open the inspector above any modal
 

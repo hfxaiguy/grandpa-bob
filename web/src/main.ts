@@ -964,13 +964,14 @@ async function main(): Promise<void> {
   const agent = new AgentClient(activeProfileSegments);
   archiveAgent = agent;
 
-  // Real-time sync: journal + transports (BroadcastChannel same-origin; WebRTC
-  // peers pair through the Sync… dialog). Shared core, wire format and both
-  // transports are in place; the engine's reconcile protocol is experimental
-  // (its offline suite documents the open cases) — the shipped boot path does
-  // not enable it: pass ?sync=1 to develop it.
+  // Real-time sync: journal + BroadcastChannel transports (same-origin tabs
+  // reconcile live — an OPFS profile and a desktop-folder profile on this
+  // machine converge with nothing to set up). Cross-device WebRTC pairing has
+  // its transports and signaling providers in `web/src/sync/`, but no dialog
+  // yet — `window.__bobSync` is the development hook. Only the lease holder
+  // syncs, so a read-only tab never writes the workspace.
   bootStage = "startSync";
-  if (params.has("sync")) {
+  if (lease?.status() === "primary") {
     const syncIdKey = `bob:sync-id:${storageMode}:${activeProfile}`;
     let syncId = "";
     try {
@@ -986,7 +987,7 @@ async function main(): Promise<void> {
       id: syncId,
       channelName: `bob-sync:${storageMode}:${activeProfile}`,
     });
-    void syncHandle;
+    (window as unknown as { __bobSync?: unknown }).__bobSync = syncHandle;
   }
   // When the admin serves this page, use ITS models.json (and /api/llm proxy)
   // so the browser, the chat UI and Telegram all share one model config.

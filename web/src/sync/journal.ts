@@ -79,17 +79,57 @@ export class Journal {
     return null;
   }
 
+  /** Paths whose LAST op is a tombstone, with the tombstone's lamport.
+   *  Deletions must travel explicitly: a hashmap lists existing files, so a
+   *  deleted path is otherwise invisible to the peer. */
+  deletions(): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const op of this.ops) {
+      if (op.op === "delete") out.set(op.path, op.lamport);
+      else out.delete(op.path);
+    }
+    return out;
+  }
+
   /** The replica's known lamport for a path (0 = never seen here). */
   lamportFor(path: string): number {
     return this.lamportByPath.get(path) ?? 0;
   }
 
-  /** Record one LOCAL mutation: bump the clock, journal, schedule persist. */
+  /** Record one LOCAL mutation: the stamp is strictly newer than anything
+   *  known for this path, so a local write causally follows what it saw. */
   recordOp(op: Omit<SyncOp, "lamport" | "at">): SyncOp {
     const last = this.lastOpFor(op.path);
     if (last && last.op === op.op && last.hash === op.hash) return last; // idempotent
-    this.clock += 1;
+    const base = Math.max(this.clock, this.lamportByPath.get(op.path) ?? 0);
+    this.clock = base + 1;
     const full: SyncOp = { ...op, lamport: this.clock, at: new Date().toISOString() };
+    this.ops.push(full);
+    this.lamportByPath.set(full.path, full.lamport);
+    this.schedulePersist();
+    return full;
+  }
+
+  /**
+   * Record an APPLIED remote op under the ORIGINATING side's lamport.
+   *
+   * This is what keeps per-path stamps meaningful: re-stamping a mirror with
+   * my own (clock-inflated) value would make content that came FROM the peer
+   * look newer than the peer's own later writes — every mirror would fabricate
+   * a fresher version. The originating stamp is the version; my clock only
+   * advances so my own future writes are causally later.
+   */
+  recordRemoteOp(op: Omit<SyncOp, "at">): SyncOp {
+    if (op.lamport > this.clock) this.clock = op.lamport;
+    const current = this.lamportByPath.get(op.path) ?? 0;
+    if (op.lamport < current) {
+      // An older version than what I already hold: keep the stamp, no append.
+      const last = this.lastOpFor(op.path);
+      return last ?? { ...op, at: new Date().toISOString() };
+    }
+    const full: SyncOp = { ...op, at: new Date().toISOString() };
+    const last = this.lastOpFor(op.path);
+    if (last && last.op === full.op && last.hash === full.hash && last.lamport === full.lamport) return last;
     this.ops.push(full);
     this.lamportByPath.set(full.path, full.lamport);
     this.schedulePersist();

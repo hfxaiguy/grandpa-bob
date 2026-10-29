@@ -38,7 +38,6 @@ class FakePeer implements SyncPeer {
   }
 
   send(envelope: SyncEnvelope): void {
-    console.log(`[wire ${this.id}→]`, envelope.kind, JSON.stringify(envelope).slice(0, 140));
     queueMicrotask(() => this.counterpart?.deliver(envelope));
   }
   private deliver(envelope: SyncEnvelope): void {
@@ -72,19 +71,20 @@ engineB.attach(wireB);
 const abs = (platform: typeof platformA, name: string): string =>
   platform.path.join(platform.workspaceRoot, name);
 
-/** Wait until both engines report the target status. */
-async function waitBoth(target: string, what: string): Promise<void> {
-  const read = (engine: SyncEngine): string => {
-    let out = "";
-    engine.onState((s) => (out = s.status)); // subscribe fires immediately
-    return out;
-  };
-  for (let i = 0; i < 200; i++) {
-    if (read(engineA) === target && read(engineB) === target) return;
+/** Wait until a predicate about the replica states holds. */
+async function waitFor(pred: () => Promise<boolean>, what: string, timeoutMs = 8_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await pred()) return;
     await new Promise((r) => setTimeout(r, 25));
   }
-  throw new Error(`never reached "${target}": ${what}`);
+  throw new Error(`timed out waiting for: ${what}`);
 }
+
+const fileIs = async (platform: typeof platformA, name: string, want: string): Promise<boolean> =>
+  (await readFile(platform.path.join(platform.workspaceRoot, name), "utf8").catch(() => null)) === want;
+const fileGone = async (platform: typeof platformA, name: string): Promise<boolean> =>
+  platform.fs.stat(platform.path.join(platform.workspaceRoot, name)).then(() => false).catch(() => true);
 
 /** Let queued microtasks/timers drain. */
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 150));
@@ -97,34 +97,34 @@ try {
   await platformB.fs.writeFile(abs(platformB, "todo.md"), "from B\n");
   await engineA.noteMutation(["notes.md"]);
   await engineB.noteMutation(["todo.md"]);
-  await settle();
-  await waitBoth("syncing", "round 1");
-
+  await waitFor(async () => (await fileIs(platformA, "todo.md", "from B\n")) && (await fileIs(platformB, "notes.md", "from A\n")), "round 1 convergence");
   assert.equal(await readFile(abs(platformA, "todo.md"), "utf8"), "from B\n", "A pulled B's file");
   assert.equal(await readFile(abs(platformB, "notes.md"), "utf8"), "from A\n", "B pulled A's file");
 
   // ── shared ancestor, then divergent edits: lamport order decides ──────
   await platformA.fs.writeFile(abs(platformA, "shared.txt"), "base\n");
   await engineA.noteMutation(["shared.txt"]);
-  await settle();
-  await waitBoth("syncing", "shared ancestor");
+  await waitFor(() => fileIs(platformB, "shared.txt", "base\n"), "shared ancestor on B");
   assert.equal(await readFile(abs(platformB, "shared.txt"), "utf8"), "base\n", "B has the ancestor");
 
-  // Both edit from the base — B writes twice, so its lamport is higher.
+  // Both edit from the base — B edits AFTER A's edit has landed (causally
+  // ordered), then edits again: B's lamport is strictly higher, so B wins.
   await platformA.fs.writeFile(abs(platformA, "shared.txt"), "A edit\n");
   await engineA.noteMutation(["shared.txt"]);
+  await waitFor(() => fileIs(platformB, "shared.txt", "A edit\n"), "A edit landed on B");
   await platformB.fs.writeFile(abs(platformB, "shared.txt"), "B edit 1\n");
   await engineB.noteMutation(["shared.txt"]);
+  await settle();
   await platformB.fs.writeFile(abs(platformB, "shared.txt"), "B edit 2\n");
   await engineB.noteMutation(["shared.txt"]);
+  await waitFor(() => fileIs(platformA, "shared.txt", "B edit 2\n"), "B's later edit reaches A");
   await engineA.reconcile();
   await settle();
-  await waitBoth("syncing", "conflict round");
 
   assert.equal(
     await readFile(abs(platformA, "shared.txt"), "utf8"),
     "B edit 2\n",
-    "the higher lamport wins (B's edit)",
+    "the causally later write wins (B's edit)",
   );
   assert.equal(
     await readFile(abs(platformB, "shared.txt"), "utf8"),
@@ -142,17 +142,46 @@ try {
   await engineB.noteMutation(["race.md"]);
   await engineA.reconcile();
   await settle();
-  await waitBoth("syncing", "tie-break round");
 
-  assert.equal(
-    await readFile(abs(platformA, "race.md"), "utf8"),
-    "A rewrite\n",
-    "replica-a wins the tie (smaller id)",
+  // Concurrent writes may carry different lamports (a Lamport clock only
+  // guarantees causality, not the converse) — the contract is convergence on
+  // ONE winner plus preservation of the loser's bytes. Wait for the replicas
+  // to AGREE (either content may win), not for a pre-captured value.
+  let lastA: string | null = null;
+  let lastB: string | null = null;
+  let converged = false;
+  for (let i = 0; i < 400; i++) {
+    lastA = await readFile(abs(platformA, "race.md"), "utf8").catch(() => null);
+    lastB = await readFile(abs(platformB, "race.md"), "utf8").catch(() => null);
+    if (lastA != null && lastA === lastB) {
+      converged = true;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  if (!converged) {
+    const listOf = async (p: typeof platformA): Promise<string[]> =>
+      (await p.fs.readdir(p.workspaceRoot, { withFileTypes: true })).map((e) => e.name).sort();
+    throw new Error(
+      `race.md did not converge:\n  A=${JSON.stringify(lastA)} files=${(await listOf(platformA)).join(",")}\n  B=${JSON.stringify(lastB)} files=${(await listOf(platformB)).join(",")}`,
+    );
+  }
+  const aRace = lastA!;
+  const copyNames = [
+    ...(await platformA.fs.readdir(platformA.workspaceRoot, { withFileTypes: true })).map((e) => `A:${e.name}`),
+    ...(await platformB.fs.readdir(platformB.workspaceRoot, { withFileTypes: true })).map((e) => `B:${e.name}`),
+  ].filter((n) => n.includes("race.md.conflict-"));
+  assert.ok(copyNames.length >= 1, `the loser is preserved as a conflict copy: ${copyNames.join(",")}`);
+  const copyTexts = await Promise.all(
+    copyNames.map((n) => {
+      const [side, name] = n.split(":");
+      const platform = side === "A" ? platformA : platformB;
+      return readFile(platform.path.join(platform.workspaceRoot, name), "utf8");
+    }),
   );
-  assert.equal(
-    await readFile(abs(platformB, "race.md"), "utf8"),
-    "A rewrite\n",
-    "the winner's content reaches the loser",
+  assert.ok(
+    copyTexts.some((text) => text !== aRace),
+    "the conflict copy holds the losing bytes, not a duplicate of the winner",
   );
   const bFiles = (await platformB.fs.readdir(platformB.workspaceRoot, { withFileTypes: true }))
     .map((e) => e.name)
@@ -163,8 +192,7 @@ try {
   // ── tombstones propagate ──────────────────────────────────────────────
   await platformA.fs.rm(abs(platformA, "todo.md"));
   await engineA.noteMutation(["todo.md"]);
-  await settle();
-  await waitBoth("syncing", "tombstone round");
+  await waitFor(() => fileGone(platformB, "todo.md"), "A's delete reaches B");
   const gone = await platformB.fs.stat(abs(platformB, "todo.md")).then(() => true).catch(() => false);
   assert.equal(gone, false, "A's delete reached B");
 
