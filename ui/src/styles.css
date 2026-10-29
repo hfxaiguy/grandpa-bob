@@ -137,15 +137,48 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 /* The little square standing in for a hidden tile: status-tinted while its app
    runs (accent), waits (warn) or failed (err). */
 .hidden-app {
+  position: relative;
+  overflow: hidden;
   width: 26px;
   height: 26px;
   flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 0;
   border-radius: 7px;
   background: var(--card);
   border: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  user-select: none;
 }
+/* The object glyph sits behind the letters as a faint watermark. Masking (vs a
+   background image) lets it inherit the square's current color, so it follows
+   the open accent tint and hover brightening too. */
+.hidden-app-art {
+  position: absolute;
+  inset: 3px;
+  background-color: currentColor;
+  opacity: 0.28;
+  -webkit-mask-image: var(--art);
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-image: var(--art);
+  mask-position: center;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  pointer-events: none;
+}
+/* Translucent initials (or a stub icon) over the watermark. */
+.hidden-app-glyph { position: relative; opacity: 0.72; pointer-events: none; }
 .hidden-app:hover, .hidden-app:focus-visible { border-color: var(--accent); }
+.hidden-app:hover .hidden-app-art, .hidden-app:focus-visible .hidden-app-art { opacity: 0.45; }
+.hidden-app:hover .hidden-app-glyph, .hidden-app:focus-visible .hidden-app-glyph { opacity: 1; }
 .hidden-app.run { border-color: var(--accent); box-shadow: 0 0 6px var(--accent); }
 .hidden-app.wait { border-color: var(--warn); box-shadow: 0 0 6px var(--warn); }
 .hidden-app.err { border-color: var(--err); box-shadow: 0 0 6px var(--err); }
@@ -231,8 +264,8 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
   background: var(--card);
   border-right: 1px solid var(--border);
 }
-.tile-rail .hidden-app { width: 20px; height: 20px; border-radius: 6px; }
-.tile-rail .hidden-app.open { border-color: var(--accent); background: var(--accent); opacity: 0.85; }
+.tile-rail .hidden-app { width: 20px; height: 20px; border-radius: 6px; font-size: 9px; }
+.tile-rail .hidden-app.open { border-color: var(--accent); background: var(--accent); color: var(--bg); opacity: 0.85; }
 /* Opened sub-apps: smaller tiles side-by-side (open order), sharing the
    tile's height; the strip scrolls horizontally rather than shrinking the
    parent's chat to nothing. */

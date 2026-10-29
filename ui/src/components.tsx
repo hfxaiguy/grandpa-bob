@@ -2,6 +2,7 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { JSX } from "solid-js";
 import { Portal } from "solid-js/web";
+import { appIconUrl } from "./app-icons";
 import { describeEvent, streamLines, type EventLine } from "./describe";
 import { copyEventStream, copyText, downloadEventStream } from "./event-dump";
 import { JsonView } from "./json-view";
@@ -1418,9 +1419,18 @@ export function RailCard() {
   );
 }
 
+/** The glyph a mini tile shows when its app sets no icon: the first letter of
+ *  the name's first two words ("enrich profile" → "EP", "emails" → "E"). */
+function appInitials(name: string): string {
+  const words = name.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  return words.slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
+}
+
 /** One rail square: status-tinted while its app runs/waits/fails; hover or
  *  keyboard focus reveals the shared flyout card. Both the board's hidden rail
- *  and a parent tile's sub-app rail use this. */
+ *  and a parent tile's sub-app rail use this. The square paints one of the
+ *  app-icons glyphs as a faint background, with the app's initials (or its
+ *  stub `icon`) translucent on top. */
 function RailSquare(props: { app: AppInfo; label: string; open?: boolean; onClick: () => void }) {
   const running = createMemo(() => currentRunningApp() === props.app.name);
   const failed = createMemo(() => erroredApp() === props.app.name);
@@ -1440,7 +1450,14 @@ function RailSquare(props: { app: AppInfo; label: string; open?: boolean; onClic
       onFocus={(e) => revealRailCard(props.app, e.currentTarget)}
       onBlur={hideRailCard}
       onClick={props.onClick}
-    />
+    >
+      <span
+        class="hidden-app-art"
+        aria-hidden="true"
+        style={{ "--art": `url("${appIconUrl(props.app.name)}")` }}
+      />
+      <span class="hidden-app-glyph" aria-hidden="true">{props.app.icon || appInitials(props.app.name)}</span>
+    </button>
   );
 }
 

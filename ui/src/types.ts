@@ -3,6 +3,9 @@
 export interface AppInfo {
   name: string;
   description: string;
+  /** Optional glyph for the app's mini tiles. Stub: nothing sets this yet, so
+   *  the tiles fall back to the name's initials (see `appInitials`). */
+  icon?: string;
   group?: string;
   guide?: string;
   /** The enclosing app's logical name (app/containers nest: app/a/app/b is

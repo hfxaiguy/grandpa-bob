@@ -2,6 +2,24 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-28 — ui: hidden-rail mini tiles show app icons behind translucent initials
+
+The left hidden rail and a parent tile's parked sub-app rail were blank,
+status-tinted squares; only the hover/focus flyout said what they were. Each
+mini tile now paints an object glyph — a small SVG set in
+`ui/src/assets/app-icons/` (envelope, globe, person, phone, microphone, folder,
+chart, book, list, knot, tree, chat, sparkles, settings) — as a faint
+watermark behind the app's initials. `ui/src/app-icons.ts` maps names to glyphs
+by keyword first (`emails` → envelope, `enrich-profile` → sparkles, `knit` →
+knot) and by a stable hash otherwise, so every app — including future ones —
+gets and keeps one icon. The glyph is masked in `currentColor`, so it follows
+each square's open/hover tint; the initials sit on top at 0.72 opacity and go
+fully opaque on hover/focus. `AppInfo.icon` remains a stub: when real per-app
+icons land they take precedence over the generated glyph.
+
+Checks: `npm --prefix ui run typecheck`, `npm --prefix ui run build` (and a
+headless-Chromium screenshot of the rail's idle and open states).
+
 ## 2026-10-28 — tree context: guarded child-module editing
 
 Knit could author and edit a tree's single `.prod.mjs`, but not the helper
