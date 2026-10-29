@@ -185,11 +185,6 @@ configureToolbar();
 const applyStorage = (): void => {
   if (storageSelect) saveStorage(storageSelect.value as StorageMode);
   if (storageServerInput) saveStorageServer(storageServerInput.value.trim());
-  console.error(`[reload-debug] applyStorage`, new Error().stack?.slice(0, 500));
-  location.reload();
-};
-const __debugReload = (reason: string, stack: string): void => {
-  console.error(`[reload-debug] ${reason}`, stack.slice(0, 500));
   location.reload();
 };
 storageSelect?.addEventListener("change", applyStorage);
@@ -901,9 +896,6 @@ function wireLeaseUi(hostLease: NonNullable<typeof lease>): void {
     else if (status === "secondary") showBanner();
   });
   (window as unknown as { __leaseState?: () => unknown }).__leaseState = () => hostLease.status();
-  window.addEventListener("pagehide", () => {
-    (window as unknown as { __leaseState?: () => unknown }).__leaseState = () => hostLease.status();
-  });
   window.addEventListener("pagehide", (event) => {
     if (!(event as PageTransitionEvent).persisted) hostLease.release();
   });
@@ -924,7 +916,31 @@ async function beforeTurn(): Promise<string | null> {
  */
 let bootStage = "start";
 
+/** Set when the browser declined to keep this origin's OPFS off its eviction list. */
+let storageEvictable = false;
+
+/**
+ * Ask the browser to make this origin's OPFS persistent. Without the grant the
+ * workspace is best-effort storage the browser may evict under disk pressure —
+ * for a single-browser install that is the only copy. A refusal never blocks
+ * boot; the status line calls it out ("⚠ storage not persistent") instead.
+ */
+async function requestPersistentStorage(): Promise<void> {
+  if (storageMode !== "browser" || !navigator.storage?.persist) return;
+  try {
+    if (navigator.storage.persisted && (await navigator.storage.persisted())) return;
+    storageEvictable = !(await navigator.storage.persist());
+  } catch {
+    // Persistence is an optimisation (private windows, older Safari, …).
+  }
+}
+
 async function main(): Promise<void> {
+  // Kick the persistence request off first: this is a decision the browser
+  // makes without a prompt in most cases, and waiting for it costs nothing.
+  bootStage = "persistentStorage";
+  const persistence = requestPersistentStorage();
+
   // The profile registry is shared by both storage kinds: `opfs` profiles
   // keep their workspace in the origin's OPFS; `desktop` profiles point at a
   // folder root registered on the storage bridge. Each mode resolves its own
@@ -1084,6 +1100,10 @@ async function main(): Promise<void> {
     void checkSeedUpdate();
     startSeedWatcher();
   }
+  // Persistence may prompt (Firefox) or be denied outright; the status line
+  // must not wait on it forever — check the settled result, cap the wait.
+  await Promise.race([persistence, new Promise<void>((resolve) => setTimeout(resolve, 2_000))]);
+  if (storageEvictable) statusBase += " · ⚠ storage not persistent";
   showStatus(pattern);
 }
 

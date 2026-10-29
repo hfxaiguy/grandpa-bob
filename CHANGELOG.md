@@ -2,6 +2,19 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-29 — OPFS workspaces ask to be persistent
+
+Browser workspaces are best-effort storage unless the origin is granted
+persistence, and for a single-browser install that copy is the only one. Boot
+now calls `navigator.storage.persist()` before the profiles load.
+
+- A refusal (headless browsers, private windows, privacy-hardened profiles)
+  never blocks boot: the status line appends `⚠ storage not persistent` so an
+  evictable workspace is visible instead of silent. No warning appears for
+  desktop profiles (real folders on disk) or when the API is unavailable.
+- The wait for the grant is capped at 2 s, so Firefox's permission doorhanger
+  cannot stall the status line.
+
 ## 2026-10-29 — state lives in `~/.bobkat`: one config for every channel
 
 The private state directory moved from `~/.grandpa-bob` to `~/.bobkat`.
