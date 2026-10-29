@@ -28,9 +28,23 @@ export interface SyncHandle {
   engine: SyncEngine;
   state(): SyncState;
   onState(cb: (state: SyncState) => void): () => void;
-  /** Pair a cross-device peer; resolves when the data channel is open. */
-  pairManual(role: "offerer" | "joiner", onOutgoing: (blob: string) => void): Promise<{ phrase: string; accept: (blob: string) => void }>;
-  pairBobSwap(service: { baseUrl: string; readKey?: string }, channel: { id: string; roleToken: string; role: "offerer" | "answerer" }): Promise<string>;
+  /**
+   * Start a manual (no-service) pairing. `onOutgoing` receives the blob to
+   * hand the other side; `accept` feeds the blob the other side produced;
+   * `done` resolves with the verification phrase once the channel opens.
+   */
+  startManualPairing(
+    role: "offerer" | "joiner",
+    onOutgoing: (blob: string) => void,
+  ): { accept: (blob: string) => void; done: Promise<string> };
+  /** Pair over the BobSwap REST mailbox (the service must support sync channels). */
+  pairBobSwap(channel: {
+    baseUrl: string;
+    readKey?: string;
+    id: string;
+    roleToken: string;
+    role: "offerer" | "answerer";
+  }): Promise<string>;
   unpair(): void;
 }
 
@@ -76,16 +90,20 @@ export async function startSync(platform: Platform, opts: { id: string; channelN
       cb(state);
       return () => stateListeners.delete(cb);
     },
-    async pairManual(role, onOutgoing) {
+    startManualPairing(role, onOutgoing) {
       const provider = new ManualSignaling(role);
       void provider.outgoing.then(onOutgoing).catch((err) => onOutgoing(`error: ${String(err)}`));
-      const accept = (blob: string): void => provider.accept(blob);
-      const { peer, phrase } = await rtcPeer(provider, engine.id);
-      engine.attach(peer);
-      return { phrase, accept };
+      const done = rtcPeer(provider, engine.id).then(({ peer, phrase }) => {
+        engine.attach(peer);
+        return phrase;
+      });
+      return { accept: (blob: string) => provider.accept(blob), done };
     },
-    async pairBobSwap(service, channel) {
-      const provider: SignalingProvider = new BobSwapSignaling(service, channel);
+    async pairBobSwap(channel) {
+      const provider: SignalingProvider = new BobSwapSignaling(
+        { baseUrl: channel.baseUrl, readKey: channel.readKey },
+        { id: channel.id, roleToken: channel.roleToken, role: channel.role },
+      );
       const { peer, phrase } = await rtcPeer(provider, engine.id);
       engine.attach(peer);
       return phrase;

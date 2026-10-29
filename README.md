@@ -66,55 +66,27 @@ every change it makes is **git-committed automatically**.
 ## Architecture
 
 ```
-  Telegram app (you: text / voice note / photo / file)
-      │
-      ▼  getUpdates, long polling (grammY)
-┌─────────────────────────────────────────────────────────────┐
-│ bot.ts                                                      │
-│  · auth gate (ALLOWED_USER_IDS, others silently dropped)    │
-│  · forum-topic routing (key = chatId:message_thread_id)     │
-│  · per-topic serial queue · typing indicator · msg chunking │
-└───┬──────────────────┬──────────────────────┬───────────────┘
-    │ text             │ voice                │ photo
-    │                  ▼                      ▼
-    │          ┌───────────────┐      download largest size
-    │          │ stt.ts        │      → base64 data URL
-    │          │ .ogg → ffmpeg │      (image-first content order)
-    │          │ → 16kHz WAV   │
-    │          └──────┬────────┘
-    │                 ▼ multipart POST /inference
-    │          whisper-server (:8178)
-    │          whisper.cpp, Vulkan backend, AMD RX 570
-    │                 │ transcript
-    ▼                 ▼
-┌─────────────────────────────────────────────────────────────┐
-│ agent.ts — continuous tree with pause/resume                │
-│  · continuation tokens store full tree state per topic      │
-│  · grandma-kat owns history, memory, scope chain            │
-│  · .human() pauses for input, .emit() sends output          │
-└───┬─────────────────────────────────────────────────────────┘
-    │ OpenAI-compatible POST /v1/chat/completions (+ tool schemas)
-    ▼
- LLM endpoint (default: HF router, google/gemma-4-26B-A4B-it:novita)
-    │ tool_calls (JSON)
-    ▼
-┌─────────────────────────────────────────────────────────────┐
-│ tools/index.ts — dispatch (errors returned as strings,      │
-│ so the model can self-correct)                              │
-│   ├─ files.ts: list/read/write/edit/delete ──┐              │
-│   └─ shell.ts: run_command                   │              │
-│        (allowlist, no shell, git deny-list)  ▼              │
-│                                   ~/grandma-workspace       │
-│                                   (sandboxed git repo)      │
-│                                              │              │
-│                                   git.ts: auto-commit       │
-│                                   every mutation            │
-└─────────────────────────────────────────────────────────────┘
+┌───────────── browser tab — the only UI and the only agent host ─────────────┐
+│  web/ + ui/  ·  agent tree runs here (worker)  ·  profiles: OPFS | desktop  │
+└──────┬───────────────────┬──────────────────────────┬──────────────────────┘
+       │                   │                          │
+  desktop channel       telegram channel          sync channel (peer-to-peer)
+  storage-server.mjs    src/index.ts              BroadcastChannel (same origin)
+   · folders (profiles)  · grammY long-poll        WebRTC DataChannel (cross-device;
+   · /stt (BOB_STT=1)    · park & forward mailbox   BobSwap REST or manual-paste
+   · loopback only       · no agent                 signaling; 6-word verify)
 ```
+
+Everything is a **pass-through channel**: small loopback processes with no UI
+and no agent. The browser tab runs the agent, holds the workspace (OPFS or a
+real folder through the bridge), drains the Telegram mailbox, and syncs with
+other replicas. BobSwap remains the seed shelf + zero-storage relay it always
+was. The shared core lives in `web/src` — `web/` must never import outside
+`web/` + `ui/` (`npm run test:standalone` enforces it).
 
 ### How the continuous tree works
 
-The agent runs as a single **grandma-kat tree** that loops forever:
+The agent runs as a single **grandma-kat tree** inside the browser worker:
 
 ```
 Tree.name("agent")
@@ -123,70 +95,63 @@ Tree.name("agent")
   .branch(classify)              ← cheap model: "tools" | "direct"
   .branch(when "direct", direct) ← cheap model: text-only answer
   .branch(when "tools", tools)   ← strong model: tool-using loop
-  .emit(…)                       ← non-blocking output to Telegram
+  .emit(…)                       ← non-blocking output to the tile
   .until(true)                   ← loop back to .human()
 ```
 
-- **`.human()`** pauses the tree and saves a checkpoint to SQLite. The
-  continuation token is stored per conversation — and persisted to
-  `<workspace>/logs/sessions.json`, so chat sessions survive bot restarts.
-  On the next message, `grandma.knit()` resumes from the checkpoint with
-  the new input. If the active pattern's shape changed (or the checkpoint
-  is missing), the session is dropped and a fresh tree starts instead.
-- **`.emit()`** sends output to Telegram without stopping the tree. The
-  bot wires `onEmit` to `ctx.reply()`.
-- **History** lives in the tree's `messages` memory slot — no external
-  `HistoryStore`. The continuation token persists the full scope chain
-  (memory, history, execution position) in `<workspace>/logs/grandma-kat.db`.
+- **`.human()`** pauses the tree and checkpoints it into the renderer's run
+  log (`.gpb-runlog`, the OPFS-backed SQLite stream). A reload restores a
+  paused run; `/clear` (or a new chat) starts fresh. In desktop mode the run
+  log lives in the profile's OPFS directory, the workspace on the bridge.
+- **`.emit()`** streams output to the tile without stopping the tree.
+- **History** lives in the tree's `messages` memory slot; the continuation
+  token persists the full scope chain (memory, history, execution position)
+  in the run log.
 
 ### Journey of a voice message ("add milk to shopping.md")
 
-1. grammY receives the voice note; the auth middleware checks your user ID.
-2. The job is chained onto this topic's promise queue (previous reply finishes first).
-3. `stt.ts` fetches the file path via Bot API `getFile`, downloads the `.ogg`,
-   converts it with ffmpeg to 16 kHz mono PCM WAV, and POSTs it to whisper-server.
-4. The bot replies `heard: "add milk to shopping.md"` in the same topic.
-5. `agent.run(key, transcript, onEmit)` resumes the tree from its checkpoint.
-   The tree's `.memoryUpdate()` appends the user message to the `messages` slot.
-6. The classify branch routes to the tools branch. Gemma decides to call
-   `read_file` → result appended → `edit_file` → result appended → final text
-   answer. Each tool error goes back to the model as a normal string so it can retry.
-7. `edit_file` writes the file, then `git.ts` commits just that path and returns
-   the short hash, which flows back into the tool result.
-8. The `.emit()` child calls `onEmit(text)` — the bot sends the answer to Telegram.
-9. The tree loops back to `.human()` and pauses. Continuation stored.
+1. The **telegram channel** (`src/index.ts`) receives the voice note; the auth
+   gate checks your user ID and the topic becomes the conversation key.
+2. The channel downloads the `.ogg`, converts it with ffmpeg to 16 kHz mono
+   WAV, and POSTs it to whisper-server — transcription happens channel-side,
+   so it works with no browser tab open.
+3. The channel replies `heard: "add milk to shopping.md"` in the topic and
+   **parks** the transcript in its file mailbox (`~/.grandpa-bob/telegram/`).
+4. Your browser tab claims the mailbox (the "bridge" toggle), runs the turn on
+   its own workspace, and relays the answer back to the phone. No tab open?
+   The message waits on disk until one connects.
+5. The tree's classify branch routes to the tools branch. Gemma decides to call
+   `read_file` → `edit_file`; each tool error goes back to the model as a
+   normal string so it can retry.
+6. `edit_file` writes the file, git-commits just that path, and the commit hash
+   flows back into the tool result — on desktop profiles the commit runs on the
+   bridge's real repo, in browser profiles isomorphic-git writes OPFS.
+7. The `.emit()` child streams the answer into the tile and the relay sends it
+   to Telegram. The tree loops back to `.human()` and pauses.
 
 ### Layout
 
 ```
-src/
-  index.ts        entry point: workspace + git init, wiring, bot startup
-  config.ts       .env loading/validation (non-model config only)
-  models.ts       models.json loader, built-in transforms
-  bot.ts          grammY bot: auth gate, forum topics, text/voice/photo/file, queues
-  attachments.ts  bounded upload storage under workspace/assets/inbox/
-  admin.ts        web UI: chat front page (/) + settings page (/settings)
-  agent.ts        continuation storage (persisted to logs/sessions.json), tree runner (grandma-kat pause/resume)
-  stt.ts          audio (Telegram voice / web upload) → ffmpeg → STT backend
-  patterns/
-    shared.ts     types (KatPromptRecord), memory-view accessors, history helpers
-    classify.ts   classify branch — cheap model: "tools" or "direct"
-    direct.ts     direct branch — cheap model: text-only answer
-    tools.ts      tools branch — strong model: tool-using loop
-    agent.ts      root tree — .human() + branches + .emit() + .until()
-  tools/
-    index.ts      tool schemas (OpenAI format) + dispatcher
-    files.ts      list/read/write/edit/delete, sandboxed, auto-committing
-    json.ts       read_json — parse a file/text/ref as JSON (+ /-path walk)
-    shell.ts      run_command with allowlist + git deny-list
-    sqlite.ts     sql_query (read) + sql_write (write) — SQLite tools, lockable
-    git.ts        repo init + auto-commit + workspace .gitignore helpers
-  util/paths.ts   workspace path sandbox
-scripts/
-  smoke.ts        offline tests: tools, sandbox, auto-commit
-  agent-mock-test.ts  mock-LLM test of both pattern paths (tools/direct)
-  llm-test.ts     live end-to-end agent test against the configured LLM
-vendor/whisper.cpp/   whisper.cpp Vulkan build (gitignored)
+src/                 Node channels only (never the agent)
+  index.ts           telegram channel: grammY + mailbox/bindings HTTP API (:8091)
+  bot.ts             telegram glue: auth gate, topics, channel-side STT, parking
+  telegram-bridge.ts the file mailbox + chat→profile bindings (Lamport-free)
+  stt.ts             whisper/sherpa transcription for the channel
+  config.ts          channel env (token, allowlist, STT, state dir)
+  platform/node.ts   Node adapter (scripts + channel tests)
+web/                 the app — UI host + agent host + shared core
+  src/main.ts        boot: profiles, platform, lease, sync, UI host
+  src/server/        the in-browser backend (all /api/* answered client-side)
+  src/agent/         worker: tree runner, tools, run log
+  src/platform/      OPFS / desktop-bridge adapters, sqlite-wasm worker
+  src/profiles.ts    OPFS + desktop-folder profiles, registry
+  src/host-lease.ts  single-host lease per workspace (Web Locks + heartbeat)
+  src/sync/          Lamport journal + pull-only reconcile + transports
+  src/swap.ts        BobSwap seeds + zero-storage relay client
+  scripts/           serve / storage bridge / make-seed / smokes
+ui/                  SolidJS tiled UI (bundled into web)
+scripts/             offline tests for the shared core and channels
+workspace/ patterns  (seed content lives in the workspace, not the repo)
 ```
 
 ### Design principle: patterns live in the workspace
@@ -342,224 +307,122 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
 
 ## Setup
 
-1. **Telegram bot**: create one with @BotFather, copy the token. Get your numeric
-   user id from @userinfobot.
-2. `cp .env.example .env` and fill in `TELEGRAM_BOT_TOKEN` and `ALLOWED_USER_IDS`.
-   The bot prefers `~/.grandpa-bob/.env` when that file exists (move it there
-   to keep secrets out of the checkout; `ENV_FILE=/path` overrides, and the
-   settings-page editor always edits whichever file was loaded).
-3. `npm install`
-4. whisper.cpp is already built under `vendor/` (Vulkan) with the `base` model.
-   To rebuild or change the model:
+1. `npm install`
+2. **The app needs no server at all**: `npm run build:web && npm run web:standalone`
+   serves it at `http://localhost:8080`. Profiles and settings are per-browser
+   (OPFS + localStorage); model keys are entered on the settings page.
+3. **Telegram (optional)**: create a bot with @BotFather, copy the token, and
+   get your numeric user id from @userinfobot. `cp .env.example .env` and fill
+   in `TELEGRAM_BOT_TOKEN` + `ALLOWED_USER_IDS`. The channel prefers
+   `~/.grandpa-bob/.env` when present; `ENV_FILE=/path` overrides.
+   `npm run dev` starts it (loopback API on `:8091`).
+4. **Desktop storage (optional)**: `npm run storage-server` serves
+   `$WORKSPACE_DIR` (default `~/grandma-workspace`) on `127.0.0.1:8795`.
+   Register extra folders as desktop profiles with the app's
+   Profiles… → *desktop folder* flow (the bridge stores the registry in
+   `~/.grandpa-bob/channels.json`). Start it with `BOB_STT=1` to expose the
+   `/stt` pass-through for in-tab voice transcription.
+5. **Voice (optional)**: the browser records are transcribed by the bridge
+   (`BOB_STT=1`); Telegram voice notes are transcribed by the channel. Both
+   use whisper-server:
+   ```sh
+   npm run whisper:up   # 127.0.0.1:8178
+   ```
+   whisper.cpp is prebuilt under `vendor/` (Vulkan). Rebuild/change the model:
    ```sh
    git clone --depth 1 https://github.com/ggml-org/whisper.cpp vendor/whisper.cpp
    cmake -S vendor/whisper.cpp -B vendor/whisper.cpp/build -DGGML_VULKAN=1 -DBUILD_SHARED_LIBS=OFF
    cmake --build vendor/whisper.cpp/build -j --target whisper-server
-   vendor/whisper.cpp/models/download-ggml-model.sh base   # or small / base.en / ...
+   vendor/whisper.cpp/models/download-ggml-model.sh base
    ```
-   To use a different model, download it and set `WHISPER_MODEL` in `.env`
-   (used by `npm run whisper:up` and the systemd unit below).
-5. **LLM backend** — copy `models.example.json` to `models.json` and edit, or
-   use the **Models** card on the settings page (`/settings`), which edits the
-   same file with a form — pick a provider preset, choose a model, hit
-   **Test**, and **Save** (applied live, no restart).
-
-   The file defines named **slots**. The agent patterns reference them by name:
-   `cheap` (routing + direct answers) and `strong` (the tool-using loop). Each
-   entry has `baseURL`, `apiKey`, `model`, and optional `transform` /
-   `protocol` fields. Secrets use `${ENV_VAR}` interpolation from `.env`.
-
-   Any **OpenAI-compatible** endpoint works out of the box (OpenAI, OpenRouter,
-   Neuralwatt `https://api.neuralwatt.com/v1`, llama.cpp, LM Studio, HF router,
-   …); set `protocol: "ollama"` only for Ollama's native `/api/chat` API
-   (local `http://127.0.0.1:11434` or cloud `https://ollama.com`).
-   `models.example.json` ships Ollama-cloud `cheap`/`strong` slots plus a
-   `neuralwatt` example — set the matching key (`OLLAMA_API_KEY`,
-   `NEURALWATT_API_KEY`) in `.env`. Bot startup, and every **Save**, pings each
-   registered slot and reports `reachable` / `NOT reachable`.
-
-   **Switch models for one conversation** without editing config: send
-   `/model strong <slot>` or `/model cheap <slot>` on Telegram, or pick from
-   the two dropdowns (cheap / strong) in the web chat. Each role is
-   independent — e.g. a big model for `strong` and a small/local one for the
-   `cheap` router — and the rest of the registry is untouched. `/model reset`
-   (or the "default" entry) clears them. Choices are saved per conversation
-   and survive a restart.
-
-   `transform` is an optional response post-processor: the only built-in is
-   `gemma4Thinking`, which moves Gemma 4's inline `<|channel|>thought…` block
-   out of the answer and into the reasoning field. Leave it **none** for
-   OpenAI/Neuralwatt/Ollama-cloud and other providers that already separate
-   reasoning.
-
-   `thinking` is an optional object that sets the model's reasoning level for a
-   slot. On an OpenAI-compatible endpoint, `{"reasoning_effort": "high"}`
-   (low / medium / high, or a provider-specific number) is sent as the request's
-   `reasoning_effort`. On `protocol: "ollama"`, `{"think": true}` sets the native
-   `think` flag and `{"options": {…}}` is merged into the request's `options`
-   (e.g. `num_ctx`). The settings-page Models card exposes all three. A tree
-   reaches it simply by naming the slot — `Model('strong')`.
-
-   Note: small local models vary a lot in tool-calling quality — if the agent
-   misuses tools, switch models before debugging anything else.
+   `WHISPER_MODEL` selects the model for `npm run whisper:up`.
+6. **LLM backend** — the Models card (settings page) edits a registry of named
+   slots: `cheap` (routing + direct answers) and `strong` (the tool-using
+   loop). Each entry has `baseURL`, `apiKey` (browser-local, never in the
+   workspace), `model`, and optional `transform`/`protocol`/`thinking`.
+   Any OpenAI-compatible endpoint works (OpenAI, OpenRouter, Neuralwatt,
+   llama.cpp, LM Studio, HF router); `protocol: "ollama"` is only for Ollama's
+   native `/api/chat`. The **Test** button probes a slot from the tab.
+   Per-conversation overrides: the cheap/strong pickers in the session panel.
 
 ## Run
 
 ```sh
-npm run whisper:up   # terminal 1: whisper-server on 127.0.0.1:8178
-npm run dev          # terminal 2: the bot
+npm run web:standalone   # the app — http://localhost:8080  (terminal 1)
+npm run dev              # the telegram channel — :8091       (terminal 2, optional)
+npm run storage-server   # desktop folders + STT bridge — :8795 (optional)
+npm run whisper:up       # voice transcription — :8178          (optional)
 ```
 
-Or run whisper-server as a **user systemd service** so it survives crashes and
-reboots (recommended — otherwise voice dies silently when the terminal closes):
+As user systemd services (survive crashes and reboots):
 
 ```sh
 mkdir -p ~/.config/systemd/user
-cp systemd/whisper.service ~/.config/systemd/user/
+cp systemd/whisper.service systemd/telegram-channel.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now whisper.service
-systemctl --user status whisper.service   # Active: active (running)
+systemctl --user enable --now whisper.service telegram-channel.service
 ```
 
-The unit sources `.env` for `WHISPER_MODEL` and restarts on failure.
+The telegram unit runs the built channel (`npm run build` first). Logs:
+`journalctl --user -u telegram-channel`.
 
-If you're using **Ollama** for the LLM instead of the HF router:
-
-```sh
-ollama pull gemma4:31b-cloud   # one-time, ~20 GB
-npm run ollama:up              # terminal 1: ollama serve (or skip if systemd-managed)
-npm run dev                    # terminal 2: the bot
-```
-
-The bot's startup log prints whether the LLM endpoint is reachable, e.g.:
-
-```
-llm       : gemma4:31b-cloud @ http://127.0.0.1:11434/v1 (reachable)
-```
-
-Useful checks: `npm run typecheck`, `npm run smoke` (offline tool/git tests),
-`npx tsx scripts/llm-test.ts` (live agent test against the real LLM).
+Useful checks: `npm run typecheck` (three packages), `npm run test:standalone`
+(the self-containment gate), `npm run test:sync`, `npm run smoke` (offline
+tool/git tests), and the browser smokes in `web/scripts/` (`browser-smoke`,
+`profile-smoke`, `lease-smoke`, `seed-update-smoke` — each needs
+`npm run web:standalone` running).
 
 ## Telegram usage
 
-- DM the bot, or add it to a **group with Topics enabled**
-  (Group settings → Topics). The bot replies inside the same topic; every topic
-  keeps a separate conversation history.
-- Send text, send a **photo** (caption optional) for image analysis, or send
-  **speech** — a voice note, a forwarded voice note / audio file, or a round
-  video — and it is transcribed locally. You'll get `heard: "…"` plus the
-  agent's reply, so the whole conversation is talkable-to; a spoken reply also
-  answers a tree that is paused for input.
-- Replies keep their line structure (rich messages spell every newline as
-  `<br>`, since their HTML would otherwise collapse it), and phone numbers
-  and email addresses become tap-to-dial `tel:` / `mailto:` links (a bare
-  digit run is never linked — no separators means no dialable shape).
-- Commands:
-  - `/new` — starts a **fresh session** for this chat and routes future messages to it (the previous session keeps its history). The new session is shared: it appears in the web UI's session list (as `telegram · chat …`) and you can type into it there — a web turn runs the same tree and mirrors back to the phone. Also drops any reverse-follow ("send to telegram") binding, so the chat is no longer pinned to a web session.
-  - `/clear` — drops the conversation continuation for this topic. The next message starts a fresh tree (new system prompt, empty history). Per-topic: each forum topic has its own continuation. The checkpoint in SQLite is orphaned but not deleted. Also resets this topic's `/model` override.
-  - `/model` — show each role's current model (`strong`, `cheap`) and the available slots; `/model <strong|cheap> <slot>` sets one, `/model <slot>` is shorthand for `strong`, `/model reset [strong|cheap]` clears. Per conversation, and independent per role.
-  - `/status` — shows workspace path, git status, LLM models, STT backend.
+- DM the bot, or add it to a **group with Topics enabled**. Every topic is an
+  independent conversation; replies land in the same topic.
+- Send text or **speech** — a voice note, forwarded audio, or a round video.
+  The channel transcribes locally and echoes `heard: "…"`, then parks the
+  transcript for your browser tab. **A parked message needs a tab**: open the
+  app (or leave a desktop tab running) and the mailbox drains into the
+  bridged conversation. No tab open → the message waits on disk across
+  channel restarts.
+- **Attachments are text-only in v1** — the phone is told to send them in the
+  web chat instead (the workspace the agent writes lives in the browser).
+- Telegram has **no server-side commands** anymore. Text arrives in the web
+  app verbatim; commands like `/new`, `/model`, `/clear` are UI actions there
+  (or plain text the tree reads). The channel's job is transport.
+- The **bridge** toggle in the session panel routes this phone chat to a web
+  session; **✈ send to telegram** pushes the session transcript to the linked
+  chat and pins it. One host lease means exactly one tab answers.
 
 ## Web UI
 
-The server on `ADMIN_PORT` (default 8080) **always** serves the browser UI. The
-admin API is opt-in — start the bot with `BOB_WEB=1`. Without it the same port
-is a static-only listener: the page boots its in-browser backend, the settings
-page runs entirely client-side, every `/api/*` answers `503 {"admin": false}`,
-and the server-only controls (restart, Telegram follow, bot logs, service
-health) render disabled with a **browser only** chip.
+The app is served by `npm run web:standalone` at `:8080` (or any static host).
+Every `/api/*` call is answered by the **in-browser backend** — there is no
+admin API. The tiled UI has one tile per app (the trunk plus every
+`app/<name>/` tree), each with its own chat bubbles, memory panel and event
+log; one composer is shown on the tile whose tree is paused at `.human()`.
 
-With `BOB_WEB=1` the admin server additionally serves:
+**Storage & profiles.** The header selects the storage: *Browser (OPFS)* keeps
+the workspace in the tab's private sandbox (Export/Import move a whole
+workspace as JSON); *Desktop (bridge)* operates on a real folder through the
+loopback storage bridge. Profiles exist in both kinds — an OPFS profile or a
+desktop profile bound to a registered folder — with their own chats, patterns,
+run log and git history. A **single-host lease** makes sure only one tab runs
+the agent per workspace: a second tab is read-only (with a *take over*
+button). A failed turn keeps a retry composer; the Stop button aborts the run.
 
-> Shortcuts: `npm run start:with-server` (production `dist/`) and
-> `npm run dev:with-server` (tsx + Vite HMR) set `BOB_WEB=1` for you. Plain
-> `npm run dev` is static-only too, but keeps Vite HMR on the frontend.
+**Voice.** The composer's 🎙/📎 routes audio to the bridge's `/stt`
+(`BOB_STT=1`, ffmpeg + whisper-server on the desktop); there is no in-tab
+model download. Browser mic access needs a secure context (`localhost`/HTTPS).
 
-- **`/` — tiled app UI.** A tiling "mission control": one tile per app (the
-  trunk plus every `app/<name>/tree.prod.mjs` in the workspace). Each tile shows
-  that app's **own chat bubbles**, a read-only **memory panel** (values
-  written inside that app, nested paths indented; **click a value to inspect
-  its full content**), and a **mini event log**;
-  a global **event-stream side panel** shows every step tagged by app. Every
-  bot bubble carries an **ⓘ "written from"** button — straight from the run
-  log it shows the prompt that produced the message, the **memory slots and
-  other pieces it read** (each with the row that wrote it: a tool result, your
-  message, an earlier prompt), a **trace deeper** walk of the read-graph, the
-  ground facts, any **ref://** handles, and a **view-prompt** expander with the
-  exact messages sent. There is
-  **one composer in the whole UI**, on the tile whose tree is paused at
-  `.human()` — the trunk when nothing is parked yet (it starts the
-  conversation); while a turn runs no composer is shown, and a failed turn
-  keeps a retry composer on the app it was headed to. The **Stop** button sits
-  in the top toolbar while a turn runs. The composer also takes **🎙 voice** and
-  **📎 files**: a voice note is recorded in the browser (MediaRecorder),
-  transcribed locally, and sent; an **audio file** streams a live transcript
-  (a progress card shows `12s / 47s` plus the growing text) that lands in the
-  box for review; any other file is attached with the composer text as its
-  caption. Voice/file handling uses the same local ffmpeg → whisper/sherpa
-  pipeline as Telegram — no audio leaves the machine. (Browser mic access needs
-  a **secure context** — `http://localhost`, not a plain-HTTP LAN IP.)
-  A tile's header **status dot** is
-  **blue** while that app is running, **yellow** while it waits on you, **red**
-  if its last turn failed, and blank otherwise — only the active app lights
-  up. A **failed turn raises a dismissible banner** at the top, marks its tile
-  `error`, and keeps that tile's input so you can retry. Event-log lines (and
-  the global stream) **expand on click** to their full payload. Tiles
-  auto-arrange — drag to reorder, `⤢` to expand (the trunk dock too), `↔` to
-  widen, `✕` to hide (the layout is remembered). The **session** button opens
-  session controls (select / new / delete, follow-Telegram, **✈ send to
-  telegram**, tree, and the cheap/strong model pickers). The one
-  stream is simply split per app. Built from `ui/` (SolidJS + Vite): run
-  **`npm run build:ui`** once; until it is built, `/` shows a build notice.
-- **`/settings` — admin page.** Credentials & `.env` editor, bot/sherpa status +
-  restart, log tails, workspace git sync/commit, tree-pattern editor, and the
-  workspace file browser.
+**Sync.** Tabs of the same origin sync their workspace live through
+BroadcastChannel — an OPFS profile and a desktop-folder profile on one machine
+converge with no setup. Cross-device pairing (WebRTC; BobSwap REST mailbox or
+manual paste, with a 6-word verification phrase) is in the Sync… dialog under
+**Live sync → Pair…**; the BobSwap path needs a service that implements the
+sync-channel endpoints, and says so plainly when it does not. Sync never
+sends workspace bytes to a server: blobs carry only WebRTC addressing.
 
-The web UI runs the agent under `web:<id>` conversation keys, serialized
-so turns never interleave; Telegram topics are unaffected. Chat histories
-persist to `<workspace>/logs/grandma-kat.db` (marker rows over the engine's
-`calls` table) and survive bot restarts.
-
-Memory panels are process state, so both hosts rebuild them from that log on
-first view — the Node admin after a restart, the browser target after a reload
-(one shared tracker: `src/memory-track.ts`). The rebuild reads raw `calls` rows,
-not the sanitized per-turn event window, so values keep their full shape and a
-slot written early in a long turn still restores. That event window itself is
-still tail-capped at 500 events per turn (`turnEvents` in `src/web-log.ts` /
-`web/src/agent/log-store.ts`), so anything else derived from it only sees a
-turn's tail. Details: `web/README.md` → "Session memory panels after reload /
-restart".
-
-**The webui follows Telegram, one-way.** By default the browser page keeps
-itself pinned to whichever conversation is live on Telegram (the freshest
-non-`web:` continuation in `sessions.json`): open it after chatting on your
-phone and the next message continues *that* conversation — and when a new
-Telegram conversation starts, the page jumps to it. The per-key run queue in
-`Agent.run` makes this sharing safe (a web turn and a Telegram turn can never
-resume the same checkpoint at once).
-
-The exchange stays visible on both ends. A Telegram turn streams into the
-followed transcript live — bubbles *and* tree steps (bot.ts feeds
-`remoteTurnStart/Event/End`). A webui turn that runs into a Telegram
-conversation is posted back to the phone with a `💻` prefix, so the chat
-there keeps making sense.
-
-**Send to telegram reverses it, per chat.** The ✈ telegram button posts the
-active web session's transcript to your linked chat and then *binds* that
-chat to the web key: the phone now follows the web session. Its next message
-continues the same tree and checkpoint, a phone turn appears in the browser
-transcript, and every browser turn is mirrored back to the phone — both ends
-share one conversation. Binding turns web-follows-telegram off (or the page
-would jump back onto the phone's own key) and is remembered in
-`logs/web-settings.json`; deleting the web session drops the binding. Chats
-that were never bound keep their own separate conversations, exactly as
-before.
-
-The checkbox on `/settings` ("webui follows telegram") turns following off;
-choosing a local web session or starting a *new chat* turns it off
-automatically too. With follow off, restarts never auto-resume — a session
-picker demands an explicit choice, exactly to avoid a stale tree hanging the
-first turn.
+Telegram is wired through the channel: the session panel's **bridge** toggle
+drains the channel mailbox into the selected session, and **✈ send to
+telegram** posts the transcript to the linked chat and pins it.
 
 ## Git integration (summary)
 
@@ -570,57 +433,34 @@ See the FAQ below for exactly how that works.
 
 ## Workspace sync (desktop ↔ phone)
 
-The desktop can act as a git server for the workspace, letting you sync
-patterns, contacts, and files between your computer and phone over LAN.
+Live sync is the browser app's job now: open the app on both devices and pair
+them (Sync… → Pair…). The pair runs peer-to-peer over a WebRTC data channel;
+same-origin tabs need no pairing at all. Conflict policy: the per-path
+Lamport stamp decides, ties break deterministically by replica id, and the
+loser's bytes are preserved as `<path>.conflict-<timestamp>` — never silently
+dropped. `logs/`, `.git/`, `.gpb-*` and `assets/inbox/` never sync (git
+history and run logs stay per-replica).
 
-**Desktop setup** (one-time):
-
-```sh
-# Create bare repo (the "server")
-git init --bare ~/grandma-workspace.git
-
-# Add it as a remote in the live workspace
-git -C ~/grandma-workspace remote add sync ~/grandma-workspace.git
-git -C ~/grandma-workspace push sync main
-
-# Start the daemon (serves on port 9418, LAN only)
-cp systemd/git-daemon.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now git-daemon.service
-```
-
-Edit `GIT_DAEMON_IP` in the service file to match your LAN IP.
-
-**Phone setup** (handled by `install.sh` on deploy):
-
-```sh
-git -C ~/grandma-workspace remote add sync git://<desktop-ip>/grandma-workspace.git
-```
-
-**Syncing** — use the buttons on the settings page (`http://<phone-ip>:8080/settings`), or manually:
-
-```sh
-# Pull from desktop
-git -C ~/grandma-workspace pull sync main
-
-# Push to desktop
-git -C ~/grandma-workspace push sync main
-```
-
-The runtime state under `logs/` (`grandma-kat.db*`, `sessions.json`,
-`web-turns.json`, `web-settings.json`) holds your prompts and conversation text, so `index.ts`
-gitignores it on boot — it stays local and out of the audit trail.
+The old LAN git-daemon path (bare repo + `git://` pull/push on the phone) is
+retired for the app: it remains possible by hand on a desktop-folder profile
+(`git -C <folder> remote add …`), but the app no longer surfaces it.
 
 ## FAQ
+
+> Answers are current unless a section is explicitly marked **historical**.
+> The agent runs in the browser; Node processes are channels. Where an answer
+> mentions server-side files (`sessions.json`, a Node run log), read it as the
+> per-replica storage of the kind in question (OPFS or a desktop folder).
 
 ### Git & workspace
 
 **How exactly does auto-commit work?**
-After a file tool writes/edits/deletes a path, `autoCommit()` in `src/tools/git.ts`
-runs: `git add -A -- <path>` → `git status --porcelain -- <path>` (skips with
-`no-changes` if clean) → `git commit -q -m "agent(<tool>): <path>" -- <path>` →
-returns `git rev-parse --short HEAD`. The hash goes into the tool result, so the
-model can report it to you (and `/status` shows the latest commit).
+After a file tool writes/edits/deletes a path, the platform's `autoCommit`
+runs — in a browser profile that is isomorphic-git writing the OPFS repo; in a
+desktop profile the tab calls the bridge, which runs the real `git` CLI
+(`git add -A -- <path>` → status check → `git commit -m "agent(<tool>): <path>"
+-- <path>` → short hash). The hash goes into the tool result, so the model can
+report it.
 
 **Will the bot commit *my* uncommitted changes in the workspace?**
 No. Both `add` and `commit` use a **pathspec** limited to the file the tool just
@@ -642,18 +482,19 @@ git -C ~/grandma-workspace config user.email grandpa-bob-bot@localhost
 ```
 
 **What happens if I delete the workspace directory?**
-On the next boot, `index.ts` recreates it (`mkdir -p`) and `ensureRepo` runs
-`git init`. You lose the git history and the grandma-kat SQLite log (which
-holds continuation tokens and the audit trail). All conversations start fresh.
+Browser profile: the OPFS directory is gone; re-seeding on the next boot gives
+a fresh workspace (and a fresh run log). Desktop profile: the bridge recreates
+a missing folder root, `git init` runs lazily on the first mutation, and the
+history/log that lived there are gone. Either way the conversations of that
+profile start fresh.
 
 **Where does the run log live?**
-The grandma-kat runner writes every LLM call, tool call, check, goback, and
-gate to a SQLite database at `<workspace>/logs/grandma-kat.db` (plus its
-`-wal` and `-shm` siblings). It contains your prompts and the model's
-responses, so it stays with the workspace — back up the workspace, back up
-the log. On first boot `index.ts` appends `logs/grandma-kat.db*` to the
-workspace's `.gitignore` so the log doesn't pollute `git status`. To inspect
-manually:
+Every LLM call, tool call, check, goback and gate lands in the replica's run
+log. Browser profiles keep it in OPFS under `.gpb-runlog/` (the streaming
+sqlite VFS — not a plain file; export the profile to back it up). Desktop
+profiles pass `logs/grandma-kat.db` through the bridge like any DB. In both
+cases the log holds your prompts and the model's responses and is excluded
+from workspace git. To inspect a desktop profile's log:
 ```sh
 sqlite3 ~/grandma-workspace/logs/grandma-kat.db \
   "SELECT seq, branch_path, kind, substr(content, 1, 120) FROM calls ORDER BY seq DESC LIMIT 20;"
@@ -673,17 +514,14 @@ the project's status.
 ### Agent & LLM
 
 **What does one agent turn actually look like?**
-On the first message from a new conversation (or after `/clear`), the bot
-pre-initializes the tree: `agent.run(key, "", no-op)` creates the tree and
-pauses at `.human()` immediately. Then `agent.run(key, message, onEmit)`
-resumes from that checkpoint. The tree's `.memoryUpdate()` appends the user
-message to `messages`, the classify branch routes to direct/contacts/tools,
-the response branch generates an answer (possibly with tool calls in a loop),
-and `.emit()` sends the answer to Telegram via `onEmit`. The tree then loops
-back to `.human()` and pauses — checkpoint saved, continuation stored.
-
-The debug REPL (`npm run repl`) follows the same flow but runs in the terminal
-with real-time event streaming.
+The first message of a conversation (or after a new chat) knits the tree in the
+browser worker; it pauses at `.human()` immediately. Each message resumes from
+that checkpoint: `.memoryUpdate()` appends the user message to `messages`, the
+classify branch routes to direct/tools, the response branch generates an answer
+(with tool calls in a loop), and `.emit()` streams it into the tile (and, when
+bridged, relays it to Telegram). The tree loops back to `.human()` and pauses —
+checkpoint in the run log. A reload restores a paused run; a changed tree
+drops the saved position and the turn starts fresh.
 
 **Why do tool errors not crash the turn?**
 `ToolRegistry.dispatch` wraps every tool in try/catch and returns errors as plain
@@ -783,17 +621,15 @@ ctx)`: `ctx.secret(name)`, `ctx.secretText(name)`, `ctx.requireSecret(name)`
 ### Telegram & topics
 
 **So… are there sessions?**
-Yes — a "session" is a continuation token stored per conversation key
-(`chatId:threadId`). The token is a checkpoint ID in the grandma-kat SQLite
-log that captures the full tree state: memory slots (including `messages`),
-execution position, scope chain. Lifecycle: **born** on the topic's first
-message (tree pauses at `.human()`); **lives** as a checkpoint in
-`<workspace>/logs/grandma-kat.db`; **cleared** by `/clear` (drops the
-continuation, next message starts a new tree). The system prompt is injected
-once at tree creation and persists across the entire conversation. Tool-call
-traces are part of the messages history. Turns within a session are strictly
-serialized by the per-topic promise queue; across sessions everything runs in
-parallel.
+Yes — a "session" is a continuation checkpoint in the replica's run log that
+captures the full tree state (memory slots including `messages`, execution
+position, scope chain). Web sessions are keyed `web:<id>`; Telegram
+conversations keep their `chatId:threadId` key and are parked/claimed through
+the channel. Lifecycle: **born** on the first message (tree pauses at
+`.human()`); **lives** until **cleared** (new chat / `/clear`, which drops the
+continuation); a reload restores a paused run. Turns within a session are
+strictly serialized; different sessions run in parallel. Exactly one tab
+hosts a workspace at a time (the lease).
 
 **How do forum topics become separate conversations?**
 Every message in a topic group carries `message_thread_id`. The bot keys history

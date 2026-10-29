@@ -57,6 +57,7 @@ import { resolveTreeEntry } from "./tree-files";
 import { patternLabel } from "./agent/pattern-path";
 import { createHostLease } from "./host-lease";
 import { startSync, activeSync } from "./sync";
+import { wireSyncUi } from "./sync-ui";
 import { parseSeedMeta, seedFreshness, SEED_CLOCK_TOLERANCE_MS, type SeedMeta } from "./seed-version";
 import type { Platform } from "./platform/types";
 
@@ -989,6 +990,7 @@ async function main(): Promise<void> {
     });
     (window as unknown as { __bobSync?: unknown }).__bobSync = syncHandle;
   }
+  wireSyncUi(() => activeSync());
   // When the admin serves this page, use ITS models.json (and /api/llm proxy)
   // so the browser, the chat UI and Telegram all share one model config.
   bootStage = "servedByAdmin";

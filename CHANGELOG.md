@@ -19,14 +19,17 @@ today:
   survive channel restarts. Bindings form when a tab drains (`claim`), a
   handover between profiles bumps a per-chat epoch so a suspended old tab's
   late relays drop. Loopback-only (`:8091`), CORS allow-list, no agent.
-- **Desktop profiles.** The storage bridge serves one folder per profile:
+- **Desktop profiles.** The storage bridge serves one folder per profile
+  (e2e: `npm run test:desktop-profile` imports a seed archive into a
+  registered root and checks per-root sandboxing):
   a folder registry (`~/.grandpa-bob/channels.json`, `POST /roots`,
   `~/`-paths expanded bridge-side) selected per request via `x-bob-root`;
   the picker creates desktop profiles, and the old single-root setup is the
   implicit `default`. The bridge stays loopback-bound.
 - **Single-host lease.** `web/src/host-lease.ts`: Web Locks with a
   localStorage-heartbeat fallback; a second tab on the same workspace is
-  read-only with a cooperative *take over* (`npm run test:lease`).
+  read-only with a cooperative *take over* (`npm run test:lease`, and
+  `smoke:lease` in real Chrome: primary → read-only + 503 → auto-promotion).
 - **STT channel.** `BOB_STT=1` on the bridge exposes `POST /stt` (ffmpeg →
   whisper-server); the UI's transcription points there. The unused
   `@huggingface/transformers` dep was dropped; the Node agent host
@@ -39,9 +42,10 @@ today:
   Same-origin tabs (an OPFS profile and a desktop-folder profile on this
   machine) reconcile live by default for the lease holder; WebRTC transports
   with BobSwap-REST and manual-paste signaling ship with the engine but have
-  no pairing dialog yet (`window.__bobSync` is the development hook). No
-  workspace bytes leave the replicas in any mode. `npm run test:sync` is the
-  gate.
+  the Sync… → Live sync dialog pairs cross-device peers (WebRTC; manual
+  paste with a 6-word verification phrase, or BobSwap REST channels when the
+  service implements them). No workspace bytes leave the replicas in any
+  mode. `npm run test:sync` is the gate.
 
 Deps: `openai` dropped (the browser calls endpoints directly); `grammy` and
 `dotenv` stay (channels). `npm run dev` / `start` target the channel;

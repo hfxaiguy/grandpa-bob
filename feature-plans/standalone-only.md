@@ -277,14 +277,14 @@ be documented in this file.
 | 1. typechecks (src, web, ui) | **PASS** |
 | 2. `build` + `build:web` + `web:standalone` boots | **PASS** (boot asserted by the browser smokes' serving path; profile/browser interactive smokes ran headless-only — see gaps) |
 | 3. boundary gate (`test:standalone`) | **PASS** — 90 files clean |
-| 4. two-tab lease interactive check | **PARTIAL** — unit-gated in `test:lease` (contention, staleness, takeover); the two-real-tabs browser smoke is a gap |
+| 4. two-tab lease interactive check | **PASS** — `test:lease` (contention, staleness, takeover) + `smoke:lease` in real Chrome: tab 1 primary → tab 2 read-only with the banner and `POST /api/chat` → 503 → closing tab 1 auto-promotes tab 2 |
 | 5. telegram channel tests | **PASS** — mailbox park/claim/ack/answered, restart survival, handover epoch (`test:telegram-bridge`); text/audio framing (`test:telegram-text`, `test:telegram-audio`) |
 | 6. loopback-only bridge | **PASS** — `127.0.0.1` bind unchanged; no storage LAN flag exists |
 | 7. sync tests | **PASS** — `test:sync`: convergence, causal LWW, conflict copies, tombstones (stable across repeated runs) |
 | 8. no `@huggingface/transformers` | **PASS** — dep removed, no references |
 | 9. remaining `test:*` pass | **PASS with 3 documented failures** — `test:tree` and `test:cdp` fail identically on `main` (pre-existing, grandma-kat API drift / environment); `test:sync` is experimental (gate 7) |
-| 10. seed flows | **PARTIAL** — `test:seed-freshness` + `test:workspace-transfer` + `test:profiles` pass; live seed-apply onto a desktop profile lacked an end-to-end check (gap) |
-| 11. docs match reality | **PARTIAL** — README banner + `.env.example` + CHANGELOG rewritten; the deeper README/web README sections still carry pre-refactor prose (marked) |
+| 10. seed flows | **PASS** — `test:seed-freshness` + `test:workspace-transfer` + `test:profiles` + `test:desktop-profile` (real bridge: register a folder, import a seed archive into it, per-root sandboxing, unknown-root refusal, registry parse/resolve) |
+| 11. docs match reality | **PASS** — README architecture/tree/voice/layout/setup/run/telegram/web-ui/sync rewritten to the channels story; FAQ key answers corrected and the rest bannered; `web/README.md` re-headed with the current contract and its milestone sections marked as the record; `.env.example` + CHANGELOG current |
 | 12. `main` stayed green | **PASS** — phase 0 committed the WIP + plan to `main` first; all work on `standalone-only` |
 
 **Gate 7 (sync) — resolved; what remains is UI, not protocol.** The engine
@@ -298,11 +298,11 @@ explicit channel in the map exchange, and file requests answered off the
 ordered queue (two sides pulling at once no longer deadlock). Same-origin
 BroadcastChannel sync runs by default for the lease holder; an OPFS profile
 and a desktop-folder profile on this machine converge with no setup.
-Remaining work: a **pairing dialog** for the cross-device WebRTC transports
-(BobSwap REST + manual paste) — the providers and the 6-word verification
-phrase exist; `window.__bobSync` is the development hook — plus a two-real-
-tabs browser smoke of the same-origin path. No workspace bytes leave the
-replicas in any mode.
+The pairing dialog shipped: Sync… → Live sync → Pair… (manual paste with a
+6-word DTLS verification phrase, or BobSwap REST channels; the BobSwap path
+says so plainly when the service does not implement sync channels). The
+two-real-tabs browser smoke lives in `web/scripts/lease-smoke.mjs`. No
+workspace bytes leave the replicas in any mode.
 
 ## Risks and mitigations
 
