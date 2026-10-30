@@ -428,7 +428,8 @@ up front: **Profiles… → New profile** offers the bundled snapshot plus every
 seed returned by `GET /api/v1/<account>/seeds` on each configured service, and
 pulls the chosen archive before the profile is created (nothing is created if
 the pull fails). The pick has no default — Create stays blocked until a seed is
-chosen.
+chosen. Listing that shelf (`/seeds`) needs a read key; a bound profile can
+still follow a public newest version without one (see below).
 
 - The **BobSwap…** dialog stores the service URL, realtime endpoint/key, account
   and API keys in this browser's localStorage (`bob:swap`); **Seed…** only asks
@@ -437,20 +438,28 @@ chosen.
   `https://bobswap.hfxaiguy.com`; any saved service overrides it. API keys are
   operator-issued (`read`/`upload`/`manage` scopes); there is no public signup.
 - On boot — and every five minutes while the tab stays open, plus whenever it
-  becomes visible again — the profile asks
-  `/api/v1/<account>/<seed>/latest/meta` and, when the seed is newer, shows the
-  usual **Workspace update available** banner (never applies silently). A
-  publish cannot push to an open tab, so the periodic check is what makes a
-  shelf update arrive without a reload (`?seedpoll=<ms>` shortens it for
-  tests). Each check logs a `[seed-check]` line naming the local and remote
-  sha/timestamp and the decision, so a refused key or a malformed response is
-  visible instead of looking like "current". Applying merges the archive and
-  **keeps the local run log and chat history**; saved walk positions reset
-  once.
+  becomes visible again — the profile asks `/api/v1/<account>/<seed>/latest/meta`
+  (with a read key) and, when the seed is newer, shows the usual **Workspace
+  update available** banner (never applies silently). A publish cannot push to
+  an open tab, so the periodic check is what makes a shelf update arrive without
+  a reload (`?seedpoll=<ms>` shortens it for tests). Each check logs a
+  `[seed-check]` line naming the local and remote sha/timestamp and the decision,
+  so a refused key or a malformed response is visible instead of looking like
+  "current". Applying merges the archive and **keeps the local run log and chat
+  history**; saved walk positions reset once.
+- **Public versions need no key.** The operator can mark individual versions
+  public in BobSwap's Seed shelf; a keyless client then reads `/latest` (only
+  while the newest version itself is public) and verifies the archive against
+  the response `ETag`, which carries the same SHA-256 as `/latest/meta`.
+  Without a read key the check sends `If-None-Match`, so an unchanged public
+  seed costs a 304 rather than a download. Listing the shelf and reading
+  private versions still require a key; publishing a new private version locks
+  `/latest` again for keyless clients.
 - **Publish this profile** uploads the current workspace as a new version
   (`<sha12>-<compact createdAt>`), **Check now** compares on demand.
-- `X-Seed-Version` and ETag/304 keep repeat checks cheap; `?key=` URLs make the
-  same flow usable from a phone link.
+- `X-Seed-Version` and ETag/304 keep repeat checks cheap; public versions work
+  from a plain link with no key, and `?key=` URLs remain supported for keyed
+  services.
 
 ## Sharing a workspace between devices (zero storage)
 

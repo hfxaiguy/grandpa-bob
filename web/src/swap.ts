@@ -175,6 +175,21 @@ function requireKey(service: SwapService, scope: "read" | "upload"): string {
   return key;
 }
 
+/** A read key, or undefined when only public versions are readable. */
+function readKeyOf(service: SwapService): string | undefined {
+  return service.readKey?.trim() || undefined;
+}
+
+/**
+ * Full SHA-256 advertised in an `ETag` header. Public seed downloads carry the
+ * same hash as `/latest/meta`'s `sha256`, so a keyless read can still verify
+ * the bytes; tolerate quoting and weak validators.
+ */
+export function sha256FromEtag(value: string | null): string | undefined {
+  const cleaned = String(value ?? "").trim().replace(/^W\//i, "").replace(/^"|"$/g, "");
+  return /^[0-9a-f]{64}$/i.test(cleaned) ? cleaned.toLowerCase() : undefined;
+}
+
 async function apiError(res: Response): Promise<Error> {
   let message = `BobSwap request failed (${res.status})`;
   try {
@@ -331,25 +346,53 @@ export async function listSeeds(
 }
 
 /**
- * Download a seed's latest archive. Verifies the bytes against the service's
- * sha when it advertises one; never trusts a mismatched body.
+ * Download a seed's latest archive. A configured read key is used when
+ * present; without one the request goes out anonymously, which only succeeds
+ * while the newest version is public (the service answers 401 otherwise).
+ * Verifies the bytes against the service's sha when it advertises one — from
+ * `/latest/meta` when keyed, or the response `ETag` when it is not — and never
+ * trusts a mismatched body.
+ *
+ * Returns null only when `ifNoneMatch` matched: the caller's copy is current
+ * and no archive was transferred (HTTP 304).
  */
+export interface FetchLatestSeedOptions {
+  /** Send `If-None-Match` (a raw SHA-256 or ETag) to make an unchanged check cheap. */
+  ifNoneMatch?: string;
+}
+
 export async function fetchLatestSeed(
   service: SwapService,
   account: string,
   seedName: string,
-): Promise<FetchedSeed> {
-  const key = requireKey(service, "read");
+  opts: FetchLatestSeedOptions = {},
+): Promise<FetchedSeed | null> {
+  const key = readKeyOf(service);
   const base = `${apiBase(service)}/${encodeURIComponent(account)}/${encodeURIComponent(seedName)}/latest`;
-  const [res, meta] = await Promise.all([
-    fetch(`${base}?key=${encodeURIComponent(key)}`, { cache: "no-cache" }),
-    fetchLatestSeedMeta(service, account, seedName).catch(() => null),
+  const headers: Record<string, string> = { accept: "application/json" };
+  const known = opts.ifNoneMatch?.trim();
+  if (known) {
+    headers["if-none-match"] = /^(?:W\/)?"/.test(known) ? known : `"${known.replace(/^"|"$/g, "")}"`;
+  }
+  const [res, keyedMeta] = await Promise.all([
+    fetch(key ? `${base}?key=${encodeURIComponent(key)}` : base, { cache: "no-cache", headers }),
+    key ? fetchLatestSeedMeta(service, account, seedName).catch(() => null) : Promise.resolve(null),
   ]);
-  if (!res.ok) throw await apiError(res);
+  if (res.status === 304) return null;
+  if (!res.ok) {
+    if (res.status === 401 && !key) {
+      throw new Error(
+        "the newest seed version isn't public — ask the publisher to make it public, or add a read key in Sync… → BobSwap…",
+      );
+    }
+    throw await apiError(res);
+  }
   const raw = await res.text();
   const bytes = encoder.encode(raw);
   const sha256 = await sha256HexBytes(bytes);
-  const announced = meta?.sha256;
+  // `/latest/meta` stays key-gated; public downloads still advertise their
+  // exact hash in ETag, which is enough to verify an anonymous archive.
+  const announced = keyedMeta?.sha256 ?? sha256FromEtag(res.headers.get("etag"));
   if (announced && announced.toLowerCase() !== sha256) {
     throw new Error("seed download failed its checksum — try again or republish the seed");
   }
@@ -359,13 +402,65 @@ export async function fetchLatestSeed(
   } catch {
     throw new Error("seed download is not valid JSON");
   }
+  const meta: RemoteSeedMeta | null =
+    keyedMeta ??
+    (typeof archive.createdAt === "string" && !Number.isNaN(Date.parse(archive.createdAt))
+      ? {
+          version: 1,
+          createdAt: archive.createdAt,
+          fileCount: archive.files.length,
+          size: bytes.length,
+          sha256,
+        }
+      : null);
   return {
     archive,
     raw,
-    version: res.headers.get("x-seed-version") ?? meta?.seed_id_and_version,
+    version:
+      res.headers.get("x-seed-version") ??
+      keyedMeta?.seed_id_and_version ??
+      (sha256FromEtag(res.headers.get("etag")) ? sha256.slice(0, 12) : undefined),
     sha256,
     size: bytes.length,
     meta,
+  };
+}
+
+export interface LatestSeedProbe {
+  /** Freshness record; synthesized from the archive on the keyless path. */
+  meta: RemoteSeedMeta;
+  version?: string;
+  sha256?: string;
+  /** True when the newest version was readable without any key. */
+  keyless: boolean;
+}
+
+/**
+ * Cheap newest-version check. With a read key it asks `/latest/meta`; without
+ * one it falls back to the keyless `/latest` (public versions only), sending
+ * `If-None-Match` so an unchanged archive costs a 304 instead of a download.
+ * Returns null when that ETag still matches the newest version.
+ */
+export async function probeLatestSeed(
+  service: SwapService,
+  account: string,
+  seedName: string,
+  knownSha?: string,
+): Promise<LatestSeedProbe | null> {
+  if (readKeyOf(service)) {
+    const meta = await fetchLatestSeedMeta(service, account, seedName);
+    if (meta) {
+      return { meta, version: meta.seed_id_and_version, sha256: meta.sha256, keyless: false };
+    }
+  }
+  const fetched = await fetchLatestSeed(service, account, seedName, { ifNoneMatch: knownSha });
+  if (!fetched) return null;
+  if (!fetched.meta) throw new Error("seed archive is missing a valid createdAt");
+  return {
+    meta: fetched.meta,
+    version: fetched.version,
+    sha256: fetched.sha256,
+    keyless: !readKeyOf(service),
   };
 }
 

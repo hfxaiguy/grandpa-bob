@@ -47,7 +47,13 @@ import {
   type ProfileRegistry,
   type SeedBinding,
 } from "./profiles";
-import { fetchLatestSeed, fetchLatestSeedMeta, resolveSwapService, type RemoteSeedMeta } from "./swap";
+import {
+  fetchLatestSeed,
+  probeLatestSeed,
+  resolveSwapService,
+  type LatestSeedProbe,
+  type RemoteSeedMeta,
+} from "./swap";
 import { wireProfileUi } from "./profile-ui";
 import { cloneWorkspace } from "./platform/git-opfs";
 import { applyDatabaseDumps } from "./db-sync";
@@ -689,33 +695,34 @@ async function checkBoundSeedUpdate(binding: SeedBinding): Promise<void> {
     return;
   }
   const account = service.account || binding.account;
-  let meta: RemoteSeedMeta | null = null;
+  const knownSha = binding.lastVersion?.sha256 ?? seedSha ?? undefined;
+  let probe: LatestSeedProbe | null = null;
   try {
-    meta = await fetchLatestSeedMeta(service, account, binding.seedName);
+    probe = await probeLatestSeed(service, account, binding.seedName, knownSha);
   } catch (err) {
     // Keep working offline, but never hide the reason: a rejected key, a
-    // rate limit or a malformed payload used to look identical to "current".
+    // private newest version, a rate limit or a malformed payload used to
+    // look identical to "current".
     console.warn(`[seed-check] ${account}/${binding.seedName}: check failed: ${errorText(err)}`);
     return;
   }
-  if (!meta) {
-    console.warn(
-      `[seed-check] ${account}/${binding.seedName}: no metadata — missing seed, account mismatch, or rejected read key`,
+  if (!probe) {
+    console.log(
+      `[seed-check] ${account}/${binding.seedName}: unchanged (304, ${knownSha?.slice(0, 12)}…)`,
     );
     return;
   }
-
-  const knownSha = binding.lastVersion?.sha256 ?? seedSha;
-  const freshness = seedFreshness(seedStamp, meta, SEED_CLOCK_TOLERANCE_MS, knownSha);
+  const meta = probe.meta;
+  const freshness = seedFreshness(seedStamp, meta, SEED_CLOCK_TOLERANCE_MS, knownSha ?? null);
   console.log(
     `[seed-check] ${account}/${binding.seedName}: local ${seedStamp ?? "unseeded"} / ` +
       `${knownSha ? `${knownSha.slice(0, 12)}…` : "no sha"}, remote ${meta.createdAt} / ` +
-      `${meta.sha256 ? `${meta.sha256.slice(0, 12)}…` : "no sha"} → ${freshness}`,
+      `${meta.sha256 ? `${meta.sha256.slice(0, 12)}…` : "no sha"}${probe.keyless ? " (public)" : ""} → ${freshness}`,
   );
   if (freshness !== "newer") return;
 
   const dismissKey = `${SEED_DISMISSED_KEY}:${binding.baseUrl}|${binding.account}/${binding.seedName}`;
-  const stamp = meta.seed_id_and_version ?? meta.sha256 ?? meta.createdAt;
+  const stamp = probe.version ?? meta.seed_id_and_version ?? meta.sha256 ?? meta.createdAt;
   try {
     if (localStorage.getItem(dismissKey) === stamp) return;
   } catch {
@@ -725,7 +732,7 @@ async function checkBoundSeedUpdate(binding: SeedBinding): Promise<void> {
     meta,
     label: `Seed update: ${binding.seedName}`,
     dismissKey,
-    apply: () => applyBoundSeedUpdate(binding, meta.seed_id_and_version),
+    apply: () => applyBoundSeedUpdate(binding, probe.version ?? meta.seed_id_and_version),
   });
 }
 
@@ -840,6 +847,7 @@ async function applyBoundSeedUpdate(binding: SeedBinding, version?: string): Pro
   if (!proceed) return;
   setStatus("fetching seed…");
   const fetched = await fetchLatestSeed(service, account, binding.seedName);
+  if (!fetched) throw new Error("the newest seed version is unchanged");
   setStatus(`applying ${fetched.archive.files.length} files…`);
   await applySeedArchive(fetched.archive, fetched.sha256);
   await recordSeedVersion(activeProfile, {

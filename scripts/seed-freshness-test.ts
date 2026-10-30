@@ -2,7 +2,7 @@
 // the comparison that decides whether the toolbar offers a workspace update.
 import assert from "node:assert/strict";
 import { parseSeedMeta, seedFreshness, SEED_CLOCK_TOLERANCE_MS } from "../web/src/seed-version.ts";
-import { parseSeedList } from "../web/src/swap.ts";
+import { parseSeedList, sha256FromEtag } from "../web/src/swap.ts";
 
 const seed = (createdAt: unknown) => parseSeedMeta({ version: 1, createdAt, fileCount: 3 });
 
@@ -152,3 +152,11 @@ assert.deepEqual(
 assert.throws(() => parseSeedList(null), /seed list/);
 assert.throws(() => parseSeedList({}), /seeds array/);
 
+// ── public (keyless) download: ETag carries the sha /latest/meta would ───
+const etagSha = "d3".repeat(32);
+assert.equal(sha256FromEtag(`"${etagSha}"`), etagSha, "quoted ETag");
+assert.equal(sha256FromEtag(etagSha), etagSha, "bare ETag (some proxies strip quotes)");
+assert.equal(sha256FromEtag(`W/"${etagSha.toUpperCase()}"`), etagSha, "weak ETag is lowercased");
+assert.equal(sha256FromEtag(null), undefined, "no ETag");
+assert.equal(sha256FromEtag('"not-a-sha"'), undefined, "malformed ETag");
+assert.equal(sha256FromEtag('"abc123"'), undefined, "short digest");

@@ -2,6 +2,27 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-30 — public seed versions: keyless reads
+
+BobSwap can now mark individual seed versions public. The browser follows the
+newest version with no read key while it is public:
+
+- **Keyless checks**: `probeLatestSeed()` asks `/latest/meta` when a read key
+  exists; without one it reads `/latest` anonymously and synthesizes the
+  freshness record from the archive, verifying the bytes against the response
+  `ETag` (the same full SHA-256 `/latest/meta` reports). Unchanged checks send
+  `If-None-Match` and stop at a 304 instead of downloading the archive.
+- **Copy/paths**: the bound-seed banner, **Check now** and new-workspace seeding
+  all use the probe, so a public seed works with no key configured. A private
+  newest version answers 401 and the message now says it is not public instead
+  of "no read key".
+- **Still keyed**: listing the shelf (`/seeds`), `/versions`, `/latest/meta`,
+  publishing, the relay and sync channels. The picker says that listing needs a
+  read key.
+- **Checks/docs**: `seed-update-smoke` gained public phases (keyless
+  offer/apply, 304 re-check, private-again lockout); `test:seed-freshness`
+  covers the ETag parser; `web/README.md` documents the public-version contract.
+
 ## 2026-10-30 — Connect browser: one command for hosted users
 
 The browser tools can now be connected from the hosted app without a repo or

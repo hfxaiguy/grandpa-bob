@@ -1,6 +1,7 @@
 // Headless check for bound-seed updates: a fake BobSwap service serves
 // /latest/meta + /latest; the browser must offer, apply (keeping the run log),
-// and then stop offering the update.
+// and then stop offering the update. Later phases repeat the flow with NO read
+// key against a public version, then lock the newest version again.
 // Requires a served build (npm run web:standalone or the admin) and Chromium.
 //   node scripts/seed-update-smoke.mjs
 import { spawn } from "node:child_process";
@@ -55,9 +56,25 @@ const archive2 = {
     },
   ],
 };
+// Phase 4 re-packs once more so the keyless (public) path has a real update to
+// apply; phase 5 keeps these bytes but makes the newest version private again.
+const archive3 = {
+  ...archive2,
+  files: [
+    ...archive2.files,
+    {
+      path: "workspace/patterns/public-only.mjs",
+      base64: Buffer.from("export default { public: true };").toString("base64"),
+    },
+  ],
+};
 let phase = 1;
+/** Whether an anonymous GET /latest is allowed (the service's public toggle). */
+let publicLatest = false;
+/** Anonymous 304s served, proving the unchanged check avoids a download. */
+let notModified = 0;
 function current() {
-  const value = phase === 1 ? archive : archive2;
+  const value = phase === 1 || phase === 3 ? archive : phase === 2 ? archive2 : archive3;
   const body = JSON.stringify(value);
   const sha256 = createHash("sha256").update(body).digest("hex");
   return {
@@ -73,6 +90,15 @@ const server = createServer((req, res) => {
   requests.push(url.pathname + url.search);
   res.setHeader("access-control-allow-origin", "*");
   res.setHeader("access-control-expose-headers", "etag, x-seed-version");
+  if (req.method === "OPTIONS") {
+    // `If-None-Match` is not CORS-safelisted: a cross-origin 304 check needs
+    // this preflight (the real service advertises the same header).
+    res.setHeader("access-control-allow-headers", "authorization, content-type, if-none-match");
+    res.setHeader("access-control-allow-methods", "GET, OPTIONS");
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
   const now = current();
   if (url.pathname === "/api/v1/personal/seeds") {
     if (url.searchParams.get("key") !== READ_KEY) {
@@ -115,13 +141,23 @@ const server = createServer((req, res) => {
     return;
   }
   if (url.pathname === "/api/v1/personal/trunk/latest") {
-    if (url.searchParams.get("key") !== READ_KEY) {
+    const keyed = url.searchParams.get("key") === READ_KEY;
+    if (!keyed && !publicLatest) {
       res.statusCode = 401;
       res.end('{"error":"key required"}');
       return;
     }
+    if (!keyed) res.setHeader("cache-control", "public, max-age=60, must-revalidate");
+    const inm = String(req.headers["if-none-match"] ?? "").replace(/^W\//, "").replace(/^"|"$/g, "");
+    if (inm && inm === now.sha256) {
+      notModified++;
+      res.statusCode = 304;
+      res.setHeader("etag", `"${now.sha256}"`);
+      res.end();
+      return;
+    }
     res.setHeader("content-type", "application/json");
-    res.setHeader("etag", now.sha256);
+    res.setHeader("etag", `"${now.sha256}"`);
     res.setHeader("x-seed-version", now.version);
     res.end(now.body);
     return;
@@ -375,9 +411,102 @@ await waitFor(
   "malformed metadata reported by Check now",
 );
 
+// The read key is no longer needed for a public newest version. Remove it from
+// the saved service and repeat the offer/apply flow keylessly.
+phase = 4;
+publicLatest = true;
+const keylessMark = requests.length;
+await evaluate(`(() => {
+  document.getElementById("seed-close").click();
+  document.getElementById("sync-menu").click();
+  document.getElementById("swap-settings").click();
+  document.getElementById("seed-read-key").value = "";
+  document.getElementById("seed-save").click();
+  document.getElementById("seed-close").click();
+  return "read key removed";
+})()`);
+await waitFor(
+  `(() => {
+    const saved = JSON.parse(localStorage.getItem("bob:swap") || "{}");
+    const service = saved.services?.["http://127.0.0.1:${SERVICE_PORT}"];
+    return !!service && !service.readKey;
+  })()`,
+  "service saved without a read key",
+);
+
+await send("Page.navigate", { url: `${BASE}/?storage=browser&seedpoll=1000` });
+await waitFor(
+  `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && !document.getElementById("ws-reseed").hidden`,
+  "public seed update banner without a read key",
+);
+const publicLabel = await evaluate(`document.getElementById("ws-reseed").textContent`);
+assert(String(publicLabel).includes("Seed update: trunk"), `keyless banner names the seed (got: ${publicLabel})`);
+
+await evaluate(`window.__smokeBeforeReload = true; document.getElementById("ws-reseed").click()`);
+await waitFor(
+  `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && !window.__smokeBeforeReload`,
+  "reload after applying the public seed",
+);
+await sleep(2500); // let the watcher hit the unchanged (304) path
+
+const publicApplied = JSON.parse(await evaluate(`(async () => {
+  const root = await navigator.storage.getDirectory();
+  const ws = await (await (await root.getDirectoryHandle("profiles")).getDirectoryHandle("fromseed")).getDirectoryHandle("workspace");
+  const pulled = await (await (await (await ws.getDirectoryHandle("patterns")).getFileHandle("public-only.mjs")).getFile()).text();
+  const registry = JSON.parse(await (await (await root.getFileHandle("profiles.json")).getFile()).text());
+  const record = registry.profiles.find((p) => p.name === "fromseed");
+  return JSON.stringify({ pulled, lastVersion: record?.seed?.lastVersion });
+})()`));
+assert(publicApplied.pulled.includes("public: true"), "the public seed's file was applied without a key");
+assert(publicApplied.lastVersion?.sha256 === current().sha256, "the keyless pull records the content hash");
+assert(publicApplied.lastVersion?.version === current().version, "the keyless pull records the version label");
+const keylessRequests = requests.slice(keylessMark);
+assert(
+  keylessRequests.some((r) => r === "/api/v1/personal/trunk/latest"),
+  "the public archive was fetched without a key",
+);
+assert(
+  !keylessRequests.some((r) => r.includes("latest/meta")),
+  "the keyless path never relies on the key-gated metadata endpoint",
+);
+assert(notModified > 0, "an unchanged public seed is re-checked with a 304, not a download");
+
+// Phase 5: a private newest version locks the seed again for keyless clients.
+phase = 5;
+publicLatest = false;
+await send("Page.navigate", { url: `${BASE}/?storage=browser&seedpoll=1000` });
+await waitFor(
+  `document.readyState === "complete" && !!window.__bobWorkspaceTransfer`,
+  "app boot after the public version was made private",
+);
+await sleep(2500);
+assert(
+  await evaluate(`document.getElementById("ws-reseed").hidden`),
+  "a private newest version offers nothing to a keyless client",
+);
+await evaluate(`(() => {
+  document.getElementById("sync-menu").click();
+  document.getElementById("profile-manage").click();
+  return "opened";
+})()`);
+await waitFor(`!!document.querySelector("#profile-list .profile-row")`, "profile manager rows");
+await evaluate(`(() => {
+  const row = [...document.querySelectorAll("#profile-list .profile-row")]
+    .find((r) => r.querySelector("strong")?.textContent === "fromseed");
+  [...row.querySelectorAll("button")].find((b) => b.textContent === "Seed…").click();
+  return "seed dialog";
+})()`);
+await waitFor(`document.getElementById("seed-dialog").open === true`, "seed dialog open");
+await evaluate(`document.getElementById("seed-check").click()`);
+await waitFor(
+  `(document.getElementById("seed-status")?.textContent ?? "").includes("isn't public")`,
+  "Check now explains the private newest version",
+);
+
 if (exceptions.length) cleanup(1, `runtime exceptions:\n${exceptions.join("\n")}`);
 console.log(
   "seed-update smoke: banner, apply, log preservation, version record, hash-only re-pack, " +
-    "watcher offer, new-workspace creation from the listed seed and malformed-metadata reporting all passed",
+    "watcher offer, new-workspace creation from the listed seed, malformed-metadata reporting, " +
+    "keyless public download + 304 re-check and private-again locking all passed",
 );
 cleanup(0);

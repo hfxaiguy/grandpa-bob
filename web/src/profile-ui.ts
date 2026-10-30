@@ -28,10 +28,10 @@ import {
   DEFAULT_SWAP_SERVICE_URL,
   defaultSwapService,
   fetchLatestSeed,
-  fetchLatestSeedMeta,
   listSeeds,
   listSwapServices,
   loadSwapStore,
+  probeLatestSeed,
   publishSeed,
   receiveWorkspace,
   resolveSwapService,
@@ -350,6 +350,7 @@ function wireProfileManager(): void {
           if (!service) throw new Error(`seed service ${seedChoice.baseUrl} is not configured`);
           const account = service.account || seedChoice.account;
           const fetched = await fetchLatestSeed(service, account, seedChoice.seedName);
+          if (!fetched) throw new Error(`seed ${seedChoice.account}/${seedChoice.seedName} is unchanged`);
           const binding: SeedBinding = {
             baseUrl: service.baseUrl,
             account,
@@ -448,7 +449,7 @@ async function refreshSeedChoices(): Promise<void> {
       services.map(async (service) => {
         const account = service.account ?? "";
         if (!ACCOUNT_RE.test(account)) throw new Error("no valid account configured");
-        if (!service.readKey) throw new Error("no read key configured");
+        if (!service.readKey) throw new Error("no read key configured — listing the shelf needs one");
         return { service, account, seeds: await listSeeds(service, account) };
       }),
     );
@@ -553,7 +554,8 @@ function setSeedBindingHint(service: SwapService | null, binding?: SeedBinding):
     : !account
       ? `Set the account for ${service.baseUrl} in Sync… → BobSwap…, then bind this profile to a seed.`
       : !service.readKey
-        ? `Add a read key for ${service.baseUrl} in Sync… → BobSwap…, then bind this profile to a seed.`
+        ? `Bind this profile to a seed on ${service.baseUrl} (account ${account}). ` +
+          "Public versions need no key; add a read key in Sync… → BobSwap… to list the shelf and read private versions."
         : `Bind this profile to a seed on ${service.baseUrl} (account ${account}). ` +
           "Updates appear in the toolbar; the run log and chat history are kept.";
 }
@@ -684,12 +686,21 @@ async function checkSeedNow(): Promise<void> {
   const account = service.account || binding.account;
   setSeedStatus("checking…");
   try {
-    const meta = await fetchLatestSeedMeta(service, account, binding.seedName);
-    if (!meta) {
-      setSeedStatus(`seed not found (or the read key is wrong)${notSaved}`);
+    const probe = await probeLatestSeed(
+      service,
+      account,
+      binding.seedName,
+      binding.lastVersion?.sha256,
+    );
+    if (!probe) {
+      pendingSeedCheck = null;
+      const apply = el<HTMLButtonElement>("seed-apply");
+      if (apply) apply.hidden = true;
+      setSeedStatus(`up to date${notSaved}`);
       return;
     }
-    const version = meta.seed_id_and_version;
+    const meta = probe.meta;
+    const version = probe.version ?? meta.seed_id_and_version;
     const last = binding.lastVersion;
     const newer = !last || (meta.sha256 && meta.sha256 !== last.sha256) || (meta.createdAt && meta.createdAt !== last.createdAt);
     setSeedStatus(
