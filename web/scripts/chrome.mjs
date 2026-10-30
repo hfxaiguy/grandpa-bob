@@ -131,7 +131,13 @@ async function launch() {
     "--use-mock-keychain",
     "--no-first-run",
     "--no-default-browser-check",
-    "--disable-features=Translate",
+    // WebRTC host candidates are mDNS-obfuscated (`<uuid>.local`) by default.
+    // Chrome's mDNS responder is unreliable on some Linux setups (several
+    // responders share :5353, no multicast loopback), which leaves ICE stuck in
+    // `new` and cross-device pairing failing with "the other side never opened a
+    // data channel". Expose real host candidates: the sync signal carries SDP
+    // anyway, and pairing is a local-first feature.
+    "--disable-features=Translate,WebRtcHideLocalIpsWithMdns",
     "--disable-popup-blocking",
     ...(HEADLESS ? ["--headless=new"] : []),
     ...EXTRA_ARGS.split(/\s+/).filter(Boolean),
