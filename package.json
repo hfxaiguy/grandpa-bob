@@ -4,12 +4,15 @@
   "private": true,
   "description": "Standalone-only agent harness: the browser tab is the only host; Node runs pass-through channels (telegram mailbox, storage bridge, STT)",
   "type": "module",
+  "workspaces": [
+    "web"
+  ],
   "scripts": {
     "dev": "NODE_OPTIONS=--dns-result-order=ipv4first tsx src/index.ts",
     "bob": "NODE_OPTIONS=--dns-result-order=ipv4first tsx src/index.ts",
     "chrome": "node web/scripts/chrome.mjs",
     "build": "tsc && npm run build:web",
-    "build:web": "npm --prefix web run build",
+    "build:web": "npm run build --workspace web",
     "web:standalone": "node web/scripts/serve.mjs",
     "build:ui": "node scripts/build-ui.mjs",
     "make-seed": "WORKSPACE_DIR=\"${WORKSPACE_DIR:-$HOME/grandma-workspace}\" npm --prefix web run make-seed",
@@ -68,7 +71,7 @@
   "dependencies": {
     "dotenv": "^17.4.2",
     "grammy": "^1.45.1",
-    "grandma-kat": "file:../grandma-kat"
+    "grandma-kat": "git+https://github.com/hfxaiguy/grandma-kat.git"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
