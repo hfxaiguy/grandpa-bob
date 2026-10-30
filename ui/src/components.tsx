@@ -427,7 +427,7 @@ function LogRow(props: { line: EventLine; showApp?: boolean }) {
       }}
     >
       <Show when={props.showApp}>
-        <span class="stream-app">{props.line.app}</span>
+        <span class="stream-app" title={props.line.app}>{props.line.app}</span>
       </Show>
       <span class="badge">{props.line.badge}</span>
       <span class="log-text"><RefText text={props.line.text} inline /></span>

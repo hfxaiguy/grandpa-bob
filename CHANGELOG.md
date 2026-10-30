@@ -2,6 +2,13 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-30 — event stream rows use fixed columns
+
+The global event stream now lays every row out in fixed app, badge and text
+columns. A long app name ellipsizes inside its column (the full name is in the
+hover title) instead of widening that row and shifting the badge and text; the
+per-tile event log keeps its existing layout.
+
 ## 2026-10-30 — public seed versions: keyless reads
 
 BobSwap can now mark individual seed versions public. The browser follows the

@@ -538,6 +538,11 @@ body.dragging-tile { user-select: none !important; }
 .mem-modal-path { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mem-modal-body { margin: 0; padding: 12px; overflow: auto; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
 .log-row { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; border-radius: 4px; color: var(--muted); cursor: pointer; }
+/* The global stream is tabular: app, badge and text each get their own column
+   so a long app name ellipsizes inside a fixed column instead of shoving the
+   rest of the row sideways (the per-tile log has no app column). */
+.stream-body .log-row { display: grid; grid-template-columns: 14ch 8ch minmax(0, 1fr); }
+.stream-body .badge { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-row:hover, .log-row:focus-visible { color: var(--fg); outline: none; }
 .badge { color: var(--accent); flex: 0 0 auto; min-width: 42px; }
 .log-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -579,7 +584,7 @@ body.dragging-tile { user-select: none !important; }
 .stream-close { padding: 2px 8px; font-size: 11px; line-height: 1.4; flex: none; }
 .stream-note { padding: 0 10px 6px; color: var(--muted); font-size: 10.5px; }
 .stream-body { flex: 1; overflow: auto; padding: 6px 10px 10px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.stream-app { color: var(--pink); min-width: 66px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stream-app { color: var(--pink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .empty-state { margin: auto; text-align: center; color: var(--muted); }
 .empty-logo {
