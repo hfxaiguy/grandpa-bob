@@ -21,15 +21,18 @@
  * a deployed web build runs whatever `app/browser/src/verbs.js` it was seeded
  * with — no second copy to keep in step.
  */
-import { BrowserCdp } from "./cdp";
+import { BrowserCdp, isLoopbackPage } from "./cdp";
 import { createModuleLoader } from "./module-loader";
 import type { KatTool } from "./browser-tools";
 import type { Platform } from "../platform/types";
 
-const NOT_CONNECTED =
-  "browser tools are not connected. Run `npm run chrome` in the grandpa-bob repo and open " +
-  "bob from the URL it prints (it adds ?cdp=…). If Chrome was already running on the debug " +
-  "port, quit it and run `npm run chrome` again so it starts with --remote-allow-origins.";
+const NOT_CONNECTED = isLoopbackPage()
+  ? "browser tools are not connected. Run `npm run chrome` in the grandpa-bob repo and open " +
+    "bob from the URL it prints (it adds ?cdp=…). If Chrome was already running on the debug " +
+    "port, quit it and run `npm run chrome` again so it starts with --remote-allow-origins."
+  : "browser tools are not connected. In the toolbar open Sync… → Connect browser… and run " +
+    "the command it copies for your system, then reload this page. It starts a separate " +
+    "Chrome with the automation port BOB needs.";
 
 interface SessionPage {
   /** The attached tab's URL (null when unknown). */
@@ -140,9 +143,11 @@ export async function browserCdpTools(
   };
 
   const session: Session = {
-    profileHint:
-      "Uses the local Chrome started by `npm run chrome`, in this run's dedicated " +
-      "work tab (a tab is opened when none exists).",
+    profileHint: isLoopbackPage()
+      ? "Uses the local Chrome started by `npm run chrome`, in this run's dedicated " +
+        "work tab (a tab is opened when none exists)."
+      : "Uses the Chrome window opened by Sync… → Connect browser…, in this run's " +
+        "dedicated work tab (a tab is opened when none exists).",
     async withPage(fn) {
       if (!endpoint) throw new Error(NOT_CONNECTED);
       const client = await BrowserCdp.connect(endpoint);

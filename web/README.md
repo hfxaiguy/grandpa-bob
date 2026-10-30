@@ -296,6 +296,15 @@ It reuses a Chrome already listening on the port, prints the URL, and runs
 headless with `BROWSER_HEADLESS=1`. Without a `?cdp=` endpoint the four tools
 return a "run `npm run chrome`" error instead of dying on `node:child_process`.
 
+**Hosted users** (no repo, no Node) use **Sync… → Connect browser…** instead:
+the dialog copies a launcher command for Windows, macOS or Linux, and the
+served scripts (`/scripts/bob-browser.sh`, `/scripts/bob-browser.ps1`) start a
+separate automation Chrome, read the debugger socket and open the app with
+`?cdp=…` — the same transport the launcher uses. The origin allowlist is set
+from the app URL passed to the script, and on first connect Chrome may ask for
+local-network access (`ws://127.0.0.1`); allow it. The opened URL contains the
+machine's automation socket — it is local-only, but should not be shared.
+
 ### Storage backend selector (browser OPFS vs desktop)
 
 The header has a **Storage** selector:

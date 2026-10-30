@@ -46,11 +46,30 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
 }
 
-export const CDP_UNAVAILABLE =
+/** True on a loopback page — the self-hosted `npm run chrome` flow. */
+export function isLoopbackPage(): boolean {
+  try {
+    const host = globalThis.location?.hostname ?? "";
+    return (
+      !host || host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1"
+    );
+  } catch {
+    return true;
+  }
+}
+
+const LOCAL_CDP_HELP =
   "cannot reach the local Chrome. Start it with `npm run chrome` in the grandpa-bob " +
   "repo and open bob from the URL it prints (it carries ?cdp=…); if Chrome was " +
   "already running on the debug port, quit it and run `npm run chrome` again so it " +
   "starts with --remote-allow-origins.";
+
+const HOSTED_CDP_HELP =
+  "browser tools are not connected. In the toolbar open Sync… → Connect browser… and " +
+  "run the command it copies for your system, then reload this page. It starts a " +
+  "separate Chrome with the automation port BOB needs.";
+
+export const CDP_UNAVAILABLE = isLoopbackPage() ? LOCAL_CDP_HELP : HOSTED_CDP_HELP;
 
 /** Turn a Runtime.evaluate result into a value or an Error. */
 function unwrap(result: unknown): unknown {

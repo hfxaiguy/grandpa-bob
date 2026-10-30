@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-30 — Connect browser: one command for hosted users
+
+The browser tools can now be connected from the hosted app without a repo or
+Node. **Sync… → Connect browser…** copies a launcher command for the user's
+OS:
+
+- **Commands**: Windows gets a PowerShell one-liner
+  (`irm …/bob-browser.ps1 | iex`, app URL via `BOB_APP_URL`); macOS/Linux get
+  `curl …/bob-browser.sh | sh -s -- <app-url>`. The dialog detects the
+  platform, offers download links, previews the served script, and accepts a
+  custom app URL for self-hosted copies (validated before it reaches a shell).
+- **Scripts**: `web/public/scripts/bob-browser.sh` (POSIX) and
+  `bob-browser.ps1` (Chrome, Edge fallback) start a dedicated profile
+  (`~/.bobkat/chrome-profile`, `%LOCALAPPDATA%\Bobkat`) with
+  `--remote-debugging-port` + `--remote-allow-origins=<app origin>`, read the
+  browser `webSocketDebuggerUrl` from `/json/version`, and reopen the app with
+  `?cdp=…` in that instance. The existing transport is unchanged.
+- **Copy**: browser-tool errors on non-loopback origins now point at the
+  dialog; loopback builds keep the `npm run chrome` instructions.
+- **Docs/plan**: `web/README.md` documents the hosted path;
+  `feature-plans/end-user-browser-automation.md` records it as the shipped
+  Phase 0 ahead of the `chrome.debugger` extension.
+
 ## 2026-10-29 — BobSwap signaling is live: contract fixes + a real-service smoke
 
 Matching the deployed sync-channel endpoints revealed three client defects,

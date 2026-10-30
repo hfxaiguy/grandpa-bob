@@ -1129,6 +1129,128 @@ function wireSyncDialog(): void {
   );
 }
 
+// ── browser automation launcher ──────────────────────────────────────────
+
+type LauncherOs = "windows" | "mac" | "linux";
+
+/** Preselect the tab for the platform this page is running on. */
+function detectLauncherOs(): LauncherOs {
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  const platform = `${nav.userAgentData?.platform ?? ""} ${navigator.userAgent}`;
+  if (/windows|win32|win64/i.test(platform)) return "windows";
+  if (/mac/i.test(platform) && !/iphone|ipad|ipod/i.test(platform)) return "mac";
+  return "linux";
+}
+
+/** The one-liner a user copies; the served script does the rest. */
+function launcherCommand(os: LauncherOs, appUrl: string): string {
+  const scripts = `${location.origin}/scripts`;
+  if (os === "windows") {
+    return `$env:BOB_APP_URL='${appUrl}'; irm ${scripts}/bob-browser.ps1 | iex`;
+  }
+  return `curl -fsSL ${scripts}/bob-browser.sh | sh -s -- ${appUrl}`;
+}
+
+/** "Connect browser…" in the Sync dialog: copy a launcher command per OS. */
+function wireBrowserDialog(): void {
+  const dialog = el<HTMLDialogElement>("browser-dialog");
+  const open = el<HTMLButtonElement>("browser-menu");
+  if (!dialog || !open) return;
+
+  const commandEl = el<HTMLElement>("browser-command");
+  const statusEl = el<HTMLElement>("browser-status");
+  const shellEl = el<HTMLElement>("browser-shell");
+  const appInput = el<HTMLInputElement>("browser-app-url");
+  const download = el<HTMLAnchorElement>("browser-download");
+  const preview = el<HTMLElement>("browser-script");
+  const tabs = Array.from(dialog.querySelectorAll<HTMLButtonElement>(".browser-tab"));
+
+  let os: LauncherOs = detectLauncherOs();
+  let previewed: LauncherOs | null = null;
+
+  const setStatus = (text: string): void => {
+    if (statusEl) statusEl.textContent = text;
+  };
+  const rawAppUrl = (): string => (appInput?.value.trim() || location.origin).replace(/\/+$/, "");
+  /** The value is interpolated into shell commands: keep it a bare http(s) URL. */
+  const appUrl = (): string | null => {
+    const url = rawAppUrl();
+    return /^https?:\/\/[^\s'"]+$/i.test(url) ? url : null;
+  };
+  const scriptFile = (): string => (os === "windows" ? "bob-browser.ps1" : "bob-browser.sh");
+
+  const loadPreview = async (): Promise<void> => {
+    if (!preview || previewed === os) return;
+    previewed = os;
+    const file = scriptFile();
+    preview.textContent = "loading…";
+    try {
+      const res = await fetch(`${location.origin}/scripts/${file}`, { cache: "no-store" });
+      preview.textContent = res.ok ? await res.text() : `could not load ${file} (HTTP ${res.status})`;
+    } catch (err) {
+      preview.textContent = `could not load ${file}: ${errorText(err)}`;
+    }
+  };
+
+  const render = (): void => {
+    for (const tab of tabs) tab.setAttribute("aria-selected", String(tab.dataset.os === os));
+    if (shellEl) shellEl.textContent = os === "windows" ? "PowerShell" : "Terminal";
+    const url = appUrl();
+    if (commandEl) commandEl.textContent = url ? launcherCommand(os, url) : "";
+    if (download) {
+      const file = scriptFile();
+      download.setAttribute("href", `${location.origin}/scripts/${file}`);
+      download.setAttribute("download", file);
+      download.textContent = `Download ${file} instead`;
+    }
+    if (!url) setStatus("app URL must start with http(s):// and contain no spaces or quotes");
+    void loadPreview();
+  };
+
+  const copy = async (): Promise<void> => {
+    const url = appUrl();
+    if (!url) {
+      setStatus("app URL must start with http(s):// and contain no spaces or quotes");
+      return;
+    }
+    const text = launcherCommand(os, url);
+    try {
+      if (!navigator.clipboard) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(text);
+      setStatus(`copied — paste it into ${os === "windows" ? "PowerShell" : "a terminal"}`);
+      getHooks().flash("command copied", 4000);
+    } catch {
+      if (!commandEl) return;
+      const range = document.createRange();
+      range.selectNodeContents(commandEl);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      setStatus("copy failed — the command is selected, press Ctrl/Cmd+C");
+    }
+  };
+
+  open.addEventListener("click", () => {
+    os = detectLauncherOs();
+    previewed = null;
+    if (appInput) appInput.value = location.origin;
+    setStatus("");
+    render();
+    dialog.showModal();
+  });
+  for (const tab of tabs) {
+    tab.addEventListener("click", () => {
+      os = (tab.dataset.os as LauncherOs | undefined) ?? os;
+      previewed = null;
+      setStatus("");
+      render();
+    });
+  }
+  appInput?.addEventListener("input", () => render());
+  el<HTMLButtonElement>("browser-copy")?.addEventListener("click", () => void copy());
+  el<HTMLButtonElement>("browser-close")?.addEventListener("click", () => dialog.close());
+}
+
 // ── entry point ──────────────────────────────────────────────────────────
 
 export function wireProfileUi(profileHooks: ProfileUiHooks): void {
@@ -1145,6 +1267,7 @@ export function wireProfileUi(profileHooks: ProfileUiHooks): void {
   wireSeedDialog();
   wireShareDialog();
   wireReceiveDialog();
+  wireBrowserDialog();
   wireSyncDialog();
 
   // Keep the receive dialog able to target the active profile after changes.
