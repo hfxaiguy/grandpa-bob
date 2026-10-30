@@ -5,7 +5,8 @@
   "description": "Standalone-only agent harness: the browser tab is the only host; Node runs pass-through channels (telegram mailbox, storage bridge, STT)",
   "type": "module",
   "workspaces": [
-    "web"
+    "web",
+    "ui"
   ],
   "scripts": {
     "dev": "NODE_OPTIONS=--dns-result-order=ipv4first tsx src/index.ts",
