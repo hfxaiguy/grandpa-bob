@@ -142,13 +142,16 @@ export async function exportWorkspace(root?: FileSystemDirectoryHandle): Promise
 export async function importWorkspace(
   archive: WorkspaceArchive,
   root?: FileSystemDirectoryHandle,
+  onProgress?: (done: number, total: number) => void,
 ): Promise<number> {
   const base = await archiveRoot(root);
+  // VFS-internal pool files are never restored directly; the logical log
+  // snapshot at logs/grandma-kat.db is imported by the next boot instead.
+  const files = archive.files.filter(
+    (entry) => entry.path !== ".gpb-runlog" && !entry.path.startsWith(".gpb-runlog/"),
+  );
   let written = 0;
-  for (const entry of archive.files) {
-    // VFS-internal pool files are never restored directly; the logical log
-    // snapshot at logs/grandma-kat.db is imported by the next boot instead.
-    if (entry.path === ".gpb-runlog" || entry.path.startsWith(".gpb-runlog/")) continue;
+  for (const entry of files) {
     const parts = entry.path.split("/").filter((part) => part && part !== ".");
     if (parts.some((part) => part === "..")) throw new Error(`invalid archive path: ${entry.path}`);
     const name = parts.pop();
@@ -166,6 +169,7 @@ export async function importWorkspace(
     await writable.write(bytes as unknown as Parameters<typeof writable.write>[0]);
     await writable.close();
     written++;
+    onProgress?.(written, files.length);
   }
   return written;
 }

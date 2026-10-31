@@ -226,6 +226,7 @@ if (NO_CDP) {
   url.searchParams.set("cdp", "");
   console.log(`app:  ${app}`);
   console.log("cdp:  disabled (BOB_NO_CDP=1)");
+  console.log(`param: ${url.search}  (clears a saved endpoint)`);
   console.log(`bob:  ${url.toString()}`);
   openUrl(url.toString());
 } else {
@@ -244,6 +245,7 @@ if (NO_CDP) {
   url.searchParams.set("cdp", wsUrl);
   console.log(`app:  ${app}`);
   console.log(`cdp:  ${wsUrl}`);
+  console.log(`param: ${url.search}`);
   console.log(`bob:  ${url.toString()}`);
   openUrl(url.toString());
 }

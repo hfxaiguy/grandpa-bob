@@ -18,19 +18,20 @@ Companion channels — one process, one port (`npm run bob`, loopback only):
 | Channel | Route | What it does |
 |---|---|---|
 | Telegram | `:8795` `/api/*` | grammY long-poll; parks text + channel-side voice transcripts in a file mailbox (`~/.bobkat/telegram/`); the tab claims and answers them |
-| Storage bridge | `:8795` `/roots`, `/fs/*`, `/git`, `/sql/*` | real folders as desktop profiles; `POST /roots` registers them, requests select one with `x-bob-root` |
+| Storage bridge | `:8795` `/roots`, `/mirror/*`, `/fs/*`, `/git`, `/sql/*` | desktop mirror sync + real-path ops; `POST /roots` registers a folder, requests select one with `x-bob-root` |
 | STT | `:8795` `/stt` (`BOB_STT=1`) | raw audio bytes → ffmpeg → whisper-server → transcript (used by the composer) |
 | Whisper | `npm run whisper:up` (`:8178`) | the transcription backend both paths call |
 
 The same modules keep their standalone CLIs (`npm run storage-server`,
 `npm run web:standalone`) for debugging a listener in isolation.
 
-Same-origin tabs sync live (BroadcastChannel) when they share a workspace —
-same storage mode and profile. Different profiles (including an OPFS profile
-vs a desktop-folder profile) are different workspaces and pair through the
-Sync… → Live sync dialog (WebRTC; BobSwap REST or manual paste). The full
-model — profiles, git vs replica sync, pairing, the verification phrase, and
-troubleshooting — is in [docs/pairing-and-sync.md](../docs/pairing-and-sync.md).
+Same-origin tabs sync live (BroadcastChannel) when they share a profile.
+Different profiles are different workspaces and pair through the
+Sync… → Live sync dialog (WebRTC; BobSwap REST or manual paste). A profile may
+also keep a **desktop mirror** folder synced through the storage bridge. The
+full model — profiles, git vs replica sync, pairing, the verification phrase,
+and troubleshooting — is in
+[docs/pairing-and-sync.md](../docs/pairing-and-sync.md).
 
 > The sections below grew with the milestones and are kept as the record of
 > how the browser target reached parity — the *current* contract is the one
@@ -158,30 +159,15 @@ A missing or torn checkpoint (a flush killed mid-write) drops to a fresh tree
 with a logged reason instead of resuming into a partial log. Each turn records
 `runMode` (`resumed` / `restored` / `fresh`) and `contextLost`, so the chat can
 say "continued the paused session from before the reload" or warn that prior
-context was not available. Restore is browser-storage only: in desktop-bridge
-mode the shared log's continuation policy belongs to the Node agent.
+context was not available.
 
-### Direct folder mode (Chromium)
+### Desktop mirrors (optional)
 
-```sh
-npm --prefix web run build      # or: npm run build:web (rerun after changes)
-npm start                       # http://127.0.0.1:8080 -> Storage: Desktop (direct folder)
-```
-
-Pick the workspace folder once. The handle is stored in IndexedDB; after a
-reload the browser only needs one click to re-grant permission (a browser rule,
-not an app choice). The tab then reads and writes the **real** folder — file
-tools, patterns, the file browser and `git_status` all operate in
-place, with no storage-server process.
-
-`SQL writes` is off by default: querying `contacts.db` / `comms.db` / `email.db`
-works, mutation tools report that writes are disabled, and `logs/grandma-kat.db`
-stays writable for BOB's own run log. Enable it to let `sql_write` persist
-changes to the real `.db` files (single tab at a time; the file is imported on
-open and exported after a mutation).
-
-Firefox has no File System Access API: pick **Desktop (local server)** there —
-the bridge implements the same `Platform` interface over loopback HTTP.
+The workspace always lives in the tab's OPFS. A profile can additionally bind a
+**desktop mirror**: a real folder on the machine running the storage bridge
+(`npm run bob`, `:8795`). The tab pushes its changes there and pulls the
+folder's changes back on a timer and at boot; see
+[Desktop mirror](#desktop-mirror-optional) below for the sync rules.
 
 
 ## `node:*` shims
@@ -209,12 +195,13 @@ want the app alone. See [Standalone](#standalone-no-admin).
 ```sh
 cd web
 npm install
-npm run make-seed /path/to/grandma-workspace   # pack workspace -> public/seed
+npm run make-seed /path/to/profile/folder      # pack workspace -> public/seed
 npm run smoke      # headless end-to-end check against :8080
 ```
 
-`npm run make-seed` turns a real grandpa-bob workspace (default
-`$WORKSPACE_DIR` or `../../workspace`) into `web/public/seed/workspace.json`.
+`npm run make-seed` turns a desktop profile folder (default
+`$BOB_WORKSPACE/folders/seed`; `BOB_WORKSPACE` defaults to `~/.bobkat`) into
+`web/public/seed/workspace.json`.
 On first load the app imports it into OPFS (`?reseed=1` forces a re-import);
 after that the browser workspace persists on its own. The sidecar
 `seed/meta.json` now records `sha256` and `size` beside `createdAt`, so the
@@ -288,12 +275,13 @@ Chrome, not FireDragon.
 npm run chrome                                  # FireDragon + background Chrome
 BOB_BROWSER_BIN=/usr/bin/firefox npm run chrome # choose the display browser
 BOB_NO_CDP=1 npm run chrome                     # no Chrome; browser_* tools off
-BOB_NO_OPEN=1 npm run chrome                    # print the URL only
+BOB_NO_OPEN=1 npm run chrome                    # print the URL and ?cdp= parameter only
 BOB_APP_URL=http://127.0.0.1:8080 npm run chrome  # explicit app URL (e.g. standalone)
 ```
 
-It reuses a Chrome already listening on the port, prints the URL, and runs
-headless with `BROWSER_HEADLESS=1`. Without a `?cdp=` endpoint the four tools
+It reuses a Chrome already listening on the port, prints the URL and the
+`?cdp=…` query parameter to append manually, and runs headless with
+`BROWSER_HEADLESS=1`. Without a `?cdp=` endpoint the four tools
 return a "run `npm run chrome`" error instead of dying on `node:child_process`.
 
 **Hosted users** (no repo, no Node) use **Sync… → Connect browser…** instead:
@@ -305,57 +293,51 @@ from the app URL passed to the script, and on first connect Chrome may ask for
 local-network access (`ws://127.0.0.1`); allow it. The opened URL contains the
 machine's automation socket — it is local-only, but should not be shared.
 
-### Storage backend selector (browser OPFS vs desktop)
+### Desktop mirror (optional)
 
-The header has a **Storage** selector:
+There is no storage-backend selector: the workspace always lives in OPFS. A
+profile can bind a real folder on the machine running the bridge as a **desktop
+mirror**, which is kept in sync both ways:
 
-- **Browser (OPFS)** — everything lives in the browser (the mode above).
-- **Desktop (direct folder)** — a real folder picked with the File System
-  Access API (Chromium only). The tab reads/writes it in place; no server.
-  See [Direct folder mode](#direct-folder-mode-chromium) above.
-- **Desktop (local server)** — BOB's file/shell/git tools operate on the real
-  workspace via a loopback bridge (works in any browser, including Firefox):
+- The toolbar shows a small `desktop: …` chip (last sync / offline); there is
+  no mode to pick. `?server=…` or `bob:storage-server` in localStorage points
+  the tab at a bridge on a non-default port.
+- **Profiles… → New profile → desktop mirror** registers
+  `~/.bobkat/folders/<name>` on the bridge (`POST /roots`) and binds it to the
+  new OPFS profile. The **Unbind** action removes the binding (both copies are
+  kept); **Sync now** runs a pass immediately.
+- The first pass of a fresh binding pulls the folder's existing files in. After
+  that, **OPFS is canonical**: if both sides changed a path since the last
+  pass, the tab's bytes win and the bridge preserves the desktop variant next
+  to it as `<file>.conflict-<timestamp>`.
+- Deletions propagate; `logs/`, `.git/`, `.gpb-*`, `assets/inbox/` and
+  conflict copies never sync (each replica keeps its own history/run log).
+- The bridge stores the last-synced manifest per folder root in
+  `~/.bobkat/mirrors/<root>.json` and exposes the protocol as
+  `POST /mirror/plan` + `POST /mirror/apply` (selected with `x-bob-root`).
+
+Desktop-only operations run against that real folder through the bridge's
+existing `/fs/*`, `/git` and `/sql/*` routes. The folder is sandboxed to the
+registered root and the bridge is loopback-only:
 
 ```sh
 npm run storage-server /home/love/grandma-workspace   # -> http://127.0.0.1:8795
-# then pick "Desktop (local server)" in the header (persisted in localStorage)
-# or load ?storage=desktop&server=http://127.0.0.1:8795
 ```
 
-The bridge is sandboxed to the workspace root and loopback-only. In desktop
-mode BOB operates on the real workspace:
-
-- **files + shell + git** via the bridge (`platform.fs`/`platform.git`);
-- **SQLite** via the bridge's `node:sqlite` routes, so `sql_*` tools work;
-- **discovery follows the backend** — the `node:fs` shim is repointed with
-  `setActiveFs()`, so `tree-sources`/`tree-files` read the desktop workspace;
-- **git sync to a branch** — `git_push` takes a `branch` (default `main`) and
-  the bridge runs `git push <remote> HEAD:refs/heads/<branch>`.
-
-The chat uses the workspace's **real `trunk` tree when present** (else the
-`sync` assistant). The worker keeps a per-pattern session and drives trunk's
-`Human("main_input")` pause/resume across messages, surfacing emits as the
-assistant reply. Trunk's tool list includes `git_status`/`git_commit`/
-`git_push`/`git_fetch` and its system prompt explains the sync flow, so with a
-tool-calling model “sync workspace git to main” commits then pushes.
-
-There is also a **Sync** button in the header: it stages every change (including
-deletions), commits, and pushes to the remote + branch you enter
-(`git commitAll` + `git_push`). In desktop mode the remote can be a local bare
-path (e.g. `/home/love/grandma-workspace.git`); in browser mode it must be a
-CORS http url. `?gitremote=…&gitbranch=…` preconfigures it.
+The tab's git is isomorphic-git over OPFS; pushing it to a local bare path is
+not possible from the browser, so use the bridge `POST /git` routes against the
+mirror folder for real `git push`/`fetch`/`pull` (a local bare path is fine
+there). The tab's `?remote=` clone/push still needs a CORS http URL.
 
 `npm run smoke` needs a Chromium/Chrome binary (override with `CHROME_BIN`) and
 the admin running. It exercises OPFS writes/rename, tree discovery,
 `grandma-kat knit()`, WASM SQLite persistence, and a real LLM
-round-trip — this is the older demo runner (`#out`). The storage-mode checks are
-`npm run smoke:browser` and `npm run smoke:direct` (both need the admin and
-Chromium; `smoke:direct` fakes the folder picker to a real OPFS directory
-and asserts file writes plus the sqlite read-only/write-back behavior).
-The profile flows have two more headless checks against the standalone build
-(`npm run web:standalone` from the repo root, port 8080):
-`npm run smoke:profiles` (pre-profile migration, create/switch, export scoping,
-seed-binding persistence) and `npm run smoke:seed-update` (banner, apply, run-log
+round-trip — this is the older demo runner (`#out`). `npm run smoke:browser`
+needs the admin and Chromium. The profile flows have two more headless checks
+against the standalone build (`npm run web:standalone` from the repo root, port
+8080): `npm run smoke:profiles` (pre-profile migration, create/switch, export
+scoping, seed-binding persistence) and `npm run smoke:seed-update` (banner,
+apply, run-log
 preservation and version recording against a fake BobSwap service). Both accept
 `CHROME_BIN` like the other smokes.
 
@@ -373,10 +355,9 @@ overrides the seeded template); when the admin serves the page, its
 
 ### Workspace backup and restore (Browser OPFS)
 
-The toolbar has **Export** and **Import** in Browser (OPFS) mode; both are
-hidden in Desktop mode, where the workspace is the real folder. OPFS is
-evictable unless the browser grants persistent storage, so this backup is a
-first-class control.
+The toolbar has **Export** and **Import** for the workspace (Sync… → Transfer);
+OPFS is evictable unless the browser grants persistent storage, so this backup
+is a first-class control.
 
 - **Export** downloads the active profile's workspace as `bob-workspace-<date>.json`:
   every file in that profile — `app/`, `patterns/`, `lib/`, the app `.db` files and
@@ -411,14 +392,15 @@ reloads the tab).
 - The **Profiles…** entry in the toolbar's **Sync…** dialog creates a new
   workspace only after an explicit seed pick — the bundled snapshot or any seed
   listed on a configured BobSwap service (a binding is stored and its archive is
-  pulled immediately). A copy of the current profile and desktop folder profiles
-  don't need a seed. Deleting non-active profiles is also there. Each profile
-  has its own `workspace/`, run log, chats, patterns and git history.
+  pulled immediately). A copy of the current profile needs no seed; a
+  **desktop mirror** profile starts from its folder (the first pass pulls it in).
+  Deleting non-active profiles is also there. Each profile has its own
+  `workspace/`, run log, chats, patterns and git history.
 - **Export**/**Import** and the BobSwap flows act on the **active** profile.
   Archive paths stay `workspace/...`, so the same file can be imported into any
   profile, any device, or packed by `make-seed`.
-- Desktop (local server) mode is unchanged: one workspace, profile controls
-  hidden.
+- A profile can bind **one** desktop mirror folder; the binding is stored in the
+  registry (`kind: "desktop"`, `folder`). Unbinding keeps both copies.
 
 ## Seed sources (BobSwap seed shelf)
 
@@ -496,10 +478,10 @@ npm run web:standalone     # http://localhost:8080
 ```
 
 `web/scripts/serve.mjs` is a zero-dependency loopback static server for
-`web/dist`; it answers `/api/*` with 404 because there is no admin API. Use
-Browser (OPFS) storage — or Desktop (direct folder) — neither needs a server
-for files, SQL, git or patterns. Telegram, transcription, the storage bridge
-and the `/api/llm` proxy are server-only and stay unavailable by design.
+`web/dist`; it answers `/api/*` with 404 because there is no admin API. The
+workspace (files, SQL, git, patterns) needs no server. Telegram, transcription,
+the storage bridge/desktop mirror and the `/api/llm` proxy are server-only and
+stay unavailable by design.
 
 If port 8080 is taken (usually by the admin), stop it or choose another origin:
 `PORT=8090 npm run web:standalone`.

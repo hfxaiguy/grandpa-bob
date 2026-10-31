@@ -1,16 +1,14 @@
 /**
  * Agent Web Worker — the browser target's "server".
  *
- * Owns the Platform (OPFS or the desktop bridge), the tool registry, the
- * grandma-kat runtime and per-pattern sessions (continuation checkpoints) so
- * trees with `Human(...)` — like the real trunk — can pause and resume across
- * chat messages.
+ * Owns the OPFS Platform, the tool registry, the grandma-kat runtime and
+ * per-pattern sessions (continuation checkpoints) so trees with `Human(...)`
+ * — like the real trunk — can pause and resume across chat messages.
  */
 import { Tree, name, Call, Return, Tools, knit, resume, inspectMemoryTool } from "grandma-kat";
 import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { setSqliteOpfsPrefix } from "../platform/sqlite-wasm";
 import { parseOpfsPrefix, setOpfsRootSegments } from "../platform/opfs-root";
-import { createDesktopPlatform } from "../platform/desktop";
 import type { Platform } from "../platform/types";
 import { browserTools, STUB_TOOL_NAMES } from "./browser-tools";
 import { browserCdpTools } from "./browser-cdp";
@@ -82,13 +80,11 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Resp
   });
 }) as typeof fetch;
 
-async function getPlatform(storage: string, server: string): Promise<Platform> {
-  const key = `${storage}|${server}`;
-  let platform = platforms.get(key);
+async function getPlatform(): Promise<Platform> {
+  let platform = platforms.get("opfs");
   if (!platform) {
-    platform =
-      storage === "desktop" ? createDesktopPlatform("/", server) : createBrowserPlatform("/workspace");
-    platforms.set(key, platform);
+    platform = createBrowserPlatform("/workspace");
+    platforms.set("opfs", platform);
   }
   return platform;
 }
@@ -258,8 +254,6 @@ interface RunOptions {
   env?: Record<string, string>;
   pattern?: string;
   remote?: string;
-  storage?: "browser" | "desktop";
-  server?: string;
   /** The chat session this run belongs to (the drawer's active key). */
   chatKey?: string;
   modelsJson?: string;
@@ -495,9 +489,7 @@ async function buildAppTools(
 async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   throwIfStopped(signal);
   const task = opts.task ?? "";
-  const storage = opts.storage ?? "browser";
-  const server = opts.server ?? "";
-  const platform = await getPlatform(storage, server);
+  const platform = await getPlatform();
   // One store for app code and the SQL tools below: they must share the same
   // cached writable handle per file or two connections can allocate the same
   // row id over the browser's OPFS seam (sqlite_sequence snapshots diverge).
@@ -520,7 +512,7 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   // One continuation per chat session: two chats on the same tree must not
   // share a pause/checkpoint.
   const chatKey = opts.chatKey || "local";
-  const sessionKey = `${storage}|${server}|${chatKey}|${patternPath}`;
+  const sessionKey = `${chatKey}|${patternPath}`;
   const session = getSession(sessionKey, platform);
   session.currentId = opts.id;
   runs.set(opts.id, session);
@@ -538,7 +530,7 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   // empty conversation). A stale or partial pause is not fatal — it drops to a
   // fresh tree, the browser counterpart of the Node target's droppable guard.
   let runMode: RunMode = session.continuation ? "resumed" : "fresh";
-  if (!session.continuation && storage === "browser") {
+  if (!session.continuation) {
     try {
       const found = await resumableCheckpoint(platform, chatKey);
       if (found) {
@@ -755,8 +747,6 @@ interface LogMessage {
   type: "log";
   op: string;
   payload?: Record<string, unknown>;
-  storage?: "browser" | "desktop";
-  server?: string;
 }
 
 function describeKey(key: string): string {
@@ -773,7 +763,7 @@ function describeKey(key: string): string {
 async function handleLog(msg: LogMessage): Promise<void> {
   const p = msg.payload ?? {};
   try {
-    const platform = await getPlatform(msg.storage ?? "browser", msg.server ?? "");
+    const platform = await getPlatform();
     await ready;
     let result: unknown;
 

@@ -22,7 +22,7 @@ const PORT = process.env.CDP_PORT
         server.close(() => resolve(port));
       });
     });
-const TARGET = process.argv[2] ?? process.env.WEB_URL ?? "http://localhost:8080/?storage=browser";
+const TARGET = process.argv[2] ?? process.env.WEB_URL ?? "http://localhost:8080/";
 const CHROME = process.env.CHROME_BIN ?? "chromium";
 const PROFILE = path.join(os.tmpdir(), `bob-browser-smoke-${PORT}-${process.pid}`);
 const MOCK_PORT = Number(process.env.MOCK_LLM_PORT ?? 8789);
@@ -119,10 +119,10 @@ await send("Page.navigate", { url: TARGET });
 let status = "";
 for (let i = 0; i < 200; i++) {
   status = (await evaluate(`document.getElementById("status")?.textContent ?? ""`).catch(() => "")) || "";
-  if (status.startsWith("browser ·")) break;
+  if (status.startsWith("opfs")) break;
   await sleep(250);
 }
-if (!status.startsWith("browser ·")) {
+if (!status.startsWith("opfs")) {
   console.error(`browser mode did not boot (status: ${status})`);
   console.log(exceptions.join("\n"));
   cleanup(3);
@@ -332,7 +332,7 @@ await send("Page.reload", { ignoreCache: true });
 let rebooted = "";
 for (let i = 0; i < 240; i++) {
   rebooted = (await evaluate(`document.getElementById("status")?.textContent ?? ""`).catch(() => "")) || "";
-  if (rebooted.startsWith("browser ·")) break;
+  if (rebooted.startsWith("opfs")) break;
   await sleep(250);
 }
 const restored = await evaluate(`(async () => {
@@ -466,7 +466,7 @@ let rebootedAfterImport = false;
 for (let i = 0; i < 240 && !rebootedAfterImport; i++) {
   rebootedAfterImport = await evaluate(
     `window.__beforeImport === undefined &&
-      (document.getElementById("status")?.textContent || "").startsWith("browser ·")`,
+      (document.getElementById("status")?.textContent || "").startsWith("opfs")`,
   ).catch(() => false);
   if (!rebootedAfterImport) await sleep(250);
 }

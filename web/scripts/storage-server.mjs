@@ -1,10 +1,14 @@
-// Local storage bridge for the browser target's "desktop storage" mode.
+// Local storage bridge for the browser target.
 //
 //   node scripts/storage-server.mjs [workspaceRoot]
 //
-// Exposes the real workspace (files + git) over loopback HTTP with CORS, so
-// the browser can use the desktop's storage instead of OPFS. Sandboxed to the
-// workspace root. Loopback-only; add auth before exposing it.
+// Exposes real folders (files + git + SQLite) over loopback HTTP with CORS:
+//   - desktop mirror folders: the tab's OPFS workspace stays canonical and is
+//     synced to a registered folder through /mirror/* (desktop-only operations
+//     then run against that real folder)
+//   - the bridge also serves any registered folder root through /fs, /git and
+//     /sql for callers that need a real path (tests, scripts, ops)
+// Sandboxed to the selected root. Loopback-only; add auth before exposing it.
 //
 // Opt-in STT pass-through: start with BOB_STT=1 (WHISPER_URL, default
 // http://127.0.0.1:8178) to expose POST /stt — raw audio bytes in, transcript
@@ -13,12 +17,14 @@
 // there directly, not through this route.
 import http from "node:http";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { diffMirror, mirrorExcluded, parseManifest } from "./mirror-lib.mjs";
 
 const execFileAsync = promisify(execFile);
 // The default root can be replaced by the combined entry (`npm run bob`) or
@@ -45,6 +51,7 @@ try {
 }
 
 async function saveRoots() {
+  await fs.mkdir(path.dirname(CHANNELS_FILE), { recursive: true });
   const tmp = `${CHANNELS_FILE}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(rootsRegistry, null, 2) + "\n");
   await fs.rename(tmp, CHANNELS_FILE);
@@ -63,13 +70,74 @@ function activeRoot(req) {
   const name = String(req.headers["x-bob-root"] ?? "").trim();
   return rootFor(name || "default");
 }
+
+// ── desktop mirror ──────────────────────────────────────────────────────
+// The browser's OPFS workspace is canonical; a bound folder on this machine
+// is a synced copy (and the surface desktop-only ops run against). The last
+// synced manifest per root lives outside the folder so a mirror never
+// contains bookkeeping of its own.
+const MIRROR_STATE_DIR = path.join(path.dirname(CHANNELS_FILE), "mirrors");
+
+async function readMirrorBase(name) {
+  try {
+    const raw = JSON.parse(await fs.readFile(path.join(MIRROR_STATE_DIR, `${name}.json`), "utf8"));
+    return parseManifest(raw.files ?? {});
+  } catch {
+    return {};
+  }
+}
+
+/** Whether this root has ever completed a sync (its base manifest exists). */
+async function mirrorBaseExists(name) {
+  return fs
+    .access(path.join(MIRROR_STATE_DIR, `${name}.json`))
+    .then(() => true, () => false);
+}
+
+async function saveMirrorBase(name, files) {
+  await fs.mkdir(MIRROR_STATE_DIR, { recursive: true });
+  const target = path.join(MIRROR_STATE_DIR, `${name}.json`);
+  const tmp = `${target}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify({ version: 1, updatedAt: new Date().toISOString(), files }, null, 2));
+  await fs.rename(tmp, target);
+}
+
+/** sha256 of the base64 text — the same hash the browser's sync hashmap uses. */
+function mirrorHash(bytes) {
+  return createHash("sha256").update(bytes.toString("base64")).digest("hex");
+}
+
+/** Walk a mirror folder into `{ path: { hash, bytes } }`. */
+async function walkMirror(dir, prefix = "", out = {}) {
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (mirrorExcluded(rel)) continue;
+    const abs = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await walkMirror(abs, rel, out);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const bytes = await fs.readFile(abs).catch(() => null);
+    if (!bytes) continue;
+    out[rel] = { hash: mirrorHash(bytes), bytes: bytes.length };
+  }
+  return out;
+}
+
+/** A locally preserved loser next to the file (`name.ext.conflict-<stamp>`). */
+function mirrorConflictPath(abs) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  return `${abs}.conflict-${stamp}`;
+}
 /** STT pass-through: off unless explicitly enabled. */
 const STT_ENABLED = process.env.BOB_STT === "1";
 const WHISPER_URL = (process.env.WHISPER_URL ?? "http://127.0.0.1:8178").replace(/\/$/, "");
 
 const cors = {
   "access-control-allow-origin": "*",
-  "access-control-allow-headers": "content-type",
+  "access-control-allow-headers": "content-type, x-bob-root",
   "access-control-allow-methods": "GET, POST, OPTIONS",
 };
 
@@ -257,6 +325,56 @@ const routes = {
     }
     throw new Error(`unknown git op: ${op}`);
   },
+  async "POST /mirror/plan"({ manifest }, _q, root, rootName) {
+    const mine = parseManifest(manifest);
+    const base = await readMirrorBase(rootName);
+    const initial = !(await mirrorBaseExists(rootName));
+    const theirs = await walkMirror(root);
+    const plan = diffMirror(base, mine, theirs);
+    const pull = [];
+    for (const p of plan.pull) {
+      const abs = resolveIn(root, p);
+      const bytes = await fs.readFile(abs).catch(() => null);
+      // A file that moved between the walk and the read is simply picked up
+      // by the next round; the hash guard would discard a stale answer anyway.
+      if (!bytes) continue;
+      pull.push({ path: p, base64: bytes.toString("base64"), hash: theirs[p].hash, bytes: bytes.length });
+    }
+    return {
+      plan: {
+        pull,
+        pullDeletes: plan.pullDeletes,
+        push: plan.push,
+        pushDeletes: plan.pushDeletes,
+        conflicts: plan.conflicts,
+      },
+      initial,
+      at: new Date().toISOString(),
+    };
+  },
+  async "POST /mirror/apply"({ writes = [], deletes = [], conflicts = [], manifest }, _q, root, rootName) {
+    // Preserve the desktop variant before OPFS overwrites it (OPFS is
+    // canonical). Conflict copies are excluded from later syncs by name.
+    for (const p of conflicts) {
+      const abs = resolveIn(root, p);
+      await fs.copyFile(abs, mirrorConflictPath(abs)).catch(() => {});
+    }
+    for (const p of deletes) {
+      await fs.rm(resolveIn(root, p), { recursive: true, force: true });
+    }
+    let written = 0;
+    for (const entry of writes) {
+      if (typeof entry?.path !== "string" || typeof entry.base64 !== "string") {
+        throw new Error("mirror write entries need {path, base64}");
+      }
+      const abs = resolveIn(root, entry.path);
+      await fs.mkdir(path.dirname(abs), { recursive: true });
+      await fs.writeFile(abs, Buffer.from(entry.base64, "base64"));
+      written++;
+    }
+    if (manifest !== undefined) await saveMirrorBase(rootName, parseManifest(manifest));
+    return { ok: true, written, deleted: deletes.length, conflicts: conflicts.length };
+  },
   async "POST /sql/columns"({ path: p, sql }, _q, root) {
     const db = openDb(root, p, { readOnly: true });
     try {
@@ -330,7 +448,8 @@ export function handleStorageRequest(req, res) {
     try {
       const body = data ? JSON.parse(data) : {};
       const root = activeRoot(req);
-      send(200, await handler(body, new URLSearchParams(query), root));
+      const rootName = String(req.headers["x-bob-root"] ?? "").trim() || "default";
+      send(200, await handler(body, new URLSearchParams(query), root, rootName));
     } catch (err) {
       send(400, { error: err instanceof Error ? err.message : String(err) });
     }

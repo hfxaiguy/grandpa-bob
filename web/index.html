@@ -46,13 +46,17 @@
         outline: 2px solid var(--accent);
         outline-offset: 1px;
       }
-      #storage-server {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 12.5px;
-        min-width: 15rem;
-        letter-spacing: 0.01em;
-      }
       #status { color: var(--muted); }
+      #mirror-status {
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 99px;
+        padding: 0.1rem 0.55rem;
+        cursor: pointer;
+      }
+      #mirror-status[data-phase="offline"],
+      #mirror-status[data-phase="error"] { color: #ffd7a1; border-color: #6a5330; }
+      #seed-bar { width: 8rem; height: 0.6rem; }
       #toolbar button:disabled { opacity: 0.55; cursor: default; }
       #app { flex: 1; min-height: 0; }
 
@@ -91,6 +95,9 @@
       dialog button:hover { border-color: var(--accent); }
       dialog button.danger { border-color: #7f3b46; }
       dialog .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 0.8rem; }
+      #confirm-dialog { width: min(520px, 92vw); }
+      #confirm-dialog form { margin: 0; border: 0; padding: 0; }
+      #confirm-message { white-space: pre-line; }
       dialog progress { width: 100%; height: 0.7rem; }
       dialog form { margin-top: 0.8rem; border-top: 1px solid var(--border); padding-top: 0.6rem; }
       .row-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.7rem; }
@@ -175,13 +182,7 @@
   </head>
   <body>
     <div id="toolbar">
-      <label>Storage
-        <select id="storage-mode">
-          <option value="browser">Browser (OPFS)</option>
-          <option value="desktop">Desktop (local server)</option>
-        </select>
-      </label>
-      <input id="storage-server" placeholder="http://127.0.0.1:8795" size="22" />
+      <span id="mirror-status" hidden></span>
       <span id="profile-tools">
         <label>Profile
           <select id="profile-select" title="Active workspace profile"></select>
@@ -191,6 +192,7 @@
       <button id="ws-reseed-dismiss" type="button" title="Not now" hidden>×</button>
       <button id="sync-menu" type="button" title="Profiles, workspace transfer and BobSwap services">Sync…</button>
       <span id="status">starting…</span>
+      <progress id="seed-bar" max="100" value="0" hidden title="Seed apply progress"></progress>
     </div>
     <div id="app">
       <div id="boot-splash" class="boot-splash" role="status" aria-live="polite">
@@ -210,7 +212,7 @@
 
     <dialog id="profile-dialog">
       <h3>Workspace profiles</h3>
-      <p class="muted">Separate workspaces in this browser (OPFS) or in folders on this machine's bridge. Switching reloads the tab.</p>
+      <p class="muted">Each profile is a workspace in this browser. A profile can also keep a synced copy in a folder on this machine's bridge (a desktop mirror). Switching reloads the tab.</p>
       <div id="profile-list"></div>
       <form id="profile-create">
         <label>New profile name
@@ -220,7 +222,7 @@
           <select id="profile-new-source">
             <option value="blank">fresh workspace (choose its seed)</option>
             <option value="duplicate">copy of the current profile</option>
-            <option value="desktop">desktop folder (this machine's bridge)</option>
+            <option value="desktop">desktop mirror (this machine's bridge)</option>
           </select>
         </label>
         <label id="profile-new-seed-label">Seed
@@ -228,10 +230,11 @@
             <option value="" disabled selected>pick a seed…</option>
           </select>
         </label>
-        <label id="profile-new-folder-label" hidden>Folder root name on the bridge
+        <label id="profile-new-folder-label" hidden>Desktop mirror folder name
           <input id="profile-new-folder" placeholder="work" autocomplete="off" />
         </label>
         <p id="profile-create-hint" class="muted"></p>
+        <progress id="profile-seed-bar" max="100" value="0" hidden></progress>
         <label class="inline"><input id="profile-new-switch" type="checkbox" checked /> switch to it after creating</label>
         <div class="row-actions"><button type="submit">Create profile</button></div>
       </form>
@@ -408,6 +411,17 @@
         <button id="pair-unpair" type="button">Close cross-device pairing</button>
         <button id="pair-close" type="button">Close</button>
       </div>
+    </dialog>
+
+    <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+      <form method="dialog">
+        <h3 id="confirm-title">Confirm</h3>
+        <p id="confirm-message"></p>
+        <div class="row-actions">
+          <button id="confirm-ok" type="submit" value="ok">Update</button>
+          <button id="confirm-cancel" type="submit" value="cancel">Cancel</button>
+        </div>
+      </form>
     </dialog>
 
     <script type="module" src="/src/main.ts"></script>

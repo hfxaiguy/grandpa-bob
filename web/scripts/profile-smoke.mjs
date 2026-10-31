@@ -140,9 +140,9 @@ await evaluate(`(async () => {
 })()`);
 
 // 2. Boot the app; migration must move the legacy workspace into default.
-await send("Page.navigate", { url: `${BASE}/?storage=browser` });
+await send("Page.navigate", { url: `${BASE}/` });
 await waitFor(
-  `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && (document.getElementById("status")?.textContent || "").includes("browser")`,
+  `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && (document.getElementById("status")?.textContent || "").includes("opfs")`,
   "app boot",
 );
 
@@ -319,7 +319,7 @@ await evaluate(`(() => {
   return "switching";
 })()`);
 await waitFor(
-  `(document.getElementById("status")?.textContent || "").includes("browser") && !(document.getElementById("status")?.textContent || "").includes("travel")`,
+  `(document.getElementById("status")?.textContent || "").includes("opfs") && !(document.getElementById("status")?.textContent || "").includes("travel")`,
   "switch back to default",
 );
 const back = await evaluate(`localStorage.getItem("bob:profile")`);
@@ -335,9 +335,9 @@ await evaluate(`(async () => {
   await writable.close();
   return "truncated";
 })()`);
-await send("Page.navigate", { url: `${BASE}/?storage=browser` });
+await send("Page.navigate", { url: `${BASE}/` });
 await waitFor(
-  `document.readyState === "complete" && (document.getElementById("status")?.textContent || "").includes("browser")`,
+  `document.readyState === "complete" && (document.getElementById("status")?.textContent || "").includes("opfs")`,
   "boot after a truncated registry",
 );
 const repaired = await evaluate(`(async () => {

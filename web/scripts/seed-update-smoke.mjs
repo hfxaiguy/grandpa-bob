@@ -225,7 +225,7 @@ await send("Page.enable");
 
 // Fresh boot (no legacy data). A 1 s poll keeps the update checks testable
 // without reloading the tab.
-await send("Page.navigate", { url: `${BASE}/?storage=browser&seedpoll=1000` });
+await send("Page.navigate", { url: `${BASE}/?seedpoll=1000` });
 await waitFor(`document.readyState === "complete" && !!window.__bobWorkspaceTransfer`, "app boot");
 
 // Configure the service and bind the default profile to its seed.
@@ -257,7 +257,7 @@ await waitFor(
 await sleep(500);
 
 // Reload: boot must now offer the update.
-await send("Page.navigate", { url: `${BASE}/?storage=browser&seedpoll=1000` });
+await send("Page.navigate", { url: `${BASE}/?seedpoll=1000` });
 await waitFor(
   `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && !document.getElementById("ws-reseed").hidden`,
   "seed update banner",
@@ -276,9 +276,12 @@ const before = await evaluate(`(async () => {
 })()`);
 const logBefore = JSON.parse(before);
 
-// Apply (the confirm is auto-accepted by the CDP handler above). The marker
+// Apply through the app's own dialog (native confirms can be suppressed in
+// embedded browsers, so make confirm() return false as those do). The marker
 // disappears with the old document, so the wait cannot pass before the reload.
-await evaluate(`window.__smokeBeforeReload = true; document.getElementById("ws-reseed").click()`);
+await evaluate(`window.confirm = () => false; window.__smokeBeforeReload = true; document.getElementById("ws-reseed").click()`);
+await waitFor(`document.getElementById("confirm-dialog")?.open === true`, "update confirmation");
+await evaluate(`document.getElementById("confirm-ok").click()`);
 await waitFor(
   `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && !window.__smokeBeforeReload`,
   "reload after applying the seed",
@@ -385,7 +388,7 @@ assert(requests.some((r) => r.includes("/api/v1/personal/seeds") && r.includes("
 
 // Phase 3: malformed shelf metadata must surface a failure, not "current".
 phase = 3;
-await send("Page.navigate", { url: `${BASE}/?storage=browser&seedpoll=1000` });
+await send("Page.navigate", { url: `${BASE}/?seedpoll=1000` });
 await waitFor(
   `document.readyState === "complete" && !!window.__bobWorkspaceTransfer`,
   "app boot after malformed metadata",
@@ -434,7 +437,7 @@ await waitFor(
   "service saved without a read key",
 );
 
-await send("Page.navigate", { url: `${BASE}/?storage=browser&seedpoll=1000` });
+await send("Page.navigate", { url: `${BASE}/?seedpoll=1000` });
 await waitFor(
   `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && !document.getElementById("ws-reseed").hidden`,
   "public seed update banner without a read key",
@@ -442,7 +445,9 @@ await waitFor(
 const publicLabel = await evaluate(`document.getElementById("ws-reseed").textContent`);
 assert(String(publicLabel).includes("Seed update: trunk"), `keyless banner names the seed (got: ${publicLabel})`);
 
-await evaluate(`window.__smokeBeforeReload = true; document.getElementById("ws-reseed").click()`);
+await evaluate(`window.confirm = () => false; window.__smokeBeforeReload = true; document.getElementById("ws-reseed").click()`);
+await waitFor(`document.getElementById("confirm-dialog")?.open === true`, "keyless update confirmation");
+await evaluate(`document.getElementById("confirm-ok").click()`);
 await waitFor(
   `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && !window.__smokeBeforeReload`,
   "reload after applying the public seed",
@@ -474,7 +479,7 @@ assert(notModified > 0, "an unchanged public seed is re-checked with a 304, not 
 // Phase 5: a private newest version locks the seed again for keyless clients.
 phase = 5;
 publicLatest = false;
-await send("Page.navigate", { url: `${BASE}/?storage=browser&seedpoll=1000` });
+await send("Page.navigate", { url: `${BASE}/?seedpoll=1000` });
 await waitFor(
   `document.readyState === "complete" && !!window.__bobWorkspaceTransfer`,
   "app boot after the public version was made private",

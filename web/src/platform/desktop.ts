@@ -1,9 +1,10 @@
 /**
- * "Desktop storage" platform: the browser uses the real workspace on the
- * machine running scripts/storage-server.mjs, via a loopback HTTP bridge.
+ * Bridge-backed platform for desktop-only operations on a real folder.
  *
- * Files, git, and SQLite go to the desktop; the session log reads and writes
- * `logs/grandma-kat.db` through the bridge like any other DB.
+ * The tab's workspace always lives in OPFS; a desktop mirror folder is kept in
+ * sync through the bridge (see `web/src/mirror.ts`). This adapter exposes the
+ * folder's real files/git/SQLite over the same loopback bridge for operations
+ * that OPFS cannot perform (git against local paths, node:sqlite, archives).
  */
 import { posixPath } from "./paths";
 import { sha256hex } from "./sha256";

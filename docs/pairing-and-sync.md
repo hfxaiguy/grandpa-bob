@@ -18,36 +18,36 @@ Git history stays **per replica**: `.git/`, `logs/`, `.gpb-*` and
 
 ## 1. Where a workspace lives
 
-Every profile has a `kind`:
+Every profile's workspace lives in this origin's OPFS
+(`/profiles/<name>/`). Self-contained per browser; survives reloads (the app
+asks for persistent storage at boot and warns if the browser refuses).
 
-- **`opfs`** — the workspace is inside the browser's origin storage
-  (`/profiles/<name>/`). Self-contained per browser; survives reloads (the app
-  asks for persistent storage at boot and warns if the browser refuses).
-- **`desktop`** — the workspace is a **real folder on disk**, served by the
-  loopback storage bridge. The profile record stores a `folder` root name.
+A profile can additionally bind a **desktop mirror**: a real folder on disk,
+served by the loopback storage bridge. The profile record stores a `folder`
+root name (`kind: "desktop"`). OPFS stays canonical; the bridge keeps the
+folder in sync (see [§6](#6-desktop-mirror)).
 
 Desktop folders are registered once with `POST /roots { name, dir }` on the
-bridge (the picker does this automatically, defaulting to
+bridge (the profile dialog does this automatically, defaulting to
 `~/.bobkat/folders/<name>`). Registrations live in `~/.bobkat/channels.json`;
 each request selects its folder with the `x-bob-root` header. The bridge binds
-loopback only: a browser on another machine cannot use a desktop profile on
+loopback only: a browser on another machine cannot use a mirror folder on
 yours, by design.
 
-Both kinds share the same single-host rule: one tab owns a workspace at a time
-(a **lease**). The lease key is per workspace — `opfs:<profile>` or
-`desktop:<server>` — so a desktop-profile tab and an OPFS-profile tab can both
-be hosts at once. Other tabs are read-only and offer **take over**.
+The single-host rule is per OPFS profile: one tab owns `opfs:<profile>` at a
+time (a **lease**). Other tabs are read-only and offer **take over**. Only the
+lease holder runs the mirror, so the shared folder has one writer.
 
 ## 2. Same-origin tabs
 
 Tabs of the same browser and origin share a `BroadcastChannel` per workspace,
-named `bob-sync:<storageMode>:<profileName>`:
+named `bob-sync:opfs:<profileName>`:
 
-- **same workspace, multiple tabs** — converge with no setup; only the lease
+- **same profile, multiple tabs** — converge with no setup; only the lease
   holder runs the engine, the others are read-only.
 - **different profiles** (even on the same machine) — these are different
-  workspaces and different channels. An OPFS profile and a desktop profile do
-  **not** auto-converge; pair them through the dialog if you want that.
+  workspaces and different channels. Pair them through the dialog if you want
+  that.
 
 ## 3. Cross-device pairing
 
@@ -117,18 +117,18 @@ tabs keep syncing.
 
 ## 4. Concrete setups
 
-### Browser copy + desktop folder on one machine
+### Two profiles on one machine
 
 ```sh
 npm run build
 npm run bob     # app :8080 + bridge/mailbox :8795, loopback
 ```
 
-1. Tab 1: `http://localhost:8080` → activate the **desktop** profile.
-2. Tab 2: `http://localhost:8080` → activate an **OPFS** profile.
+1. Tab 1: `http://localhost:8080` → activate profile A.
+2. Tab 2: `http://localhost:8080` → activate profile B.
 3. Sync… → Pair… on both → BobSwap channel or manual blob → compare phrase.
-4. Keep both tabs open. Each store is complete and self-sufficient; the pair
-   keeps them converged.
+4. Keep both tabs open. Each workspace is complete and self-sufficient; the
+   pair keeps them converged.
 
 ### Server ↔ remote browser (phone or another computer)
 
@@ -137,38 +137,57 @@ over the LAN from the server; the bridge is never exposed:
 
 ```sh
 npm run build
-npm run bob                                     # desktop profile + bridge, loopback
+npm run bob                                     # app + bridge, loopback
 HOST=0.0.0.0 PORT=8081 npm run web:standalone   # app-only static files on the LAN
 ```
 
-1. On the server: `http://localhost:8080` → desktop profile active.
-2. On the other device: `http://<server-lan-ip>:8081` (own OPFS at that
-   origin; no bridge there — desktop profiles are per machine).
+1. On the server: `http://localhost:8080`.
+2. On the other device: `http://<server-lan-ip>:8081` (its own OPFS at that
+   origin; a mirror binding is per machine).
 3. Sync… → Pair… → BobSwap channel (id + code) or manual blobs.
 4. Compare the phrase; keep both tabs open while you want them converged.
 
 Firewall: allow the static port (8081 above), not the bridge.
 
-### Two machines with a folder on each
+### Two machines with a mirror folder on each
 
-Each machine runs `npm run bob`, each tab activates its own desktop profile,
-and the two tabs pair over WebRTC. Folders never leave their machines; only
-file contents flow, peer-to-peer.
+Each machine runs `npm run bob`, each tab binds a mirror folder on its own
+machine, and the two tabs pair over WebRTC. Folders never leave their
+machines; only file contents flow, peer-to-peer.
 
 ## 5. Data and backup model
 
 A pair is **two independent copies**, not a cache hierarchy:
 
-- OPFS profile = complete copy in browser storage.
-- Desktop profile = complete copy in the folder (the bridge proxies every
-  read/write; there is no hidden OPFS staging copy).
+- Every profile = complete copy in browser storage.
+- A desktop mirror = a synced copy in the folder (OPFS remains canonical; a
+  divergent desktop edit becomes a `.conflict-*` file next to it).
 - The replica journal (`.gpb-sync/journal.jsonl`) lives in each workspace and
-  is how deferred changes catch up.
+  is how deferred changes catch up; it is never mirrored to the desktop.
 - No server ever receives workspace bytes. Git remotes, if configured, are a
   separate optional backup/versioning path and still carry DB dumps under
   `logs/scratch` for cross-device database continuity.
 
-## 6. Troubleshooting
+## 6. Desktop mirror
+
+A profile's `folder` binding is reconciled by `web/src/mirror.ts` through
+`POST /mirror/plan` and `POST /mirror/apply` on the bridge:
+
+1. The tab hashes its workspace (same exclusions as replica sync: `.git/`,
+   `logs/`, `.gpb-*`, `assets/inbox/`, conflict copies) and sends the manifest.
+2. The bridge compares it with the folder and with the last-synced manifest at
+   `~/.bobkat/mirrors/<root>.json`: changed-here files push, changed-there
+   files pull, both-changed is a conflict (OPFS wins; the desktop variant is
+   preserved as `<file>.conflict-<timestamp>`), deletions propagate.
+3. A pass runs at boot (before indexing), every 60 s, and from **Profiles… →
+   Sync now**. Only the lease holder runs it. The toolbar chip shows the last
+   pass / offline state; there is no storage-mode selector.
+
+Desktop-only operations (real `git`, node:sqlite, scripts) run against that
+folder through the bridge's `/fs`, `/git` and `/sql` routes with the folder's
+`x-bob-root`.
+
+## 7. Troubleshooting
 
 | Symptom | Meaning |
 |---|---|
@@ -179,4 +198,5 @@ A pair is **two independent copies**, not a cache hierarchy:
 | Phrases differ | Do not trust the link — signaling was altered or the peers see different certificates; close and retry. |
 | Pair connected but files don't move | Both tabs must stay open; check the Live sync status line and the conflict counter. |
 | "opfs-sahpool" / persistence warnings | The browser refused persistent origin storage; the workspace still works but can be evicted. |
-| "desktop bridge unreachable" | `npm run bob` (or `storage-server`) is not running on the desktop. |
+| `desktop: offline` chip | `npm run bob` (or `storage-server`) is not running on the desktop, or the bridge URL is wrong. |
+| Files reappear with `desktop: synced` | The desktop mirror pulled them back; delete on both sides (or unbind) to remove them for good. |

@@ -138,13 +138,10 @@ function telegramChannelUrl(): string {
 
 /**
  * The profile id this page hosts — the same derivation the local backend
- * uses for mailbox claims. Kept in sync with web/src/main.ts.
+ * uses for mailbox claims. Workspaces always live in OPFS now; `?server=` /
+ * the bridge URL only affects the desktop mirror, not the workspace id.
  */
 function profileId(): string {
-  const storage = localStorage.getItem("bob:storage") === "desktop" ? "desktop" : "browser";
-  if (storage === "desktop") {
-    return `desktop:${bridgeUrl()}`;
-  }
   let profile = "default";
   try {
     profile = localStorage.getItem("bob:profile") || "default";
@@ -353,7 +350,7 @@ export async function refreshMemory(): Promise<void> {
  *  SSE "cleared"/"sessions"), so one call site keeps the address bar honest.
  *  `replaceState`, not `pushState`: the screen still follows one session, and
  *  back/forward should not walk a session history. Other query params
- *  (`storage`, `server`, `remote` on the browser target) are preserved. */
+ *  (`server`, `remote` on the browser target) are preserved. */
 function updateSessionUrl(key: string | null): void {
   try {
     const url = new URL(location.href);

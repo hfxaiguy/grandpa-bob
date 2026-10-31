@@ -36,8 +36,6 @@ export interface BackendResponse {
 export interface BackendOptions {
   agent: AgentClient;
   platform: Platform;
-  storage: "browser" | "desktop";
-  server: string;
   env: Record<string, string>;
   remote: string;
   initialPattern: string;
@@ -294,10 +292,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
 
   const ACTIVE_KEY = "bob:web:active-session";
 
-  const logCtx = () => ({
-    storage: opts.storage,
-    server: opts.server,
-  });
+  const logCtx = () => ({});
 
   const readActive = (): string | null => {
     try {
@@ -580,8 +575,6 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         env: opts.env,
         pattern: activePattern,
         remote: opts.remote,
-        storage: opts.storage,
-        server: opts.server,
         chatKey: key,
         modelsJson,
         serverModels: opts.serverModels,
@@ -966,7 +959,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
           uptime: Math.round(performance.now() / 1000),
           pid: null,
           workspace: platform.workspaceRoot,
-          storage: opts.storage,
+          storage: "opfs",
           // Same shape as the admin's status: the Settings page populates the
           // credentials shortcuts and the all-keys editor from this.
           env: loadEnv(),

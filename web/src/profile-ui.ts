@@ -9,7 +9,7 @@
 import {
   DEFAULT_PROFILE,
   activateProfile,
-  createDesktopProfile,
+  bindDesktopMirror,
   createProfile,
   deleteProfile,
   isValidProfileName,
@@ -17,11 +17,11 @@ import {
   profileHandle,
   recordSeedVersion,
   setSeedBinding,
+  unbindDesktopMirror,
   type ProfileRecord,
   type ProfileRegistry,
   type SeedBinding,
 } from "./profiles";
-import { loadStorage, saveStorage, type StorageMode } from "./settings";
 import { STATE_HOME } from "./state-dir";
 import {
   activeSwapService,
@@ -49,11 +49,13 @@ import {
   type WorkspaceArchive,
 } from "./workspace-transfer";
 import { loadOrCreateDevice, saveDeviceName } from "./device-keys";
+import type { MirrorStatus } from "./mirror";
 
 export interface ProfileUiHooks {
-  storage(): "browser" | "desktop";
   activeProfile(): string;
   registry(): ProfileRegistry;
+  /** Storage bridge origin used for folder registration and the mirror. */
+  bridgeUrl(): string;
   flash(text: string, ms?: number): void;
   reload(): void;
   refreshRegistry(): Promise<ProfileRegistry>;
@@ -61,8 +63,12 @@ export interface ProfileUiHooks {
   applySeedUpdate(binding: SeedBinding, meta: RemoteSeedMeta, version?: string): Promise<void>;
   /** Archive whatever workspace BOB currently operates on. */
   buildActiveArchive(): Promise<WorkspaceArchive>;
-  /** Merge into a profile (browser) or the single desktop workspace (null). */
-  importInto(target: string | null, archive: WorkspaceArchive): Promise<number>;
+  /** Merge into an OPFS profile. */
+  importInto(target: string, archive: WorkspaceArchive): Promise<number>;
+  /** Run the active profile's desktop mirror now. */
+  syncMirror(): Promise<void>;
+  /** Current desktop-mirror status (null when this profile has none). */
+  mirrorStatus(): MirrorStatus | null;
 }
 
 const ACCOUNT_RE = /^[a-z0-9._-]{1,64}$/;
@@ -133,30 +139,13 @@ function fillServiceFields(service: SwapService | null): void {
 
 // ── profile picker + manager ─────────────────────────────────────────────
 
-/** Base URL of the storage bridge (folders register there). */
-const SERVER_KEY = "bob:storage-server";
-const DEFAULT_SERVER = "http://127.0.0.1:8795";
-function bridgeUrl(): string {
-  try {
-    const raw = localStorage.getItem(SERVER_KEY) ?? "";
-    if (!raw) return DEFAULT_SERVER;
-    return new URL(raw.includes("://") ? raw : `http://${raw}`).origin;
-  } catch {
-    return DEFAULT_SERVER;
-  }
-}
-
 /**
- * Where a new desktop profile's folder lives on this machine: under
+ * Where a new desktop mirror's folder lives on this machine: under
  * `~/.bobkat/folders/<name>` — the bridge expands the leading `~` so
  * the browser never needs to know the desktop's home path.
  */
 function homeFolder(name: string): string {
   return `${STATE_HOME}/folders/${name}`;
-}
-
-function currentStorage(): StorageMode {
-  return loadStorage();
 }
 
 function renderProfileSelect(): void {
@@ -168,7 +157,7 @@ function renderProfileSelect(): void {
     ...registry.profiles.map((profile) => {
       const option = document.createElement("option");
       option.value = profile.name;
-      const kind = profile.kind === "desktop" ? ` (desktop: ${profile.folder})` : "";
+      const kind = profile.kind === "desktop" ? ` (desktop mirror: ${profile.folder})` : "";
       option.textContent = `${profile.name === DEFAULT_PROFILE ? "default" : profile.name}${kind}`;
       return option;
     }),
@@ -176,16 +165,12 @@ function renderProfileSelect(): void {
   select.value = ui.activeProfile();
 }
 
-/** Kind of a profile record ("opfs" is the implicit default). */
-function kindOf(profile: ProfileRecord): "opfs" | "desktop" {
-  return profile.kind ?? "opfs";
-}
-
 async function renderProfileList(): Promise<void> {
   const list = el<HTMLDivElement>("profile-list");
   if (!list) return;
   const ui = getHooks();
   const registry = await ui.refreshRegistry();
+  const mirror = ui.mirrorStatus();
   list.replaceChildren();
 
   for (const profile of registry.profiles) {
@@ -210,13 +195,10 @@ async function renderProfileList(): Promise<void> {
     actions.className = "row-actions";
 
     const isActive = profile.name === ui.activeProfile();
+    const mirrorBound = profile.kind === "desktop" && !!profile.folder;
     if (!isActive) {
       actions.append(
         actionButton("Switch", () => {
-          // Cross-kind switching also moves the storage mode; the reload
-          // applies both.
-          const mode = kindOf(profile) === "desktop" ? "desktop" : "browser";
-          if (mode !== currentStorage()) saveStorage(mode);
           activateProfile(profile.name);
           ui.reload();
         }),
@@ -227,24 +209,72 @@ async function renderProfileList(): Promise<void> {
       actionButton("Seed…", () => void openSeedDialog(profile)),
       actionButton("Publish…", () => void publishProfile(profile)),
     );
+    if (mirrorBound && isActive && mirror) {
+      actions.append(
+        actionButton("Sync now", () => {
+          void (async () => {
+            try {
+              await ui.syncMirror();
+              ui.flash(`desktop mirror synced (${profile.folder})`, 6000);
+            } catch (err) {
+              ui.flash(`mirror sync failed: ${errorText(err)}`, 10_000);
+            }
+            await renderProfileList();
+          })();
+        }),
+      );
+    }
+    if (mirrorBound) {
+      actions.append(
+        actionButton(
+          "Unbind",
+          () => {
+            if (
+              !confirm(
+                `Remove the desktop mirror "${profile.folder}" from profile "${profile.name}"?\n\n` +
+                  "The OPFS workspace and the folder itself are kept.",
+              )
+            ) {
+              return;
+            }
+            void unbindDesktopMirror(profile.name)
+              .then(async () => {
+                if (isActive) {
+                  ui.reload();
+                  return;
+                }
+                await renderProfileList();
+                renderProfileSelect();
+              })
+              .catch((err) => ui.flash(`unbind failed: ${errorText(err)}`, 8000));
+          },
+          true,
+        ),
+      );
+    }
     if (profile.name !== DEFAULT_PROFILE && !isActive) {
       actions.append(
-        actionButton("Delete", () => {
-          if (!confirm(`Delete profile "${profile.name}" and its workspace from this browser?`)) return;
-          void deleteProfile(profile.name)
-            .then(() => renderProfileList())
-            .catch((err) => ui.flash(`delete failed: ${errorText(err)}`, 8000));
-        }, true),
+        actionButton(
+          "Delete",
+          () => {
+            if (!confirm(`Delete profile "${profile.name}" and its workspace from this browser?`)) return;
+            void deleteProfile(profile.name)
+              .then(() => renderProfileList())
+              .catch((err) => ui.flash(`delete failed: ${errorText(err)}`, 8000));
+          },
+          true,
+        ),
       );
     }
 
     row.append(info, actions);
     list.append(row);
 
-    if (kindOf(profile) === "desktop") {
-      // The workspace lives on the bridge: the OPFS dir only carries the run
-      // log, so a file count would mislead. Name the folder instead.
-      details.textContent = ` · desktop folder: ${profile.folder}`;
+    if (mirrorBound) {
+      // The workspace is still this browser's OPFS; name the synced folder
+      // and, for the active profile, how the last mirror pass went.
+      const state = isActive && mirror ? ` · ${mirror.detail}` : "";
+      details.textContent = ` · desktop mirror: ${profile.folder}${state}`;
       continue;
     }
     void summarizeWorkspace(await profileHandle(profile.name))
@@ -327,9 +357,10 @@ function wireProfileManager(): void {
       const submit = form?.querySelector<HTMLButtonElement>('button[type="submit"]') ?? null;
       try {
         if (source === "desktop") {
-          // Register the folder on the bridge first; the registry record
-          // binds the profile name to that root afterwards.
-          const res = await fetch(`${bridgeUrl()}/roots`, {
+          // Register the folder on the bridge first; the profile stays an
+          // OPFS workspace and the folder becomes its synced mirror. If the
+          // folder already holds files, the first mirror pass pulls them in.
+          const res = await fetch(`${ui.bridgeUrl()}/roots`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ name: folder, dir: homeFolder(folder) }),
@@ -338,7 +369,8 @@ function wireProfileManager(): void {
             const d = (await res.json().catch(() => ({}))) as { error?: string };
             throw new Error(d.error ?? `bridge rejected the folder: HTTP ${res.status}`);
           }
-          await createDesktopProfile(name, folder);
+          await createProfile(name, { kind: "blank" });
+          await bindDesktopMirror(name, folder);
         } else if (source === "duplicate") {
           await createProfile(name, { kind: "duplicate", from: await profileHandle(ui.activeProfile()) });
         } else if (seedChoice?.kind === "remote") {
@@ -363,12 +395,20 @@ function wireProfileManager(): void {
             },
           };
           if (hint) hint.textContent = `seeding ${fetched.archive.files.length} files…`;
-          await createProfile(name, {
-            kind: "seed",
-            archive: fetched.archive,
-            sha256: fetched.sha256,
-            binding,
-          });
+          try {
+            await createProfile(name, {
+              kind: "seed",
+              archive: fetched.archive,
+              sha256: fetched.sha256,
+              binding,
+              onProgress: (done, total) => {
+                setSeedProgress("profile-seed-bar", done, total);
+                if (hint) hint.textContent = `seeding ${done}/${total} files…`;
+              },
+            });
+          } finally {
+            clearSeedProgress("profile-seed-bar");
+          }
           if (hint) hint.textContent = "";
           ui.flash(`workspace seeded from ${account}/${seedChoice.seedName}`, 6000);
         } else {
@@ -376,8 +416,6 @@ function wireProfileManager(): void {
           await createProfile(name, { kind: "blank" });
         }
         if (switchNow) {
-          const mode = source === "desktop" ? "desktop" : "browser";
-          if (mode !== currentStorage()) saveStorage(mode);
           activateProfile(name);
           ui.reload();
           return;
@@ -767,7 +805,7 @@ async function publishProfile(profile: ProfileRecord): Promise<void> {
   try {
     ui.flash("building archive…", 5000);
     const archive =
-      ui.storage() === "desktop" || profile.name === ui.activeProfile()
+      profile.name === ui.activeProfile()
         ? await ui.buildActiveArchive()
         : await buildWorkspaceArchive(await profileHandle(profile.name));
     const published = await publishSeed(service, account, binding.seedName, archive);
@@ -862,6 +900,23 @@ function fillServiceSelect(select: HTMLSelectElement | null, preferred?: string)
   } else {
     select.value = DEFAULT_SWAP_SERVICE_URL;
   }
+}
+
+/** Show `done` of `total` files written on a seed `<progress>` bar. */
+export function setSeedProgress(barId: string, done: number, total: number): void {
+  const bar = el<HTMLProgressElement>(barId);
+  if (!bar) return;
+  bar.hidden = false;
+  bar.max = Math.max(1, total);
+  bar.value = Math.min(done, bar.max);
+}
+
+/** Hide a seed progress bar once an apply finishes — success or failure. */
+export function clearSeedProgress(barId: string): void {
+  const bar = el<HTMLProgressElement>(barId);
+  if (!bar) return;
+  bar.hidden = true;
+  bar.value = 0;
 }
 
 function setShareProgress(progress: RelayProgress): void {
@@ -977,15 +1032,6 @@ function renderReceiveTargets(): void {
   if (!select) return;
   const ui = getHooks();
   const wrap = el<HTMLElement>("recv-new-wrap");
-  if (ui.storage() === "desktop") {
-    const only = document.createElement("option");
-    only.value = "desktop";
-    only.textContent = "this desktop workspace";
-    select.replaceChildren(only);
-    select.value = "desktop";
-    if (wrap) wrap.hidden = true;
-    return;
-  }
   const registry = ui.registry();
   const current = `current:${ui.activeProfile()}`;
   const options: HTMLOptionElement[] = [];
@@ -1023,8 +1069,7 @@ async function startReceive(): Promise<void> {
   }
   const target = el<HTMLSelectElement>("recv-target")?.value ?? "new";
   const newName = el<HTMLInputElement>("recv-new-name")?.value.trim() ?? "";
-  const desktop = ui.storage() === "desktop";
-  if (!desktop && target === "new" && !isValidProfileName(newName)) {
+  if (target === "new" && !isValidProfileName(newName)) {
     setReceiveStatus("new profile names use lowercase letters, digits, dot, dash or underscore");
     return;
   }
@@ -1057,26 +1102,22 @@ async function startReceive(): Promise<void> {
     });
 
     const archive = validateWorkspaceArchive(received.archive);
-    let profileName: string | null = null;
-    if (desktop) {
-      setReceiveStatus("importing into this desktop workspace…");
-    } else {
-      profileName = target.startsWith("current:") ? ui.activeProfile() : target.slice("profile:".length);
-      if (target === "new") {
-        await createProfile(newName);
-        profileName = newName;
-      }
-      setReceiveStatus("importing…");
+    const profileName = target.startsWith("current:")
+      ? ui.activeProfile()
+      : target.slice("profile:".length);
+    if (target === "new") {
+      await createProfile(newName);
     }
-    const written = await ui.importInto(profileName, archive);
+    const targetName = target === "new" ? newName : profileName;
+    setReceiveStatus("importing…");
+    const written = await ui.importInto(targetName, archive);
 
     ui.flash(
-      `received ${written} files from ${received.ownerName} into ` +
-        (profileName ? `"${profileName}"` : "this workspace") +
-        ` (check ${received.visualCheck ?? "—"})`,
+      `received ${written} files from ${received.ownerName} into "${targetName}" ` +
+        `(check ${received.visualCheck ?? "—"})`,
       10_000,
     );
-    if (profileName) activateProfile(profileName);
+    activateProfile(targetName);
     ui.reload();
   } catch (err) {
     setReceiveStatus(`receive failed: ${errorText(err)}`);

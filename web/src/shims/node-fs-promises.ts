@@ -1,9 +1,9 @@
 /**
  * Vite alias target for `node:fs` / `node:fs/promises`.
  *
- * Routes to the *active* backend: OPFS by default, or the desktop bridge when
- * storage mode is "desktop". Shared modules (tree-sources, tree-files) that
- * `import fs from "node:fs"` therefore follow the selected storage mode.
+ * Routes to the workspace's OPFS backend. Shared modules (tree-sources,
+ * tree-files) that `import fs from "node:fs"` therefore read the tab's
+ * workspace; desktop-only operations go through the storage bridge instead.
  */
 import type { DirEntry, FileSystem } from "../platform/types";
 import { opfsFs } from "../platform/corefs";

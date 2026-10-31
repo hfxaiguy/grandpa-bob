@@ -116,12 +116,12 @@ const navAhead = (page, url) => page.send("Page.navigate", { url });
 const makeSide = async (i) => {
   launch(i);
   console.error(`   [device ${i}] launching…`);
-  const page = await connect(i, `${BASE}/?storage=browser`);
+  const page = await connect(i, `${BASE}/`);
   await page.waitFor(booted, "first boot");
   console.error(`   [device ${i}] booted`);
   await injectService(page);
   console.error(`   [device ${i}] service saved → reload`);
-  await navAhead(page, `${BASE}/?storage=browser&fresh=${Date.now()}`);
+  await navAhead(page, `${BASE}/?fresh=${Date.now()}`);
   await page.waitFor(booted, "boot after the service was saved");
   console.error(`   [device ${i}] rebooted`);
   await page.evaluate(`document.getElementById("sync-menu").click()`);

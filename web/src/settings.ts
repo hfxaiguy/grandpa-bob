@@ -28,7 +28,6 @@ export function setEnvVar(name: string, value: string): void {
 }
 
 const REMOTE_KEY = "bob:remote";
-const STORAGE_KEY = "bob:storage";
 const SERVER_KEY = "bob:storage-server";
 
 /** Workspace git remote to clone from on startup. */
@@ -108,27 +107,6 @@ export function saveModelsJson(json: string): void {
   }
 }
 
-export type StorageMode = "browser" | "desktop";
-
-const STORAGE_MODES: StorageMode[] = ["browser", "desktop"];
-
-/** Where BOB's tools operate: the browser's OPFS sandbox or the desktop bridge. */
-export function loadStorage(): StorageMode {
-  try {
-    return localStorage.getItem(STORAGE_KEY) === "desktop" ? "desktop" : "browser";
-  } catch {
-    return "browser";
-  }
-}
-
-export function saveStorage(mode: StorageMode): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, STORAGE_MODES.includes(mode) ? mode : "browser");
-  } catch {
-    // ignore
-  }
-}
-
 /** Default loopback address of the storage bridge (scripts/storage-server.mjs). */
 const DEFAULT_SERVER = "http://127.0.0.1:8795";
 
@@ -158,15 +136,6 @@ export function loadStorageServer(): string {
     return normalizeStorageServer(localStorage.getItem(SERVER_KEY) ?? "");
   } catch {
     return DEFAULT_SERVER;
-  }
-}
-
-export function saveStorageServer(url: string): void {
-  const normalized = normalizeStorageServer(url);
-  try {
-    localStorage.setItem(SERVER_KEY, normalized);
-  } catch {
-    // ignore
   }
 }
 

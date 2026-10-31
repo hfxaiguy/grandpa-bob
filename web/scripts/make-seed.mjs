@@ -4,9 +4,11 @@
 //
 //   node scripts/make-seed.mjs [workspaceDir]
 //
-// Defaults to $WORKSPACE_DIR or ../../workspace. Writes web/public/seed/
-// workspace.json, which web/src/main.ts imports into OPFS on first run.
-// Paths are prefixed with "workspace/" so they land in the browser workspace.
+// Defaults to $BOB_WORKSPACE/folders/seed — the desktop profile named "seed"
+// (BOB_WORKSPACE defaults to ~/.bobkat). Pass a directory to pack a different
+// workspace. Writes web/public/seed/workspace.json, which web/src/main.ts
+// imports into OPFS on first run. Paths are prefixed with "workspace/" so they
+// land in the browser workspace.
 //
 // Only app/, patterns/ and lib/ are packed. Knowledge, scraped pages, assets,
 // database dumps and root notes are desktop-only; the browser starts with an
@@ -30,10 +32,26 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const workspace =
-  process.argv[2] ??
-  process.env.WORKSPACE_DIR ??
-  path.resolve(here, "..", "..", "workspace");
+
+/** Expand a leading ~/ in BOB_WORKSPACE (systemd env files do not expand it). */
+function expandHome(value) {
+  if (!value) return value;
+  if (value === "~") return os.homedir();
+  return value.startsWith("~/") ? path.join(os.homedir(), value.slice(2)) : value;
+}
+
+// The seed is built from the desktop profile folder, not from the app source
+// tree: ~/.bobkat/folders/seed by default. BOB_WORKSPACE relocates the state
+// root on servers; an explicit argument still wins for one-off builds.
+const configuredBobWorkspace = process.env.BOB_WORKSPACE?.trim();
+const bobWorkspace = path.resolve(
+  configuredBobWorkspace
+    ? expandHome(configuredBobWorkspace)
+    : path.join(os.homedir(), ".bobkat"),
+);
+const workspace = process.argv[2]
+  ? path.resolve(expandHome(process.argv[2]))
+  : path.join(bobWorkspace, "folders", "seed");
 const out = path.resolve(here, "..", "public", "seed", "workspace.json");
 
 /** Top-level directories the browser needs to run app trees and patterns. */

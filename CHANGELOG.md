@@ -9,26 +9,12 @@ columns. A long app name ellipsizes inside its column (the full name is in the
 hover title) instead of widening that row and shifting the badge and text; the
 per-tile event log keeps its existing layout.
 
-## 2026-10-30 — public seed versions: keyless reads
+## 2026-10-30 — `npm run chrome` prints the `?cdp=` parameter
 
-BobSwap can now mark individual seed versions public. The browser follows the
-newest version with no read key while it is public:
-
-- **Keyless checks**: `probeLatestSeed()` asks `/latest/meta` when a read key
-  exists; without one it reads `/latest` anonymously and synthesizes the
-  freshness record from the archive, verifying the bytes against the response
-  `ETag` (the same full SHA-256 `/latest/meta` reports). Unchanged checks send
-  `If-None-Match` and stop at a 304 instead of downloading the archive.
-- **Copy/paths**: the bound-seed banner, **Check now** and new-workspace seeding
-  all use the probe, so a public seed works with no key configured. A private
-  newest version answers 401 and the message now says it is not public instead
-  of "no read key".
-- **Still keyed**: listing the shelf (`/seeds`), `/versions`, `/latest/meta`,
-  publishing, the relay and sync channels. The picker says that listing needs a
-  read key.
-- **Checks/docs**: `seed-update-smoke` gained public phases (keyless
-  offer/apply, 304 re-check, private-again lockout); `test:seed-freshness`
-  covers the ETag parser; `web/README.md` documents the public-version contract.
+The launcher now prints `param: ?cdp=…` (URL-encoded, ready to append) next to
+the app URL, so it can be pasted into an already-open tab. With `BOB_NO_CDP=1`
+it prints the empty `?cdp=` that clears a saved endpoint. `BOB_NO_OPEN=1` still
+skips launching a browser.
 
 ## 2026-10-30 — Connect browser: one command for hosted users
 
@@ -52,6 +38,85 @@ OS:
 - **Docs/plan**: `web/README.md` documents the hosted path;
   `feature-plans/end-user-browser-automation.md` records it as the shipped
   Phase 0 ahead of the `chrome.debugger` extension.
+
+## 2026-10-30 — public seed versions: keyless reads
+
+BobSwap can now mark individual seed versions public. The browser follows the
+newest version with no read key while it is public:
+
+- **Keyless checks**: `probeLatestSeed()` asks `/latest/meta` when a read key
+  exists; without one it reads `/latest` anonymously and synthesizes the
+  freshness record from the archive, verifying the bytes against the response
+  `ETag` (the same full SHA-256 `/latest/meta` reports). Unchanged checks send
+  `If-None-Match` and stop at a 304 instead of downloading the archive.
+- **Copy/paths**: the bound-seed banner, **Check now** and new-workspace seeding
+  all use the probe, so a public seed works with no key configured. A private
+  newest version answers 401 and the message now says it is not public instead
+  of "no read key".
+- **Still keyed**: listing the shelf (`/seeds`), `/versions`, `/latest/meta`,
+  publishing, the relay and sync channels. The picker says that listing needs a
+  read key.
+- **Checks/docs**: `seed-update-smoke` gained public phases (keyless
+  offer/apply, 304 re-check, private-again lockout); `test:seed-freshness`
+  covers the ETag parser; `web/README.md` documents the public-version contract.
+
+## 2026-10-30 — one workspace (OPFS), desktop becomes a synced mirror
+
+The header's **Storage** selector (Browser OPFS / Desktop server) and its
+server-URL input are gone. The tab's workspace now always lives in OPFS; the
+desktop is no longer a second place the agent operates from. Instead a profile
+can bind a **desktop mirror** — a real folder on the machine running the
+storage bridge — and the two copies stay in step:
+
+- **Sync rules**: OPFS is canonical. Each pass (boot, every 60 s, or
+  **Profiles… → Sync now**) sends a workspace manifest; the bridge diffs it
+  against the folder and the last-synced manifest (`~/.bobkat/mirrors/<root>.json`).
+  Changed-here files push, changed-there files pull, deletions propagate.
+  Divergent files keep the tab's bytes and preserve the desktop variant as
+  `<file>.conflict-<timestamp>`. `.git/`, `logs/`, `.gpb-*`, `assets/inbox/`
+  and conflict copies never mirror.
+- **First sync of a binding** pulls the folder's files into a fresh OPFS
+  profile; mirror-bound profiles skip the bundled seed overlay (and mirror
+  bootstrap runs before indexing/pattern detection).
+- **Bridge API**: new `POST /mirror/plan` + `POST /mirror/apply` routes in
+  `web/scripts/storage-server.mjs`, with pure reconcile logic in
+  `web/scripts/mirror-lib.mjs`. The existing `/fs`, `/git` and `/sql` routes
+  stay available to run desktop-only operations against the mirror folder.
+- **UI**: a small `desktop: synced 12:34 / offline` chip replaces the
+  selector; the profiles dialog shows the mirror folder, **Sync now** and
+  **Unbind**; creating a profile from a desktop folder now creates an OPFS
+  profile bound to that folder instead of making the folder the workspace.
+- **Plumbing removed**: `createDesktopPlatform` is no longer used by the app
+  (it remains the bridge client for tests/ops); the agent worker and local
+  backend no longer carry `storage`/`server` mode fields; leases and sync
+  channels are always `opfs:<profile>` / `bob-sync:opfs:<profile>`; the chat
+  UI's `profileId()` drops its `desktop:` branch.
+- **Checks/docs**: `test:mirror` covers plan/apply, conflicts, deletions and
+  exclusions; `test:desktop-profile` now asserts the mirror binding; browser,
+  profile and lease smokes look for the `opfs` status; README, `web/README.md`
+  and `docs/pairing-and-sync.md` describe the mirror model. `smoke:direct`
+  (File System Access mode) is removed.
+
+## 2026-10-29 — seed applies show file-level progress
+
+Every path that overlays a seed archive reported only a static "applying N
+files…" line. `importWorkspace()` now takes an optional
+`onProgress(done, total)` callback fired after each file write (VFS-internal
+`.gpb-runlog` entries stay out of the count), and all four flows use it:
+
+- **Bound-seed / workspace updates** — a `<progress>` bar in the toolbar
+  (`#seed-bar`) fills per file while the status line reads `applying 12/240
+  files…`; the bar is cleared in a `finally`, so a failed apply cannot leave
+  it stuck.
+- **Boot seeding** — no extra UI: the splash bar's 30→45 slice now advances
+  with the write loop instead of jumping.
+- **Profile creation from a remote seed** — the create dialog stays open
+  during the overlay, so its own bar (`#profile-seed-bar`) and the hint carry
+  the count.
+
+The fetch phase stays text-only (the archive is one JSON download). Typecheck
+plus `test:workspace-transfer`, `test:profiles` and `test:seed-freshness`
+pass; the callback is optional, so desktop imports are unchanged.
 
 ## 2026-10-29 — BobSwap signaling is live: contract fixes + a real-service smoke
 

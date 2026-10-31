@@ -80,10 +80,10 @@ async function connect(url) {
   return { target, send, evaluate, waitFor, close: () => fetch(`http://127.0.0.1:${PORT}/json/close/${target.id}`).catch(() => {}) };
 }
 
-const booted = `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && (document.getElementById("status")?.textContent || "").includes("browser")`;
+const booted = `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && (document.getElementById("status")?.textContent || "").includes("opfs")`;
 /** A secondary tab never wires the transfer UI (it is read-only), so its
  *  boot predicate must not require that hook. */
-const bootedReadOnly = `document.readyState === "complete" && (document.getElementById("status")?.textContent || "").includes("browser")`;
+const bootedReadOnly = `document.readyState === "complete" && (document.getElementById("status")?.textContent || "").includes("opfs")`;
 
 let version;
 for (let i = 0; i < 150 && !version; i++) {
@@ -93,13 +93,13 @@ if (!version) cleanup(1, "chrome devtools unreachable");
 
 try {
   // ── tab 1: the workspace host ────────────────────────────────────────
-  const one = await connect(`${BASE}/?storage=browser`);
+  const one = await connect(`${BASE}/`);
   await one.waitFor(booted, "tab 1 boot");
   await one.waitFor(`!document.getElementById("bob-lease-banner")`, "tab 1 holds the lease without a banner");
   console.log("ok  tab 1 is the primary host");
 
   // ── tab 2: same profile → read-only ──────────────────────────────────
-  const two = await connect(`${BASE}/?storage=browser&fresh=${Date.now()}`);
+  const two = await connect(`${BASE}/?fresh=${Date.now()}`);
   await two.waitFor(bootedReadOnly, "tab 2 boot");
   await two.waitFor(`!!document.getElementById("bob-lease-banner")`, "tab 2 shows the read-only banner");
   const gate = await two.evaluate(`(async () => {

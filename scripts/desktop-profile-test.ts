@@ -1,15 +1,17 @@
-// Desktop-profile e2e: the storage bridge serves one folder per profile,
+// Desktop-bridge e2e: the storage bridge serves one folder per profile,
 // selected per request, and a workspace archive (a seed) imports into the
-// selected folder — never into another root.
+// selected folder — never into another root. Desktop profiles are now OPFS
+// workspaces with a synced mirror folder, so the registry still carries the
+// binding (kind + folder) while `web/src/mirror.ts` does the sync.
 //
 // Spawns the real bridge (`web/scripts/storage-server.mjs`), registers a
 // second folder root, then uses `createDesktopPlatform(..., { rootName })`
-// exactly as the app does in desktop mode.
+// exactly as desktop-only operations do.
 //
 // Run: `npm run test:desktop-profile`.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -17,7 +19,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { createDesktopPlatform } from "../web/src/platform/desktop.js";
 import { importPlatformArchive, type WorkspaceArchive } from "../web/src/workspace-transfer.js";
-import { parseProfileRegistry, resolveActiveForMode } from "../web/src/profiles.js";
+import { parseProfileRegistry } from "../web/src/profiles.js";
 
 const repo = path.resolve(import.meta.dirname, "..");
 
@@ -117,7 +119,7 @@ try {
   const unknown = await post("/fs/list", { path: "." }, "missing");
   assert.equal(unknown.ok, false, "an unregistered root name is refused");
 
-  // ── the registry record (pure layer) parses and resolves by mode ─────
+  // ── the registry record (pure layer) parses the mirror binding ────────
   const registry = parseProfileRegistry({
     version: 1,
     profiles: [
@@ -133,8 +135,6 @@ try {
     ],
     "desktop records carry kind + folder; old records stay opfs",
   );
-  assert.equal(resolveActiveForMode(registry, "desktop"), "travel", "desktop mode resolves the desktop profile");
-  assert.equal(resolveActiveForMode(registry, "browser"), "default", "browser mode resolves the OPFS profile");
 
   // ── stale registry entries: a desktop record without a folder is invalid
   assert.throws(

@@ -29,7 +29,7 @@ const PORT = process.env.CDP_PORT
         server.close(() => resolve(port));
       });
     });
-const TARGET = process.argv[2] ?? process.env.WEB_URL ?? "http://localhost:8080/?storage=browser";
+const TARGET = process.argv[2] ?? process.env.WEB_URL ?? "http://localhost:8080/";
 const CHROME = process.env.CHROME_BIN ?? "chromium";
 const PROFILE = path.join(os.tmpdir(), `bob-runlog-smoke-${PORT}-${process.pid}`);
 const SESSION = "web:migrate-smoke";

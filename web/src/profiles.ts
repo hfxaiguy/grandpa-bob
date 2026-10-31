@@ -60,11 +60,11 @@ export interface ProfileRecord {
   lastUsedAt?: string;
   seed?: SeedBinding;
   /**
-   * Where this profile's workspace lives. `opfs` (the default, undefined for
-   * old registries) is a directory under `/profiles/<name>/` in the origin's
-   * OPFS; `desktop` is a folder on the machine running the storage bridge —
-   * `folder` names a root registered there (`POST /roots` on the bridge),
-   * resolved by the bridge per request via the `x-bob-root` header.
+   * The workspace always lives in this origin's OPFS. `kind: "desktop"` binds
+   * a synced mirror folder on the machine running the storage bridge —
+   * `folder` names a root registered there (`POST /roots`), resolved by the
+   * bridge per request via the `x-bob-root` header. The folder is a copy, not
+   * the live workspace; OPFS remains canonical.
    */
   kind?: "opfs" | "desktop";
   folder?: string;
@@ -647,6 +647,8 @@ export type NewProfileSource =
       sha256: string;
       /** Persisted with the profile so update offers work from the start. */
       binding: SeedBinding;
+      /** Per-file write progress while the archive is overlaid. */
+      onProgress?: (done: number, total: number) => void;
     };
 
 /** Freshness markers live next to the workspace (`<profile>/workspace`). */
@@ -692,7 +694,7 @@ export async function createProfile(
       await profiles.removeEntry(name, { recursive: true }).catch(() => undefined);
       dest = await profileHandle(name);
       const archive = validateWorkspaceArchive(source.archive);
-      await importWorkspace(archive, dest);
+      await importWorkspace(archive, dest, source.onProgress);
       await stampSeededProfile(dest, archive, source.sha256);
     } catch (err) {
       // The registry is not written yet. Drop the partial directory so a
@@ -710,45 +712,31 @@ export async function createProfile(
 }
 
 /**
- * Register a desktop profile: a bridge folder root bound to a profile name.
- * The folder must already be registered on the bridge (`POST /roots`); this
- * only writes the registry record. The OPFS directory is created too — it
- * carries this profile's run log (the sqlite worker's pool lives there even
- * when the workspace is on the bridge).
+ * Bind a desktop mirror folder to an existing OPFS profile. The folder must
+ * already be registered on the bridge (`POST /roots`); this only writes the
+ * registry binding — the workspace itself stays in OPFS and syncs both ways.
  */
-export async function createDesktopProfile(name: string, folder: string): Promise<ProfileRecord> {
-  if (!isValidProfileName(name)) {
-    throw new Error("profile names use lowercase letters, digits, dot, dash or underscore (max 64)");
-  }
+export async function bindDesktopMirror(name: string, folder: string): Promise<ProfileRecord> {
   if (!isValidProfileName(folder)) {
     throw new Error("folder names use lowercase letters, digits, dot, dash or underscore (max 64)");
   }
   const registry = await loadRegistry();
-  if (registry.profiles.some((profile) => profile.name === name)) {
-    throw new Error(`profile already exists: ${name}`);
-  }
-  await profileHandle(name);
-  const record: ProfileRecord = { name, createdAt: new Date().toISOString(), kind: "desktop", folder };
-  const next: ProfileRegistry = { version: 1, profiles: [...registry.profiles, record] };
+  const next = patchRegistry(registry, name, (record) => ({ ...record, kind: "desktop", folder }));
   await writeRegistry(next);
-  return record;
+  return next.profiles.find((profile) => profile.name === name)!;
 }
 
-/**
- * The active profile for one storage mode. `resolveActiveProfileName` may
- * name a profile of the other kind; when that happens, fall back to the
- * first profile of the requested kind (default guaranteed by the parser).
- */
-export function resolveActiveForMode(registry: ProfileRegistry, mode: "browser" | "desktop"): string {
-  const wanted = mode === "desktop" ? "desktop" : "opfs";
-  const active = resolveActiveProfileName(registry);
-  const record = registry.profiles.find((profile) => profile.name === active);
-  const kindOf = (p: ProfileRecord | undefined): "opfs" | "desktop" => p?.kind ?? "opfs";
-  if (record && kindOf(record) === wanted) return active;
-  const fallback =
-    registry.profiles.find((profile) => kindOf(profile) === wanted) ??
-    registry.profiles.find((profile) => profile.name === DEFAULT_PROFILE);
-  return fallback?.name ?? DEFAULT_PROFILE;
+/** Remove a profile's desktop mirror binding (the OPFS workspace is untouched). */
+export async function unbindDesktopMirror(name: string): Promise<ProfileRegistry> {
+  const registry = await loadRegistry();
+  const next = patchRegistry(registry, name, (record) => {
+    const copy = { ...record };
+    delete copy.kind;
+    delete copy.folder;
+    return copy;
+  });
+  await writeRegistry(next);
+  return next;
 }
 
 /** Delete a non-default, non-active profile and its workspace directory. */

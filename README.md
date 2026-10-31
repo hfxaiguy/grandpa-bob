@@ -6,8 +6,8 @@ _BOB = **B**etter **O**rganizational **B**ot_
 > UI and the only agent host. Node processes are **pass-through channels**:
 > the **telegram channel** (grammY long-poll; messages are *parked* in a
 > file-backed mailbox and answered by your browser tab — Node never runs the
-> agent), the **storage bridge** (`web/scripts/storage-server.mjs` — real
-> folders on disk for **desktop profiles**, plus opt-in STT with `BOB_STT=1`),
+> agent), the **storage bridge** (`web/scripts/storage-server.mjs` — desktop
+> mirror folders and real-path ops, plus opt-in STT with `BOB_STT=1`),
 > and **BobSwap** (seeds + zero-storage relay). The shared core lives in
 > `web/src` now; `web/` imports nothing outside `web/` + `ui/`
 > (`npm run test:standalone` is the gate).
@@ -39,15 +39,17 @@ every change it makes is **git-committed automatically**.
   mailbox, surviving channel restarts.
 - **Web UI** — the only interface, served by `npm run web:standalone` at
   `http://<host>:8080` (loopback static server; every `/api/*` call runs the
-  **in-browser backend**). Storage chosen in the header:
-  - **Browser (OPFS)** — a private sandbox in the tab, seeded from the workspace,
-    with toolbar **Export**/**Import** for a whole-workspace JSON backup;
-    **profiles** keep separate OPFS workspaces (switchable in the toolbar, each
-    with its own chats, patterns, log and git history), and a profile can be
-    bound to a **BobSwap seed** for updates.
-  - **Desktop (bridge)** — the loopback storage bridge serving real folders;
-    **desktop profiles** bind one folder per profile (registered on the bridge,
-    `~/.bobkat/channels.json`), each with its own chat history and run log.
+  **in-browser backend**). The workspace always lives in the tab's private
+  OPFS sandbox, seeded from the workspace, with toolbar **Export**/**Import**
+  for a whole-workspace JSON backup; **profiles** keep separate OPFS
+  workspaces (switchable in the toolbar, each with its own chats, patterns, log
+  and git history), and a profile can be bound to a **BobSwap seed** for
+  updates.
+  - A profile can also keep a **desktop mirror**: a folder on the machine
+    running the storage bridge, kept in sync both ways (`~/.bobkat/folders/<name>`
+    by default, registered in `~/.bobkat/channels.json`). OPFS stays canonical;
+    desktop-only operations (real git against local paths, node:sqlite) run
+    against the mirrored folder through the same bridge.
   A **single-host lease** guarantees only one tab runs the agent per workspace
   (a second tab is read-only, with a *take over* button). A tab can also answer
   Telegram: the "bridge" toggle drains the channel's mailbox against a web
@@ -69,7 +71,8 @@ every change it makes is **git-committed automatically**.
 
 ```
 ┌───────────── browser tab — the only UI and the only agent host ─────────────┐
-│  web/ + ui/  ·  agent tree runs here (worker)  ·  profiles: OPFS | desktop  │
+│  web/ + ui/  ·  agent tree runs here  ·  workspace: OPFS (per profile)     │
+│  a profile can keep a synced mirror folder on the desktop                   │
 └──────┬───────────────────┬──────────────────────────┬──────────────────────┘
        │                   │                          │
   channels: one process (`npm run bob`)
@@ -81,11 +84,12 @@ every change it makes is **git-committed automatically**.
 ```
 
 Everything is a **pass-through channel**: small loopback processes with no UI
-and no agent. The browser tab runs the agent, holds the workspace (OPFS or a
-real folder through the bridge), drains the Telegram mailbox, and syncs with
-other replicas. BobSwap remains the seed shelf + zero-storage relay it always
-was. The shared core lives in `web/src` — `web/` must never import outside
-`web/` + `ui/` (`npm run test:standalone` enforces it).
+and no agent. The browser tab runs the agent, holds the OPFS workspace, drains
+the Telegram mailbox, and syncs with other replicas; a mirror binding lets it
+exchange that workspace with a real folder on the desktop. BobSwap remains the
+seed shelf + zero-storage relay it always was. The shared core lives in
+`web/src` — `web/` must never import outside `web/` + `ui/`
+(`npm run test:standalone` enforces it).
 
 ### How the continuous tree works
 
@@ -104,8 +108,8 @@ Tree.name("agent")
 
 - **`.human()`** pauses the tree and checkpoints it into the renderer's run
   log (`.gpb-runlog`, the OPFS-backed SQLite stream). A reload restores a
-  paused run; `/clear` (or a new chat) starts fresh. In desktop mode the run
-  log lives in the profile's OPFS directory, the workspace on the bridge.
+  paused run; `/clear` (or a new chat) starts fresh. The run log always lives
+  in the profile's OPFS directory; a desktop mirror never carries it.
 - **`.emit()`** streams output to the tile without stopping the tree.
 - **History** lives in the tree's `messages` memory slot; the continuation
   token persists the full scope chain (memory, history, execution position)
@@ -127,8 +131,8 @@ Tree.name("agent")
    `read_file` → `edit_file`; each tool error goes back to the model as a
    normal string so it can retry.
 6. `edit_file` writes the file, git-commits just that path, and the commit hash
-   flows back into the tool result — on desktop profiles the commit runs on the
-   bridge's real repo, in browser profiles isomorphic-git writes OPFS.
+   flows back into the tool result — isomorphic-git writes the OPFS repo; the
+   mirrored folder carries a copy, not the live history.
 7. The `.emit()` child streams the answer into the tile and the relay sends it
    to Telegram. The tree loops back to `.human()` and pauses.
 
@@ -147,8 +151,9 @@ web/                 the app — UI host + agent host + shared core
   src/main.ts        boot: profiles, platform, lease, sync, UI host
   src/server/        the in-browser backend (all /api/* answered client-side)
   src/agent/         worker: tree runner, tools, run log
-  src/platform/      OPFS / desktop-bridge adapters, sqlite-wasm worker
-  src/profiles.ts    OPFS + desktop-folder profiles, registry
+  src/platform/      OPFS adapter + bridge clients, sqlite-wasm worker
+  src/profiles.ts    OPFS profiles + desktop mirror bindings, registry
+  src/mirror.ts      two-way OPFS ↔ desktop-folder mirror (bridge /mirror)
   src/host-lease.ts  single-host lease per workspace (Web Locks + heartbeat)
   src/sync/          Lamport journal + pull-only reconcile + transports
   src/swap.ts        BobSwap seeds + zero-storage relay client
@@ -321,12 +326,13 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    `~/.bobkat/.env` when present; `ENV_FILE=/path` overrides.
    `npm run bob` picks it up automatically (loopback API on `:8795`); without
    a token the same process just leaves the bot off.
-4. **Desktop storage (optional)**: `npm run bob` serves `$WORKSPACE_DIR`
+4. **Desktop mirror (optional)**: `npm run bob` serves `$WORKSPACE_DIR`
    (default `~/grandma-workspace`) on `127.0.0.1:8795`.
-   Register extra folders as desktop profiles with the app's
-   Profiles… → *desktop folder* flow (the bridge stores the registry in
-   `~/.bobkat/channels.json`). Start it with `BOB_STT=1` to expose the
-   `/stt` pass-through for in-tab voice transcription.
+   A profile can bind a mirror folder with the app's Profiles… → *desktop
+   mirror* flow (the bridge stores the folder registry in
+   `~/.bobkat/channels.json`); the tab's OPFS workspace stays canonical and
+   syncs both ways. Start the process with `BOB_STT=1` to expose the `/stt`
+   pass-through for in-tab voice transcription.
 5. **Voice (optional)**: the browser records are transcribed by the bridge
    (`BOB_STT=1`); Telegram voice notes are transcribed by the channel. Both
    use whisper-server:
@@ -408,22 +414,22 @@ admin API. The tiled UI has one tile per app (the trunk plus every
 `app/<name>/` tree), each with its own chat bubbles, memory panel and event
 log; one composer is shown on the tile whose tree is paused at `.human()`.
 
-**Storage & profiles.** The header selects the storage: *Browser (OPFS)* keeps
-the workspace in the tab's private sandbox (Export/Import move a whole
-workspace as JSON); *Desktop (bridge)* operates on a real folder through the
-loopback storage bridge. Profiles exist in both kinds — an OPFS profile or a
-desktop profile bound to a registered folder — with their own chats, patterns,
-run log and git history. A **single-host lease** makes sure only one tab runs
-the agent per workspace: a second tab is read-only (with a *take over*
-button). A failed turn keeps a retry composer; the Stop button aborts the run.
+**Storage & profiles.** The workspace always lives in the tab's OPFS sandbox
+(Export/Import move a whole workspace as JSON); there is no storage backend to
+choose. A profile can bind a **desktop mirror** — a real folder on the machine
+running the loopback storage bridge — which syncs both ways in the background;
+OPFS is canonical and the folder is the surface for desktop-only operations.
+Profiles have their own chats, patterns, run log and git history. A
+**single-host lease** makes sure only one tab runs the agent per workspace: a
+second tab is read-only (with a *take over* button). A failed turn keeps a retry
+composer; the Stop button aborts the run.
 
 **Voice.** The composer's 🎙/📎 routes audio to the bridge's `/stt`
 (`BOB_STT=1`, ffmpeg + whisper-server on the desktop); there is no in-tab
 model download. Browser mic access needs a secure context (`localhost`/HTTPS).
 
-**Sync.** Tabs of the same origin that share a workspace (same storage mode and
-profile) sync live through BroadcastChannel — no setup. Different workspaces
-(an OPFS profile vs a desktop-folder profile, or two profiles) pair through the
+**Sync.** Tabs of the same origin that share a workspace (same profile) sync
+live through BroadcastChannel — no setup. Different profiles pair through the
 dialog. Cross-device pairing (WebRTC; BobSwap REST mailbox or manual paste, with
 a 6-word verification phrase derived from both DTLS certificates) is in the
 Sync… dialog under **Live sync → Pair…**; the BobSwap path needs a service that
@@ -453,8 +459,8 @@ dropped. `logs/`, `.git/`, `.gpb-*` and `assets/inbox/` never sync (git
 history and run logs stay per-replica).
 
 The old LAN git-daemon path (bare repo + `git://` pull/push on the phone) is
-retired for the app: it remains possible by hand on a desktop-folder profile
-(`git -C <folder> remote add …`), but the app no longer surfaces it.
+retired for the app: it remains possible by hand against a profile's mirror
+folder (`git -C <folder> remote add …`), but the app no longer surfaces it.
 
 Step-by-step for both cases (same machine; server ↔ remote browser) and the
 troubleshooting table: [docs/pairing-and-sync.md](docs/pairing-and-sync.md).
@@ -464,17 +470,18 @@ troubleshooting table: [docs/pairing-and-sync.md](docs/pairing-and-sync.md).
 > Answers are current unless a section is explicitly marked **historical**.
 > The agent runs in the browser; Node processes are channels. Where an answer
 > mentions server-side files (`sessions.json`, a Node run log), read it as the
-> per-replica storage of the kind in question (OPFS or a desktop folder).
+> per-replica storage of the kind in question (OPFS, or a mirror folder when an
+> operation needs a real path).
 
 ### Git & workspace
 
 **How exactly does auto-commit work?**
 After a file tool writes/edits/deletes a path, the platform's `autoCommit`
-runs — in a browser profile that is isomorphic-git writing the OPFS repo; in a
-desktop profile the tab calls the bridge, which runs the real `git` CLI
+runs — the tab uses isomorphic-git over its OPFS repo
 (`git add -A -- <path>` → status check → `git commit -m "agent(<tool>): <path>"
 -- <path>` → short hash). The hash goes into the tool result, so the model can
-report it.
+report it. A desktop mirror folder is a copy for desktop-only git/SQL/scripts;
+it does not carry the tab's `.git` history.
 
 **Will the bot commit *my* uncommitted changes in the workspace?**
 No. Both `add` and `commit` use a **pathspec** limited to the file the tool just
@@ -496,21 +503,21 @@ git -C ~/grandma-workspace config user.email grandpa-bob-bot@localhost
 ```
 
 **What happens if I delete the workspace directory?**
-Browser profile: the OPFS directory is gone; re-seeding on the next boot gives
-a fresh workspace (and a fresh run log). Desktop profile: the bridge recreates
-a missing folder root, `git init` runs lazily on the first mutation, and the
-history/log that lived there are gone. Either way the conversations of that
-profile start fresh.
+Every profile's workspace lives in OPFS: deleting it removes that profile's
+files, and the next boot re-seeds (or pulls it back from its desktop mirror, if
+one is bound). A desktop mirror folder that is deleted simply repopulates from
+OPFS on the next sync. Either way the conversations of that profile start fresh
+only when the run log goes too.
 
 **Where does the run log live?**
 Every LLM call, tool call, check, goback and gate lands in the replica's run
-log. Browser profiles keep it in OPFS under `.gpb-runlog/` (the streaming
-sqlite VFS — not a plain file; export the profile to back it up). Desktop
-profiles pass `logs/grandma-kat.db` through the bridge like any DB. In both
-cases the log holds your prompts and the model's responses and is excluded
-from workspace git. To inspect a desktop profile's log:
+log. All profiles keep it in OPFS under `.gpb-runlog/` (the streaming sqlite
+VFS — not a plain file; export the profile to back it up); the log is excluded
+from the desktop mirror and from workspace git. The mirror folder's `logs/` is
+for desktop-side database use, not the tab's run log. To inspect the logical
+log, export the profile (it carries `workspace/logs/grandma-kat.db`):
 ```sh
-sqlite3 ~/grandma-workspace/logs/grandma-kat.db \
+sqlite3 grandma-kat.db \
   "SELECT seq, branch_path, kind, substr(content, 1, 120) FROM calls ORDER BY seq DESC LIMIT 20;"
 ```
 

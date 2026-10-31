@@ -19,10 +19,9 @@ export interface AgentRunPromise extends Promise<AgentRunResult> {
   runId: number;
 }
 
-/** Context for session-log calls (which storage backend the platform needs). */
+/** Context for session-log calls (the worker owns the platform). */
 export interface AgentLogContext {
-  storage?: "browser" | "desktop";
-  server?: string;
+  // Kept as an object so future context fields do not change every call site.
 }
 
 /** Live hooks so a backend can re-emit events as they arrive (SSE). */
@@ -36,8 +35,6 @@ export interface AgentRunOptions {
   env?: Record<string, string>;
   pattern?: string;
   remote?: string;
-  storage?: "browser" | "desktop";
-  server?: string;
   /** The chat session this run belongs to (per-session continuation state). */
   chatKey?: string;
   /** Model registry JSON from browser settings (takes precedence over models.json). */
