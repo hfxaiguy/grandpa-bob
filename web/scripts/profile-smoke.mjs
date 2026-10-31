@@ -88,7 +88,11 @@ ws.onmessage = (ev) => {
     exceptions.push(msg.params.exceptionDetails.exception?.description ?? msg.params.exceptionDetails.text);
   }
   if (msg.method === "Runtime.consoleAPICalled") {
-    exceptions.push("[console] " + msg.params.args.map((a) => a.value ?? a.description ?? "").join(" ").slice(0, 300));
+    const line =
+      "[console] " + msg.params.args.map((a) => a.value ?? a.description ?? "").join(" ").slice(0, 300);
+    // Seed diagnostics are expected boot output (private shelf fallback,
+    // freshness checks); real app exceptions still fail the run.
+    if (!/^\[console\] \[(?:seed-bootstrap|seed-check)\]/.test(line)) exceptions.push(line);
   }
 };
 const send = (method, params = {}) =>
@@ -290,6 +294,7 @@ assert(
   "the profile seed dialog shows the service picker and seed name only",
 );
 await evaluate(`(() => {
+  document.getElementById("seed-service").value = "https://bobswap.example.com";
   document.getElementById("seed-name").value = "trunk";
   document.getElementById("seed-save").click();
   return "saved";

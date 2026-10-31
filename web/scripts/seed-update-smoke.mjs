@@ -397,7 +397,6 @@ await sleep(2500); // at least two poll cycles
 const bannerHidden = await evaluate(`document.getElementById("ws-reseed").hidden`);
 assert(bannerHidden === true, "malformed metadata does not show an update banner");
 await evaluate(`(() => {
-  document.getElementById("sync-menu").click();
   document.getElementById("profile-manage").click();
   return "opened";
 })()`);
@@ -490,7 +489,6 @@ assert(
   "a private newest version offers nothing to a keyless client",
 );
 await evaluate(`(() => {
-  document.getElementById("sync-menu").click();
   document.getElementById("profile-manage").click();
   return "opened";
 })()`);

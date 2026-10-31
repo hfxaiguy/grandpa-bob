@@ -179,7 +179,7 @@ A profile's `folder` binding is reconciled by `web/src/mirror.ts` through
    `~/.bobkat/mirrors/<root>.json`: changed-here files push, changed-there
    files pull, both-changed is a conflict (OPFS wins; the desktop variant is
    preserved as `<file>.conflict-<timestamp>`), deletions propagate.
-3. A pass runs at boot (before indexing), every 60 s, and from **Profiles… →
+3. A pass runs at boot (before indexing), every 60 s, and from **Profiles →
    Sync now**. Only the lease holder runs it. The toolbar chip shows the last
    pass / offline state; there is no storage-mode selector.
 

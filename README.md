@@ -328,7 +328,7 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    a token the same process just leaves the bot off.
 4. **Desktop mirror (optional)**: `npm run bob` serves `$WORKSPACE_DIR`
    (default `~/grandma-workspace`) on `127.0.0.1:8795`.
-   A profile can bind a mirror folder with the app's Profiles… → *desktop
+   A profile can bind a mirror folder with the app's Profiles → *desktop
    mirror* flow (the bridge stores the folder registry in
    `~/.bobkat/channels.json`); the tab's OPFS workspace stays canonical and
    syncs both ways. Start the process with `BOB_STT=1` to expose the `/stt`

@@ -202,11 +202,12 @@ npm run smoke      # headless end-to-end check against :8080
 `npm run make-seed` turns a desktop profile folder (default
 `$BOB_WORKSPACE/folders/seed`; `BOB_WORKSPACE` defaults to `~/.bobkat`) into
 `web/public/seed/workspace.json`.
-On first load the app imports it into OPFS (`?reseed=1` forces a re-import);
-after that the browser workspace persists on its own. The sidecar
-`seed/meta.json` now records `sha256` and `size` beside `createdAt`, so the
-toolbar can offer an update even when a re-pack happens to reuse the same
-timestamp.
+On first load the app first tries the public shelf named by
+`web/public/seed-bootstrap.json` (see below), then imports the bundled archive
+into OPFS (`?reseed=1` forces the bundled re-import). After that the browser
+workspace persists on its own. The sidecar `seed/meta.json` records `sha256`
+and `size` beside `createdAt`, so the toolbar can offer an update even when a
+re-pack happens to reuse the same timestamp.
 
 To ship that packed seed to a BobSwap shelf without it drifting, publish the
 exact bytes (from the repo root). The first interactive run asks for the
@@ -302,7 +303,7 @@ mirror**, which is kept in sync both ways:
 - The toolbar shows a small `desktop: …` chip (last sync / offline); there is
   no mode to pick. `?server=…` or `bob:storage-server` in localStorage points
   the tab at a bridge on a non-default port.
-- **Profiles… → New profile → desktop mirror** registers
+- **Profiles → desktop mirror** registers
   `~/.bobkat/folders/<name>` on the bridge (`POST /roots`) and binds it to the
   new OPFS profile. The **Unbind** action removes the binding (both copies are
   kept); **Sync now** runs a pass immediately.
@@ -389,8 +390,8 @@ reloads the tab).
   `/profiles/default/`. The move is marked in `/migration.json`, resumes if the
   tab closes mid-copy, verifies file count and total bytes, and only then removes
   the originals — a failed verification keeps both copies and refuses to boot.
-- The **Profiles…** entry in the toolbar's **Sync…** dialog creates a new
-  workspace only after an explicit seed pick — the bundled snapshot or any seed
+- The toolbar's **Profiles** dialog creates a new workspace only after an
+  explicit seed pick — the bundled snapshot or any seed
   listed on a configured BobSwap service (a binding is stored and its archive is
   pulled immediately). A copy of the current profile needs no seed; a
   **desktop mirror** profile starts from its folder (the first pass pulls it in).
@@ -405,13 +406,37 @@ reloads the tab).
 ## Seed sources (BobSwap seed shelf)
 
 A profile can be bound to a seed on a BobSwap service, so updates can arrive
-later (`Sync…` → `Profiles…` → **Seed…**). New browser profiles pick their seed
-up front: **Profiles… → New profile** offers the bundled snapshot plus every
+later (**Profiles** → **Seed…**). New browser profiles pick their seed up
+front: **Profiles** offers the bundled snapshot plus every
 seed returned by `GET /api/v1/<account>/seeds` on each configured service, and
 pulls the chosen archive before the profile is created (nothing is created if
 the pull fails). The pick has no default — Create stays blocked until a seed is
 chosen. Listing that shelf (`/seeds`) needs a read key; a bound profile can
 still follow a public newest version without one (see below).
+
+**Fresh browsers** (no `.seeded` marker and no trunk tree) read
+`web/public/seed-bootstrap.json` and try that shelf's newest public archive
+before the bundled snapshot:
+
+```json
+{ "baseUrl": "https://bobswap.hfxaiguy.com", "account": "personal", "seedName": "trunk" }
+```
+
+That resolves to
+`https://bobswap.hfxaiguy.com/api/v1/personal/trunk/latest` (the client always
+appends `/api/v1/<account>/<seedName>/latest`).
+
+The keyless pull verifies the archive against the response `ETag`, applies it,
+and stores the seed binding + version so later boots keep watching the shelf.
+If the newest version is private, the service is offline, or the pull exceeds
+8 seconds, boot falls back to `/seed/workspace.json`. `?bootstrap=<account>/<seed>`
+and `?bootstrap-url=<origin>` override the file for one tab; `npm run
+smoke:bootstrap` uses them to point a fresh browser at a fake public service,
+then repeats with the shelf private to check the bundled fallback. Forks that
+do not publish to BobSwap can delete the file. The shelf must expose `/latest`
+anonymously: mark the seed **public latest** in the BobSwap dashboard (future
+uploads included), or mark the individual newest version public — no read key
+is shipped.
 
 - The **BobSwap…** dialog stores the service URL, realtime endpoint/key, account
   and API keys in this browser's localStorage (`bob:swap`); **Seed…** only asks

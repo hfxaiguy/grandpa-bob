@@ -2,6 +2,31 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-31 — Profiles moves beside Sync…
+
+The profile launcher moved out of the Sync dialog to the toolbar, right beside
+**Sync…**, and is labelled **Profiles**. The dialog now names its two parts:
+**Manage profiles** lists every profile with its switch/seed/publish/mirror/
+delete actions, and **Create profile** holds the new-workspace form. The Sync
+dialog keeps workspace transfer and BobSwap. The `smoke:seed-update` flow no
+longer opens the Sync menu before the profile dialog.
+
+## 2026-10-31 — fresh profiles pull the public seed shelf first
+
+A browser with no workspace now follows `web/public/seed-bootstrap.json` to a
+BobSwap shelf before importing the bundled snapshot. The tab fetches the
+newest `/latest` archive anonymously, verifies it against the response `ETag`,
+applies it, and records the seed binding + version so later boots keep checking
+that shelf. A private newest version, an offline service or an 8 s timeout
+falls back to `/seed/workspace.json` unchanged. `?bootstrap=<account>/<seed>`
+and `?bootstrap-url=<origin>` override the file for one tab; `smoke:bootstrap`
+drives a fresh browser against a fake public service, then repeats with the
+shelf private to prove the bundled fallback. Both seed fetches are
+`cache: "no-cache"`, so a rebuilt snapshot cannot sit behind a stale cache. The
+shelf must expose `/latest` anonymously — mark the seed **public latest** in
+BobSwap (future uploads included), or mark the individual newest version
+public; no read key is baked into the bundle.
+
 ## 2026-10-30 — event stream rows use fixed columns
 
 The global event stream now lays every row out in fixed app, badge and text

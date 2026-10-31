@@ -190,7 +190,8 @@
       </span>
       <button id="ws-reseed" type="button" hidden>Workspace update available</button>
       <button id="ws-reseed-dismiss" type="button" title="Not now" hidden>×</button>
-      <button id="sync-menu" type="button" title="Profiles, workspace transfer and BobSwap services">Sync…</button>
+      <button id="profile-manage" type="button" title="Manage profiles: switch, create, seed, publish or delete">Profiles</button>
+      <button id="sync-menu" type="button" title="Workspace transfer and BobSwap services">Sync…</button>
       <span id="status">starting…</span>
       <progress id="seed-bar" max="100" value="0" hidden title="Seed apply progress"></progress>
     </div>
@@ -213,7 +214,9 @@
     <dialog id="profile-dialog">
       <h3>Workspace profiles</h3>
       <p class="muted">Each profile is a workspace in this browser. A profile can also keep a synced copy in a folder on this machine's bridge (a desktop mirror). Switching reloads the tab.</p>
+      <h4>Manage profiles</h4>
       <div id="profile-list"></div>
+      <h4>Create profile</h4>
       <form id="profile-create">
         <label>New profile name
           <input id="profile-new-name" placeholder="travel" autocomplete="off" />
@@ -329,13 +332,8 @@
 
     <dialog id="sync-dialog">
       <h3>Sync</h3>
-      <p class="muted">Workspace profiles, transfer and BobSwap services.</p>
+      <p class="muted">Workspace transfer and BobSwap services.</p>
       <section id="opfs-tools">
-        <h4>Profiles</h4>
-        <div class="sync-row">
-          <button id="profile-manage" type="button" title="Create, duplicate or delete profiles; set seed sources">Profiles…</button>
-          <span class="muted">Create, duplicate or delete profiles; set seed sources.</span>
-        </div>
         <h4>Transfer</h4>
         <div class="sync-row">
           <button id="ws-export" type="button" title="Download the active profile as a JSON archive">Export</button>

@@ -11,6 +11,7 @@
     "smoke": "node smoke.mjs",
     "smoke:browser": "node scripts/browser-smoke.mjs",
     "smoke:profiles": "node scripts/profile-smoke.mjs",
+    "smoke:bootstrap": "node scripts/seed-bootstrap-smoke.mjs",
     "smoke:mirror": "node scripts/mirror-smoke.mjs",
     "smoke:seed-update": "node scripts/seed-update-smoke.mjs",
     "mock-llm": "node mock-llm.mjs",

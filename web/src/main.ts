@@ -43,6 +43,7 @@ import {
   profileSegmentsFor,
   recordSeedVersion,
   resolveActiveProfileName,
+  setSeedBinding,
   touchProfile,
   type ProfileRegistry,
   type SeedBinding,
@@ -55,6 +56,11 @@ import {
   type RemoteSeedMeta,
 } from "./swap";
 import { wireProfileUi, setSeedProgress, clearSeedProgress } from "./profile-ui";
+import {
+  bootstrapSeedFromParams,
+  parseBootstrapSeed,
+  type BootstrapSeed,
+} from "./seed-bootstrap";
 import { cloneWorkspace } from "./platform/git-opfs";
 import { applyDatabaseDumps } from "./db-sync";
 import { createAutoSync, DEFAULT_INTERVAL_MS } from "./auto-sync";
@@ -374,6 +380,88 @@ async function applySeedArchive(
   return stamp;
 }
 
+/**
+ * A deployment can name a BobSwap shelf in `public/seed-bootstrap.json`. A
+ * fresh profile tries that shelf's newest public archive before the bundled
+ * snapshot; the query parameters exist for the smoke and one-off testing.
+ */
+async function loadBootstrapSeed(): Promise<BootstrapSeed | null> {
+  const fromParams = bootstrapSeedFromParams(params);
+  if (fromParams) return fromParams;
+  try {
+    const res = await fetch("/seed-bootstrap.json", { cache: "no-cache" });
+    if (!res.ok) return null;
+    return parseBootstrapSeed(await res.json());
+  } catch {
+    return null;
+  }
+}
+
+/** Remember the shelf a fresh profile was pulled from, so it keeps following it. */
+async function bindBootstrapSeed(
+  bootstrap: BootstrapSeed,
+  sha256: string,
+  createdAt: string,
+  version?: string,
+): Promise<void> {
+  try {
+    await setSeedBinding(activeProfile, {
+      baseUrl: bootstrap.baseUrl,
+      account: bootstrap.account,
+      seedName: bootstrap.seedName,
+      lastVersion: {
+        version: version ?? sha256.slice(0, 12),
+        sha256,
+        createdAt,
+        checkedAt: new Date().toISOString(),
+      },
+    });
+    profileRegistry = await loadRegistry();
+  } catch (err) {
+    console.warn(
+      `[seed-bootstrap] could not bind ${bootstrap.account}/${bootstrap.seedName}: ${errorText(err)}`,
+    );
+  }
+}
+
+/**
+ * Pull the configured shelf's newest public archive into a fresh profile.
+ * Returns false when the shelf is private, offline or times out; the bundled
+ * snapshot is the fallback and nothing is written before the download lands.
+ */
+async function pullBootstrapSeed(bootstrap: BootstrapSeed): Promise<boolean> {
+  // A saved service can contribute a read key, but a fresh browser has none;
+  // a keyless service object is enough for a public shelf on any origin.
+  const service = resolveSwapService(bootstrap.baseUrl) ?? { baseUrl: bootstrap.baseUrl };
+  const account = service.account || bootstrap.account;
+  const label = `${account}/${bootstrap.seedName}`;
+  bootProgress(`pulling seed ${label}…`, 30);
+  try {
+    const fetched = await Promise.race([
+      fetchLatestSeed(service, account, bootstrap.seedName),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("timed out")), 8_000),
+      ),
+    ]);
+    if (!fetched) return false;
+    await applySeedArchive(fetched.archive, fetched.sha256, (done, count) => {
+      bootProgress(`seeding ${done}/${count} files…`, 30 + Math.round((15 * done) / count));
+    });
+    const version = fetched.version ?? fetched.sha256.slice(0, 12);
+    await bindBootstrapSeed(
+      { ...bootstrap, account },
+      fetched.sha256,
+      fetched.archive.createdAt,
+      version,
+    );
+    console.log(`[seed-bootstrap] ${label}: pulled ${version}`);
+    return true;
+  } catch (err) {
+    console.warn(`[seed-bootstrap] ${label}: ${errorText(err)} — using the bundled snapshot`);
+    return false;
+  }
+}
+
 async function seedWorkspace(root: string): Promise<void> {
   const marker = platform.path.join(root, ".seeded");
   const force = params.has("reseed");
@@ -386,8 +474,14 @@ async function seedWorkspace(root: string): Promise<void> {
     seedSha = await readSeedSha();
     return;
   }
+
+  // A fresh tab first follows the configured public shelf. `?reseed=1` means
+  // "overlay the bundled snapshot", so it deliberately skips this path.
+  const bootstrap = force ? null : await loadBootstrapSeed();
+  if (bootstrap && (await pullBootstrapSeed(bootstrap))) return;
+
   try {
-    const res = await fetch("/seed/workspace.json");
+    const res = await fetch("/seed/workspace.json", { cache: "no-cache" });
     if (!res.ok) return;
     const text = await res.text();
     const archive = JSON.parse(text) as WorkspaceArchive;

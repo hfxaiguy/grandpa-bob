@@ -1162,7 +1162,7 @@ function wireReceiveDialog(): void {
 // ── sync menu (collapsed toolbar controls) ───────────────────────────────
 
 /**
- * The toolbar's profile/transfer/BobSwap controls live in `#sync-dialog`.
+ * The toolbar's transfer/BobSwap controls live in `#sync-dialog`.
  * Closing it on a launcher click keeps native dialogs from stacking; the
  * launcher's own click handler then opens its dialog in the same gesture.
  */
