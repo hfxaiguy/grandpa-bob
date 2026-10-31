@@ -2,6 +2,13 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-31 — tile descriptions open in a modal
+
+The ellipsized description under a tile's title is now a button: clicking it
+opens the app's full description in a scrollable modal, with the README's
+`## Guide` below when the app has one. The modal is portaled past the tile's
+clipping and closes on backdrop click or ✕.
+
 ## 2026-10-31 — Profiles moves beside Sync…
 
 The profile launcher moved out of the Sync dialog to the toolbar, right beside

@@ -1074,6 +1074,9 @@ export function Tile(props: { app: AppInfo }) {
   const chatRef = { el: undefined as HTMLDivElement | undefined };
   // The bubble whose provenance panel is open (null = closed).
   const [prov, setProv] = createSignal<{ turnId: string; bubble: number; text: string } | null>(null);
+  // The tile's description line opens the full text (and the app's guide) in a
+  // modal — the line itself is ellipsized to one row.
+  const [descOpen, setDescOpen] = createSignal(false);
 
   createEffect(() => {
     bubbles();
@@ -1256,9 +1259,15 @@ export function Tile(props: { app: AppInfo }) {
             </Show>
           </header>
           <Show when={props.app.description}>
-            <div class="tile-desc" title={props.app.guide || props.app.description}>
+            <button
+              type="button"
+              class="tile-desc"
+              title="open the full description"
+              aria-haspopup="dialog"
+              onClick={() => setDescOpen(true)}
+            >
               {props.app.description}
-            </div>
+            </button>
           </Show>
           <div class="chat" ref={(el) => (chatRef.el = el)}>
             <Show when={bubbles().length} fallback={<div class="empty">no messages yet</div>}>
@@ -1366,6 +1375,39 @@ export function Tile(props: { app: AppInfo }) {
                 <ProvenanceModal turnId={p().turnId} bubble={p().bubble} text={p().text} onClose={() => setProv(null)} />
               </Portal>
             )}
+          </Show>
+          <Show when={descOpen()}>
+            <Portal>
+              <div
+                class="mem-modal desc-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-label={`${name()} description`}
+                onClick={(ev) => ev.target === ev.currentTarget && setDescOpen(false)}
+              >
+                <div class="mem-modal-card desc-modal-card">
+                  <div class="mem-modal-head">
+                    <span class="desc-modal-name">{name()}</span>
+                    <span class="desc-modal-kind">description</span>
+                    <span class="spacer" />
+                    <button type="button" title="close" onClick={() => setDescOpen(false)}>
+                      ✕
+                    </button>
+                  </div>
+                  <div class="desc-modal-body">
+                    <RefText text={props.app.description} />
+                    <Show when={props.app.guide?.trim()}>
+                      {(guide) => (
+                        <>
+                          <div class="desc-modal-sec">guide</div>
+                          <RefText text={guide()} />
+                        </>
+                      )}
+                    </Show>
+                  </div>
+                </div>
+              </div>
+            </Portal>
           </Show>
         </div>
         <Show when={openKids().length}>

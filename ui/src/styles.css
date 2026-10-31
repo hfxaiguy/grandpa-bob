@@ -393,16 +393,29 @@ body.dragging-tile { user-select: none !important; }
 .dot.run { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 .dot.wait { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
 
+/* The truncated one-line description under the title: a button that opens the
+   full text (and the app's guide) in a modal. */
 .tile-desc {
+  display: block;
+  width: 100%;
   padding: 5px 10px;
+  font: inherit;
   font-size: 12px;
+  line-height: 1.5;
   color: var(--muted);
+  text-align: left;
+  background: none;
+  border: 0;
   border-bottom: 1px solid var(--border);
+  border-radius: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
   user-select: none;
 }
+.tile-desc:hover, .tile-desc:focus-visible { color: var(--fg); background: #1b2742; }
+.tile-desc:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 
 .chat { flex: 1; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 60px; }
 .bubble {
@@ -537,6 +550,12 @@ body.dragging-tile { user-select: none !important; }
 .mem-modal-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .mem-modal-path { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mem-modal-body { margin: 0; padding: 12px; overflow: auto; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+/* The tile description modal: prose, not the monospace payload viewer. */
+.desc-modal-card { width: min(680px, 92vw); }
+.desc-modal-name { font-weight: 650; }
+.desc-modal-kind { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px; }
+.desc-modal-body { flex: 1; min-height: 0; padding: 14px 16px; overflow: auto; font-size: 13.5px; line-height: 1.6; }
+.desc-modal-sec { margin: 16px 0 6px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px; }
 .log-row { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; border-radius: 4px; color: var(--muted); cursor: pointer; }
 /* The global stream is tabular: app, badge and text each get their own column
    so a long app name ellipsizes inside a fixed column instead of shoving the
