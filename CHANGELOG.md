@@ -2,6 +2,12 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — pair teardown says Disconnect
+
+The Pair dialog's teardown button is now **Disconnect** and reads red. It still
+closes only tab-to-tab pairing; desktop mirrors are unbound from **Profiles**,
+and the local workspace is kept.
+
 ## 2026-11-01 — desktop pairing survives Gecko's mDNS candidates
 
 Firefox/Firedragon hides host ICE candidates as `<uuid>.local`. When the

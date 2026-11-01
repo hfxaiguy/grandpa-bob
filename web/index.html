@@ -93,7 +93,8 @@
         border-radius: 6px; padding: 0.35rem 0.6rem;
       }
       dialog button:hover { border-color: var(--accent); }
-      dialog button.danger { border-color: #7f3b46; }
+      dialog button.danger { color: var(--err); border-color: #7f3b46; }
+      dialog button.danger:hover { border-color: var(--err); }
       dialog .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 0.8rem; }
       #confirm-dialog { width: min(520px, 92vw); }
       #confirm-dialog form { margin: 0; border: 0; padding: 0; }
@@ -389,7 +390,7 @@
       </label>
 
       <div class="row-actions">
-        <button id="pair-unpair" type="button" title="Close the tab-to-tab WebRTC pair; a desktop mirror is unbound in Profiles">Close tab-to-tab pairing</button>
+        <button id="pair-unpair" type="button" class="danger" title="Disconnect the tab-to-tab WebRTC pair; a desktop mirror is unbound in Profiles">Disconnect</button>
         <button id="pair-close" type="button">Close</button>
       </div>
       <p class="muted">A desktop mirror is unbound from <strong>Profiles</strong>; the local workspace is kept.</p>

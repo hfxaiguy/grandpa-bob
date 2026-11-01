@@ -400,7 +400,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
   el<HTMLButtonElement>("pair-unpair")?.addEventListener("click", () => {
     getSync()?.unpair();
     setVerify("—");
-    setStatus("tab-to-tab pairing closed (same-origin tabs keep syncing)");
+    setStatus("tab-to-tab pairing disconnected (same-origin tabs keep syncing)");
     updateLiveStatus();
   });
 }
