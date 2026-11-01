@@ -112,7 +112,7 @@ export interface StreamLine {
   emit: boolean;
 }
 
-/** An inspected `ref://` target (mirrors src/provenance.ts RefTarget). */
+/** An inspected `ref://` target (mirrors web/src/ref-target.ts RefTarget). */
 export interface RefTarget {
   seq: number;
   kind: string;
@@ -128,7 +128,7 @@ export interface RefTarget {
 }
 
 // ── message provenance ("what was this written from") ───────────────────
-// Mirrors src/provenance.ts (the /api/provenance payload).
+// Mirrors web/src/provenance.ts (the /api/provenance payload).
 
 export interface ProvWriter {
   seq: number;

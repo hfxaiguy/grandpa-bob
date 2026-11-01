@@ -25,7 +25,7 @@ import { parseModels, type ModelRegistry } from "../model-config";
 import { refTargetFromRow } from "../ref-target";
 import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "../db-sync";
 import { AgentStoppedError, isAgentStopped } from "../stop-error";
-import type { SessionSummary } from "../agent/log-store";
+import type { LogRow, SessionSummary } from "../agent/log-store";
 
 export interface BackendResponse {
   status: number;
@@ -873,6 +873,67 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     if (pathname === "/api/turns" && method === "GET") {
       const key = await ensureSession();
       return { status: 200, body: { turns: await turnsFor(key), session: key, awaiting: await awaitingFor(key) } };
+    }
+    if (pathname === "/api/provenance" && method === "GET") {
+      // "What was this reply written from?" — a read-only walk over the run
+      // log from the bubble's emit row: the prompt that produced it, the memory
+      // slots it read and their writers, ref:// handles. Computed per click.
+      // Params: turnId, bubble (emit index, -1 = last), text (preferred match),
+      // depth (1..6).
+      const turnId = (search.get("turnId") ?? "").trim();
+      if (!turnId) return { status: 400, body: { error: "turnId is required" } };
+      const bubbleIdx = Number.parseInt(search.get("bubble") ?? "", 10);
+      const depth = Number.parseInt(search.get("depth") ?? "1", 10) || 1;
+      const wantText = search.get("text") ?? "";
+      // A running turn has no marker (and its last events may not be flushed);
+      // hand the worker this page's rows so ⓘ works mid-turn, then let it merge
+      // them over the persisted run.
+      const live = [...liveTurns.values()].flat().find((t) => t.turnId === turnId && t.status === "running");
+      let livePayload: { runId: string; rows: LogRow[] } | undefined;
+      if (live) {
+        const rows = live.events.filter(
+          (e): e is typeof e & { seq: number; run_id: string } =>
+            Number.isInteger(e.seq) && typeof e.run_id === "string" && !!e.run_id,
+        );
+        if (rows.length) {
+          livePayload = {
+            runId: rows[rows.length - 1].run_id,
+            rows: rows
+              .filter((e) => typeof e.kind === "string")
+              .map((e) => {
+                const raw = e as Record<string, unknown>;
+                return {
+                  seq: e.seq,
+                  run_id: e.run_id,
+                  branch_path: typeof raw.branch_path === "string" ? raw.branch_path : null,
+                  iteration: typeof raw.iteration === "number" ? raw.iteration : null,
+                  scope_id: typeof raw.scope_id === "number" ? raw.scope_id : null,
+                  kind: e.kind as string,
+                  content: raw.content ?? null,
+                };
+              }),
+          };
+        }
+      }
+      try {
+        const data = await agent.log<Record<string, unknown> | null>(
+          "provenance",
+          {
+            turnId,
+            bubble: Number.isInteger(bubbleIdx) ? bubbleIdx : -1,
+            text: wantText,
+            depth,
+            ...(livePayload ? { live: livePayload } : {}),
+          },
+          logCtx(),
+        );
+        if (!data) {
+          return { status: 404, body: { error: "this turn has no engine run recorded — nothing to trace" } };
+        }
+        return { status: 200, body: data };
+      } catch (err) {
+        return { status: 500, body: { error: err instanceof Error ? err.message : "provenance walk failed" } };
+      }
     }
     if (pathname === "/api/ref" && method === "GET") {
       // Refs are `ref://<seq>` addresses into the run log of the SELECTED

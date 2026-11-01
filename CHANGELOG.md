@@ -2,6 +2,31 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — provenance survives the browser-only host
+
+The ⓘ on a bot bubble ("written from") had been a dead button since the Node
+admin host was removed: `src/provenance.ts` was deleted with `src/admin.ts`
+instead of moving into `web/src/`, so every click answered
+`/api/provenance: 404` in every mode. It is back, computed in the tab:
+
+- **`web/src/provenance.ts`** — the read-only walk over the run log restored,
+  now reading one run's rows once (`loadRunEvents`) and walking them in memory,
+  since the browser's SQLite is behind the worker's async queue. Same payload
+  (prompt, pieces with their writers, depth walk, `ref://`, leaves), same caps
+  (depth 6, breadth 60, value/message truncation).
+- **Turn resolution changed hands**: the admin used `WebLog.findTurn`; the
+  browser uses the persisted `web_turn_end` marker (turnId → runId +
+  fromSeq/toSeq) and anchors the bubble by its text, then its emit index. A
+  turn still running is traced from the page's own event rows merged over the
+  persisted run, so a mid-turn ⓘ works before the next flush.
+- **`GET /api/provenance`** in `web/src/server/local-backend.ts` asks the
+  worker (which owns the log DB, the same seam as `/api/ref`) and returns the
+  walk; the UI needed no change.
+- **Regression**: `npm run test:provenance` knits a real tree (two memory
+  slots, `line` reads `who`, a prompt reads `line`) through the browser logger,
+  writes the turn marker, and asserts the prompt link, the depth walk to the
+  ground fact, the nearest-call fallback, and the endpoint's 200/400/404.
+
 ## 2026-11-01 — hosted UI can pair with a local desktop bridge
 
 `https://bobkat.hfxaiguy.com` is now in the default channel-API allowlist, so

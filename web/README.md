@@ -369,6 +369,24 @@ from the app URL passed to the script, and on first connect Chrome may ask for
 local-network access (`ws://127.0.0.1`); allow it. The opened URL contains the
 machine's automation socket — it is local-only, but should not be shared.
 
+### Message provenance — the ⓘ on a bot bubble
+
+Every non-machine reply bubble carries an ⓘ that opens **"written from"**: the
+prompt that produced the message, the memory slots and other pieces that prompt
+read (with the row that wrote each), `ref://` handles inside the prompt, and the
+ground facts the walk bottoms out on. **Trace deeper** walks the writers' own
+reads another level (up to 6).
+
+It is computed on click from the run log alone — nothing is written, and the
+engine never reads it. `GET /api/provenance?turnId=&bubble=&text=&depth=`
+(`web/src/server/local-backend.ts`) asks the worker (which owns the log DB) for
+the walk (`web/src/provenance.ts`). The bubble is anchored by its text, falling
+back to its emit index; a turn with no engine run answers a 404 the UI shows
+as-is. A turn that is still running is traced from the page's own event rows,
+so ⓘ works mid-turn before the logger's next flush. Regression:
+`npm run test:provenance` knits a real tree (two memory slots + a prompt) and
+asserts the prompt link, the depth walk, the nearest fallback and the endpoint.
+
 ### Desktop/server peer (optional)
 
 There is no storage-backend selector: the workspace always lives in OPFS. A

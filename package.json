@@ -43,6 +43,7 @@
     "test:telegram-bridge": "tsx scripts/telegram-bridge-test.ts",
     "test:emit-value": "tsx scripts/emit-value-test.ts",
     "test:emit-component": "tsx scripts/emit-component-test.ts",
+    "test:provenance": "tsx scripts/provenance-web-test.ts",
     "test:csv": "tsx scripts/csv-test.ts",
     "test:read-json": "tsx scripts/read-json-test.ts",
     "test:shell": "tsx scripts/shell-sandbox-test.ts",

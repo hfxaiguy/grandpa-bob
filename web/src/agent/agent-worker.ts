@@ -33,8 +33,10 @@ import {
   writeDelete,
   writeLabel,
   writeTurnEnd,
+  type LogRow,
 } from "./log-store";
 import type { TurnMarker } from "../web-log-types";
+import { provenanceFor } from "../provenance";
 import { createModuleLoader } from "./module-loader";
 import {
   AgentStoppedError,
@@ -859,6 +861,23 @@ async function handleLog(msg: LogMessage): Promise<void> {
       case "memoryWrites":
         result = await memoryWrites(platform, String(p.key ?? ""));
         break;
+      case "provenance": {
+        // "What was this reply written from" — a read-only walk over the run
+        // log this worker owns, the same seam `/api/ref` uses.
+        const live = p.live as { runId?: unknown; rows?: unknown } | undefined;
+        const liveRows = Array.isArray(live?.rows) ? (live.rows as LogRow[]) : undefined;
+        result = await provenanceFor(platform, {
+          turnId: String(p.turnId ?? ""),
+          bubble: typeof p.bubble === "number" ? p.bubble : -1,
+          text: typeof p.text === "string" ? p.text : "",
+          depth: typeof p.depth === "number" ? p.depth : 1,
+          live:
+            live && typeof live.runId === "string" && live.runId
+              ? { runId: live.runId, rows: liveRows ?? [] }
+              : undefined,
+        });
+        break;
+      }
       case "turnEnd": {
         // Flush the engine events first, then write the marker with the run's
         // real seq bounds. The run session is the one that logged them.
