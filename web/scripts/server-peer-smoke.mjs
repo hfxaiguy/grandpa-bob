@@ -135,7 +135,7 @@ async function waitFor(expression, label, timeout = 90_000) {
     await sleep(250);
   }
   const status = await evaluate(
-    `JSON.stringify({ status: document.getElementById("status")?.textContent, chip: document.getElementById("mirror-status")?.textContent, pair: document.getElementById("pair-server-status")?.textContent })`,
+    `JSON.stringify({ status: document.getElementById("status")?.textContent, chip: document.getElementById("mirror-status")?.textContent, pair: document.getElementById("pair-status")?.textContent })`,
   ).catch(() => "n/a");
   throw new Error(`timeout waiting for ${label} (${status})`);
 }
@@ -187,10 +187,10 @@ try {
   );
   await evaluate(`(() => {
     document.getElementById("live-pair").click();
+    document.getElementById("pair-source-desktop").click();
     document.getElementById("pair-server-url").value = "http://127.0.0.1:${CHANNEL_PORT}";
-    document.getElementById("pair-server-channel").value = ${JSON.stringify(pairing.channelId)};
-    document.getElementById("pair-server-code").value = ${JSON.stringify(pairing.code)};
-    document.getElementById("pair-server-join").click();
+    document.getElementById("pair-code").value = ${JSON.stringify(pairing.code)};
+    document.getElementById("pair-join-code").click();
     return true;
   })()`);
 
@@ -338,7 +338,7 @@ try {
     chipHidden: document.getElementById("mirror-status")?.hidden,
     link: localStorage.getItem("bob:server:default"),
     active: localStorage.getItem("bob:profile"),
-    pairStatus: document.getElementById("pair-server-status")?.textContent,
+    pairStatus: document.getElementById("pair-status")?.textContent,
   })`).catch((e) => `debug failed: ${e}`);
   const mirror = path.join(STATE, "folders/default");
   const files = await readdir(mirror).catch((e) => String(e));

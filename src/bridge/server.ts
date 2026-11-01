@@ -219,6 +219,19 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
           });
         }
 
+        // Single-code join: the browser sends only the 8-digit code; the
+        // channel id stays on the server until the response.
+        if (pathname === "/api/v1/sync/channels/join" && req.method === "POST") {
+          const joined = mailbox.joinByCode(String(body.code ?? ""));
+          return send(req, res, 200, {
+            channel_id: joined.channel.id,
+            role_token: joined.roleToken,
+            role: "offerer",
+            ice_servers: iceServers,
+          });
+        }
+
+        // Deprecated for one release: channel-id + code (old clients).
         const join = /^\/api\/v1\/sync\/channels\/([^/]+)\/join$/.exec(pathname);
         if (join && req.method === "POST") {
           const code = String(body.code ?? "");

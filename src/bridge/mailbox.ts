@@ -7,7 +7,7 @@
  * channel's signal feed directly. SDP/ICE only — workspace bytes never touch
  * this surface.
  */
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 export type SignalSide = "offerer" | "answerer";
 
@@ -51,6 +51,13 @@ const MAX_SIGNALS = 500;
 const MAX_FAILED_JOINS = 10;
 
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
+
+/** Constant-time comparison for hex digests of equal length. */
+const sameHash = (left: string, right: string): boolean => {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && timingSafeEqual(a, b);
+};
 
 export class Mailbox {
   private channels = new Map<string, MailboxChannel>();
@@ -108,7 +115,7 @@ export class Mailbox {
     if (!channel.codeHash || !channel.codeExpiresAt) throw new Error("channel is not joinable");
     if (Date.now() > channel.codeExpiresAt) throw new Error("pairing code expired — run npm run pair again");
     const normalized = String(code).replace(/[^0-9A-Fa-f]/g, "");
-    if (hash(normalized) !== channel.codeHash) {
+    if (!sameHash(hash(normalized), channel.codeHash)) {
       channel.failedJoins++;
       if (channel.failedJoins >= MAX_FAILED_JOINS) this.remove(channel.id);
       throw new Error("pairing code does not match");
@@ -124,6 +131,27 @@ export class Mailbox {
     channel.lastActivity = Date.now();
     channel.onJoined?.(channel.profile);
     return { channel, roleToken: channel.tokens.offerer };
+  }
+
+  /**
+   * Single-code join: find the one pending channel whose code matches. The
+   * channel id stays internal; a miss cannot burn another channel because it
+   * does not identify one.
+   */
+  joinByCode(code: string): { channel: MailboxChannel; roleToken: string } {
+    const normalized = String(code).replace(/[^0-9A-Fa-f]/g, "");
+    const now = Date.now();
+    for (const channel of this.channels.values()) {
+      if (channel.closed || channel.used) continue;
+      if (!channel.codeHash || !channel.codeExpiresAt) continue;
+      if (now > channel.codeExpiresAt) continue;
+      if (!sameHash(hash(normalized), channel.codeHash)) continue;
+      channel.used = true;
+      channel.lastActivity = now;
+      channel.onJoined?.(channel.profile);
+      return { channel, roleToken: channel.tokens.offerer };
+    }
+    throw new Error("invalid pairing code");
   }
 
   /** Bearer role token → which side of the channel it belongs to. */

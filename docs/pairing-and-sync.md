@@ -53,27 +53,37 @@ named `bob-sync:opfs:<profileName>`:
 ## 3. Cross-device pairing
 
 Open **Sync… → Live sync → Pair…**. Both tabs must host their own workspace
-(a read-only tab says "take over the workspace first"). Two signaling paths:
+(a read-only tab says "take over the workspace first"). The dialog is one code
+field plus a source switch — **Another tab / relay** (BobSwap) or **My desktop /
+server** — so the code is the only thing to exchange. The relay and desktop
+paths share the same code flow (§6 covers the desktop side); manual paste is
+the no-service fallback.
 
 ### BobSwap REST (automatic, needs a service)
 
 The client targets the sync-channel contract documented at `/docs/agents` on
 the service:
 
-1. Offerer clicks **Create a channel** → `POST /api/v1/sync/channels` returns a
-   channel id, a **single-use pairing code**, a role token, and optional
-   `ice_servers` (STUN and, when deployed, TURN — no client release needed to
-   add TURN).
-2. Share the channel id + code by any means (Telegram is the obvious one).
-3. The joiner enters both and clicks **Join a channel** → the code is spent,
-   and the service returns a role token and the ICE servers.
+1. Offerer clicks **Create a code** → `POST /api/v1/sync/channels` returns an
+   internal channel id, a **single-use 8-digit code** (`XXXX-XXXX`), a role
+   token and optional `ice_servers` (STUN and, when deployed, TURN — no client
+   release needed to add TURN). The dialog shows only the code; the channel id
+   stays in client state for signaling.
+2. Share the code by any means (Telegram is the obvious one).
+3. The joiner enters it and clicks **Pair with code** → `POST
+   /api/v1/sync/channels/join` spends the code, resolves the channel and
+   returns the channel id, a role token and the ICE servers. The service
+   answers one opaque `invalid pairing code` for wrong, spent or expired
+   codes, with a per-IP join rate limit.
 4. Offer, answer and trickled ICE candidates travel through the signal
    mailbox; the client polls it. **Only SDP/ICE metadata touches the service**
    — never workspace content.
 5. When the data channel opens, both sides display the verification phrase
    (next section).
 
-If the service has not deployed those endpoints, the dialog says so and manual
+The service keeps `POST /api/v1/sync/channels/{channel_id}/join` as a
+deprecated alias for one release; the UI never asks for a channel id. If the
+service has not deployed the code-only join yet, the dialog says so and manual
 paste remains the fallback.
 
 ### Manual paste (no service)
@@ -127,7 +137,8 @@ npm run bob     # app :8080 + bridge/mailbox :8795, loopback
 
 1. Tab 1: `http://localhost:8080` → activate profile A.
 2. Tab 2: `http://localhost:8080` → activate profile B.
-3. Sync… → Pair… on both → BobSwap channel or manual blob → compare phrase.
+3. Sync… → Pair… on both → **Another tab / relay** (code) or manual blob →
+   compare phrase.
 4. Keep both tabs open. Each workspace is complete and self-sufficient; the
    pair keeps them converged.
 
@@ -145,7 +156,7 @@ HOST=0.0.0.0 PORT=8081 npm run web:standalone   # app-only static files on the L
 1. On the server: `http://localhost:8080`.
 2. On the other device: `http://<server-lan-ip>:8081` (its own OPFS at that
    origin; a mirror binding is per machine).
-3. Sync… → Pair… → BobSwap channel (id + code) or manual blobs.
+3. Sync… → Pair… → **Another tab / relay** (code only) or manual blobs.
 4. Compare the phrase; keep both tabs open while you want them converged.
 
 Firewall: allow the static port (8081 above), not the bridge.
@@ -177,17 +188,17 @@ A desktop/server is another peer, not a storage mode. Pairing is the same
 channel flow used between two browsers:
 
 1. On the desktop/server, `npm run pair` creates a mailbox channel on the
-   combined process's `:8795` and prints the channel id, single-use code,
+   combined process's `:8795` and prints a single-use 8-digit code, the
    mirror folder and requested exec allowlist. The tab's active profile must
    match `--profile` (default `default`), while `--mirror` / `--mirror-path`
    pick the folder independently — so one desktop can host a separate mirror
    per browser profile. (`--exec git,make,…` grants ops; `--list` /
    `--revoke <profile>` manage paired profiles.)
-2. In the tab, **Sync… → Pair… → Desktop / server** joins with the URL,
-   channel id and code. The dialog shows the active profile and, once the
-   channel opens, the mirror + exec capabilities the console is approving.
-   Both sides derive the same SAS from the DTLS fingerprints; the operator
-   compares it on the console before approving.
+2. In the tab, **Sync… → Pair… → Pair with a code**, select **My desktop /
+   server**, and enter the code — no channel id. The dialog shows the active
+   profile and, once the channel opens, the mirror + exec capabilities the
+   console is approving. Both sides derive the same SAS from the DTLS
+   fingerprints; the operator compares it on the console before approving.
 3. On approval the server mints a per-profile **client key** and the tab pins
    a per-profile **server proof key**. Reconnects use a client-key channel and
    mutual HMAC proofs — no human step. Revoking on the server drops the key and
@@ -213,7 +224,9 @@ the opt-in `/stt` remain on the channel server.
 | "this tab does not host the workspace — take over the workspace first" | Only the lease holder can pair. Use the lease banner's **take over**. |
 | "not running here — this tab is not the workspace host" | The Live sync status of a read-only tab. |
 | "sync channels may not be deployed yet" | The BobSwap service lacks `/api/v1/sync/channels…`; use manual paste. |
-| "pairing failed: NetworkError when attempting to fetch resource." / `cannot reach http://…` | The tab could not reach the mailbox. Open the app at `http://localhost:8080` or `http://127.0.0.1:8080` on the machine running `npm run bob`; type `http://127.0.0.1:8795` explicitly in Server URL and check `/health` in that tab. A non-loopback page origin is rejected, and a browser on another device cannot reach the loopback mailbox — pair browser↔browser instead. |
+| "this relay has no single-code join" | The relay predates code-only pairing; update it, or switch the Pair dialog to **My desktop / server**. Manual paste still works. |
+| "invalid pairing code" | The code is wrong, already spent or older than 10 minutes. Create a new one on the other device. A 429 means the per-IP join rate limit; wait for `Retry-After`. |
+| "pairing failed: NetworkError when attempting to fetch resource." / `cannot reach http://…` | The tab could not reach the mailbox. Open the app at `http://localhost:8080` or `http://127.0.0.1:8080` on the machine running `npm run bob`; in **My desktop / server** open **Advanced** and check the mailbox URL (`http://127.0.0.1:8795`), then check `/health` in that tab. A non-loopback page origin is rejected, and a browser on another device cannot reach the loopback mailbox — pair browser↔browser instead. |
 | "data channel never opened" | NAT/firewall; try same-LAN, or configure TURN via a service's `ice_servers`. |
 | Phrases differ | Do not trust the link — signaling was altered or the peers see different certificates; close and retry. |
 | "this code is for browser profile …" | The tab's active profile differs from the console's `--profile`; switch to that profile or rerun `npm run pair -- --profile <tab profile>`. |

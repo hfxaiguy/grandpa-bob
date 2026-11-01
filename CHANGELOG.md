@@ -2,6 +2,33 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — pairing is code-only; channel ids stay internal
+
+BobSwap's sync channels now join by a single 8-digit code, so the Pair dialog
+no longer asks for (or shows) a channel id:
+
+- `web/src/sync-ui.ts` sends `POST /api/v1/sync/channels/join { code }` and
+  takes `channel_id`, `role`, `role_token` and `ice_servers` from the response;
+  the offerer shows only `XXXX-XXXX`. Relay and desktop/server now share one
+  **Pair with a code** form with a source switch (**Another tab / relay** vs
+  **My desktop / server**); the desktop mailbox URL moved under *Advanced* and
+  defaults to `127.0.0.1:8795`. `pairWithServer()` gets the channel id from its
+  join response.
+- The relay path falls back to the built-in BobSwap deployment when no service
+  is saved, so a fresh tab can join by code; creating a code still needs a
+  relay key, and a 401/403 says to add one via **BobSwap…** or switch to the
+  desktop path. The relay's read key falls back to the upload key when that is
+  the only credential saved.
+- `BobSwapSignaling` accepts the relay's `role: "joiner"` (normalized to the
+  answerer side) and tolerates `joiner` labels in the signal feed.
+- The local `:8795` mailbox gained the same code-only route
+  (`mailbox.joinByCode`), while `POST /channels/{id}/join` remains as a
+  deprecated alias for one release, matching BobSwap.
+- `npm run pair` prints the code (no channel id); the smokes, README,
+  `web/README.md` and `docs/pairing-and-sync.md` describe the one-code flow.
+- A profile mismatch now reaches the tab with the exact `--profile` hint from
+  the peer handshake when the code was created for another browser profile.
+
 ## 2026-11-01 — app chats can render workspace UI components
 
 An emit can now carry a visual component instead of a text bubble. The

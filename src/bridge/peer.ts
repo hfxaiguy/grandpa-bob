@@ -358,7 +358,15 @@ export class PeerSession {
     const expectedProfile = this.profile;
     if (op === "hello") {
       if (control.profile !== expectedProfile) {
-        link.send(controlEnvelope(channelPeerId(this.profile), { op: "error", message: "profile mismatch" }));
+        const got = String(control.profile ?? "");
+        link.send(
+          controlEnvelope(channelPeerId(this.profile), {
+            op: "error",
+            message:
+              `this code is for browser profile "${expectedProfile}", but this tab is "${got}" — ` +
+              `rerun \`npm run pair -- --profile ${got}\``,
+          }),
+        );
         this.dispose();
         return;
       }

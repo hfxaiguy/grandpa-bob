@@ -345,16 +345,33 @@
         Cross-device sync is peer-to-peer: the pairing blobs only carry WebRTC
         addressing, never workspace content. Same-origin tabs need nothing here.
       </p>
-      <h4>Desktop / server</h4>
-      <p class="muted">The desktop console runs <code>npm run pair</code> and prints a channel id + code. Joining is the same channel flow as BobSwap; the verification phrase must match the console. If the desktop folder already has a workspace, it replaces this profile's files on first pairing; an empty folder receives this workspace.</p>
-      <p class="muted">This tab is profile <strong id="pair-server-profile">default</strong>; the desktop session must use <code>--profile</code> with the same name. The mirror folder and exec allowlist are chosen on the desktop console (<code>--mirror</code>, <code>--mirror-path</code>, <code>--exec</code>) and shown here before approval.</p>
-      <div class="grid">
-        <label>Server URL<input id="pair-server-url" placeholder="http://127.0.0.1:8795" autocomplete="off" /></label>
-        <label>Channel id<input id="pair-server-channel" placeholder="sc_…" autocomplete="off" /></label>
-        <label>Pairing code<input id="pair-server-code" placeholder="ABCD-1234" autocomplete="off" /></label>
+      <h4>Pair with a code</h4>
+      <p class="muted">Enter the 8-digit code the other device shows. Same-origin tabs need nothing here.</p>
+      <div class="row-actions" role="radiogroup" aria-label="Code source">
+        <label class="inline"><input type="radio" name="pair-source" id="pair-source-relay" value="relay" checked /> Another tab / relay</label>
+        <label class="inline"><input type="radio" name="pair-source" id="pair-source-desktop" value="desktop" /> My desktop / server</label>
       </div>
-      <div class="row-actions"><button id="pair-server-join" type="button">Join server channel</button></div>
-      <p id="pair-server-status" class="muted"></p>
+      <p id="pair-hint-relay" class="muted">Both tabs must show the same verification phrase. Relay: <span id="pair-relay-url">—</span> (change via <strong>BobSwap…</strong>). <span id="pair-relay-key-note" hidden>Creating a code needs a BobSwap key; joining does not.</span></p>
+      <p id="pair-hint-desktop" class="muted" hidden>Run <code>npm run pair</code> in the desktop terminal, then enter its code. The console approves the mirror + exec. If the desktop folder already has a workspace, it replaces this profile's files on first pairing.</p>
+      <div class="grid">
+        <label>Pairing code<input id="pair-code" placeholder="XXXX-XXXX" autocomplete="off" inputmode="numeric" /></label>
+      </div>
+      <div class="row-actions">
+        <button id="pair-join-code" type="button">Pair</button>
+        <button id="pair-create-code" type="button">Create a code</button>
+      </div>
+      <p id="pair-created-wrap" class="muted" hidden>Pairing code <strong id="pair-created-code">—</strong> — share it with the other device.</p>
+      <p class="muted">This tab is profile <strong id="pair-server-profile">default</strong>. Desktop sessions need <code>--profile</code> matching this name; mirror and exec are chosen with <code>--mirror</code>, <code>--mirror-path</code> and <code>--exec</code>.</p>
+      <details id="pair-advanced" hidden>
+        <summary>Advanced</summary>
+        <div class="grid">
+          <label>Desktop mailbox URL<input id="pair-server-url" placeholder="http://127.0.0.1:8795" autocomplete="off" /></label>
+        </div>
+        <p class="muted">Only needed for a non-default <code>BOB_CHANNEL_PORT</code> or an SSH tunnel.</p>
+      </details>
+      <p>Verification phrase <strong id="pair-verify">—</strong>
+        <span class="muted">(must match on both devices before trusting the link)</span></p>
+      <p id="pair-status" class="muted">idle</p>
 
       <h4>Manual (no service)</h4>
       <div class="row-actions">
@@ -370,24 +387,12 @@
       <label>Blob to hand to the other device
         <textarea id="pair-output" rows="3" readonly placeholder="your offer or answer appears here"></textarea>
       </label>
-      <p>Verification phrase <strong id="pair-verify">—</strong>
-        <span class="muted">(must match on both devices before trusting the link)</span></p>
-      <p id="pair-status" class="muted">idle</p>
 
-      <h4>BobSwap (automatic, needs a live service)</h4>
       <div class="row-actions">
-        <button id="pair-swap-offer" type="button">Create a channel</button>
-        <button id="pair-swap-join" type="button">Join a channel</button>
-      </div>
-      <p class="muted">Channel <code id="pair-swap-channel">—</code> · code <strong id="pair-swap-code">—</strong></p>
-      <div class="grid">
-        <label>Channel id<input id="pair-swap-channel-input" placeholder="sc_…" autocomplete="off" /></label>
-        <label>Pairing code<input id="pair-swap-code-input" placeholder="ABCD-2345" autocomplete="off" /></label>
-      </div>
-      <div class="row-actions">
-        <button id="pair-unpair" type="button">Close cross-device pairing</button>
+        <button id="pair-unpair" type="button" title="Close the tab-to-tab WebRTC pair; a desktop mirror is unbound in Profiles">Close tab-to-tab pairing</button>
         <button id="pair-close" type="button">Close</button>
       </div>
+      <p class="muted">A desktop mirror is unbound from <strong>Profiles</strong>; the local workspace is kept.</p>
     </dialog>
 
     <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">

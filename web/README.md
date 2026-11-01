@@ -372,12 +372,12 @@ profile can pair with a desktop/server using the **same channel flow as two
 browsers** — a code, a DTLS verification phrase, then the same `SyncEngine`.
 
 - On the desktop/server, `npm run pair` creates a mailbox channel on the
-  existing `:8795` and prints the channel id, one-time code, mirror folder and
+  existing `:8795` and prints a single-use 8-digit code, the mirror folder and
   requested exec allowlist. `--exec git,make,…` grants ops; `--list` and
   `--revoke <profile>` manage paired profiles.
-- In the tab: **Sync… → Pair… → Desktop / server**, enter the URL, channel id
-  and code. Both sides show the same SAS; nothing syncs or executes before
-  the operator approves on the console.
+- In the tab: **Sync… → Pair… → Pair with a code**, select **My desktop /
+  server**, and enter the code. Both sides show the same SAS; nothing syncs
+  or executes before the operator approves on the console.
 - First pairing: if the desktop folder already holds a workspace it replaces
   the profile's files; an empty folder receives the tab's workspace. Approval
   mints a per-profile client key and the tab pins a per-profile server proof
@@ -564,10 +564,10 @@ Two REST/peer paths cover this; neither stores workspace bytes on BobSwap:
   its SHA-256. A public version needs no key; private versions need a read key.
 - **Two live tabs:** **Sync…** → **Pair…** opens a WebRTC DataChannel and
   reconciles changes peer-to-peer. Signaling is either the BobSwap REST mailbox
-  (channel id + pairing code exchanged out-of-band) or a manual paste; the
-  mailbox carries SDP/ICE only. Both sides show the same 6-word verification
-  phrase before any data moves; a MITM relay changes the DTLS fingerprints and
-  the phrases stop matching.
+  (a single-use 8-digit code exchanged out-of-band; channel ids stay internal)
+  or a manual paste; the mailbox carries SDP/ICE only. Both sides show the same
+  6-word verification phrase before any data moves; a MITM relay changes the
+  DTLS fingerprints and the phrases stop matching.
 - **No service at all:** **Sync…** → **Export**/**Import** moves a JSON archive
   by hand.
 

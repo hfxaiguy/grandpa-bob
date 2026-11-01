@@ -1,7 +1,7 @@
 // Live cross-device pairing smoke THROUGH the real BobSwap signaling service.
 //
-//   device A: tab 1 (its own browser instance) → creates a sync channel
-//   device B: tab 2 (another browser instance) → joins with channel + code
+//   device A: tab 1 (its own browser instance) → creates a code-only channel
+//   device B: tab 2 (another browser instance) → joins with the code only
 //   both     : phrases must render and MATCH; data channel opens
 //
 // Requires a served build, Chromium, and ~/.bobkat/bobswap.json (the
@@ -137,16 +137,19 @@ try {
   const b = await makeSide(1);
   console.log("ok  both devices booted with the BobSwap service configured");
 
-  // device A: create the channel
-  await a.evaluate(`document.getElementById("pair-swap-offer").click()`);
-  const channel = await a.waitFor(`document.getElementById("pair-swap-channel").textContent.startsWith("sc_") && document.getElementById("pair-swap-code").textContent.match(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/) ? document.getElementById("pair-swap-channel").textContent.trim() + "|" + document.getElementById("pair-swap-code").textContent.trim() : false`, "bobswap channel create");
-  const [id, code] = channel.split("|");
-  console.log(`ok  device A created channel ${id} (pairing code ${code})`);
+  // device A: create the channel (only its 8-digit code is shared)
+  await a.evaluate(`document.getElementById("pair-source-relay").click()`);
+  await a.evaluate(`document.getElementById("pair-create-code").click()`);
+  const code = await a.waitFor(`(() => {
+    const code = document.getElementById("pair-created-code").textContent.trim();
+    return /^\\d{4}-\\d{4}$/.test(code) ? code : false;
+  })()`, "bobswap code create");
+  console.log(`ok  device A created a channel (pairing code ${code})`);
 
-  // device B: join with channel + code
-  await b.evaluate(`document.getElementById("pair-swap-channel-input").value = ${JSON.stringify(id)}`);
-  await b.evaluate(`document.getElementById("pair-swap-code-input").value = ${JSON.stringify(code)}`);
-  await b.evaluate(`document.getElementById("pair-swap-join").click()`);
+  // device B: join with the code only
+  await b.evaluate(`document.getElementById("pair-source-relay").click()`);
+  await b.evaluate(`document.getElementById("pair-code").value = ${JSON.stringify(code)}`);
+  await b.evaluate(`document.getElementById("pair-join-code").click()`);
 
   // both sides converge to "connected" with a rendered phrase
   const doneExpr = `(() => {
@@ -155,7 +158,7 @@ try {
     return v && v !== "—" && s.includes("connected") ? v : false;
   })()`;
   const dump = (tag, page) => page.evaluate(
-    `(JSON.stringify({ status: document.getElementById("pair-status").textContent, verify: document.getElementById("pair-verify").textContent, channel: document.getElementById("pair-swap-channel").textContent, live: document.getElementById("live-sync-status").textContent }))`,
+    `(JSON.stringify({ status: document.getElementById("pair-status").textContent, verify: document.getElementById("pair-verify").textContent, code: document.getElementById("pair-created-code").textContent, live: document.getElementById("live-sync-status").textContent }))`,
   ).then((v) => console.error(`   [${tag}] ${v}`)).catch(() => {});
   let phraseA, phraseB;
   try {

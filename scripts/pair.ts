@@ -156,11 +156,10 @@ async function runPairing(args: Args): Promise<void> {
   console.log(`mirror:    ${args.mirror} → ${args.mirrorPath ?? `~/.bobkat/folders/${args.mirror}`}`);
   console.log(`exec:      ${args.exec.length ? args.exec.join(", ") : "(none)"}`);
   console.log("");
-  console.log(`channel:   ${info.channelId}`);
   console.log(`code:      ${info.code}`);
   console.log("");
   console.log(`In the browser (profile "${info.profile}"): Sync… → Pair… → Desktop / server.`);
-  console.log(`URL:       ${args.url}`);
+  console.log(`Enter:     ${args.url} and the code above — no channel id.`);
   console.log("Tab on another profile? Stop (Ctrl-C) and rerun with --profile <name>.");
   console.log("Waiting for the browser…\n");
 

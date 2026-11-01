@@ -187,9 +187,25 @@ export class BobSwapSignaling implements SignalingProvider {
 
   constructor(
     private service: { baseUrl: string; readKey?: string },
-    private channel: { id: string; roleToken: string; role: "offerer" | "answerer" },
+    private channel: {
+      id: string;
+      roleToken: string;
+      /** `joiner` is the relay's name for the answerer side. */
+      role: "offerer" | "answerer" | "joiner";
+    },
     private onStatus?: (text: string) => void,
   ) {}
+
+  /** Normalize the relay's public role names onto the signal-feed sides. */
+  private ownSide(): "offerer" | "answerer" {
+    return this.channel.role === "offerer" ? "offerer" : "answerer";
+  }
+
+  /** The peer's feed label. Accept `joiner` as an alias for `answerer`. */
+  private isOwn(entryFrom: unknown): boolean {
+    if (entryFrom === this.ownSide()) return true;
+    return this.ownSide() === "answerer" && entryFrom === "joiner";
+  }
 
   private url(pathname: string): string {
     return `${this.service.baseUrl.replace(/\/$/, "")}${pathname}`;
@@ -258,7 +274,7 @@ export class BobSwapSignaling implements SignalingProvider {
       const { entries, cursor: next } = await this.feed(cursor);
       let hit: { sdp: string } | null = null;
       for (const m of entries) {
-        if (m.from === this.channel.role) continue;
+        if (this.isOwn(m.from)) continue;
         if (m.type === kind && !hit) {
           const sdp = (m.payload as { sdp?: unknown }).sdp;
           if (typeof sdp !== "string" || sdp.length === 0) throw new Error(`peer sent an empty ${kind}`);
@@ -297,7 +313,7 @@ export class BobSwapSignaling implements SignalingProvider {
         const { entries, cursor: next } = await this.feed(cursor);
         cursor = next;
         for (const m of entries) {
-          if (m.from === this.channel.role) continue;
+          if (this.isOwn(m.from)) continue;
           if (m.type === "candidates") void this.applyCandidates(pc, m.payload);
         }
       } catch (err) {
@@ -318,7 +334,7 @@ export class BobSwapSignaling implements SignalingProvider {
     pc.addEventListener("connectionstatechange", () => {
       if (pc.connectionState === "connected") this.onStatus?.("peer connection up");
     });
-    if (this.channel.role === "offerer") {
+    if (this.ownSide() === "offerer") {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await this.signal({ type: "offer", payload: { sdp: pc.localDescription!.sdp, type: "offer" } });

@@ -47,11 +47,11 @@ every change it makes is **git-committed automatically**.
   and git history), and a profile can be bound to a **BobSwap seed** for
   updates.
   - A profile can **pair with a desktop/server** as another WebRTC peer: the
-    desktop runs `npm run pair`, prints a channel id + one-time code, and both
+    desktop runs `npm run pair`, prints a single-use 8-digit code, and both
     sides compare the DTLS verification phrase before approval. The desktop
     folder becomes the profile's mirror and an allowlisted exec surface; the
     per-profile keys are pinned for silent reconnects. Local and remote servers
-    use the same channel flow.
+    use the same code-only flow.
   A **single-host lease** guarantees only one tab runs the agent per workspace
   (a second tab is read-only, with a *take over* button). A tab can also answer
   Telegram: the "bridge" toggle drains the channel's mailbox against a web
@@ -330,9 +330,10 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    `npm run bob` picks it up automatically (loopback API on `:8795`); without
    a token the same process just leaves the bot off.
 4. **Desktop/server peer (optional)**: `npm run bob` serves the app plus the
-   mailbox on `127.0.0.1:8795`. Run `npm run pair` on the desktop to print a
-   channel id, one-time code and the approval prompt; the tab joins from
-   Sync… → Pair… → Desktop / server. Exec is opt-in via `--exec git,make,…`.
+   mailbox on `127.0.0.1:8795`. Run `npm run pair` on the desktop to print an
+   8-digit one-time code and the approval prompt; the tab joins from
+   Sync… → Pair… → **Pair with a code**, select **My desktop / server**, and
+   enter the code. Exec is opt-in via `--exec git,make,…`.
    Start the process with `BOB_STT=1` to expose the `/stt` pass-through for
    in-tab voice transcription.
 5. **Voice (optional)**: the browser records are transcribed by the bridge
@@ -436,13 +437,14 @@ model download. Browser mic access needs a secure context (`localhost`/HTTPS).
 
 **Sync.** Tabs of the same origin that share a workspace (same profile) sync
 live through BroadcastChannel — no setup. Different profiles pair through the
-dialog. Cross-device pairing (WebRTC; BobSwap REST mailbox or manual paste, with
-a 6-word verification phrase derived from both DTLS certificates) is in the
-Sync… dialog under **Live sync → Pair…**; the BobSwap path needs a service that
-implements the sync-channel endpoints, and says so plainly when it does not.
-Signaling blobs carry only WebRTC addressing; workspace bytes travel over the
-authenticated data channel (a paired desktop/server is a peer endpoint and its
-mirror folder holds a copy). Full guide: [docs/pairing-and-sync.md](docs/pairing-and-sync.md).
+dialog. Cross-device pairing (WebRTC, with a 6-word verification phrase derived
+from both DTLS certificates) is in the Sync… dialog under **Live sync →
+Pair…**: one code field with a source switch — **Another tab / relay**
+(BobSwap, defaulting to the built-in deployment) or **My desktop / server**.
+Manual paste remains the no-service fallback. Signaling blobs carry only
+WebRTC addressing; workspace bytes travel over the authenticated data channel
+(a paired desktop/server is a peer endpoint and its mirror folder holds a
+copy). Full guide: [docs/pairing-and-sync.md](docs/pairing-and-sync.md).
 
 Telegram is wired through the channel: the session panel's **bridge** toggle
 drains the channel mailbox into the selected session, and **✈ send to

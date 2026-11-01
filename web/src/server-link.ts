@@ -43,8 +43,9 @@ export interface ServerConnection {
 }
 
 interface JoinResponse {
+  channel_id: string;
   role_token: string;
-  role: "offerer";
+  role?: string;
   ice_servers?: unknown[];
 }
 
@@ -146,25 +147,32 @@ function unreachable(base: string, err: unknown): Error {
   );
 }
 
-async function joinServerChannel(
-  base: string,
-  channelId: string,
-  code: string,
-  profile: string,
-): Promise<JoinResponse> {
+/** The desktop mailbox is code-only too; its join response carries the channel. */
+function normalizeRole(role: string | undefined): "offerer" | "answerer" {
+  return role === "answerer" || role === "joiner" ? "answerer" : "offerer";
+}
+
+async function joinServerChannel(base: string, code: string): Promise<JoinResponse> {
   let res: Response;
   try {
-    res = await fetch(`${base}/api/v1/sync/channels/${encodeURIComponent(channelId)}/join`, {
+    res = await fetch(`${base}/api/v1/sync/channels/join`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code, profile }),
+      body: JSON.stringify({ code }),
     });
   } catch (err) {
     throw unreachable(base, err);
   }
   const data = (await res.json().catch(() => ({}))) as JoinResponse & { error?: string };
-  if (!res.ok) throw new Error(data.error ?? `join failed: HTTP ${res.status}`);
-  if (!data.role_token) throw new Error("the server did not return a role token");
+  if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error(
+        `single-code join is not available at ${base} — restart \`npm run bob\`, or use manual pairing`,
+      );
+    }
+    throw new Error(data.error ?? `join failed: HTTP ${res.status}`);
+  }
+  if (!data.channel_id || !data.role_token) throw new Error("the server did not return a channel or role token");
   return data;
 }
 
@@ -172,7 +180,7 @@ async function createReconnectChannel(
   base: string,
   profile: string,
   clientKey: string,
-): Promise<{ channel_id: string; role_token: string; ice_servers?: unknown[] }> {
+): Promise<{ channel_id: string; role_token: string; role?: string; ice_servers?: unknown[] }> {
   let res: Response;
   try {
     res = await fetch(`${base}/api/v1/sync/channels`, {
@@ -190,12 +198,18 @@ async function createReconnectChannel(
   const data = (await res.json().catch(() => ({}))) as {
     channel_id?: string;
     role_token?: string;
+    role?: string;
     ice_servers?: unknown[];
     error?: string;
   };
   if (!res.ok) throw new Error(data.error ?? `reconnect failed: HTTP ${res.status}`);
   if (!data.channel_id || !data.role_token) throw new Error("reconnect answered without a channel");
-  return { channel_id: data.channel_id, role_token: data.role_token, ice_servers: data.ice_servers };
+  return {
+    channel_id: data.channel_id,
+    role_token: data.role_token,
+    role: data.role,
+    ice_servers: data.ice_servers,
+  };
 }
 
 async function hmacHex(keyText: string, message: string): Promise<string> {
@@ -224,14 +238,15 @@ async function openLink(
   url: string,
   channelId: string,
   roleToken: string,
+  role: "offerer" | "answerer",
   localId: string,
   onSas: (phrase: string) => void,
   iceServers?: unknown[],
 ): Promise<Opened> {
-  const provider = new BobSwapSignaling({ baseUrl: url }, { id: channelId, roleToken, role: "offerer" });
+  const provider = new BobSwapSignaling({ baseUrl: url }, { id: channelId, roleToken, role });
   const servers = toIceServers(iceServers);
   const { peer, phrase } = await rtcPeer(provider, localId, {
-    createChannel: true,
+    createChannel: role === "offerer",
     // Loopback/self-hosted: none. A remote mailbox may advertise STUN/TURN.
     iceServers: servers,
   });
@@ -405,7 +420,6 @@ function negotiate(
 
 export async function pairWithServer(opts: {
   url: string;
-  channelId: string;
   code: string;
   profile: string;
   localId: string;
@@ -413,12 +427,20 @@ export async function pairWithServer(opts: {
   onStatus: (text: string) => void;
 }): Promise<ServerConnection> {
   const base = normalizeUrl(opts.url);
-  opts.onStatus("joining the server channel…");
-  const joined = await joinServerChannel(base, opts.channelId, opts.code, opts.profile);
+  opts.onStatus("joining with the code…");
+  const joined = await joinServerChannel(base, opts.code);
   opts.onStatus("connecting…");
   let opened: Opened;
   try {
-    opened = await openLink(base, opts.channelId, joined.role_token, opts.localId, opts.onSas, joined.ice_servers);
+    opened = await openLink(
+      base,
+      joined.channel_id,
+      joined.role_token,
+      normalizeRole(joined.role),
+      opts.localId,
+      opts.onSas,
+      joined.ice_servers,
+    );
   } catch (err) {
     throw failedToFetch(err) ? unreachable(base, err) : err;
   }
@@ -446,6 +468,7 @@ export async function resumeServer(opts: {
       base,
       channel.channel_id,
       channel.role_token,
+      normalizeRole(channel.role),
       opts.localId,
       opts.onSas ?? (() => {}),
       channel.ice_servers,

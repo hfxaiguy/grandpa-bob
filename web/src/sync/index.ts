@@ -46,7 +46,8 @@ export interface SyncHandle {
     readKey?: string;
     id: string;
     roleToken: string;
-    role: "offerer" | "answerer";
+    /** `joiner` is the relay's public name for the answerer side. */
+    role: "offerer" | "answerer" | "joiner";
     /** ICE servers from the channel create/join response (STUN/TURN). */
     iceServers?: RTCIceServer[];
   }): Promise<string>;

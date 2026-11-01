@@ -1,15 +1,18 @@
 /**
- * The Live sync pairing UI: manual paste (no service) and BobSwap REST.
+ * The Live sync pairing UI: one code form (BobSwap relay or desktop/server),
+ * plus manual paste (no service).
  *
  * Same-origin tabs reconcile automatically (BroadcastChannel) — this dialog
- * exists for CROSS-DEVICE pairs. Manual pairing is the no-service path: one
- * blob per direction, exchanged by any means (a Telegram message works).
- * BobSwap pairing is automatic: the service implements the sync channel
- * endpoints (`/api/v1/sync/channels…`), pairing codes are single-use, and the
- * signaling mailbox carries SDP/ICE only. The create/join responses supply the
- * ICE servers the peer connection uses (STUN, plus TURN when configured).
+ * exists for CROSS-DEVICE pairs. The code form has a source switch: the relay
+ * path is automatic (BobSwap REST mailbox; codes are single-use and the signal
+ * mailbox carries SDP/ICE only), while the desktop path joins the loopback
+ * mailbox created by `npm run pair` and binds a mirror folder + exec
+ * capabilities after the console approves. Manual pairing is the no-service
+ * path: one blob per direction, exchanged by any means (a Telegram message
+ * works). The create/join responses supply the ICE servers the peer connection
+ * uses (STUN, plus TURN when configured).
  */
-import { activeSwapService, type SwapService } from "./swap";
+import { activeSwapService, defaultSwapService, type SwapService } from "./swap";
 import { pairWithServer } from "./server-link";
 import { bindDesktopMirror } from "./profiles";
 import { loadStorageServer } from "./settings";
@@ -33,30 +36,54 @@ function statusLine(state: SyncState): string {
   return `${state.status}${state.detail ? ` — ${state.detail}` : ""}${conflicts}`;
 }
 
+function relayUnreachable(base: string, err: unknown): Error {
+  const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
+  return new Error(`cannot reach ${base}${detail} — check the relay in BobSwap… and the network`);
+}
+
 /** Create a sync channel on a BobSwap service (offerer side). */
 async function createSwapChannel(service: SwapService): Promise<{
   id: string;
   code: string;
   roleToken: string;
+  role: "offerer" | "answerer" | "joiner";
   iceServers: RTCIceServer[];
 }> {
   const base = service.baseUrl.replace(/\/$/, "");
-  const res = await fetch(`${base}/api/v1/sync/channels`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(service.readKey ? { authorization: `Bearer ${service.readKey}` } : {}),
-    },
-    body: "{}",
-  });
+  const key = service.readKey ?? service.uploadKey;
+  let res: Response;
+  try {
+    res = await fetch(`${base}/api/v1/sync/channels`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(key ? { authorization: `Bearer ${key}` } : {}),
+      },
+      body: "{}",
+    });
+  } catch (err) {
+    throw relayUnreachable(base, err);
+  }
   const data = (await res.json().catch(() => ({}))) as {
     channel_id?: string;
     pairing_code?: string;
     role_token?: string;
+    role?: string;
     ice_servers?: unknown;
     error?: string;
   };
-  if (!res.ok) throw new Error(data.error ?? `service said HTTP ${res.status} (sync channels may not be deployed yet)`);
+  if (!res.ok) {
+    if (res.status === 429) {
+      const retry = res.headers.get("retry-after");
+      throw new Error(`${data.error ?? "rate limited"}${retry ? ` — retry in ${retry}s` : ""}`);
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        "this relay needs a BobSwap key to create a code — add one in BobSwap…, or switch to My desktop / server",
+      );
+    }
+    throw new Error(data.error ?? `service said HTTP ${res.status} (sync channels may not be deployed yet)`);
+  }
   if (!data.channel_id || !data.pairing_code || !data.role_token) {
     throw new Error("the service answered without a channel, pairing code or role token");
   }
@@ -64,33 +91,58 @@ async function createSwapChannel(service: SwapService): Promise<{
     id: data.channel_id,
     code: data.pairing_code,
     roleToken: data.role_token,
+    role: data.role === "answerer" || data.role === "joiner" ? data.role : "offerer",
     iceServers: toIceServers(data.ice_servers),
   };
 }
 
-/** Join an existing sync channel (answerer side). */
+/** Join with a single code (answerer side); the service resolves the channel. */
 async function joinSwapChannel(
   service: SwapService,
-  id: string,
   code: string,
-): Promise<{ roleToken: string; iceServers: RTCIceServer[] }> {
+): Promise<{
+  id: string;
+  roleToken: string;
+  role: "offerer" | "answerer" | "joiner";
+  iceServers: RTCIceServer[];
+}> {
   const base = service.baseUrl.replace(/\/$/, "");
-  const res = await fetch(`${base}/api/v1/sync/channels/${encodeURIComponent(id)}/join`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(service.readKey ? { authorization: `Bearer ${service.readKey}` } : {}),
-    },
-    body: JSON.stringify({ code }),
-  });
+  const key = service.readKey ?? service.uploadKey;
+  let res: Response;
+  try {
+    res = await fetch(`${base}/api/v1/sync/channels/join`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(key ? { authorization: `Bearer ${key}` } : {}),
+      },
+      body: JSON.stringify({ code }),
+    });
+  } catch (err) {
+    throw relayUnreachable(base, err);
+  }
   const data = (await res.json().catch(() => ({}))) as {
+    channel_id?: string;
     role_token?: string;
+    role?: string;
     ice_servers?: unknown;
     error?: string;
   };
-  if (!res.ok) throw new Error(data.error ?? `join failed: HTTP ${res.status}`);
-  if (!data.role_token) throw new Error("the service answered without a role token");
-  return { roleToken: data.role_token, iceServers: toIceServers(data.ice_servers) };
+  if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error("this relay has no single-code join — update it, or switch to My desktop / server");
+    }
+    const retry = res.headers.get("retry-after");
+    const suffix = res.status === 429 && retry ? ` — retry in ${retry}s` : "";
+    throw new Error(`${data.error ?? `join failed: HTTP ${res.status}`}${suffix}`);
+  }
+  if (!data.channel_id || !data.role_token) throw new Error("the service answered without a channel or role token");
+  return {
+    id: data.channel_id,
+    roleToken: data.role_token,
+    role: data.role === "answerer" || data.role === "joiner" ? data.role : "answerer",
+    iceServers: toIceServers(data.ice_servers),
+  };
 }
 
 export function wireSyncUi(getSync: SyncGetter): void {
@@ -103,7 +155,6 @@ export function wireSyncUi(getSync: SyncGetter): void {
 
   const setStatus = (text: string): void => setText("pair-status", text);
   const setVerify = (phrase: string): void => setText("pair-verify", phrase);
-  const setServerStatus = (text: string): void => setText("pair-server-status", text);
   const activeProfile = (): string => localStorage.getItem("bob:profile") || "default";
   const serverUrl = (): string => {
     const input = el<HTMLInputElement>("pair-server-url");
@@ -113,9 +164,54 @@ export function wireSyncUi(getSync: SyncGetter): void {
     if (input && !input.value) input.value = fallback;
     return input?.value.trim() || fallback;
   };
-  const serverChannel = (): string => el<HTMLInputElement>("pair-server-channel")?.value.trim() ?? "";
-  const serverCode = (): string => el<HTMLInputElement>("pair-server-code")?.value.trim() ?? "";
+  const pairCode = (): string => el<HTMLInputElement>("pair-code")?.value.trim() ?? "";
   const showActiveProfile = (): void => setText("pair-server-profile", activeProfile());
+
+  const PAIR_SOURCE_KEY = "bob:pair-source";
+  type PairSource = "relay" | "desktop";
+  const pairSource = (): PairSource => {
+    try {
+      return localStorage.getItem(PAIR_SOURCE_KEY) === "desktop" ? "desktop" : "relay";
+    } catch {
+      return "relay";
+    }
+  };
+  const relayService = (): SwapService => activeSwapService() ?? defaultSwapService();
+  const updatePairMode = (): void => {
+    const desktop = pairSource() === "desktop";
+    const relayRadio = el<HTMLInputElement>("pair-source-relay");
+    const desktopRadio = el<HTMLInputElement>("pair-source-desktop");
+    if (relayRadio) relayRadio.checked = !desktop;
+    if (desktopRadio) desktopRadio.checked = desktop;
+    const relayHint = el<HTMLElement>("pair-hint-relay");
+    const desktopHint = el<HTMLElement>("pair-hint-desktop");
+    if (relayHint) relayHint.hidden = desktop;
+    if (desktopHint) desktopHint.hidden = !desktop;
+    const create = el<HTMLButtonElement>("pair-create-code");
+    if (create) create.hidden = desktop;
+    const advanced = el<HTMLDetailsElement>("pair-advanced");
+    if (advanced) advanced.hidden = !desktop;
+    const join = el<HTMLButtonElement>("pair-join-code");
+    if (join) join.textContent = desktop ? "Pair with desktop" : "Pair with code";
+    const saved = activeSwapService();
+    const keyNote = el<HTMLElement>("pair-relay-key-note");
+    if (keyNote) keyNote.hidden = desktop || Boolean(saved?.readKey || saved?.uploadKey);
+    setText("pair-relay-url", saved ? saved.baseUrl : `${defaultSwapService().baseUrl} (default)`);
+  };
+  const setPairSource = (source: PairSource): void => {
+    try {
+      localStorage.setItem(PAIR_SOURCE_KEY, source);
+    } catch {
+      /* private mode */
+    }
+    const created = el<HTMLElement>("pair-created-wrap");
+    if (created) created.hidden = true;
+    updatePairMode();
+  };
+  const fillServerUrl = (): void => {
+    const input = el<HTMLInputElement>("pair-server-url");
+    if (input && !input.value) input.value = loadStorageServer();
+  };
 
   // Live status line in the Sync… dialog.
   const updateLiveStatus = (): void => {
@@ -129,8 +225,8 @@ export function wireSyncUi(getSync: SyncGetter): void {
   open.addEventListener("click", () => {
     updateLiveStatus();
     showActiveProfile();
-    const input = el<HTMLInputElement>("pair-server-url");
-    if (input && !input.value) input.value = loadStorageServer();
+    updatePairMode();
+    fillServerUrl();
     dialog.showModal();
   });
   close?.addEventListener("click", () => dialog.close());
@@ -138,6 +234,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
   sync?.onState(() => updateLiveStatus());
   updateLiveStatus();
   showActiveProfile();
+  updatePairMode();
 
   const requireSync = (): SyncHandle | null => {
     const handle = getSync();
@@ -210,109 +307,92 @@ export function wireSyncUi(getSync: SyncGetter): void {
     setStatus("checking the answer…");
   });
 
-  // ── BobSwap REST (automatic) ─────────────────────────────────────────
-  const service = (): SwapService => {
-    const active = activeSwapService();
-    if (!active) throw new Error("configure a BobSwap service first (BobSwap… in the Sync dialog)");
-    return active;
+  // ── Code pairing: relay (BobSwap) or desktop/server ──────────────────
+  el<HTMLInputElement>("pair-source-relay")?.addEventListener("change", () => setPairSource("relay"));
+  el<HTMLInputElement>("pair-source-desktop")?.addEventListener("change", () => setPairSource("desktop"));
+
+  const pairRelay = async (handle: SyncHandle, code: string): Promise<void> => {
+    const swap = relayService();
+    setStatus(`joining via ${swap.baseUrl}…`);
+    const joined = await joinSwapChannel(swap, code);
+    const phrase = await handle.pairBobSwap({
+      baseUrl: swap.baseUrl,
+      readKey: swap.readKey ?? swap.uploadKey,
+      id: joined.id,
+      roleToken: joined.roleToken,
+      role: joined.role,
+      iceServers: joined.iceServers,
+    });
+    setVerify(phrase);
+    setStatus("connected — both devices must show the same phrase");
+    updateLiveStatus();
   };
 
-  el<HTMLButtonElement>("pair-swap-offer")?.addEventListener("click", () => {
+  const pairDesktop = async (handle: SyncHandle, code: string): Promise<void> => {
+    const profile = activeProfile();
+    const url = serverUrl();
+    showActiveProfile();
+    setStatus(`joining ${url}…`);
+    const connection = await pairWithServer({
+      url,
+      code,
+      profile,
+      localId: handle.engine.id,
+      onSas: (phrase) => setVerify(phrase),
+      onStatus: (text) => setStatus(text),
+    });
+    handle.attach(connection.peer);
+    await bindDesktopMirror(profile, connection.info.mirror);
+    setStatus(`paired · fingerprint ${connection.info.fingerprint} — reloading…`);
+    setTimeout(() => location.reload(), 800);
+  };
+
+  el<HTMLButtonElement>("pair-create-code")?.addEventListener("click", () => {
     const handle = requireSync();
     if (!handle) return;
     void (async () => {
       try {
-        const swap = service();
-        setStatus("creating a sync channel…");
+        const swap = relayService();
+        setStatus(`creating a code via ${swap.baseUrl}…`);
         const channel = await createSwapChannel(swap);
-        setText("pair-swap-channel", channel.id);
-        setText("pair-swap-code", channel.code);
-        setText("pair-swap-box", "");
-        setStatus("share the channel id + pairing code with the other device, then wait");
+        const created = el<HTMLElement>("pair-created-wrap");
+        if (created) created.hidden = false;
+        setText("pair-created-code", channel.code);
+        setStatus("share the 8-digit code with the other device, then wait");
         const phrase = await handle.pairBobSwap({
           baseUrl: swap.baseUrl,
-          readKey: swap.readKey,
+          readKey: swap.readKey ?? swap.uploadKey,
           id: channel.id,
           roleToken: channel.roleToken,
-          role: "offerer",
+          role: channel.role,
           iceServers: channel.iceServers,
         });
         setVerify(phrase);
         setStatus("connected — both devices must show the same phrase");
         updateLiveStatus();
       } catch (err) {
-        setStatus(`BobSwap pairing failed: ${err instanceof Error ? err.message : String(err)}`);
+        setStatus(`pairing failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     })();
   });
 
-  el<HTMLButtonElement>("pair-swap-join")?.addEventListener("click", () => {
+  el<HTMLButtonElement>("pair-join-code")?.addEventListener("click", () => {
     const handle = requireSync();
     if (!handle) return;
+    const code = pairCode();
+    if (!/^\d{4}-?\d{4}$/.test(code)) {
+      setStatus("enter the 8-digit pairing code");
+      return;
+    }
+    const source = pairSource();
+    setVerify("—");
     void (async () => {
       try {
-        const swap = service();
-        const id = (el<HTMLInputElement>("pair-swap-channel-input") as HTMLInputElement)?.value.trim();
-        const code = (el<HTMLInputElement>("pair-swap-code-input") as HTMLInputElement)?.value.trim();
-        if (!id || !code) {
-          setStatus("enter the channel id and pairing code");
-          return;
-        }
-        setStatus("joining the channel…");
-        const joined = await joinSwapChannel(swap, id, code);
-        const phrase = await handle.pairBobSwap({
-          baseUrl: swap.baseUrl,
-          readKey: swap.readKey,
-          id,
-          roleToken: joined.roleToken,
-          role: "answerer",
-          iceServers: joined.iceServers,
-        });
-        setVerify(phrase);
-        setStatus("connected — both devices must show the same phrase");
-        updateLiveStatus();
-      } catch (err) {
-        setStatus(`BobSwap pairing failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    })();
-  });
-
-  el<HTMLButtonElement>("pair-server-join")?.addEventListener("click", () => {
-    const handle = requireSync();
-    if (!handle) return;
-    void (async () => {
-      try {
-        const profile = activeProfile();
-        const url = serverUrl();
-        const channel = serverChannel();
-        const code = serverCode();
-        if (!channel || !/^\d{4}-?\d{4}$/.test(code)) {
-          setServerStatus("enter the channel id and the 8-digit code from npm run pair");
-          return;
-        }
-        showActiveProfile();
-        setServerStatus(`joining ${url}…`);
-        const connection = await pairWithServer({
-          url,
-          channelId: channel,
-          code,
-          profile,
-          localId: handle.engine.id,
-          onSas: (phrase) => setVerify(phrase),
-          onStatus: (text) => {
-            setServerStatus(text);
-            setStatus(text);
-          },
-        });
-        handle.attach(connection.peer);
-        await bindDesktopMirror(profile, connection.info.mirror);
-        setServerStatus(`paired · fingerprint ${connection.info.fingerprint}`);
-        setStatus("paired — reloading…");
-        setTimeout(() => location.reload(), 800);
+        if (source === "desktop") await pairDesktop(handle, code);
+        else await pairRelay(handle, code);
       } catch (err) {
         const text = err instanceof Error ? err.message : String(err);
-        setServerStatus(`pairing failed: ${text}`);
-        setStatus(`server pairing failed: ${text}`);
+        setStatus(`${source === "desktop" ? "desktop" : "relay"} pairing failed: ${text}`);
       }
     })();
   });
@@ -320,7 +400,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
   el<HTMLButtonElement>("pair-unpair")?.addEventListener("click", () => {
     getSync()?.unpair();
     setVerify("—");
-    setStatus("cross-device pairing closed (same-origin tabs keep syncing)");
+    setStatus("tab-to-tab pairing closed (same-origin tabs keep syncing)");
     updateLiveStatus();
   });
 }
