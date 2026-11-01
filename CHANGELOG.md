@@ -2,6 +2,16 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — a lost pairing session says so instead of a bare 404
+
+Pairing codes and channels live in the `npm run bob` process, so restarting the
+process invalidates an open code or a half-finished pairing. The desktop peer
+now keeps the channel alive briefly after sending a control error (profile
+mismatch, denial, rejected client key) so the tab can display it instead of
+racing the close, and a missing channel maps to "the pairing session is gone —
+rerun `npm run pair`" rather than `BobSwap signal poll: HTTP 404`. The README
+and pairing guide call out the restart rule.
+
 ## 2026-11-01 — old turns regain their visual components
 
 A `contacts.graph` turn persisted before the emit-component feature carried no

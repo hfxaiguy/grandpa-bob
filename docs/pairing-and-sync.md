@@ -193,7 +193,9 @@ channel flow used between two browsers:
    match `--profile` (default `default`), while `--mirror` / `--mirror-path`
    pick the folder independently — so one desktop can host a separate mirror
    per browser profile. (`--exec git,make,…` grants ops; `--list` /
-   `--revoke <profile>` manage paired profiles.)
+   `--revoke <profile>` manage paired profiles.) Codes and pairing sessions
+   live in the `npm run bob` process: restarting it invalidates any open code,
+   so run `npm run pair` again after a restart.
 2. In the tab, **Sync… → Pair… → Pair with a code**, select **My desktop /
    server**, and enter the code — no channel id. The dialog shows the active
    profile and, once the channel opens, the mirror + exec capabilities the
@@ -226,6 +228,7 @@ the opt-in `/stt` remain on the channel server.
 | "sync channels may not be deployed yet" | The BobSwap service lacks `/api/v1/sync/channels…`; use manual paste. |
 | "this relay has no single-code join" | The relay predates code-only pairing; update it, or switch the Pair dialog to **My desktop / server**. Manual paste still works. |
 | "invalid pairing code" | The code is wrong, already spent or older than 10 minutes. Create a new one on the other device. A 429 means the per-IP join rate limit; wait for `Retry-After`. |
+| `BobSwap signal poll: HTTP 404` / "the pairing session is gone" | The browser joined, then the bridge lost the channel — usually `npm run bob` was restarted or the pairing session was closed before approval. Rerun `npm run pair` and use the new code; the desktop console prints the first error (profile mismatch, denial, or session timeout). |
 | "pairing failed: NetworkError when attempting to fetch resource." / `cannot reach http://…` | The tab could not reach the mailbox. Open the app at `http://localhost:8080` or `http://127.0.0.1:8080` on the machine running `npm run bob`; in **My desktop / server** open **Advanced** and check the mailbox URL (`http://127.0.0.1:8795`), then check `/health` in that tab. A browser on another device cannot reach the loopback mailbox — pair browser↔browser instead. |
 | `origin https://… is not allowed` | The page origin is not on the bridge allowlist. Use the locally served app, or add the exact `https://` origin to `BOB_APP_ORIGINS` and restart `npm run bob`. The default allows loopback and `https://bobkat.hfxaiguy.com`. |
 | Local Network Access prompt / `Permission was denied … loopback address space` | Chrome/Edge blocks a public HTTPS page from reaching `127.0.0.1` until the site is allowed. Allow Local Network Access for the hosted origin in the browser's site settings, then restart `npm run bob` so the bridge sends `Access-Control-Allow-Private-Network: true` on CORS preflights. The app served at `http://localhost:8080` avoids the prompt. |

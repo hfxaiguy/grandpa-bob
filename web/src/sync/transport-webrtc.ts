@@ -224,7 +224,12 @@ export class BobSwapSignaling implements SignalingProvider {
       body: JSON.stringify(body),
     });
     const data = (await res.json().catch(() => ({}))) as { error?: string };
-    if (!res.ok) throw new Error(data.error ?? `BobSwap signal: HTTP ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 404) {
+        throw new Error("the pairing session is gone — the server may have restarted or the code expired");
+      }
+      throw new Error(data.error ?? `BobSwap signal: HTTP ${res.status}`);
+    }
     return data;
   }
 
@@ -233,7 +238,13 @@ export class BobSwapSignaling implements SignalingProvider {
       this.url(`/api/v1/sync/channels/${this.channel.id}/signal?after=${after}`),
       { headers: this.signalHeaders() },
     );
-    if (!res.ok) throw new Error(`BobSwap signal poll: HTTP ${res.status}`);
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (res.status === 404) {
+        throw new Error("the pairing session is gone — the server may have restarted or the code expired");
+      }
+      throw new Error(data.error ?? `BobSwap signal poll: HTTP ${res.status}`);
+    }
     const data = (await res.json()) as unknown;
     // Both response shapes are accepted: {messages, cursor} and a bare array
     // (the contract text says "Array of peer messages").
@@ -275,6 +286,12 @@ export class BobSwapSignaling implements SignalingProvider {
       let hit: { sdp: string } | null = null;
       for (const m of entries) {
         if (this.isOwn(m.from)) continue;
+        if (m.type === "error") {
+          const message = (m.payload as { message?: unknown }).message;
+          throw new Error(
+            typeof message === "string" && message ? message : "the peer closed the pairing session",
+          );
+        }
         if (m.type === kind && !hit) {
           const sdp = (m.payload as { sdp?: unknown }).sdp;
           if (typeof sdp !== "string" || sdp.length === 0) throw new Error(`peer sent an empty ${kind}`);

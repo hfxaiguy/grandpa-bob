@@ -333,7 +333,9 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    mailbox on `127.0.0.1:8795`. Run `npm run pair` on the desktop to print an
    8-digit one-time code and the approval prompt; the tab joins from
    Sync… → Pair… → **Pair with a code**, select **My desktop / server**, and
-   enter the code. Exec is opt-in via `--exec git,make,…`.
+   enter the code. Exec is opt-in via `--exec git,make,…`. Open codes live in
+   the `npm run bob` process, so restarting it means running `npm run pair`
+   again.
    Start the process with `BOB_STT=1` to expose the `/stt` pass-through for
    in-tab voice transcription.
 5. **Voice (optional)**: the browser records are transcribed by the bridge

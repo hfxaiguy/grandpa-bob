@@ -263,6 +263,15 @@ export class PeerSession {
     this.approval = null;
   }
 
+  /**
+   * Send the control/error frame, then give the browser's signal poll a
+   * moment to read it before the channel disappears. Closing synchronously
+   * races the error and surfaces as a bare `signal poll: HTTP 404` in the tab.
+   */
+  private closeSoon(delayMs = 1_500): void {
+    setTimeout(() => this.dispose(), delayMs).unref?.();
+  }
+
   async start(): Promise<void> {
     try {
       const answer = await answerChannel(this.mailbox, this.channel, this.iceServers);
@@ -303,7 +312,7 @@ export class PeerSession {
         if (!ok) {
           link.send(controlEnvelope(channelPeerId(this.profile), { op: "error", message: "pairing denied" }));
           this.emit("denied", {});
-          this.dispose();
+          this.closeSoon();
           return;
         }
         const clientKey = randomBytes(32).toString("hex");
@@ -344,8 +353,20 @@ export class PeerSession {
         this.emit("resume-requested", { profile: this.profile });
       }
     } catch (err) {
-      this.emit("error", { message: err instanceof Error ? err.message : String(err) });
-      this.dispose();
+      const message = err instanceof Error ? err.message : String(err);
+      this.emit("error", { message });
+      if (this.link) {
+        try {
+          this.link.send(controlEnvelope(channelPeerId(this.profile), { op: "error", message }));
+        } catch {
+          /* the datachannel is already going away */
+        }
+      } else {
+        // No control link yet: leave an error in the signal feed so the
+        // browser's offer/answer wait fails with this message, not a 404.
+        this.mailbox.append(this.channel, "answerer", "error", { message });
+      }
+      this.closeSoon(this.link ? 1_500 : 3_000);
     }
   }
 
@@ -367,7 +388,7 @@ export class PeerSession {
               `rerun \`npm run pair -- --profile ${got}\``,
           }),
         );
-        this.dispose();
+        this.closeSoon();
         return;
       }
       this.emit("joined", { profile: this.profile, sas: this.sas });
@@ -386,7 +407,7 @@ export class PeerSession {
       if (!sameSecret(proof, hmac(record.keyHash, this.pendingNonce))) {
         this.emit("error", { message: "client key rejected" });
         link.send(controlEnvelope(channelPeerId(this.profile), { op: "error", message: "client key rejected" }));
-        this.dispose();
+        this.closeSoon();
         return;
       }
       this.emit("sas", { sas: this.sas });

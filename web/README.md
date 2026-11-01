@@ -402,7 +402,9 @@ browsers** — a code, a DTLS verification phrase, then the same `SyncEngine`.
 - On the desktop/server, `npm run pair` creates a mailbox channel on the
   existing `:8795` and prints a single-use 8-digit code, the mirror folder and
   requested exec allowlist. `--exec git,make,…` grants ops; `--list` and
-  `--revoke <profile>` manage paired profiles.
+  `--revoke <profile>` manage paired profiles. The code and session live in
+  the bridge process: restarting `npm run bob` invalidates them, so run
+  `npm run pair` again after a restart.
 - In the tab: **Sync… → Pair… → Pair with a code**, select **My desktop /
   server**, and enter the code. Both sides show the same SAS; nothing syncs
   or executes before the operator approves on the console.

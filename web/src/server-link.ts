@@ -444,7 +444,14 @@ export async function pairWithServer(opts: {
       joined.ice_servers,
     );
   } catch (err) {
-    throw failedToFetch(err) ? unreachable(base, err) : err;
+    if (failedToFetch(err)) throw unreachable(base, err);
+    if (err instanceof Error && /HTTP 404|session is gone|unknown channel/i.test(err.message)) {
+      throw new Error(
+        "the desktop pairing session closed — `npm run bob` may have restarted; " +
+          "rerun `npm run pair` and use the new code",
+      );
+    }
+    throw err;
   }
   return new Promise<ServerConnection>((resolve, reject) => {
     negotiate(
