@@ -230,13 +230,24 @@ function ComponentBubble(props: { component: EmitComponent; app: string; text: s
   });
 
   const fallbackText = () => props.text || (error() ? "(component unavailable)" : "");
+  // The reason belongs on screen, not in a hover title: a component that fails
+  // to load or render degrades to its text, and the user debugs from there.
+  const errorNote = () => {
+    const one = error().replace(/\s+/g, " ").trim();
+    return one.length > 200 ? `${one.slice(0, 199)}…` : one;
+  };
 
   return (
     <Show
       when={!error()}
       fallback={
-        <span class="component-fallback" title={error()}>
+        <span class="component-fallback">
           {fallbackText()}
+          <Show when={error()}>
+            <span class="component-note" title={error()}>
+              view unavailable — {errorNote()}
+            </span>
+          </Show>
         </span>
       }
     >

@@ -22,6 +22,7 @@ import type { DerivedTurn, StoredSession, TurnMarker } from "../web-log-types";
 import type { MemoryWrite } from "../memory-track";
 import { sanitizeEvent, type SanitizedEvent } from "../sanitize";
 import { newTurnApps, seedPausedApp, tagEventApp } from "../app-attribution";
+import { emitValue, type EmitComponent } from "../util/emit-text";
 import { listAppTrees } from "../tree-sources";
 import { LOG_TABLES } from "grandma-kat";
 import type { KatEvent } from "./logger";
@@ -661,6 +662,13 @@ export async function getTurns(
         // The marker's emit tags were written under the old attribution rule;
         // the run log is authoritative when every stored bubble has one emit.
         if (!t.emits || replayed.emitApps.length === t.emits.length) t.emitApps = replayed.emitApps;
+        // Turns persisted before component bubbles existed carry no
+        // `components` field at all. The run log's raw emit rows do hold the
+        // emitted value (`{ text, component, props }`), so rehydrate the
+        // visual bubbles instead of degrading them to text forever.
+        if (t.components == null && t.emits?.length && replayed.components.length === t.emits.length) {
+          t.components = replayed.components;
+        }
       }
       out.push(t);
     }
@@ -675,7 +683,7 @@ async function turnEvents(
   toSeq: number,
   appNames: string[],
   pausedApp?: string | null,
-): Promise<{ events: SanitizedEvent[]; emitApps: string[] }> {
+): Promise<{ events: SanitizedEvent[]; emitApps: string[]; components: (EmitComponent | null)[] }> {
   const bounds = "run_id = ? AND seq > ? AND seq <= ?";
   const trees = (await (
     await db.prepare(
@@ -684,10 +692,12 @@ async function turnEvents(
   ).all(runId, fromSeq, toSeq)) as { seq: number; kind: string; content: string }[];
   const app = appLookup(trees.map((t) => ({ seq: t.seq, kind: t.kind, content: parseJson(t.content) })), appNames, pausedApp);
   // Emit tags come from the full range, not the capped tail: bubbles must line
-  // up with the marker's stored emits even in a very long turn.
+  // up with the marker's stored emits even in a very long turn. The raw value
+  // is read here too: turns from before component bubbles can recover their
+  // `{ component, props }` from it (see getTurns).
   const emits = (await (
-    await db.prepare(`SELECT seq FROM calls WHERE ${bounds} AND kind = 'emit' ORDER BY seq`)
-  ).all(runId, fromSeq, toSeq)) as { seq: number }[];
+    await db.prepare(`SELECT seq, content FROM calls WHERE ${bounds} AND kind = 'emit' ORDER BY seq`)
+  ).all(runId, fromSeq, toSeq)) as { seq: number; content: string | null }[];
   const tail = (await (
     await db.prepare(`SELECT * FROM calls WHERE ${bounds} ORDER BY seq DESC LIMIT ${MAX_TURN_EVENTS}`)
   ).all(runId, fromSeq, toSeq)) as {
@@ -711,7 +721,16 @@ async function turnEvents(
       app(r.seq),
     ),
   );
-  return { events, emitApps: emits.map((e) => app(e.seq)) };
+  const emitRows = emits.map((e) => {
+    const content = parseJson(e.content) as { value?: unknown } | null;
+    const { component } = emitValue(content?.value ?? "");
+    return { seq: e.seq, component: component ?? null };
+  });
+  return {
+    events,
+    emitApps: emitRows.map((e) => app(e.seq)),
+    components: emitRows.map((e) => e.component),
+  };
 }
 
 /** The workspace's runnable app-tree names — the tile boundaries. */

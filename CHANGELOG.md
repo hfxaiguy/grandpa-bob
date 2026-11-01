@@ -2,6 +2,26 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — old turns regain their visual components
+
+A `contacts.graph` turn persisted before the emit-component feature carried no
+`components` field in its `web_turn_end` marker, so replay rendered the graph's
+emit as its fallback text forever — the workspace, tree, engine and worker were
+all correct; the marker simply predated the field.
+
+- **Rehydrated from the run log.** `getTurns` already replays the run's emit
+  rows for app attribution; it now also parses their raw `value` (`emitValue`)
+  and fills `components` when the marker has no field, aligned with `emits`
+  exactly like `emitApps`. A marker that carries `components` is authoritative
+  and never overridden.
+- **Failures are visible.** A component that cannot be fetched or rendered now
+  shows its emitted text plus a dim `view unavailable — <reason>` line instead
+  of hiding the reason in a hover `title`; the full message stays in the
+  tooltip. Chat text and Telegram fallback are unchanged.
+- **Regression**: `npm run test:turn-components` writes an old-shaped marker
+  plus raw emit rows and asserts the rehydrated `ui.mjs` bubble and props, the
+  replayed tile attribution, and that a stored `components` field wins.
+
 ## 2026-11-01 — provenance survives the browser-only host
 
 The ⓘ on a bot bubble ("written from") had been a dead button since the Node

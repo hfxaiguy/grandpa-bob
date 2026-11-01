@@ -156,8 +156,14 @@ keys or sync. The guest reports its own height, and its messages come back
 over postMessage (`bob-component-size`, `bob-component-ready`,
 `bob-component-action`, `bob-component-error`). The emitted `text` is the
 fallback whenever the source cannot be loaded or rendered, and it is what
-Telegram shows — always include it. Components are single-file for now: the
-guest imports one data-URL module, so sibling imports do not resolve.
+Telegram shows — always include it. A failed view also shows a dim
+`view unavailable — <reason>` line under that text (the full message stays in
+the tooltip), so a missing module or a guest error is visible instead of
+silently degrading. Turns persisted before components existed have no
+`components` field in their marker; replay rehydrates it from the run log's
+raw emit rows, so their graphs still appear after a reload. Components are
+single-file for now: the guest imports one data-URL module, so sibling
+imports do not resolve.
 
 Tests: `npm run test:emit-value` (parsing/fallback) and
 `npm run test:emit-component` (the sandboxed guest document).
