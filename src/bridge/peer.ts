@@ -224,6 +224,15 @@ export class PeerSession {
   private sas = "";
   private closed = false;
   private busy = false;
+  private paired = false;
+  private helloResolve: (() => void) | null = null;
+  private helloPromise = new Promise<void>((resolve) => {
+    this.helloResolve = resolve;
+  });
+  private closedResolve: (() => void) | null = null;
+  private closedPromise = new Promise<void>((resolve) => {
+    this.closedResolve = resolve;
+  });
 
   constructor(
     private mailbox: Mailbox,
@@ -285,7 +294,12 @@ export class PeerSession {
         void this.onControl(control, link);
       });
       this.link = link;
-      link.onClosed(() => this.dispose());
+      link.onClosed(() => {
+        if (this.mode === "pairing" && !this.paired && !this.closed) {
+          this.emit("error", { message: "the browser disconnected before pairing finished" });
+        }
+        this.dispose();
+      });
       this.emit("connected", { sas: this.sas });
       const key = await serverKey();
       const proofKey = hmac(key, `pair:${this.profile}`);
@@ -302,6 +316,20 @@ export class PeerSession {
         }),
       );
       if (this.mode === "pairing") {
+        // The tab must identify its profile before anyone is asked to approve.
+        // Otherwise a quick `--yes` (or a fast operator) can approve while the
+        // hello is still in flight, minting a key for a profile mismatch.
+        await Promise.race([
+          this.helloPromise,
+          this.closedPromise,
+          new Promise<void>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("the browser did not send its profile")),
+              2 * 60_000,
+            ).unref?.(),
+          ),
+        ]);
+        if (this.closed) return;
         const approval = new Promise<boolean>((resolve) => {
           this.approval = resolve;
           setTimeout(() => resolve(false), 5 * 60_000).unref?.();
@@ -340,6 +368,7 @@ export class PeerSession {
             capabilities: { mirror: this.capabilities.mirror, exec: this.capabilities.exec },
           }),
         );
+        this.paired = true;
         this.emit("paired", { profile: this.profile, fingerprint: record.fingerprint });
       } else {
         const record = (await readPeers()).peers[this.profile];
@@ -380,19 +409,17 @@ export class PeerSession {
     if (op === "hello") {
       if (control.profile !== expectedProfile) {
         const got = String(control.profile ?? "");
-        link.send(
-          controlEnvelope(channelPeerId(this.profile), {
-            op: "error",
-            message:
-              `this code is for browser profile "${expectedProfile}", but this tab is "${got}" — ` +
-              `rerun \`npm run pair -- --profile ${got}\``,
-          }),
-        );
+        const message =
+          `this code is for browser profile "${expectedProfile}", but this tab is "${got}" — ` +
+          `rerun \`npm run pair -- --profile ${got}\``;
+        this.emit("error", { message });
+        link.send(controlEnvelope(channelPeerId(this.profile), { op: "error", message }));
         this.closeSoon();
         return;
       }
       this.emit("joined", { profile: this.profile, sas: this.sas });
       if (this.mode === "pairing") this.emit("sas", { sas: this.sas });
+      this.helloResolve?.();
       return;
     }
     if (op === "resume") {
@@ -542,6 +569,7 @@ export class PeerSession {
     if (this.closed) return;
     this.closed = true;
     this.done = true;
+    this.closedResolve?.();
     if (this.watchTimer) clearTimeout(this.watchTimer);
     this.watcher?.close();
     try {
@@ -652,8 +680,15 @@ export class PeerManager {
   }
 
   private unregister(session: PeerSession): void {
-    this.sessions.delete(session.id);
     this.codes.delete(session.id);
     if (this.liveByProfile.get(session.profile) === session) this.liveByProfile.delete(session.profile);
+    if (session.mode === "pairing") {
+      // Keep the finished session's events queryable for a minute. `npm run
+      // pair` polls every 700ms; deleting immediately races its next poll and
+      // turns the real error into "unknown pairing session".
+      setTimeout(() => this.sessions.delete(session.id), 60_000).unref?.();
+    } else {
+      this.sessions.delete(session.id);
+    }
   }
 }

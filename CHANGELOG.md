@@ -2,6 +2,18 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — approval waits for the tab's profile
+
+`npm run pair` no longer prompts for approval until the browser has sent its
+profile hello, so a quick `--yes` (or a fast operator) cannot approve while the
+hello is in flight and mint a client key for a profile mismatch. Finished
+pairing sessions stay queryable for 60 seconds, so the CLI prints the real
+`pairing failed: …` reason instead of racing its next poll and showing
+`unknown pairing session`. The tab also checks the profile in the desktop's
+`server` frame and shows the same switch-profile/rerun hint even if the control
+error is lost, and a link that closes before pairing reports that the browser
+disconnected.
+
 ## 2026-11-01 — a lost pairing session says so instead of a bare 404
 
 Pairing codes and channels live in the `npm run bob` process, so restarting the

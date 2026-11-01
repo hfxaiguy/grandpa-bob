@@ -343,6 +343,18 @@ function negotiate(
     const op = String(control.op ?? "");
     if (op === "server") {
       serverNonce = String(control.nonce ?? "");
+      const serverProfile = String(control.profile ?? "");
+      if (serverProfile && serverProfile !== opts.profile) {
+        settled = true;
+        clearTimeout(timer);
+        reject(
+          new Error(
+            `this desktop pairing is for browser profile "${serverProfile}", but this tab is "${opts.profile}" — ` +
+              `switch profiles, or rerun \`npm run pair -- --profile ${opts.profile}\``,
+          ),
+        );
+        return;
+      }
       const pairing = control.pairing === true;
       if (pairing) {
         const capabilities = (control.capabilities ?? {}) as { mirror?: string; exec?: string[] };
