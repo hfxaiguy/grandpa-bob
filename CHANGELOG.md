@@ -2,6 +2,28 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — story: the trunk's handoff context fills the app's `input`
+
+Handing a conversation to an app used to lose the thread: the trunk passed its
+`input` (the request plus whatever context the app cannot see), but an app whose
+root opened on `Human(main_input)` ignored it and showed an empty input box —
+the person had to repeat themselves. Two changes, one on each side of the
+boundary:
+
+- The trunk's system prompt now says what the app call's input carries: the
+  request in the user's own words **plus the context the app cannot see** —
+  what was said earlier and why the app is taking over — still without a
+  provenance/meta line.
+- The story app consumes it. A gated `Goto("main_input", input)` arms the
+  Human pause with the handed-over context, so the first turn runs on it and
+  the reply appears; only the next message waits for the person. Opening story
+  directly (no `input`) still pauses first, exactly as before. `Goto`'s
+  one-shot delivery is what keeps the conversation loop pausing on every later
+  turn.
+
+`app/story/test/tree.test.mjs` covers both paths (handoff runs first, direct
+open waits, the next human message runs another turn).
+
 ## 2026-11-01 — ui: tile headers stay pinned while the board scrolls
 
 A tile's header row (status, pin/wide/expand and ✕) now sticks to the top of
