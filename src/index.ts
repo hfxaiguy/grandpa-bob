@@ -106,8 +106,17 @@ const CHANNEL_HOST = process.env.BOB_CHANNEL_HOST?.trim() || HOST;
 /** One port for both channel APIs (telegram moved here; the bridge never moves). */
 const CHANNEL_PORT = Number(process.env.BOB_CHANNEL_PORT ?? process.env.STORAGE_PORT ?? "8795");
 const APP_PORT = Number(process.env.PORT ?? "8080");
-/** Browser origins allowed to call the channel API (comma-separated). */
-const ALLOWED_ORIGINS = (process.env.BOB_APP_ORIGINS ?? "http://localhost:8080,http://127.0.0.1:8080")
+/**
+ * Browser origins allowed to call the channel API (comma-separated).
+ *
+ * The hosted first-party UI is allowed to pair with a local desktop bridge;
+ * the bridge still requires the one-time code, SAS match and console approval
+ * before it mirrors files or runs anything. Set BOB_APP_ORIGINS to replace
+ * this list (e.g. for a self-hosted app on another domain).
+ */
+const DEFAULT_APP_ORIGINS =
+  "http://localhost:8080,http://127.0.0.1:8080,https://bobkat.hfxaiguy.com";
+const ALLOWED_ORIGINS = (process.env.BOB_APP_ORIGINS ?? DEFAULT_APP_ORIGINS)
   .split(",")
   .map((s) => s.trim().replace(/\/$/, ""))
   .filter(Boolean);

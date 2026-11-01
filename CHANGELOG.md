@@ -2,6 +2,14 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — hosted UI can pair with a local desktop bridge
+
+`https://bobkat.hfxaiguy.com` is now in the default channel-API allowlist, so
+the hosted app can join the local `:8795` mailbox without setting
+`BOB_APP_ORIGINS`. The bridge still requires the one-time code, a matching SAS
+and console approval before it mirrors files or runs anything;
+`BOB_APP_ORIGINS` still replaces the default list.
+
 ## 2026-11-01 — pairing is code-only; channel ids stay internal
 
 BobSwap's sync channels now join by a single 8-digit code, so the Pair dialog

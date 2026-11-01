@@ -107,6 +107,10 @@ Nested `app/` folders belong to sub-apps, so each sub-app keeps its own
 `contacts.graph` is `app/contacts/app/graph/ui.mjs`. Files must already exist
 and must end in `.mjs` — the same confined-write rule as any child module.
 
+Tool access follows the same nesting: the trunk sees only top-level app trees,
+and an app tree automatically gets the app trees directly below it as tools.
+`contacts.graph` is a tool of `contacts`, never of the trunk.
+
 The emit attaches the component and still carries the fallback text. The
 portable shape works anywhere a tree runs (including plain `node --test`):
 
@@ -398,8 +402,12 @@ browsers** — a code, a DTLS verification phrase, then the same `SyncEngine`.
   BOB_ICE_SERVERS='[{"urls":"stun:stun.example.com:3478"}]'
   npm run bob
   ```
-  The admin API stays loopback-only; the mailbox/Telegram/STT share the port,
-  so an operator exposing it must front it with HTTPS and a firewall.
+  The default `BOB_APP_ORIGINS` is
+  `http://localhost:8080,http://127.0.0.1:8080,https://bobkat.hfxaiguy.com`;
+  setting the variable replaces that list. The peer mailbox also accepts any
+  loopback hostname/port. The admin API stays loopback-only; the
+  mailbox/Telegram/STT share the port, so an operator exposing it must front it
+  with HTTPS and a firewall.
 - `/fs`, `/git`, `/sql` and `/roots` are **not mounted** by the product
   process. The standalone `storage-server.mjs` CLI keeps them for tests/debug;
   `/health` and the opt-in `/stt` remain on the channel server.
