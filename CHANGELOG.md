@@ -2,6 +2,188 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — story: the forest is the product; a trunk call is an ask
+
+Story now has two entrances. A trunk/app call carrying `input` takes
+`story_ask`: the input becomes the person’s message, one turn runs, and the
+reply returns as the tool result with no `Human()` pause. Opening Story directly
+takes the chat path and still pauses at `main_input` for the next message.
+
+- **Cross-links and actions.** `parent:` remains hierarchy. `link: other — why`
+  records a many-to-many relationship, and plan steps are actions with a
+  length, time, done test, direction-level why, story and parent. A shared
+  action is written once, with links, not duplicated. `story_graph` draws the
+  parent tree and cross-links; `story_actions` returns the flat why/when/done
+  ledger across the forest.
+- **Review reads the files.** `story_read` accepts `tail:"all"` and
+  `story_review` reads each full story log, so it no longer treats a detail as
+  missing because it fell outside five entries.
+- **The turn has room.** The story turn budget is 9 rounds; the forest is
+  preloaded into the prompt so `story_read` is not the first move; repeated
+  forest/story reads are cached briefly and invalidated by the app’s writes.
+- Regression: `node --test app/story/test/tree.test.mjs` (11 pass) and
+  `node --test patterns/trunk.test.mjs` (13 pass). Seed re-packed.
+
+## 2026-11-01 — story: parents are fields; `epic` becomes `story`
+
+The story app had been using `epic(...)` as if it were a container. It is an
+action: `epic(name)` / now `story(name)` holds one snake_case name, and `·` is
+“then”, not “contains”. So a parent cannot live inside the action; it is a
+field on the story file.
+
+- **Rename.** The KAT action label is now `story(name)` in the shared notation,
+  prompts, examples, the write schema and the test fixtures. Legacy `epic` is
+  accepted on read and normalized to `story` on the next write.
+- **`parent:`.** A story file may carry `parent: visibility_in_the_world`
+  between its title and its `kat` fence. `story_read` returns it,
+  `story_record` and `story_direct` can set it (and preserve the existing one
+  when omitted), and `story_write` stores it atomically with the rest of the
+  file.
+- **Legacy shapes are lifted.** An old wrapper such as
+  `epic(visibility_in_the_world · need(...) · (frame + gather)*) · epic(present)`
+  is read as `parent: visibility_in_the_world` plus the flat term
+  `need(...) · (frame + gather)* · story(present)`. A leading action such as
+  `story(self_care) · activity(clean_home)` becomes `parent: self_care` plus
+  `activity(clean_home)`. A new nested wrapper is rejected by the record and
+  direct checks, so the model cannot reintroduce it.
+- **`story_graph`.** The forest is drawable as an ASCII tree from parent links.
+  A parent that has no story file of its own renders as a `(parent)` node; this
+  is how an epic can hold stories before it has its own page.
+
+Checks: `node --test app/story/test/tree.test.mjs` (8 pass) and the seed
+re-packed with `npm run make-seed`.
+
+## 2026-11-01 — story: a direction carries a timeboxed first move
+
+The story app now thinks in a method, not only in headers. Its root prompt
+states the loop — NAME, BREAK, WHEN, RECORD, DONE, TEST — and the three rules
+that keep it from becoming another list: one step in flight per story, a step
+with no time is a wish, and done is defined before starting.
+
+- `story_direct` now returns a plan with every direction: one to five steps
+  that fit one sitting (aim for 20–30 minutes; 45 is the ceiling), each with a
+  length, a day/time and a one-sentence done test. The step at `next` is the
+  only one in flight; an empty day is written as `needs a day` and asked for,
+  never invented. The plan is written as one readable log entry beside the
+  plain-English `why`.
+- `story_schedule` records the day, time and length when the person supplies
+  them, without rewriting the story's header. The plan entry stays the record.
+- The unit is explicit. A repeated plan is written and shown as its unit
+  ("one 20-minute zone block"), not as a vague whole ("clean the house").
+  When one step serves two stories, the plan carries an `overlaps` entry: one
+  action with two reasons is a good sign, not a filing error.
+- A story that does not exist yet is named and offered; its details are not
+  invented. `story_record` keeps a reported outcome and whether it met the
+  step's done test, including the parts that did not happen. `story_review`
+  now returns each story's term and names the step in flight and what is
+  missing.
+- The root reply leads with the first move in plain English, then the rest of
+  the plan, and puts the KAT header last. It asks only the questions needed to
+  put a time on the next move, each with a recommendation or a constraint.
+
+Checks: `node --test app/story/test/tree.test.mjs` (8 pass) and
+`node --test patterns/trunk.test.mjs` (13 pass), plus the seed re-packed with
+`npm run make-seed`.
+
+## 2026-11-01 — pairing failures name the URL; mirror/profile selection is explicit
+
+Firefox reports a refused connection and a CORS rejection with the same bare
+`NetworkError when attempting to fetch resource.`. The Desktop / server join
+now uses the normalized saved bridge URL (`loadStorageServer()`), fills the
+Server URL field with the effective value, names the active browser profile and
+the mirror/exec capabilities it is waiting to approve, and turns a failed fetch
+into `cannot reach <url> — is npm run bob running…`.
+
+- A mailbox request from a non-loopback origin now gets a readable
+  `origin … is not allowed` 403 (preflights are answered) and a console warning
+  instead of an opaque NetworkError. The mailbox still refuses the data; only
+  the rejection is readable.
+- `npm run pair` prints the browser profile and absolute mirror path, warns
+  when the tab profile must change, and `--list` shows `mirror → folder` per
+  paired profile.
+- A profile mismatch now says `this code is for browser profile "<x>", but this
+  tab is "<y>"` and prints the `--profile` rerun command; expired/used codes
+  point back to `npm run pair`.
+
+## 2026-11-01 — story: directions apply immediately; the approval pause is gone
+
+`story_direct` no longer pauses at `Human("confirm")`. Once it has read the
+forest, evaluated the tests and chosen a story's next growth, it writes the new
+header and its plain-English reason to the story log in the same turn, then
+returns. The next turn can redirect it; the log records what changed and why.
+
+- Removed the `confirm` human slot, the yes/no branches and the
+  "Approve? Reply yes or no" prompt. `story_direct` now returns
+  `{ directed: true, story, proposal, why }`.
+- The root prompt, the tool description and the README no longer describe a
+  human gate; the direct tool says it applies the growth immediately.
+- Regression: `a direct applies immediately, and a later direct is fresh`
+  asserts there is no confirm pause, the header is rewritten, the previous
+  direction stays in the log, and no approval prompt appears. Story tests
+  (6 pass) and trunk tests (13 pass) are green; seed re-packed.
+
+## 2026-11-01 — story: scratch memory is per call; the frame is kept, not re-asked
+
+Story's `story_record` and `story_direct` registers are tree tools, and a tree
+tool keeps its memory slots for the session. That included `classified`,
+`state` and `choice` — scratch values derived from one call's prompt. On the
+next call the framework hydrated them and skipped their `Memory()`
+initializers, so a new record was written with the previous classification and
+a new direction showed the first proposal again.
+
+That is the reported frame bug: the person had already given the
+presentation's frame, and `story_record` classified it, but the header step
+and `story_write` used the previous call's entry. The story kept the word
+`frame` in its header and none of its content, and a later turn asked for the
+frame again.
+
+- `classified`, `state` and `choice` now use
+  `Memory(keep(() => false), …)`, so every `story_record` / `story_direct`
+  call re-derives them from its own prompt.
+- Story's root prompt now says the conversation is the record: anything
+  already said there is given and must not be re-requested. The classify
+  prompt keeps a step's content — for example a frame's audience, format and
+  setting — in the log instead of reducing it to the step's name; only a
+  genuinely missing detail is asked for.
+- Regression: `node --test app/story/test/tree.test.mjs` (6 pass — two record
+  calls in one session keep their own words, and the scratch slots reset) and
+  `node --test patterns/trunk.test.mjs` (13 pass). Seed re-packed.
+
+## 2026-11-01 — story: the trunk becomes a callable; the standalone `Goto` hop is gone
+
+The story app used a standalone `Goto("main_input", …)` to deliver the trunk's
+handoff as its first turn. Story now **registers the trunk as a callable** and
+uses it instead, whenever a turn needs something outside the story surface — a
+fact, a file, a person, or an action the story tools cannot take.
+
+- `patterns/trunk.prod.mjs` exports the assistant's tool list once
+  (`assistantTools`) and an **askable turn** (`trunk_ask`): `input` seeds a
+  fresh thread (`keep(() => false)`), the ordinary turn loop runs with every
+  app and host tool plus the cheap gate, and the final reply is the tool
+  result. No `Human()` sits inside it, so an ask answers and returns instead
+  of taking the chat.
+- A caller may declare `avoid: ["<app>"]` beside its ask. The trunk's gate
+  refuses any round proposing a declared app **deterministically** — before
+  the cheap verdict and the recheck, nothing runs — and folds the refusal like
+  a normal gate rejection so the model answers in text. A chat turn has no
+  `avoid` in scope, so its gate and the three-strike escalation are unchanged.
+- `patterns/trunk_ask.prod.mjs` is a by-name shim (it re-exports the same def)
+  so an app picked as the chat pattern itself can resolve `From("trunk_ask")`
+  from disk even when the trunk's module never loaded in-process.
+- Story's root now owns a real `conversation` collection slot: a caller's
+  `input` seeds it once as `{ role: "context" }`, the person's messages and
+  the replies append, and the turn prompt reads the thread. The handoff is
+  preserved without the jump, and continuity is explicit in the prompt.
+- Story offers `trunk` in `Tools()`; its prompt says when to ask and that
+  story work stays story's. The wrapper declares `avoid: ["story"]` in code,
+  so the story model cannot forget it and the trunk cannot re-enter story mid
+  ask.
+
+Checks: `node --test patterns/trunk.test.mjs` (13 pass, including the ask
+round-trip, the deterministic refusal, and story→trunk integration) and
+`node --test app/story/test/tree.test.mjs` (3 pass), plus the seed re-packed
+with `npm run make-seed`.
+
 ## 2026-11-01 — ui: the running build's version + build time in the toolbar
 
 The chat toolbar's right corner now carries a muted `v0.1.0 · YYYY-MM-DD HH:mm`
