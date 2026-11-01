@@ -74,6 +74,14 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 .conn.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .session-label { color: var(--muted); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .toolbar button.active { border-color: var(--accent); color: var(--accent); background: #17243f; }
+/* Which build is loaded, parked at the toolbar's right edge. */
+.build-stamp {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: none;
+}
 
 .body { display: flex; flex: 1; min-height: 0; }
 /* A column so the trunk dock can take the bottom of the board: the grid sits at

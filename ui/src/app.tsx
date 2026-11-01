@@ -2,6 +2,7 @@
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import logo from "./assets/logo.webp";
 import logoMark from "./assets/logo-mark.webp";
+import { buildInfo } from "./build-info";
 import { EventModal, GlobalStream, HiddenRail, RailCard, RefModal, SessionPanel, Tiles, WorkspaceUpload } from "./components";
 import { init, orderedApps, state, stop, toggleHidden, toggleSub, toggleMachine, toggleStream, dismissError, retryLast } from "./store";
 
@@ -96,6 +97,9 @@ export function App() {
         <a class="link-btn" href="/settings">
           settings
         </a>
+        <span class="build-stamp" title={buildInfo.title}>
+          {buildInfo.label}
+        </span>
       </header>
 
       <Show when={state.lastError}>

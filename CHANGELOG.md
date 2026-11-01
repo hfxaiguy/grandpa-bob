@@ -2,6 +2,15 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — ui: the running build's version + build time in the toolbar
+
+The chat toolbar's right corner now carries a muted `v0.1.0 · YYYY-MM-DD HH:mm`
+stamp, with the full local time and UTC ISO build timestamp in its tooltip.
+Vite bakes both values in at bundle time (`__APP_VERSION__` from the root
+package.json and `__BUILD_TIME__`), in the standalone `ui/` build and the
+browser target's `web/` build alike, so a tab can say exactly which build it
+is running after an update or a reload.
+
 ## 2026-11-01 — story: the trunk's handoff context fills the app's `input`
 
 Handing a conversation to an app used to lose the thread: the trunk passed its
