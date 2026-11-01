@@ -33,6 +33,7 @@ assert.ok(doc.includes('"--bob-fg":"#dbe4f5"'), "theme is embedded");
 assert.ok(doc.includes("bob-component-size"), "the guest reports its height");
 assert.ok(doc.includes("bob-component-action"), "the guest can send a reply");
 assert.ok(doc.includes("bob-component-error"), "render failures surface to the host");
+assert.ok(doc.includes("bob-component-escape"), "Escape inside the guest reaches the host");
 
 // ── 3. props can never close the script element (XSS escape hatch) ──
 assert.ok(!doc.includes("</script><script>alert(1)</script>"), "props JSON escapes <");
@@ -42,5 +43,11 @@ assert.ok(!doc.includes("allow-same-origin"), "the document itself never grants 
 // ── 4. a missing/undefined props value is still valid JSON ──
 const bare = componentDoc("export default () => {};", undefined);
 assert.ok(bare.includes("const INITIAL_PROPS = null;"), "undefined props normalize to null");
+
+// ── 5. fill mode stretches the guest to the iframe, not its content ──
+const filled = componentDoc(source, { name: "Keith" }, {}, { fill: true });
+assert.ok(filled.includes("html, body, #root { height: 100%; }"), "fill mode gives the guest a full-height box");
+assert.ok(filled.includes("body { overflow: auto; }"), "fill mode scrolls content taller than the box");
+assert.ok(!doc.includes("html, body, #root { height: 100%; }"), "inline mode keeps content height");
 
 console.log("emit-component-test: sandboxed component document OK");

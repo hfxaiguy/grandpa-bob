@@ -2,6 +2,26 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — emitted views blow up to full screen
+
+Every visual component bubble — the contacts graph included — now has a `⤢`
+control in its top-right corner. It opens the same sandboxed guest in a
+near-fullscreen modal (96vw × 96vh), with the owning app and module path in its
+header; Escape or the backdrop closes it.
+
+- **Fill mode.** The full-screen guest document gets `height: 100%` on `html`,
+  `body` and `#root` (`componentDoc(..., { fill: true })`), so a component can
+  lay itself out to the frame instead of reporting its content height; overflow
+  scrolls if the content is taller. The inline bubble keeps the existing
+  content-height contract.
+- **The inline view is untouched.** The modal mounts a second sandboxed iframe
+  instead of reparenting the first (a DOM move would reload it), so the chat
+  keeps its component state and both copies use the same `postMessage`
+  action/error path.
+- **Regression**: `npm run test:emit-component` asserts fill mode's height and
+  overflow rules, the Escape relay, and that inline mode does not gain the
+  full-height rules.
+
 ## 2026-11-01 — pairing has a debug trace
 
 `npm run pair -- --debug` (or `BOB_PAIR_DEBUG=1`) now prints each admin

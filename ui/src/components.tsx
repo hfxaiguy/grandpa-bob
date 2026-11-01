@@ -165,7 +165,18 @@ function hostComponentTheme(): ComponentTheme {
   };
 }
 
-function ComponentBubble(props: { component: EmitComponent; app: string; text: string }) {
+/** One sandboxed mount of a workspace UI module. `fill` is the full-screen
+ *  variant: the guest stretches to the frame instead of reporting its own
+ *  content height. `onExpand` adds the corner control that opens that variant;
+ *  the full-screen copy leaves it off. */
+function ComponentView(props: {
+  component: EmitComponent;
+  app: string;
+  text: string;
+  fill?: boolean;
+  onExpand?: () => void;
+  onEscape?: () => void;
+}) {
   const [source, setSource] = createSignal<string | null>(null);
   const [error, setError] = createSignal("");
   const [ready, setReady] = createSignal(false);
@@ -218,6 +229,8 @@ function ComponentBubble(props: { component: EmitComponent; app: string; text: s
         void send(d.value);
       } else if (d.type === "bob-component-error") {
         setError(String(d.message || "component failed"));
+      } else if (d.type === "bob-component-escape") {
+        props.onEscape?.();
       }
     };
     window.addEventListener("message", onMessage);
@@ -226,7 +239,9 @@ function ComponentBubble(props: { component: EmitComponent; app: string; text: s
 
   const doc = createMemo(() => {
     const src = source();
-    return src == null ? null : componentDoc(src, props.component.props, hostComponentTheme());
+    return src == null
+      ? null
+      : componentDoc(src, props.component.props, hostComponentTheme(), { fill: !!props.fill });
   });
 
   const fallbackText = () => props.text || (error() ? "(component unavailable)" : "");
@@ -253,7 +268,11 @@ function ComponentBubble(props: { component: EmitComponent; app: string; text: s
     >
       <Show when={doc()} fallback={<span class="component-loading">loading view…</span>}>
         {(html) => (
-          <span class="emit-component" classList={{ ready: ready() }} data-src={props.component.src}>
+          <span
+            class="emit-component"
+            classList={{ ready: ready(), fill: !!props.fill }}
+            data-src={props.component.src}
+          >
             <iframe
               ref={(el) => (frame = el)}
               // No allow-same-origin: the guest is opaque and cannot touch the
@@ -261,12 +280,84 @@ function ComponentBubble(props: { component: EmitComponent; app: string; text: s
               sandbox="allow-scripts"
               srcdoc={html()}
               title={props.text || `component ${props.component.src}`}
-              style={{ height: `${height()}px` }}
+              style={props.fill ? undefined : { height: `${height()}px` }}
             />
+            <Show when={props.onExpand}>
+              <button
+                type="button"
+                class="component-expand"
+                title="expand this view to full screen"
+                aria-label="expand this view to full screen"
+                onClick={() => props.onExpand?.()}
+              >
+                ⤢
+              </button>
+            </Show>
           </span>
         )}
       </Show>
     </Show>
+  );
+}
+
+/** An emit's visual component in the chat, with a control that opens the same
+ *  guest in a near-fullscreen modal. The modal mounts its own sandboxed copy
+ *  rather than reparenting the inline iframe (a DOM move would reload it). */
+function ComponentBubble(props: { component: EmitComponent; app: string; text: string }) {
+  const [fullscreen, setFullscreen] = createSignal(false);
+  const label = () => `${props.app} · ${props.component.src}`;
+
+  createEffect(() => {
+    if (!fullscreen()) return;
+    const onKey = (ev: KeyboardEvent): void => {
+      if (ev.key === "Escape") setFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    onCleanup(() => window.removeEventListener("keydown", onKey));
+  });
+
+  return (
+    <>
+      <ComponentView
+        component={props.component}
+        app={props.app}
+        text={props.text}
+        onExpand={() => setFullscreen(true)}
+      />
+      <Show when={fullscreen()}>
+        <Portal>
+          <div
+            class="mem-modal component-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${props.app} view`}
+            onClick={(ev) => ev.target === ev.currentTarget && setFullscreen(false)}
+          >
+            <div class="mem-modal-card component-modal-card">
+              <div class="mem-modal-head">
+                <span class="desc-modal-kind">view</span>
+                <span class="mem-modal-path" title={label()}>
+                  {label()}
+                </span>
+                <span class="spacer" />
+                <button type="button" title="close (Esc)" onClick={() => setFullscreen(false)}>
+                  ✕
+                </button>
+              </div>
+              <div class="component-modal-body">
+                <ComponentView
+                  component={props.component}
+                  app={props.app}
+                  text={props.text}
+                  fill
+                  onEscape={() => setFullscreen(false)}
+                />
+              </div>
+            </div>
+          </div>
+        </Portal>
+      </Show>
+    </>
   );
 }
 

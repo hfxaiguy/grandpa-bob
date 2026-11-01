@@ -12,6 +12,7 @@
 //                 { type: "bob-component-ready" }
 //                 { type: "bob-component-action", value }   // feed as a reply
 //                 { type: "bob-component-error", message }
+//                 { type: "bob-component-escape" }          // close full screen
 //   host → guest  { type: "bob-component-props", props }     // re-render
 //
 // The contract is vanilla by necessity (the guest is opaque-origin and cannot
@@ -19,11 +20,21 @@
 //
 //   render(root: HTMLElement, props: unknown, api: { action(v): void }): void
 //
+// `componentDoc(..., { fill: true })` is the chat's full-screen variant: the
+// guest document and #root get height:100%, so a component can lay itself out
+// to the frame instead of reporting a content height.
+//
 // v1 components are single-file: the guest imports the module once from a data
 // URL, so sibling imports would not resolve. Inline helpers instead.
 
 /** The host→guest theme keys the guest sets on its `:root`. */
 export type ComponentTheme = Record<string, string>;
+
+/** Extra document modes. `fill` stretches the document to the iframe box (the
+ *  full-screen view) instead of letting the content define its own height. */
+export interface ComponentDocOptions {
+  fill?: boolean;
+}
 
 /** UTF-8 → base64 without blowing the argument stack on large sources. */
 export function base64Utf8(text: string): string {
@@ -46,8 +57,14 @@ function scriptJson(value: unknown): string {
  * Build the guest HTML document for one component. Pure: the caller passes the
  * theme it wants the guest to inherit, so this is testable in Node.
  */
-export function componentDoc(source: string, props: unknown, theme: ComponentTheme = {}): string {
+export function componentDoc(
+  source: string,
+  props: unknown,
+  theme: ComponentTheme = {},
+  options: ComponentDocOptions = {},
+): string {
   const sourceUrl = `data:text/javascript;base64,${base64Utf8(source)}`;
+  const fill = options.fill === true;
   return `<!doctype html>
 <html>
 <head>
@@ -62,6 +79,7 @@ export function componentDoc(source: string, props: unknown, theme: ComponentThe
   }
   *, *::before, *::after { box-sizing: border-box; }
   #root { display: block; }
+  ${fill ? "html, body, #root { height: 100%; }\n  body { overflow: auto; }" : ""}
 </style>
 </head>
 <body>
@@ -126,6 +144,12 @@ window.addEventListener("message", (ev) => {
   if (!data || data.type !== "bob-component-props") return;
   props = data.props;
   void draw();
+});
+
+// Key events inside the opaque iframe cannot bubble to the host, so relay the
+// one the full-screen view reserves: Escape closes it.
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") parent.postMessage({ type: "bob-component-escape" }, "*");
 });
 
 if (typeof ResizeObserver === "function") {

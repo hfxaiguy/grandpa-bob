@@ -154,7 +154,11 @@ iframe with `sandbox="allow-scripts"` — **no** `allow-same-origin` — so
 workspace code is an opaque origin and can never touch the host tab, OPFS,
 keys or sync. The guest reports its own height, and its messages come back
 over postMessage (`bob-component-size`, `bob-component-ready`,
-`bob-component-action`, `bob-component-error`). The emitted `text` is the
+`bob-component-action`, `bob-component-error`, `bob-component-escape`). Each
+component bubble also has a `⤢` control: it opens the same guest in a
+near-fullscreen modal, mounted with fill mode so the component can use the
+whole frame. The full-screen copy is a second sandboxed iframe (the inline one
+is not moved), and Escape or the backdrop closes it. The emitted `text` is the
 fallback whenever the source cannot be loaded or rendered, and it is what
 Telegram shows — always include it. A failed view also shows a dim
 `view unavailable — <reason>` line under that text (the full message stays in

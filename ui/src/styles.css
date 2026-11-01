@@ -489,8 +489,31 @@ body.dragging-tile { user-select: none !important; }
 /* A component bubble is a frame, not a text run: the guest draws its own
    card with the theme vars the host hands it. */
 .bubble.has-component { width: 100%; max-width: 100%; padding: 6px; white-space: normal; }
-.emit-component { display: block; width: 100%; }
+.emit-component { position: relative; display: block; width: 100%; }
 .emit-component iframe { display: block; width: 100%; border: 0; background: transparent; overflow: hidden; }
+/* Expand sits inside the guest frame; a bubble with the provenance ⓘ insets
+   its component by 30px, so this corner stays clear of that button. */
+.component-expand {
+  position: absolute;
+  z-index: 1;
+  top: 3px;
+  right: 5px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: 0.55;
+  cursor: pointer;
+}
+.component-expand:hover, .component-expand:focus-visible { opacity: 1; color: var(--accent); background: rgba(11, 18, 36, 0.6); }
+.component-expand:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+/* Full-screen variant: the shell is the modal body's flex child, and the guest
+   fills whatever height the card gives it. */
+.emit-component.fill { display: flex; flex: 1; min-height: 0; }
+.emit-component.fill iframe { height: 100%; }
 .component-loading, .component-fallback { display: block; color: #94a3b8; font-size: 12px; }
 .component-fallback { white-space: pre-wrap; }
 .component-note { display: block; margin-top: 4px; color: var(--err); font-size: 11px; line-height: 1.45; opacity: .85; }
@@ -601,6 +624,12 @@ body.dragging-tile { user-select: none !important; }
    higher so a clicked handle always comes to the front. */
 .ref-modal { z-index: 65; }
 .mem-modal-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; width: min(720px, 92vw); max-height: 88vh; display: flex; flex-direction: column; }
+/* Emit-component full-screen view: nearly the whole window, with the guest's
+   own card taking the body. */
+.mem-modal.component-modal { padding: 2vh 2vw; }
+.mem-modal-card.component-modal-card { width: 96vw; max-width: none; height: 96vh; max-height: none; overflow: hidden; }
+.component-modal-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--card); }
+.component-modal-body .component-loading, .component-modal-body .component-fallback { padding: 12px; }
 .mem-modal-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .mem-modal-path { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mem-modal-body { margin: 0; padding: 12px; overflow: auto; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
