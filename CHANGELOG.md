@@ -2,6 +2,18 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — ui: tile headers stay pinned while the board scrolls
+
+A tile's header row (status, pin/wide/expand and ✕) now sticks to the top of
+the board: when a tall tile — typically one expanded with `⤢` — scrolls past
+the top of the `.tiles` viewport, its menu stays in view under the toolbar, so
+the tile can be closed without scrolling back up. The header sits flush by
+cancelling the board's padding offset. `.tile` now clips with `overflow: clip`
+instead of `hidden`, which keeps the rounded-corner clipping but stops the tile
+from being a scroll container (a sticky child inside `overflow: hidden` would
+stick to the tile's own never-scrolling box). The trunk dock already pins to
+the bottom of the board.
+
 ## 2026-11-01 — one pairing model: every endpoint is a peer
 
 The desktop mirror's private poll engine is gone. A desktop/server is now just

@@ -77,8 +77,11 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 
 .body { display: flex; flex: 1; min-height: 0; }
 /* A column so the trunk dock can take the bottom of the board: the grid sits at
-   the top, the trunk's auto margin eats the leftover height. */
-.tiles { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+   the top, the trunk's auto margin eats the leftover height. `--board-pad` is
+   also the negative sticky offset the tile headers use below, so they pin
+   flush with the top edge of the board instead of leaving the padding band
+   above them showing a sliver of scrolling content. */
+.tiles { --board-pad: 12px; flex: 1; overflow: auto; padding: var(--board-pad); display: flex; flex-direction: column; gap: 12px; }
 
 /* ── the board: a true square grid ───────────────────────────────────────
    Every app tile is a square cell, so the rows line up exactly however much
@@ -223,7 +226,11 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
+  /* `clip` (not `hidden`) so the tile is not a scroll container: a sticky
+     header inside it must resolve against the board (.tiles), not against the
+     tile's own never-scrolling box. `hidden` stays as the fallback. */
   overflow: hidden;
+  overflow: clip;
   min-height: 260px;
   max-height: 70vh;
   /* Lets the header respond to the tile's own width (the stream and the wide
@@ -364,6 +371,17 @@ body.dragging-tile { user-select: none !important; }
   padding: 8px 10px;
   background: var(--card);
   border-bottom: 1px solid var(--border);
+  /* The tile's menu must follow the board scroll: a tall (expanded) tile can
+     scroll past the top of the .tiles viewport, and its ✕ has to stay within
+     reach wherever the board is scrolled. Sticky resolves against .tiles
+     because .tile clips with `overflow: clip`, not `hidden`. The background is
+     opaque so chat slides beneath it; z-index keeps it over the tile content. */
+  position: sticky;
+  /* Negative to cancel the board's padding: sticky offsets resolve against the
+     content box, so `top: 0` would leave the padding band above the header
+     showing content scrolling out. */
+  top: calc(-1 * var(--board-pad));
+  z-index: 2;
   /* Only pinned tiles can be dragged (see the Tile component): their header is
      the drag handle, so keep its text non-selectable. Unpinned tiles follow
      activity and keep the default cursor. */
