@@ -22,6 +22,7 @@ import { pairingPhrase } from "../../web/src/sync/sas.js";
 import { createNodePlatform } from "../platform/node.js";
 import { ShellTools } from "../tools/shell.js";
 import { Mailbox, type MailboxChannel, type SignalEntry } from "./mailbox.js";
+import { expandLocalCandidate, expandLocalSdp, localMdnsHosts } from "./mdns.js";
 import {
   defaultMirrorDir,
   peerJournalDir,
@@ -91,6 +92,7 @@ function answerChannel(
     let phrase = "";
     let settled = false;
     const pending: unknown[] = [];
+    const mdnsHosts = localMdnsHosts();
     const timer = setTimeout(() => fail(new Error("timed out waiting for the browser's offer")), 600_000);
 
     const fail = (err: Error): void => {
@@ -171,15 +173,17 @@ function answerChannel(
         const list = (entry.payload as { candidates?: unknown[] }).candidates;
         if (!Array.isArray(list)) return;
         for (const candidate of list) {
-          if (remoteSet) await pc.addIceCandidate(candidate as never).catch(() => undefined);
-          else pending.push(candidate);
+          for (const expanded of expandLocalCandidate(candidate, mdnsHosts)) {
+            if (remoteSet) await pc.addIceCandidate(expanded as never).catch(() => undefined);
+            else pending.push(expanded);
+          }
         }
         return;
       }
       if (entry.type === "offer" && !remoteSet) {
         const sdp = (entry.payload as { sdp?: unknown }).sdp;
         if (typeof sdp !== "string") return fail(new Error("offer without SDP"));
-        await pc.setRemoteDescription({ type: "offer", sdp }).catch(fail);
+        await pc.setRemoteDescription({ type: "offer", sdp: expandLocalSdp(sdp, mdnsHosts) }).catch(fail);
         remoteSet = true;
         for (const candidate of pending.splice(0)) {
           await pc.addIceCandidate(candidate as never).catch(() => undefined);

@@ -28,6 +28,7 @@
     "test:ui": "npm --prefix ui run typecheck && npm --prefix ui run build",
     "test:ui-order": "tsx scripts/ui-order-test.ts",
     "test:tree-scope": "tsx scripts/tree-scope-test.ts",
+    "test:bridge-mdns": "tsx scripts/bridge-mdns-test.ts",
     "test:spec-lint": "tsx scripts/spec-lint-test.ts",
     "test:tree-modules": "tsx scripts/tree-modules-test.ts",
     "test:tree": "tsx scripts/tree-serialize-test.ts",

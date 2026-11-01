@@ -2,6 +2,17 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — desktop pairing survives Gecko's mDNS candidates
+
+Firefox/Firedragon hides host ICE candidates as `<uuid>.local`. When the
+browser's mDNS responder is unavailable — notably in headless sessions — werift
+cannot resolve the name and the pairing console reports `connection failed`
+before approval, with no mirror folder yet created. The bridge now expands
+`.local` offer/candidate addresses to its own local IPv4 addresses while keeping
+the browser's real port, so desktop pairing works without changing
+`about:config`. Covered by `npm run test:bridge-mdns` and a Firedragon WebDriver
+E2E.
+
 ## 2026-11-01 — approval waits for the tab's profile
 
 `npm run pair` no longer prompts for approval until the browser has sent its
