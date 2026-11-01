@@ -2,6 +2,15 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — pairing has a debug trace
+
+`npm run pair -- --debug` (or `BOB_PAIR_DEBUG=1`) now prints each admin
+mutation and every pairing event, so a stalled handshake reads as
+`waiting-offer → offer-received → answer-sent → channel-open → connected →
+control hello → error`. Event polling is not logged at that level; failed
+polls still are. The server emits the offer/answer/channel/control events; the
+normal operator output is unchanged.
+
 ## 2026-11-01 — pair teardown says Disconnect
 
 The Pair dialog's teardown button is now **Disconnect** and reads red. It still

@@ -196,6 +196,9 @@ channel flow used between two browsers:
    `--revoke <profile>` manage paired profiles.) Codes and pairing sessions
    live in the `npm run bob` process: restarting it invalidates any open code,
    so run `npm run pair` again after a restart.
+   Add `--debug` (`npm run pair -- --debug`, or `BOB_PAIR_DEBUG=1`) to trace
+   the handshake: waiting for the offer, offer/answer, channel open, control
+   `hello`, SAS and the first error.
 2. In the tab, **Sync… → Pair… → Pair with a code**, select **My desktop /
    server**, and enter the code — no channel id. The dialog shows the active
    profile and, once the channel opens, the mirror + exec capabilities the

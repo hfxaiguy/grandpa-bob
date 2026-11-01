@@ -405,6 +405,9 @@ browsers** — a code, a DTLS verification phrase, then the same `SyncEngine`.
   `--revoke <profile>` manage paired profiles. The code and session live in
   the bridge process: restarting `npm run bob` invalidates them, so run
   `npm run pair` again after a restart.
+  Add `--debug` (`npm run pair -- --debug`, or `BOB_PAIR_DEBUG=1`) to log the
+  admin calls and every pairing event: `waiting-offer`, `offer-received`,
+  `answer-sent`, `channel-open`, `connected`, the control `hello`, and errors.
 - In the tab: **Sync… → Pair… → Pair with a code**, select **My desktop /
   server**, and enter the code. Both sides show the same SAS; nothing syncs
   or executes before the operator approves on the console.

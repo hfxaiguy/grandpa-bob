@@ -28,6 +28,7 @@ interface Args {
   list: boolean;
   revoke?: string;
   url: string;
+  debug: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -38,6 +39,7 @@ function parseArgs(argv: string[]): Args {
     yes: false,
     list: false,
     url: process.env.BOB_PAIR_URL ?? DEFAULT_URL,
+    debug: /^(1|true|yes)$/i.test(process.env.BOB_PAIR_DEBUG ?? ""),
   };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
@@ -54,6 +56,7 @@ function parseArgs(argv: string[]): Args {
     else if (flag === "--list") args.list = true;
     else if (flag === "--revoke") args.revoke = value();
     else if (flag === "--url") args.url = value();
+    else if (flag === "--debug" || flag === "-d") args.debug = true;
     else if (flag === "--help" || flag === "-h") {
       printHelp();
       process.exit(0);
@@ -74,6 +77,8 @@ function printHelp(): void {
   --list                show paired profiles
   --revoke <profile>    revoke a profile's client key
   --url <url>           admin API origin (default: ${DEFAULT_URL})
+  --debug, -d           log admin API calls and every pairing event
+                        (or set BOB_PAIR_DEBUG=1)
 
 The tab's active browser profile must match --profile. --mirror and
 --mirror-path choose the desktop folder independently, so one desktop can host
@@ -98,10 +103,18 @@ async function api<T>(
   init: { method?: string; body?: unknown } = {},
 ): Promise<T> {
   const key = await adminKey();
+  const method = init.method ?? "GET";
+  const url = `${args.url.replace(/\/$/, "")}${route}`;
+  const isEventPoll = /\/admin\/pairing\/[^/]+\/events/.test(route);
+  if (args.debug && !isEventPoll) {
+    const body = init.body === undefined ? "" : ` ${JSON.stringify(init.body)}`;
+    console.error(`[pair:debug] ${method} ${url}${body}`);
+  }
+  const started = Date.now();
   let res: Response;
   try {
-    res = await fetch(`${args.url.replace(/\/$/, "")}${route}`, {
-      method: init.method ?? "GET",
+    res = await fetch(url, {
+      method,
       headers: {
         "content-type": "application/json",
         "x-bob-admin": key,
@@ -109,7 +122,11 @@ async function api<T>(
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
     });
   } catch {
+    if (args.debug) console.error(`[pair:debug] ${method} ${url} → network error`);
     throw new Error(`cannot reach ${args.url} — is \`npm run bob\` running?`);
+  }
+  if (args.debug && (!isEventPoll || !res.ok)) {
+    console.error(`[pair:debug] ${method} ${url} → ${res.status} ${res.statusText} (${Date.now() - started}ms)`);
   }
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
@@ -163,6 +180,13 @@ async function runPairing(args: Args): Promise<void> {
   console.log("Tab on another profile? Stop (Ctrl-C) and rerun with --profile <name>.");
   console.log("Waiting for the browser…\n");
 
+  if (args.debug) {
+    console.error(
+      `[pair:debug] profile=${JSON.stringify(info.profile)} mirror=${JSON.stringify(args.mirror)} ` +
+        `exec=${JSON.stringify(args.exec)} url=${args.url} session=${info.id}`,
+    );
+  }
+
   let after = -1;
   let approved = false;
   const deadline = Date.now() + 10 * 60_000;
@@ -173,6 +197,11 @@ async function runPairing(args: Args): Promise<void> {
     );
     for (const event of view.events) {
       after = Math.max(after, event.seq);
+      if (args.debug) {
+        console.error(
+          `[pair:debug] #${event.seq} ${event.at} ${event.type} ${JSON.stringify(event.data ?? {})}`,
+        );
+      }
       if (event.type === "joined") console.log("browser joined the channel");
       if (event.type === "connected") console.log(`SAS: ${String(event.data.sas ?? "—")}`);
       if (event.type === "sas") console.log(`verification phrase: ${String(event.data.sas ?? "—")}`);
@@ -203,6 +232,9 @@ async function runPairing(args: Args): Promise<void> {
         console.error(`pairing failed: ${String(event.data.message ?? "unknown error")}`);
         process.exit(1);
       }
+    }
+    if (args.debug && (view.events.length || view.done)) {
+      console.error(`[pair:debug] poll after=${after} events=${view.events.length} done=${view.done}`);
     }
     if (view.done) {
       console.log("pairing session closed");

@@ -84,6 +84,7 @@ function answerChannel(
   mailbox: Mailbox,
   channel: MailboxChannel,
   iceServers: unknown[] = [],
+  onEvent?: (type: string, data?: Record<string, unknown>) => void,
 ): Promise<AnswerHandle> {
   return new Promise((resolve, reject) => {
     const pc = new RTCPeerConnection({ iceServers: iceServers as never });
@@ -98,6 +99,7 @@ function answerChannel(
     const fail = (err: Error): void => {
       if (settled) return;
       settled = true;
+      onEvent?.("offer-failed", { error: err.message });
       clearTimeout(timer);
       channel.listeners.delete(listener);
       try { pc.close(); } catch { /* already closed */ }
@@ -106,6 +108,7 @@ function answerChannel(
     const succeed = (channelDc: RTCDataChannel): void => {
       if (settled) return;
       settled = true;
+      onEvent?.("channel-open", {});
       clearTimeout(timer);
       const base: SyncPeer = {
         id: channelPeerId(channel.profile),
@@ -183,6 +186,7 @@ function answerChannel(
       if (entry.type === "offer" && !remoteSet) {
         const sdp = (entry.payload as { sdp?: unknown }).sdp;
         if (typeof sdp !== "string") return fail(new Error("offer without SDP"));
+        onEvent?.("offer-received", { bytes: sdp.length });
         await pc.setRemoteDescription({ type: "offer", sdp: expandLocalSdp(sdp, mdnsHosts) }).catch(fail);
         remoteSet = true;
         for (const candidate of pending.splice(0)) {
@@ -194,6 +198,7 @@ function answerChannel(
           sdp: pc.localDescription?.sdp ?? "",
           type: "answer",
         });
+        onEvent?.("answer-sent", { bytes: pc.localDescription?.sdp?.length ?? 0 });
       }
     };
     const listener = (entry: SignalEntry): void => {
@@ -287,7 +292,17 @@ export class PeerSession {
 
   async start(): Promise<void> {
     try {
-      const answer = await answerChannel(this.mailbox, this.channel, this.iceServers);
+      this.emit("waiting-offer", {
+        profile: this.profile,
+        mirror: this.capabilities.mirror,
+        exec: this.capabilities.exec,
+      });
+      const answer = await answerChannel(
+        this.mailbox,
+        this.channel,
+        this.iceServers,
+        (type, data) => this.emit(type, data ?? {}),
+      );
       if (this.closed) {
         answer.close();
         return;
@@ -299,6 +314,7 @@ export class PeerSession {
       });
       this.link = link;
       link.onClosed(() => {
+        this.emit("link-closed", { paired: this.paired });
         if (this.mode === "pairing" && !this.paired && !this.closed) {
           this.emit("error", { message: "the browser disconnected before pairing finished" });
         }
@@ -319,6 +335,7 @@ export class PeerSession {
           nonce,
         }),
       );
+      this.emit("server-frame", { profile: this.profile, pairing: this.mode === "pairing" });
       if (this.mode === "pairing") {
         // The tab must identify its profile before anyone is asked to approve.
         // Otherwise a quick `--yes` (or a fast operator) can approve while the
@@ -409,6 +426,10 @@ export class PeerSession {
 
   private async onControl(control: Record<string, unknown>, link: SyncPeer): Promise<void> {
     const op = String(control.op ?? "");
+    this.emit("control", {
+      op,
+      ...(op === "hello" ? { profile: String(control.profile ?? "") } : {}),
+    });
     const expectedProfile = this.profile;
     if (op === "hello") {
       if (control.profile !== expectedProfile) {

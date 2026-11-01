@@ -335,7 +335,8 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    Sync… → Pair… → **Pair with a code**, select **My desktop / server**, and
    enter the code. Exec is opt-in via `--exec git,make,…`. Open codes live in
    the `npm run bob` process, so restarting it means running `npm run pair`
-   again.
+   again. Add `--debug` to that command to log each
+   pairing event.
    Start the process with `BOB_STT=1` to expose the `/stt` pass-through for
    in-tab voice transcription.
 5. **Voice (optional)**: the browser records are transcribed by the bridge
