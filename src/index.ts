@@ -191,6 +191,9 @@ async function handleTelegram(
     "content-type": "application/json",
     "access-control-allow-methods": "GET,POST,OPTIONS",
     "access-control-allow-headers": "content-type",
+    // See the peer mailbox: hosted HTTPS pages need the PNA opt-in before
+    // Chrome will let them reach this loopback channel API.
+    "access-control-allow-private-network": "true",
   };
   if (allowed) headers["access-control-allow-origin"] = origin;
   if (req.method === "OPTIONS") {
