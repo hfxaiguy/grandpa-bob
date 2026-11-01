@@ -12,7 +12,6 @@
     "smoke:browser": "node scripts/browser-smoke.mjs",
     "smoke:profiles": "node scripts/profile-smoke.mjs",
     "smoke:bootstrap": "node scripts/seed-bootstrap-smoke.mjs",
-    "smoke:mirror": "node scripts/mirror-smoke.mjs",
     "smoke:seed-update": "node scripts/seed-update-smoke.mjs",
     "mock-llm": "node mock-llm.mjs",
     "make-seed": "node scripts/make-seed.mjs",
@@ -21,7 +20,8 @@
     "typecheck": "tsc --noEmit",
     "smoke:lease": "node scripts/lease-smoke.mjs",
     "smoke:pairing": "node scripts/pairing-smoke.mjs",
-    "smoke:pair-live": "node scripts/pair-smoke.mjs"
+    "smoke:pair-live": "node scripts/pair-smoke.mjs",
+    "smoke:peer": "node scripts/server-peer-smoke.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

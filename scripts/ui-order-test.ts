@@ -1,6 +1,8 @@
 /**
  * Tile order: pins stay put, unpinned tiles float by recent activity, and hidden
- * tiles park in the left rail in board order.
+ * tiles park in the left rail in board order. New chats open on trunk alone;
+ * active apps raise their parked tiles while two app seats are free, and a
+ * denied raise pulses that app's rail square.
  *
  * The board is pinned-first (manual order) then most-recently-active. Trunk is
  * pinned by default (including for layouts saved before pins existed); only
@@ -12,9 +14,22 @@
  */
 import assert from "node:assert/strict";
 
-const { state, setState, orderedApps, hiddenApps, togglePinned, toggleHidden, moveTile, handleSSE, toggleSub, subApps, openSubApps, parkAllExcept } = await import(
-  "../ui/src/store.ts"
-);
+const {
+  state,
+  setState,
+  orderedApps,
+  hiddenApps,
+  togglePinned,
+  toggleHidden,
+  moveTile,
+  handleSSE,
+  toggleSub,
+  subApps,
+  openSubApps,
+  parkAllExcept,
+  applyProfileVisibleExceptions,
+  resetBoardForNewSession,
+} = await import("../ui/src/store.ts");
 
 const apps = ["trunk", "alpha", "beta", "gamma"].map((name) => ({ name, description: "" }));
 setState("apps", apps);
@@ -100,25 +115,95 @@ handleSSE({ type: "emit", turnId: "t1", app: "gamma", text: "hello" });
 assert.ok(state.activity.gamma > state.activity.beta, "an emit bumps its app");
 assert.equal(order()[1], "gamma", "the emitting app floats up");
 
-// ── a new session opens on a quiet board ────────────────────────────────
-// New session parks every board tile except trunk, contacts and files. The
-// keep list wins over earlier parking (contacts comes back); parented apps
-// stay out of the board rail either way.
+// ── a new session opens on a trunk-only board ───────────────────────────
+// New session parks every board tile except trunk; active apps raise their
+// tiles later (below). Parented apps stay out of the board rail either way.
 setState("apps", [
   ...apps,
   { name: "contacts", description: "" },
   { name: "files", description: "" },
   { name: "email", description: "" },
+  { name: "kinit", description: "" },
   { name: "files.sub", description: "", parent: "files" },
 ]);
 setState("layout", "hidden", ["contacts", "beta", "email"]);
 parkAllExcept();
 assert.deepEqual(
   [...state.layout.hidden].sort(),
-  ["alpha", "beta", "email", "gamma"],
-  "every app except contacts and files parks in the rail",
+  ["alpha", "beta", "contacts", "email", "files", "gamma", "kinit"],
+  "every app except trunk parks in the rail",
 );
-assert.deepEqual(order(), ["trunk", "contacts", "files"], "trunk, contacts and files stay on the board");
+assert.deepEqual(order(), ["trunk"], "only trunk stays on the board");
 assert.ok(!rail().includes("files.sub"), "a parented app never parks on the board rail");
 
-console.log("ui-order: pinned-first order, activity ranking, rail order, live bumps and the new-session board ok");
+// ── active apps raise their tiles, up to two beside trunk ───────────────
+// The first two apps to run take the two app seats; the third stays in the
+// rail (its square pulses) instead of evicting a tile the user may be reading.
+handleSSE({ type: "turn_start", session: "web:t", turnId: "raise-a", input: "hi", inputApp: "alpha", ts: 20_000 });
+assert.ok(order().includes("alpha"), "an active app raises its parked tile");
+handleSSE({ type: "event", turnId: "raise-a", event: { kind: "tree_enter", app: "beta", ts: 20_001 } });
+assert.ok(order().includes("beta"), "a second active app raises its tile");
+handleSSE({ type: "event", turnId: "raise-a", event: { kind: "tree_enter", app: "gamma", ts: 20_002 } });
+assert.ok(!order().includes("gamma"), "a third active app keeps its rail seat");
+assert.equal(state.raiseDenied, "gamma", "the denied tile pulses in the rail");
+
+// A manual open is never capped, and it answers the pulse.
+toggleHidden("gamma");
+assert.ok(order().includes("gamma"), "a manual open is not capped");
+assert.equal(state.raiseDenied, null, "opening the tile clears the pulse");
+
+// Activity inside a sub-app raises the parent tile that carries it.
+toggleHidden("alpha");
+toggleHidden("beta");
+handleSSE({ type: "event", turnId: "raise-a", event: { kind: "tree_enter", app: "files.sub", ts: 20_003 } });
+assert.ok(!order().includes("files.sub"), "a sub-app never boards itself");
+assert.ok(order().includes("files"), "activity in a sub-app raises its parent tile");
+
+// ── a profile's "hidden… except:" list replaces the trunk-only board ────
+// Without a list, new chats open on trunk alone (above). With one, exactly
+// those tiles stay visible — everything else parks, including kinit/email.
+(globalThis as unknown as { window: { __bobProfileVisibleApps?: string[] | null } }).window = {
+  __bobProfileVisibleApps: ["contacts", "files"],
+};
+resetBoardForNewSession();
+assert.deepEqual(
+  [...state.layout.hidden].sort(),
+  ["alpha", "beta", "email", "gamma", "kinit"],
+  "every app outside the profile's exceptions parks",
+);
+assert.deepEqual(
+  [...order()].sort(),
+  ["contacts", "files", "trunk"].sort(),
+  "only the listed exceptions join trunk",
+);
+assert.ok(!order().includes("kinit") && !order().includes("email"), "kinit and email are hidden by default");
+
+// A boot re-applies the exceptions over a saved layout.
+setState("layout", "hidden", ["beta"]);
+applyProfileVisibleExceptions();
+assert.deepEqual(
+  [...state.layout.hidden].sort(),
+  ["alpha", "beta", "email", "gamma", "kinit"],
+  "boot hides everything the profile did not list",
+);
+assert.deepEqual(
+  [...order()].sort(),
+  ["contacts", "files", "trunk"].sort(),
+  "manual shows do not outlive a profile's exceptions",
+);
+
+// The exceptions can name any apps; only those stay on the board.
+(globalThis as unknown as { window: { __bobProfileVisibleApps?: string[] | null } }).window = {
+  __bobProfileVisibleApps: ["kinit", "email"],
+};
+resetBoardForNewSession();
+assert.deepEqual([...order()].sort(), ["email", "kinit", "trunk"].sort(), "the listed exceptions stay visible");
+
+// An empty explicit list means trunk alone.
+(globalThis as unknown as { window: { __bobProfileVisibleApps?: string[] | null } }).window = {
+  __bobProfileVisibleApps: [],
+};
+resetBoardForNewSession();
+assert.deepEqual(order(), ["trunk"], "an empty exception list leaves only trunk");
+
+console.log("ui-order: pinned-first order, activity ranking, rail order, live bumps, auto-raise seats, profile exceptions and the trunk-only new-session board ok");

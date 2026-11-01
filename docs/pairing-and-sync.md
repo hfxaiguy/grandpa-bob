@@ -22,10 +22,11 @@ Every profile's workspace lives in this origin's OPFS
 (`/profiles/<name>/`). Self-contained per browser; survives reloads (the app
 asks for persistent storage at boot and warns if the browser refuses).
 
-A profile can additionally bind a **desktop mirror**: a real folder on disk,
-served by the loopback storage bridge. The profile record stores a `folder`
-root name (`kind: "desktop"`). OPFS stays canonical; the bridge keeps the
-folder in sync (see [§6](#6-desktop-mirror)).
+A profile can additionally pair with a **desktop/server peer**: the same
+WebRTC channel flow as two browsers, with a mirror folder and an allowlisted
+exec surface granted on the server console (see
+[§6](#6-desktopserver-peer)). The profile record stores the mirror folder name
+(`kind: "desktop"`, `folder`).
 
 Desktop folders are registered once with `POST /roots { name, dir }` on the
 bridge (the profile dialog does this automatically, defaulting to
@@ -168,24 +169,35 @@ A pair is **two independent copies**, not a cache hierarchy:
   separate optional backup/versioning path and still carry DB dumps under
   `logs/scratch` for cross-device database continuity.
 
-## 6. Desktop mirror
+## 6. Desktop/server peer
 
-A profile's `folder` binding is reconciled by `web/src/mirror.ts` through
-`POST /mirror/plan` and `POST /mirror/apply` on the bridge:
+A desktop/server is another peer, not a storage mode. Pairing is the same
+channel flow used between two browsers:
 
-1. The tab hashes its workspace (same exclusions as replica sync: `.git/`,
-   `logs/`, `.gpb-*`, `assets/inbox/`, conflict copies) and sends the manifest.
-2. The bridge compares it with the folder and with the last-synced manifest at
-   `~/.bobkat/mirrors/<root>.json`: changed-here files push, changed-there
-   files pull, both-changed is a conflict (OPFS wins; the desktop variant is
-   preserved as `<file>.conflict-<timestamp>`), deletions propagate.
-3. A pass runs at boot (before indexing), every 60 s, and from **Profiles →
-   Sync now**. Only the lease holder runs it. The toolbar chip shows the last
-   pass / offline state; there is no storage-mode selector.
+1. On the desktop/server, `npm run pair` creates a mailbox channel on the
+   combined process's `:8795` and prints the channel id, single-use code,
+   mirror folder and requested exec allowlist. (`--exec git,make,…` grants
+   ops; `--list` / `--revoke <profile>` manage paired profiles.)
+2. In the tab, **Sync… → Pair… → Desktop / server** joins with the URL,
+   channel id and code. Both sides derive the same SAS from the DTLS
+   fingerprints; the operator compares it on the console before approving.
+3. On approval the server mints a per-profile **client key** and the tab pins
+   a per-profile **server proof key**. Reconnects use a client-key channel and
+   mutual HMAC proofs — no human step. Revoking on the server drops the key and
+   live channel.
+4. First pairing: a non-empty desktop folder replaces the profile's workspace;
+   an empty folder receives the tab's workspace. The Node peer runs the same
+   `rtcPeer` + `SyncEngine` (werift polyfill); its journal lives in
+   `~/.bobkat/peers/<profile>/`, never in the mirror folder.
+5. Exec is the `ShellTools` allowlist (`execFile`, cwd, argument escape guard,
+   git deny, timeout/output caps), never a shell string. The agent worker
+   routes only allowlisted commands over a `MessagePort`; other shell commands
+   keep using the local virtual shell. Changed files converge before the tool
+   result returns; divergent paths keep both copies.
 
-Desktop-only operations (real `git`, node:sqlite, scripts) run against that
-folder through the bridge's `/fs`, `/git` and `/sql` routes with the folder's
-`x-bob-root`.
+The product process does not mount `/fs`, `/git`, `/sql` or `/roots`; the
+standalone `storage-server` CLI keeps them for tests/debug. Only `/health` and
+the opt-in `/stt` remain on the channel server.
 
 ## 7. Troubleshooting
 
@@ -198,5 +210,6 @@ folder through the bridge's `/fs`, `/git` and `/sql` routes with the folder's
 | Phrases differ | Do not trust the link — signaling was altered or the peers see different certificates; close and retry. |
 | Pair connected but files don't move | Both tabs must stay open; check the Live sync status line and the conflict counter. |
 | "opfs-sahpool" / persistence warnings | The browser refused persistent origin storage; the workspace still works but can be evicted. |
-| `desktop: offline` chip | `npm run bob` (or `storage-server`) is not running on the desktop, or the bridge URL is wrong. |
-| Files reappear with `desktop: synced` | The desktop mirror pulled them back; delete on both sides (or unbind) to remove them for good. |
+| `desktop: offline` chip | `npm run bob` is not running, the mailbox URL is wrong, or the profile needs re-pairing (`npm run pair`). |
+| `desktop: sync error` / no ops | The server console has not approved exec, or the command is not in its allowlist. |
+| Paired but the mirror is stale | Both sides must be reachable; the desktop peer reconnects with its client key, and `npm run pair -- --list` shows the registered profiles. |

@@ -10,9 +10,9 @@
   ],
   "scripts": {
     "dev": "NODE_OPTIONS=--dns-result-order=ipv4first tsx src/index.ts",
-    "bob": "NODE_OPTIONS=--dns-result-order=ipv4first tsx src/index.ts",
+    "bob": "npm run build:bridge && NODE_OPTIONS=--dns-result-order=ipv4first tsx src/index.ts",
     "chrome": "node web/scripts/chrome.mjs",
-    "build": "tsc && npm run build:web",
+    "build": "npm run build:bridge && tsc && npm run build:web",
     "build:web": "npm run build --workspace web",
     "web:standalone": "node web/scripts/serve.mjs",
     "build:ui": "node scripts/build-ui.mjs",
@@ -21,7 +21,7 @@
     "seed:ship": "tsx scripts/publish-seed.ts --pack",
     "start": "node --dns-result-order=ipv4first dist/src/index.js",
     "storage-server": "WORKSPACE_DIR=\"${WORKSPACE_DIR:-$HOME/grandma-workspace}\" node web/scripts/storage-server.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.bridge.json",
     "lint:specs": "tsx scripts/spec-lint.ts",
     "smoke": "tsx scripts/smoke.ts",
     "test:standalone": "tsx scripts/web-standalone-test.ts",
@@ -67,16 +67,20 @@
     "test:live-tool-row": "tsx scripts/live-tool-row-test.ts",
     "test:sync": "tsx scripts/sync-engine-test.ts",
     "test:desktop-profile": "tsx scripts/desktop-profile-test.ts",
-    "test:mirror": "tsx scripts/mirror-sync-test.ts",
-    "test:app-attribution": "tsx scripts/app-attribution-test.ts"
+    "test:app-attribution": "tsx scripts/app-attribution-test.ts",
+    "build:bridge": "node scripts/build-bridge.mjs",
+    "pair": "tsx scripts/pair.ts",
+    "smoke:peer": "npm --prefix web run smoke:peer"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
     "grammy": "^1.45.1",
-    "grandma-kat": "git+https://github.com/hfxaiguy/grandma-kat.git"
+    "grandma-kat": "git+https://github.com/hfxaiguy/grandma-kat.git",
+    "werift": "^0.25.2"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"
   }

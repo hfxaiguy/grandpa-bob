@@ -1453,7 +1453,11 @@ export function RailCard() {
             <Show when={cur().app.description}>
               <div class="hidden-info-desc">{cur().app.description}</div>
             </Show>
-            <div class="hidden-info-hint">click to {state.layout.subsOpen.includes(cur().app.name) ? "park" : "open"}</div>
+            <div class="hidden-info-hint">
+              {state.raiseDenied === cur().app.name
+                ? "active — board full; click to show"
+                : `click to ${state.layout.subsOpen.includes(cur().app.name) ? "park" : "open"}`}
+            </div>
           </div>
         </Portal>
       )}
@@ -1485,6 +1489,8 @@ function RailSquare(props: { app: AppInfo; label: string; open?: boolean; onClic
         wait: state.awaiting === props.app.name,
         err: failed(),
         open: !!props.open,
+        // Active but denied a board seat: the square nudges until opened.
+        denied: state.raiseDenied === props.app.name,
       }}
       aria-label={props.label}
       onMouseEnter={(e) => revealRailCard(props.app, e.currentTarget)}

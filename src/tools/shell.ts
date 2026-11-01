@@ -57,15 +57,25 @@ function npmBinPath(): string {
   return path.resolve(process.cwd(), "node_modules", ".bin");
 }
 
+export interface ShellOptions {
+  timeoutMs?: number;
+  maxOutput?: number;
+}
+
 export class ShellTools {
   private env: NodeJS.ProcessEnv;
+  private timeoutMs: number;
+  private maxOutput: number;
 
   constructor(
     private workspace: string,
     private allowedCommands: string[],
+    options: ShellOptions = {},
   ) {
     const bin = npmBinPath();
     this.env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+    this.timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
+    this.maxOutput = options.maxOutput ?? MAX_OUTPUT;
   }
 
   async runCommand(command: string, args: string[] = []): Promise<string> {
@@ -84,13 +94,13 @@ export class ShellTools {
       const { stdout, stderr } = await execFileAsync(base, args, {
         cwd: this.workspace,
         env: this.env,
-        timeout: TIMEOUT_MS,
+        timeout: this.timeoutMs,
         maxBuffer: 4 * 1024 * 1024,
       });
       return this.format(base, args, stdout, stderr, 0);
     } catch (err: unknown) {
       const e = err as { code?: number | string; stdout?: string; stderr?: string; killed?: boolean };
-      if (e.killed) throw new Error(`command timed out after ${TIMEOUT_MS / 1000}s: ${base}`);
+      if (e.killed) throw new Error(`command timed out after ${this.timeoutMs / 1000}s: ${base}`);
       return this.format(base, args, e.stdout ?? "", e.stderr ?? "", e.code ?? "?");
     }
   }
@@ -99,7 +109,7 @@ export class ShellTools {
     let out = `$ ${base} ${args.join(" ")} (exit ${code})\n`;
     if (stdout) out += stdout;
     if (stderr) out += (stdout ? "\n" : "") + `[stderr]\n${stderr}`;
-    if (out.length > MAX_OUTPUT) out = out.slice(0, MAX_OUTPUT) + "\n… (truncated)";
+    if (out.length > this.maxOutput) out = out.slice(0, this.maxOutput) + "\n… (truncated)";
     return out.trim() || "(no output)";
   }
 }

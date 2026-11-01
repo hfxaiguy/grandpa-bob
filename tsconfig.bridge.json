@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "src/bridge/**/*.ts",
+    "src/tools/shell.ts",
+    "src/state-dir.ts",
+    "web/src/sync/engine.ts",
+    "web/src/sync/hashmap.ts",
+    "web/src/sync/journal.ts",
+    "web/src/sync/chunking.ts",
+    "web/src/sync/control-peer.ts",
+    "web/src/sync/sas.ts",
+    "web/src/platform/types.ts",
+    "web/src/platform/paths.ts"
+  ],
+  "exclude": []
+}

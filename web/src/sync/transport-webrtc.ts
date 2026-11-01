@@ -16,6 +16,10 @@
  * both sides display before any bytes move.
  */
 import type { SyncEnvelope, SyncPeer } from "./engine";
+import { chunkedPeer } from "./chunking";
+import { pairingPhrase, verifyPhrase } from "./sas";
+
+export { pairingPhrase, verifyPhrase } from "./sas";
 
 /**
  * Fallback when a service supplies no ICE servers (or the manual-paste path,
@@ -339,45 +343,6 @@ export class BobSwapSignaling implements SignalingProvider {
 }
 
 
-/** Every `a=fingerprint:` value in an SDP, normalized so both sides agree. */
-function fingerprints(sdp: string): string[] {
-  return sdp
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("a=fingerprint:"))
-    .map((line) => line.slice("a=fingerprint:".length).trim().toUpperCase())
-    .filter((value) => value.length > 0);
-}
-
-/**
- * The 6-word short authentication string (SAS) for a pair of endpoints.
- *
- * Seeded from BOTH SDPs' DTLS certificate fingerprints — the local one and the
- * peer's — deduped and sorted, so each side hashes the exact same input. A
- * signaling relay that substitutes its own certificate changes the remote
- * fingerprints, so the two phrases stop matching — which is the point: the
- * phrase is what makes the untrusted relay detectable.
- */
-export function pairingPhrase(localSdp: string, remoteSdp: string): string {
-  const seed = [...new Set([...fingerprints(localSdp), ...fingerprints(remoteSdp)])].sort().join("|");
-  const words = ["anchor", "basil", "cedar", "delta", "ember", "fjord", "granite", "harbor", "igloo", "jasper"];
-  let h = 2166136261;
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  const out: string[] = [];
-  for (let i = 0; i < 6; i++) {
-    h = Math.imul(h ^ (h >>> 13), 1274126177);
-    out.push(words[Math.abs(h) % words.length]);
-  }
-  return out.join("-");
-}
-
-/** The 6-word verification phrase for an open connection (both sides show it). */
-export function verifyPhrase(pc: RTCPeerConnection): string {
-  return pairingPhrase(pc.localDescription?.sdp ?? "", pc.remoteDescription?.sdp ?? "");
-}
-
 /**
  * Wire the data channel + signaling into a SyncPeer.
  *
@@ -391,7 +356,9 @@ export async function rtcPeer(
   engineId: string,
   opts: { createChannel?: boolean; iceServers?: RTCIceServer[]; onState?: (text: string) => void } = {},
 ): Promise<{ peer: SyncPeer; phrase: string }> {
-  const iceServers = opts.iceServers && opts.iceServers.length > 0 ? opts.iceServers : STUN;
+  // `undefined` → the public STUN fallback; an explicit empty array means
+  // "no ICE servers" (loopback/self-hosted peers).
+  const iceServers = opts.iceServers !== undefined ? opts.iceServers : STUN;
   const pc = new RTCPeerConnection({ iceServers });
   const awaitOpen = (channel: RTCDataChannel): Promise<void> =>
     new Promise<void>((resolve, reject) => {
@@ -461,5 +428,7 @@ export async function rtcPeer(
       }
     },
   };
-  return { peer, phrase: verifyPhrase(pc) };
+  // Every RTC data channel is frame-limited; chunk transparently so file
+  // contents (base64 in `ops`/`file-req` replies) never exceed the wire limit.
+  return { peer: chunkedPeer(peer), phrase: verifyPhrase(pc) };
 }

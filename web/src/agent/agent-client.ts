@@ -64,12 +64,37 @@ export class AgentClient {
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private logPending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private opsPort: MessagePort | null = null;
+  private opsHandler: ((command: string, args: string[]) => Promise<string>) | null = null;
+  private opsConfig: { enabled: boolean; allow: string[] } = { enabled: false, allow: [] };
 
   constructor(opfsPrefix: readonly string[] = []) {
     this.worker = new Worker(new URL("./agent-worker.ts", import.meta.url), {
       type: "module",
       name: encodeOpfsPrefix(opfsPrefix),
     });
+    // A dedicated port carries desktop/server ops out of the worker (the RTC
+    // datachannel lives on the main thread).
+    const channel = new MessageChannel();
+    this.opsPort = channel.port1;
+    channel.port1.onmessage = (event: MessageEvent) => {
+      const msg = event.data as { type?: string; id?: string; command?: string; args?: string[] };
+      if (msg.type !== "ops-request" || !msg.id) return;
+      void (async () => {
+        try {
+          if (!this.opsHandler) throw new Error("no desktop/server is connected");
+          const output = await this.opsHandler(String(msg.command ?? ""), Array.isArray(msg.args) ? msg.args.map(String) : []);
+          channel.port1.postMessage({ type: "ops-result", id: msg.id, output });
+        } catch (err) {
+          channel.port1.postMessage({
+            type: "ops-result",
+            id: msg.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })();
+    };
+    this.worker.postMessage({ type: "ops-port", port: channel.port2 }, [channel.port2]);
     this.worker.onmessage = (ev: MessageEvent) => {
       const msg = ev.data as {
         id: number;
@@ -115,6 +140,17 @@ export class AgentClient {
       for (const p of this.pending.values()) p.reject(err);
       this.pending.clear();
     };
+  }
+
+  /** Route allowlisted shell commands to the connected desktop/server. */
+  setOpsHandler(handler: ((command: string, args: string[]) => Promise<string>) | null): void {
+    this.opsHandler = handler;
+  }
+
+  /** Tell the worker which commands should go to the desktop. */
+  setOpsConfig(config: { enabled: boolean; allow: string[] }): void {
+    this.opsConfig = { enabled: !!config.enabled, allow: [...config.allow] };
+    this.worker.postMessage({ type: "ops-config", ...this.opsConfig });
   }
 
   run(opts: AgentRunOptions = {}, hooks?: AgentRunHooks): AgentRunPromise {

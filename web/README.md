@@ -18,7 +18,7 @@ Companion channels — one process, one port (`npm run bob`, loopback only):
 | Channel | Route | What it does |
 |---|---|---|
 | Telegram | `:8795` `/api/*` | grammY long-poll; parks text + channel-side voice transcripts in a file mailbox (`~/.bobkat/telegram/`); the tab claims and answers them |
-| Storage bridge | `:8795` `/roots`, `/mirror/*`, `/fs/*`, `/git`, `/sql/*` | desktop mirror sync + real-path ops; `POST /roots` registers a folder, requests select one with `x-bob-root` |
+| Peer mailbox | `:8795` `/api/v1/sync/*`, `/admin/*` | BobSwap-shaped pairing channels + loopback admin API for `npm run pair`; STT/health stay |
 | STT | `:8795` `/stt` (`BOB_STT=1`) | raw audio bytes → ffmpeg → whisper-server → transcript (used by the composer) |
 | Whisper | `npm run whisper:up` (`:8178`) | the transcription backend both paths call |
 
@@ -28,8 +28,8 @@ The same modules keep their standalone CLIs (`npm run storage-server`,
 Same-origin tabs sync live (BroadcastChannel) when they share a profile.
 Different profiles are different workspaces and pair through the
 Sync… → Live sync dialog (WebRTC; BobSwap REST or manual paste). A profile may
-also keep a **desktop mirror** folder synced through the storage bridge. The
-full model — profiles, git vs replica sync, pairing, the verification phrase,
+also pair with a **desktop/server peer** (same channel flow, SAS, mirror and
+allowlisted ops). The full model — profiles, git vs replica sync, pairing, the verification phrase,
 and troubleshooting — is in
 [docs/pairing-and-sync.md](../docs/pairing-and-sync.md).
 
@@ -161,13 +161,11 @@ with a logged reason instead of resuming into a partial log. Each turn records
 say "continued the paused session from before the reload" or warn that prior
 context was not available.
 
-### Desktop mirrors (optional)
+### Desktop/server peer (optional)
 
-The workspace always lives in the tab's OPFS. A profile can additionally bind a
-**desktop mirror**: a real folder on the machine running the storage bridge
-(`npm run bob`, `:8795`). The tab pushes its changes there and pulls the
-folder's changes back on a timer and at boot; see
-[Desktop mirror](#desktop-mirror-optional) below for the sync rules.
+The workspace always lives in the tab's OPFS. A profile can pair with a
+desktop/server as another WebRTC peer; see
+[Desktop/server peer](#desktopserver-peer-optional) below for the flow.
 
 
 ## `node:*` shims
@@ -294,41 +292,44 @@ from the app URL passed to the script, and on first connect Chrome may ask for
 local-network access (`ws://127.0.0.1`); allow it. The opened URL contains the
 machine's automation socket — it is local-only, but should not be shared.
 
-### Desktop mirror (optional)
+### Desktop/server peer (optional)
 
 There is no storage-backend selector: the workspace always lives in OPFS. A
-profile can bind a real folder on the machine running the bridge as a **desktop
-mirror**, which is kept in sync both ways:
+profile can pair with a desktop/server using the **same channel flow as two
+browsers** — a code, a DTLS verification phrase, then the same `SyncEngine`.
 
-- The toolbar shows a small `desktop: …` chip (last sync / offline); there is
-  no mode to pick. `?server=…` or `bob:storage-server` in localStorage points
-  the tab at a bridge on a non-default port.
-- **Profiles → desktop mirror** registers
-  `~/.bobkat/folders/<name>` on the bridge (`POST /roots`) and binds it to the
-  new OPFS profile. The **Unbind** action removes the binding (both copies are
-  kept); **Sync now** runs a pass immediately.
-- The first pass of a fresh binding pulls the folder's existing files in. After
-  that, **OPFS is canonical**: if both sides changed a path since the last
-  pass, the tab's bytes win and the bridge preserves the desktop variant next
-  to it as `<file>.conflict-<timestamp>`.
-- Deletions propagate; `logs/`, `.git/`, `.gpb-*`, `assets/inbox/` and
-  conflict copies never sync (each replica keeps its own history/run log).
-- The bridge stores the last-synced manifest per folder root in
-  `~/.bobkat/mirrors/<root>.json` and exposes the protocol as
-  `POST /mirror/plan` + `POST /mirror/apply` (selected with `x-bob-root`).
-
-Desktop-only operations run against that real folder through the bridge's
-existing `/fs/*`, `/git` and `/sql/*` routes. The folder is sandboxed to the
-registered root and the bridge is loopback-only:
-
-```sh
-npm run storage-server /home/love/grandma-workspace   # -> http://127.0.0.1:8795
-```
-
-The tab's git is isomorphic-git over OPFS; pushing it to a local bare path is
-not possible from the browser, so use the bridge `POST /git` routes against the
-mirror folder for real `git push`/`fetch`/`pull` (a local bare path is fine
-there). The tab's `?remote=` clone/push still needs a CORS http URL.
+- On the desktop/server, `npm run pair` creates a mailbox channel on the
+  existing `:8795` and prints the channel id, one-time code, mirror folder and
+  requested exec allowlist. `--exec git,make,…` grants ops; `--list` and
+  `--revoke <profile>` manage paired profiles.
+- In the tab: **Sync… → Pair… → Desktop / server**, enter the URL, channel id
+  and code. Both sides show the same SAS; nothing syncs or executes before
+  the operator approves on the console.
+- First pairing: if the desktop folder already holds a workspace it replaces
+  the profile's files; an empty folder receives the tab's workspace. Approval
+  mints a per-profile client key and the tab pins a per-profile server proof
+  key, so later boots reconnect without a human step.
+- Mirror sync runs through the multi-peer engine (journal on the server lives
+  outside the folder); conflicts keep both copies, and a convergence barrier
+  makes an op's changed files visible before the tool result returns.
+- Exec is `src/tools/shell.ts`: allowlisted `execFile`, cwd locked to the
+  folder, argument path-escape guard, git deny-list, timeout/output caps. The
+  agent worker routes only allowlisted commands to the peer over a
+  `MessagePort`; everything else keeps using the local virtual shell.
+- The Node peer uses werift and the same provider/`rtcPeer`/engine; local and
+  remote deployments differ only in mailbox URL and ICE servers. To expose the
+  mailbox beyond loopback:
+  ```sh
+  BOB_CHANNEL_HOST=0.0.0.0              # default is 127.0.0.1; put HTTPS in front
+  BOB_APP_ORIGINS=https://bob.example.com
+  BOB_ICE_SERVERS='[{"urls":"stun:stun.example.com:3478"}]'
+  npm run bob
+  ```
+  The admin API stays loopback-only; the mailbox/Telegram/STT share the port,
+  so an operator exposing it must front it with HTTPS and a firewall.
+- `/fs`, `/git`, `/sql` and `/roots` are **not mounted** by the product
+  process. The standalone `storage-server.mjs` CLI keeps them for tests/debug;
+  `/health` and the opt-in `/stt` remain on the channel server.
 
 `npm run smoke` needs a Chromium/Chrome binary (override with `CHROME_BIN`) and
 the admin running. It exercises OPFS writes/rename, tree discovery,
@@ -341,6 +342,11 @@ scoping, seed-binding persistence) and `npm run smoke:seed-update` (banner,
 apply, run-log
 preservation and version recording against a fake BobSwap service). Both accept
 `CHROME_BIN` like the other smokes.
+
+The desktop/server peer has an end-to-end check (`npm run smoke:peer`): it
+spawns the combined process, drives the real pair dialog, matches the SAS,
+approves the mirror and exec capabilities, verifies mirror push/pull, runs an
+allowlisted shell op with convergence, and reloads to test silent reconnect.
 
 The pairing phrase (short authentication string) has its own check that needs
 no app build or server: `npm run smoke:pairing` starts a throwaway Vite dev
@@ -394,14 +400,22 @@ reloads the tab).
   explicit seed pick — the bundled snapshot or any seed
   listed on a configured BobSwap service (a binding is stored and its archive is
   pulled immediately). A copy of the current profile needs no seed; a
-  **desktop mirror** profile starts from its folder (the first pass pulls it in).
+  paired desktop/server profile starts from its folder (first pairing pulls it in).
   Deleting non-active profiles is also there. Each profile has its own
   `workspace/`, run log, chats, patterns and git history.
+- **Hidden… except: is per profile.** **Profiles** → **Hidden… except:** picks
+  the top-level apps that stay on the board; every other app starts in the
+  hidden rail. Pick `contacts` and `files` to hide `kinit`, `email` and the
+  rest, or leave every box unchecked for trunk alone. **Use trunk-only
+  default** clears the list. Exceptions are re-applied on each load, each
+  profile keeps its own board layout, and active apps can raise up to two tiles
+  beside trunk.
 - **Export**/**Import** and the BobSwap flows act on the **active** profile.
   Archive paths stay `workspace/...`, so the same file can be imported into any
   profile, any device, or packed by `make-seed`.
-- A profile can bind **one** desktop mirror folder; the binding is stored in the
-  registry (`kind: "desktop"`, `folder`). Unbinding keeps both copies.
+- A profile can pair with **one** desktop/server; the mirror folder is stored in
+  the registry (`kind: "desktop"`, `folder`). Unbinding clears the local link;
+  `npm run pair -- --revoke` removes the server credential.
 
 ## Seed sources (BobSwap seed shelf)
 
@@ -505,8 +519,8 @@ npm run web:standalone     # http://localhost:8080
 `web/scripts/serve.mjs` is a zero-dependency loopback static server for
 `web/dist`; it answers `/api/*` with 404 because there is no admin API. The
 workspace (files, SQL, git, patterns) needs no server. Telegram, transcription,
-the storage bridge/desktop mirror and the `/api/llm` proxy are server-only and
-stay unavailable by design.
+the peer mailbox/desktop ops and the `/api/llm` proxy are server-only and stay
+unavailable by design.
 
 If port 8080 is taken (usually by the admin), stop it or choose another origin:
 `PORT=8090 npm run web:standalone`.

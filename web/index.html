@@ -126,6 +126,9 @@
       .badge { font-size: 11px; border: 1px solid var(--border); border-radius: 99px; padding: 0.05rem 0.45rem; color: var(--muted); }
       .profile-row { display: flex; justify-content: space-between; gap: 0.8rem; align-items: center; padding: 0.45rem 0; border-bottom: 1px solid var(--border); }
       .profile-row:last-child { border-bottom: 0; }
+      #hidden-app-list { display: flex; flex-wrap: wrap; gap: 0.35rem 1.1rem; margin: 0.4rem 0; }
+      .hidden-app-row { display: flex; align-items: center; gap: 0.4rem; width: auto; margin: 0; color: var(--fg); }
+      .hidden-app-row input { display: inline; width: auto; margin: 0; }
       #share-code { font-size: 28px; letter-spacing: 0.25em; color: var(--accent); }
       #share-check { font-size: 20px; letter-spacing: 0.15em; color: var(--accent); }
       /* Pre-UI boot splash. The web target prepares the workspace (profiles,
@@ -213,7 +216,7 @@
 
     <dialog id="profile-dialog">
       <h3>Workspace profiles</h3>
-      <p class="muted">Each profile is a workspace in this browser. A profile can also keep a synced copy in a folder on this machine's bridge (a desktop mirror). Switching reloads the tab.</p>
+      <p class="muted">Each profile is a workspace in this browser. A profile can pair with a desktop/server in Sync… → Pair…; the paired folder is its mirror. Switching reloads the tab.</p>
       <h4>Manage profiles</h4>
       <div id="profile-list"></div>
       <h4>Create profile</h4>
@@ -225,7 +228,6 @@
           <select id="profile-new-source">
             <option value="blank">fresh workspace (choose its seed)</option>
             <option value="duplicate">copy of the current profile</option>
-            <option value="desktop">desktop mirror (this machine's bridge)</option>
           </select>
         </label>
         <label id="profile-new-seed-label">Seed
@@ -233,15 +235,29 @@
             <option value="" disabled selected>pick a seed…</option>
           </select>
         </label>
-        <label id="profile-new-folder-label" hidden>Desktop mirror folder name
-          <input id="profile-new-folder" placeholder="work" autocomplete="off" />
-        </label>
         <p id="profile-create-hint" class="muted"></p>
         <progress id="profile-seed-bar" max="100" value="0" hidden></progress>
         <label class="inline"><input id="profile-new-switch" type="checkbox" checked /> switch to it after creating</label>
         <div class="row-actions"><button type="submit">Create profile</button></div>
       </form>
       <div class="row-actions"><button id="profile-close" type="button">Close</button></div>
+    </dialog>
+
+    <dialog id="hidden-dialog">
+      <h3>Hidden… except:<span id="hidden-profile-suffix"> — <span id="hidden-profile-name"></span></span></h3>
+      <p class="muted">
+        These top-level tiles stay on the board; every other app starts in the hidden rail.
+        Leave every box unchecked to start on trunk alone, or use
+        <strong>Trunk-only default</strong> to clear the list (active apps can still raise up
+        to two tiles beside trunk).
+      </p>
+      <div id="hidden-app-list"></div>
+      <p id="hidden-status" class="muted"></p>
+      <div class="row-actions">
+        <button id="hidden-save" type="button">Save</button>
+        <button id="hidden-quiet" type="button" hidden>Use trunk-only default</button>
+        <button id="hidden-close" type="button">Close</button>
+      </div>
     </dialog>
 
     <dialog id="seed-dialog">
@@ -377,6 +393,16 @@
         Cross-device sync is peer-to-peer: the pairing blobs only carry WebRTC
         addressing, never workspace content. Same-origin tabs need nothing here.
       </p>
+      <h4>Desktop / server</h4>
+      <p class="muted">The desktop console runs <code>npm run pair</code> and prints a channel id + code. Joining is the same channel flow as BobSwap; the verification phrase must match the console. If the desktop folder already has a workspace, it replaces this profile's files on first pairing; an empty folder receives this workspace.</p>
+      <div class="grid">
+        <label>Server URL<input id="pair-server-url" placeholder="http://127.0.0.1:8795" autocomplete="off" /></label>
+        <label>Channel id<input id="pair-server-channel" placeholder="sc_…" autocomplete="off" /></label>
+        <label>Pairing code<input id="pair-server-code" placeholder="ABCD-1234" autocomplete="off" /></label>
+      </div>
+      <div class="row-actions"><button id="pair-server-join" type="button">Join server channel</button></div>
+      <p id="pair-server-status" class="muted"></p>
+
       <h4>Manual (no service)</h4>
       <div class="row-actions">
         <button id="pair-offer" type="button">Create an offer</button>

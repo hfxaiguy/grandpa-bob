@@ -39,6 +39,7 @@ const stale = {
       name: "travel",
       createdAt: "2026-10-01T00:00:00.000Z",
       lastUsedAt: "2026-10-02T00:00:00.000Z",
+      visibleApps: ["kinit", "email", "kinit", "  "],
       seed: {
         baseUrl: "https://bobswap.example.com/",
         account: "personal",
@@ -58,6 +59,19 @@ assert.equal(parsed.profiles[0].name, "default");
 assert.equal(parsed.profiles[1].name, "travel");
 assert.equal(parsed.profiles[1].seed?.baseUrl, "https://bobswap.example.com", "trailing slash trimmed");
 assert.equal(parsed.profiles[1].seed?.lastVersion?.version, "3f9a1b2c4d5e-20261023T005733Z");
+assert.deepEqual(parsed.profiles[1].visibleApps, ["kinit", "email"], "visible exceptions are trimmed and de-duplicated");
+
+// An explicit empty list is meaningful: it means only trunk is on the board.
+const visible = parseProfileRegistry({
+  version: 1,
+  profiles: [{ name: "default", createdAt: "x", visibleApps: [] }],
+});
+assert.deepEqual(visible.profiles[0].visibleApps, [], "an empty exception list is preserved");
+const badVisible = parseProfileRegistry({
+  version: 1,
+  profiles: [{ name: "default", createdAt: "x", visibleApps: "email" }],
+});
+assert.equal(badVisible.profiles[0].visibleApps, undefined, "a non-array exception list is ignored");
 
 // Idempotent round-trip.
 assert.deepEqual(parseProfileRegistry(JSON.parse(JSON.stringify(parsed))), parsed);

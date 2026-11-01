@@ -82,6 +82,10 @@ export interface UiState {
   /** The most recent failure (a failed turn or a failed model call), shown
    *  as a dismissible banner. */
   lastError: { title: string; text: string } | null;
+  /** A hidden tile whose app is active but could not raise because both app
+   *  seats are taken; its rail square pulses until opened (or the pulse
+   *  times out). */
+  raiseDenied: string | null;
   layout: Layout;
   /** The event stream is shown. Persisted; on a small screen it starts hidden
    *  and folds into a bottom sheet when opened. */
@@ -96,10 +100,31 @@ export interface UiState {
   showMachine: boolean;
 }
 
-const LAYOUT_KEY = "gpb.tiled.layout";
+/** The active profile's name (localStorage is set before the app mounts). */
+function storedProfileName(): string {
+  try {
+    return localStorage.getItem("bob:profile") || "default";
+  } catch {
+    return "default";
+  }
+}
+
+/** Layouts are per profile: hidden tiles in one workspace must not leak into
+ *  another. The old unscoped key still seeds the default profile. */
+const LEGACY_LAYOUT_KEY = "gpb.tiled.layout";
+const LAYOUT_KEY = `gpb.tiled.layout:${storedProfileName()}`;
 /** Apps a brand-new session keeps on the board, besides trunk (the
- *  conversation itself). Everything else parks in the hidden rail. */
-const NEW_SESSION_KEEP = ["contacts", "files"];
+ *  conversation itself) when the profile has no explicit exception list. Empty:
+ *  a fresh chat opens on trunk alone, and active apps raise their tiles as
+ *  they run (see `maybeRaiseTile`). */
+const NEW_SESSION_KEEP: readonly string[] = [];
+/** Board seats for auto-raised app tiles, beside trunk. The bot opens a tile
+ *  when its app becomes active; with both seats taken the app waits in the
+ *  rail (its square pulses) instead of evicting a tile the user may be
+ *  reading. Manual opens from the rail are never capped. */
+const AUTO_RAISE_SEATS = 2;
+/** How long a denied raise keeps pulsing its rail square. */
+const RAISE_DENIED_MS = 12_000;
 const MACHINE_KEY = "gpb.showMachine";
 const STREAM_KEY = "gpb.tiled.stream";
 const BRIDGE_KEY = "bob:telegram-bridge";
@@ -165,7 +190,11 @@ function loadBridge(): boolean {
 
 function loadLayout(): Layout {
   try {
-    const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null");
+    let saved = localStorage.getItem(LAYOUT_KEY);
+    if (saved === null && storedProfileName() === "default") {
+      saved = localStorage.getItem(LEGACY_LAYOUT_KEY);
+    }
+    const raw = JSON.parse(saved || "null");
     if (raw && typeof raw === "object") {
       return {
         order: Array.isArray(raw.order) ? raw.order : [],
@@ -248,6 +277,7 @@ export const [state, setState] = createStore<UiState>({
   toast: "",
   toastErr: false,
   lastError: null,
+  raiseDenied: null,
   layout: loadLayout(),
   streamOpen: loadStreamOpen(),
   activity: {},
@@ -542,10 +572,9 @@ export async function selectSession(key: string): Promise<void> {
 export async function newSession(): Promise<void> {
   try {
     await postJSON("/api/session", { new: true });
-    // A fresh chat opens quiet: trunk, contacts and files on the board, every
-    // other tile parked in the rail. The layout persists until a tile is
-    // reopened, so this resets by design on every new session.
-    parkAllExcept();
+    // A fresh chat opens on the profile's board: an explicit "hidden… except:"
+    // list decides which tiles stay; without one, trunk alone is on the board.
+    resetBoardForNewSession();
     await refreshSession();
   } catch (e) {
     toast(e instanceof Error ? e.message : "could not start a session", true);
@@ -801,6 +830,62 @@ function touchActivity(app: string | null | undefined, at?: number): void {
   setState("activity", name, Math.max(state.activity[name] ?? 0, when));
 }
 
+/** The board tile that carries `app`: a parented app surfaces through its
+ *  top-level ancestor (sub-apps never board). Null for trunk / unknown apps. */
+function boardTileOf(app: string | null | undefined): string | null {
+  if (!app || app === "trunk") return null;
+  let cur = state.apps.find((a) => a.name === app);
+  const seen = new Set<string>();
+  while (cur?.parent) {
+    if (seen.has(cur.name)) return null;
+    seen.add(cur.name);
+    const parentName: string = cur.parent;
+    cur = state.apps.find((a) => a.name === parentName);
+  }
+  return cur ? cur.name : null;
+}
+
+/** Board seats in use: every visible tile except trunk. */
+function appSeatsUsed(): number {
+  return orderedApps().reduce((n, a) => n + (a.name === "trunk" ? 0 : 1), 0);
+}
+
+let raiseDeniedTimer: ReturnType<typeof setTimeout> | undefined;
+
+function setRaiseDenied(name: string): void {
+  setState("raiseDenied", name);
+  clearTimeout(raiseDeniedTimer);
+  raiseDeniedTimer = setTimeout(() => {
+    if (state.raiseDenied === name) setState("raiseDenied", null);
+  }, RAISE_DENIED_MS);
+}
+
+function clearRaiseDenied(name?: string): void {
+  if (name && state.raiseDenied !== name) return;
+  clearTimeout(raiseDeniedTimer);
+  if (state.raiseDenied !== null) setState("raiseDenied", null);
+}
+
+/** Live activity for `app`: raise its parked tile while a seat is free,
+ *  otherwise leave it in the rail with a pulsing square. Only live SSE frames
+ *  call this (never history seeding), so switching sessions does not
+ *  rearrange the board. */
+function maybeRaiseTile(app: string | null | undefined): void {
+  const tile = boardTileOf(app);
+  if (!tile) return;
+  if (!state.layout.hidden.includes(tile)) {
+    clearRaiseDenied(tile);
+    return;
+  }
+  if (appSeatsUsed() >= AUTO_RAISE_SEATS) {
+    setRaiseDenied(tile);
+    return;
+  }
+  setState("layout", "hidden", (h) => h.filter((x) => x !== tile));
+  saveLayout();
+  clearRaiseDenied(tile);
+}
+
 /** The most recent app a live event was attributed to. Turns fire an event per
  *  step; bumping the owning tile on every one of them would reshuffle the grid
  *  several times a second, so activity only moves when the run changes app. */
@@ -846,13 +931,16 @@ export function dismissError(): void {
 }
 
 export function toggleHidden(name: string): void {
+  const wasHidden = state.layout.hidden.includes(name);
   setState("layout", "hidden", (h) => (h.includes(name) ? h.filter((x) => x !== name) : [...h, name]));
   saveLayout();
+  // A manual open answers the app's pulse; parking a tile leaves the others be.
+  if (wasHidden) clearRaiseDenied(name);
 }
 
 /** Park every board tile except trunk and `keep`, restoring any of those that
- *  were parked before. Starting a session uses this so a fresh chat opens on a
- *  quiet board; the rail still lists everything else. Parented apps are left
+ *  were parked before. Starting a session uses this so a fresh chat opens on
+ *  trunk alone; the rail still lists everything else. Parented apps are left
  *  alone — their seat is the parent's rail, never the board's. */
 export function parkAllExcept(keep: readonly string[] = NEW_SESSION_KEEP): void {
   const shown = new Set(["trunk", ...keep]);
@@ -861,6 +949,58 @@ export function parkAllExcept(keep: readonly string[] = NEW_SESSION_KEEP): void 
     "hidden",
     state.apps.filter((a) => !a.parent && !shown.has(a.name)).map((a) => a.name),
   );
+  clearRaiseDenied();
+  saveLayout();
+}
+
+/**
+ * The active profile's "hidden… except:" list, published by the browser host
+ * before the app mounts. `null` means the profile has no explicit list, so the
+ * trunk-only board stays the new-chat default.
+ */
+function profileVisibleApps(): string[] | null {
+  if (typeof window === "undefined") return null;
+  const raw = (window as unknown as { __bobProfileVisibleApps?: unknown }).__bobProfileVisibleApps;
+  if (!Array.isArray(raw)) return null;
+  return raw.filter((name): name is string => typeof name === "string" && name.trim().length > 0);
+}
+
+/** Hide every top-level tile the profile did not list as a board exception.
+ *  On boot this reasserts the profile default over the saved layout; apps are
+ *  still reachable from the rail, and live runs can raise up to two seats. */
+export function applyProfileVisibleExceptions(): void {
+  const exceptions = profileVisibleApps();
+  if (exceptions === null) return;
+  const visible = new Set(exceptions);
+  setState(
+    "layout",
+    "hidden",
+    state.apps
+      .filter((app) => !app.parent && app.name !== "trunk" && !visible.has(app.name))
+      .map((app) => app.name),
+  );
+  clearRaiseDenied();
+  saveLayout();
+}
+
+/** Reset the board for a new chat: an explicit profile exception list decides
+ *  which tiles stay visible; without one, trunk alone stays and active apps
+ *  raise themselves. */
+export function resetBoardForNewSession(): void {
+  const exceptions = profileVisibleApps();
+  if (exceptions === null) {
+    parkAllExcept();
+    return;
+  }
+  const visible = new Set(exceptions);
+  setState(
+    "layout",
+    "hidden",
+    state.apps
+      .filter((app) => !app.parent && app.name !== "trunk" && !visible.has(app.name))
+      .map((app) => app.name),
+  );
+  clearRaiseDenied();
   saveLayout();
 }
 
@@ -1017,6 +1157,7 @@ export function handleSSE(msg: any): void {
       if (state.turns.some((t) => t.turnId === msg.turnId)) return;
       // The app the human just spoke to is the most recently active one.
       touchActivity(msg.inputApp, msg.ts);
+      maybeRaiseTile(msg.inputApp);
       setState(
         produce((s) => {
           s.turns.push({
@@ -1046,6 +1187,9 @@ export function handleSSE(msg: any): void {
         lastTouchedApp = ev.app;
         touchActivity(ev.app, typeof ev.ts === "number" ? ev.ts : undefined);
       }
+      // Raises are checked on every event (not just app changes), so a seat
+      // freed by a manual park can be taken by the app that is still running.
+      maybeRaiseTile(ev?.app);
       setState(
         produce((s) => {
           const t = s.turns.find((x) => x.turnId === msg.turnId);
@@ -1073,6 +1217,7 @@ export function handleSSE(msg: any): void {
         lastTouchedApp = msg.app;
         touchActivity(msg.app);
       }
+      maybeRaiseTile(msg.app);
       setState(
         produce((s) => {
           const t = s.turns.find((x) => x.turnId === msg.turnId);
@@ -1201,6 +1346,8 @@ export async function init(): Promise<void> {
   }
   boot("loading apps and models…", 10);
   await Promise.all([refreshApps(), refreshPatterns(), refreshModels()]);
+  // Profile-level board exceptions are applied once the app catalog is known.
+  applyProfileVisibleExceptions();
   boot("loading apps and models…", 25);
   // The URL carries the open chat. A reload is an explicit pick, so
   // `?session=<key>` resumes that conversation — restoring its turns, memory
@@ -1235,6 +1382,9 @@ export async function init(): Promise<void> {
     boot("starting a new chat…", 30);
     try {
       await postJSON("/api/session", { new: true });
+      // A plain page load lands on a new chat, so it starts on the same
+      // trunk-only board as clicking "new chat" (a resume keeps its layout).
+      resetBoardForNewSession();
     } catch (e) {
       console.warn("session:", e);
     }

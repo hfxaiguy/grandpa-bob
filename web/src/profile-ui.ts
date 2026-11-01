@@ -9,20 +9,19 @@
 import {
   DEFAULT_PROFILE,
   activateProfile,
-  bindDesktopMirror,
   createProfile,
   deleteProfile,
   isValidProfileName,
   isValidSeedName,
   profileHandle,
   recordSeedVersion,
+  setProfileVisibleApps,
   setSeedBinding,
   unbindDesktopMirror,
   type ProfileRecord,
   type ProfileRegistry,
   type SeedBinding,
 } from "./profiles";
-import { STATE_HOME } from "./state-dir";
 import {
   activeSwapService,
   DEFAULT_SWAP_SERVICE_URL,
@@ -49,13 +48,12 @@ import {
   type WorkspaceArchive,
 } from "./workspace-transfer";
 import { loadOrCreateDevice, saveDeviceName } from "./device-keys";
-import type { MirrorStatus } from "./mirror";
+import { clearServerLink } from "./server-link";
+import type { MirrorStatus } from "./peer-status";
 
 export interface ProfileUiHooks {
   activeProfile(): string;
   registry(): ProfileRegistry;
-  /** Storage bridge origin used for folder registration and the mirror. */
-  bridgeUrl(): string;
   flash(text: string, ms?: number): void;
   reload(): void;
   refreshRegistry(): Promise<ProfileRegistry>;
@@ -101,6 +99,9 @@ let seedDialogMode: "binding" | "service" = "binding";
 let pendingSeedCheck: { meta: RemoteSeedMeta; version?: string } | null = null;
 let shareAbort: AbortController | null = null;
 let receiveAbort: AbortController | null = null;
+/** Cached top-level app names; the workspace's app folders rarely change. */
+let appNames: string[] | null = null;
+let hiddenProfile = "";
 
 function getHooks(): ProfileUiHooks {
   if (!hooks) throw new Error("profile UI is not wired");
@@ -138,15 +139,6 @@ function fillServiceFields(service: SwapService | null): void {
 }
 
 // ── profile picker + manager ─────────────────────────────────────────────
-
-/**
- * Where a new desktop mirror's folder lives on this machine: under
- * `~/.bobkat/folders/<name>` — the bridge expands the leading `~` so
- * the browser never needs to know the desktop's home path.
- */
-function homeFolder(name: string): string {
-  return `${STATE_HOME}/folders/${name}`;
-}
 
 function renderProfileSelect(): void {
   const select = el<HTMLSelectElement>("profile-select");
@@ -190,6 +182,17 @@ async function renderProfileList(): Promise<void> {
       badge.textContent = `seed: ${profile.seed.account}/${profile.seed.seedName}`;
       info.append(" ", badge);
     }
+    if (Array.isArray(profile.visibleApps)) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = profile.visibleApps.length
+        ? `hidden except: ${profile.visibleApps.join(", ")}`
+        : "only trunk visible";
+      badge.title = profile.visibleApps.length
+        ? `These tiles stay on the board; every other app starts in the hidden rail: ${profile.visibleApps.join(", ")}`
+        : "Only trunk shows by default; every other app starts in the hidden rail";
+      info.append(" ", badge);
+    }
 
     const actions = document.createElement("div");
     actions.className = "row-actions";
@@ -206,6 +209,7 @@ async function renderProfileList(): Promise<void> {
     }
 
     actions.append(
+      actionButton("Hidden… except:", () => void openHiddenDialog(profile)),
       actionButton("Seed…", () => void openSeedDialog(profile)),
       actionButton("Publish…", () => void publishProfile(profile)),
     );
@@ -237,6 +241,7 @@ async function renderProfileList(): Promise<void> {
             ) {
               return;
             }
+            clearServerLink(profile.name);
             void unbindDesktopMirror(profile.name)
               .then(async () => {
                 if (isActive) {
@@ -296,6 +301,111 @@ async function renderProfileList(): Promise<void> {
   }
 }
 
+/** Top-level app tiles, excluding the trunk (always on the board). */
+async function topLevelAppNames(): Promise<string[]> {
+  if (appNames) return appNames;
+  const res = await fetch("/api/apps", { headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error(`could not list apps (HTTP ${res.status})`);
+  const data = (await res.json()) as { apps?: Array<{ name?: unknown; parent?: unknown }> };
+  appNames = (data.apps ?? [])
+    .filter((app) => typeof app.name === "string" && app.name !== "trunk" && !app.parent)
+    .map((app) => app.name as string);
+  return appNames;
+}
+
+/** Reflect changed board exceptions immediately; boot picks them up next load. */
+function publishVisibleApps(profile: string, apps: string[] | null): void {
+  if (profile !== getHooks().activeProfile()) return;
+  (window as unknown as { __bobProfileVisibleApps?: string[] | null }).__bobProfileVisibleApps = apps;
+}
+
+/** Checkbox list of top-level apps kept on the board ("hidden… except:"). */
+async function openHiddenDialog(profile: ProfileRecord): Promise<void> {
+  const dialog = el<HTMLDialogElement>("hidden-dialog");
+  if (!dialog) return;
+  hiddenProfile = profile.name;
+  const suffix = el<HTMLElement>("hidden-profile-name");
+  if (suffix) suffix.textContent = profile.name;
+  const quiet = el<HTMLButtonElement>("hidden-quiet");
+  if (quiet) quiet.hidden = !Array.isArray(profile.visibleApps);
+  const status = el<HTMLElement>("hidden-status");
+  if (status) status.textContent = "";
+  const list = el<HTMLDivElement>("hidden-app-list");
+  if (list) list.textContent = "loading apps…";
+  const save = el<HTMLButtonElement>("hidden-save");
+  if (save) save.disabled = true;
+  if (!dialog.open) dialog.showModal();
+
+  let names: string[];
+  try {
+    names = await topLevelAppNames();
+  } catch (err) {
+    if (list) list.textContent = `could not list apps: ${errorText(err)}`;
+    return;
+  }
+  if (hiddenProfile !== profile.name || !list) return;
+  if (save) save.disabled = false;
+  const selected = new Set(profile.visibleApps ?? []);
+  list.replaceChildren(
+    ...names.map((name) => {
+      const label = document.createElement("label");
+      label.className = "hidden-app-row";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = name;
+      box.checked = selected.has(name);
+      label.append(box, document.createTextNode(name));
+      return label;
+    }),
+  );
+  if (!names.length) list.textContent = "no app tiles found in this workspace";
+}
+
+async function saveVisibleApps(profile: string, apps: string[] | null): Promise<void> {
+  const dialog = el<HTMLDialogElement>("hidden-dialog");
+  const status = el<HTMLElement>("hidden-status");
+  const save = el<HTMLButtonElement>("hidden-save");
+  const quiet = el<HTMLButtonElement>("hidden-quiet");
+  if (save) save.disabled = true;
+  if (quiet) quiet.disabled = true;
+  if (status) status.textContent = "saving…";
+  try {
+    await setProfileVisibleApps(profile, apps);
+    publishVisibleApps(profile, apps);
+    getHooks().flash(
+      apps === null
+        ? `"${profile}" uses the trunk-only default`
+        : apps.length
+          ? `"${profile}" keeps ${apps.join(", ")} on the board by default`
+          : `"${profile}" leaves only trunk on the board by default`,
+      6000,
+    );
+    dialog?.close();
+    await renderProfileList();
+  } catch (err) {
+    if (status) status.textContent = `save failed: ${errorText(err)}`;
+  } finally {
+    if (save) save.disabled = false;
+    if (quiet) quiet.disabled = false;
+  }
+}
+
+function wireHiddenDialog(): void {
+  const dialog = el<HTMLDialogElement>("hidden-dialog");
+  el<HTMLButtonElement>("hidden-close")?.addEventListener("click", () => dialog?.close());
+  el<HTMLButtonElement>("hidden-save")?.addEventListener("click", () => {
+    if (!hiddenProfile) return;
+    const list = el<HTMLDivElement>("hidden-app-list");
+    const checked = list
+      ? [...list.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:checked')].map((box) => box.value)
+      : [];
+    void saveVisibleApps(hiddenProfile, checked);
+  });
+  el<HTMLButtonElement>("hidden-quiet")?.addEventListener("click", () => {
+    if (hiddenProfile) void saveVisibleApps(hiddenProfile, null);
+  });
+}
+
 function actionButton(
   label: string,
   onClick: () => void,
@@ -322,11 +432,9 @@ function wireProfileManager(): void {
 
   const form = el<HTMLFormElement>("profile-create");
   const sourceSelect = el<HTMLSelectElement>("profile-new-source");
-  const folderLabel = el<HTMLElement>("profile-new-folder-label");
   const seedLabel = el<HTMLElement>("profile-new-seed-label");
   const syncSourceFields = (): void => {
     const source = sourceSelect?.value ?? "blank";
-    if (folderLabel) folderLabel.hidden = source !== "desktop";
     if (seedLabel) seedLabel.hidden = source !== "blank";
   };
   sourceSelect?.addEventListener("change", syncSourceFields);
@@ -337,14 +445,9 @@ function wireProfileManager(): void {
     const ui = getHooks();
     const name = el<HTMLInputElement>("profile-new-name")?.value.trim() ?? "";
     const source = el<HTMLSelectElement>("profile-new-source")?.value ?? "blank";
-    const folder = el<HTMLInputElement>("profile-new-folder")?.value.trim() ?? "";
     const switchNow = el<HTMLInputElement>("profile-new-switch")?.checked ?? true;
     if (!isValidProfileName(name)) {
       ui.flash("profile names use lowercase letters, digits, dot, dash or underscore", 8000);
-      return;
-    }
-    if (source === "desktop" && !isValidProfileName(folder)) {
-      ui.flash("folder names use lowercase letters, digits, dot, dash or underscore", 8000);
       return;
     }
     const seedChoice = source === "blank" ? selectedSeedChoice() : null;
@@ -356,22 +459,7 @@ function wireProfileManager(): void {
       const hint = el<HTMLElement>("profile-create-hint");
       const submit = form?.querySelector<HTMLButtonElement>('button[type="submit"]') ?? null;
       try {
-        if (source === "desktop") {
-          // Register the folder on the bridge first; the profile stays an
-          // OPFS workspace and the folder becomes its synced mirror. If the
-          // folder already holds files, the first mirror pass pulls them in.
-          const res = await fetch(`${ui.bridgeUrl()}/roots`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name: folder, dir: homeFolder(folder) }),
-          });
-          if (!res.ok) {
-            const d = (await res.json().catch(() => ({}))) as { error?: string };
-            throw new Error(d.error ?? `bridge rejected the folder: HTTP ${res.status}`);
-          }
-          await createProfile(name, { kind: "blank" });
-          await bindDesktopMirror(name, folder);
-        } else if (source === "duplicate") {
+        if (source === "duplicate") {
           await createProfile(name, { kind: "duplicate", from: await profileHandle(ui.activeProfile()) });
         } else if (seedChoice?.kind === "remote") {
           // Fetch before creating anything: a failed pull must not leave a
@@ -1316,6 +1404,7 @@ export function wireProfileUi(profileHooks: ProfileUiHooks): void {
   });
 
   wireProfileManager();
+  wireHiddenDialog();
   wireSeedDialog();
   wireShareDialog();
   wireReceiveDialog();

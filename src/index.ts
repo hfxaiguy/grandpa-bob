@@ -51,6 +51,14 @@ interface StaticModule {
   startStaticServer(options?: { port?: number; host?: string }): Promise<{ server: http.Server }>;
 }
 
+/** The bundled Node peer (werift + the shared sync engine); built separately. */
+interface PeerModule {
+  configurePeerServer(options?: { allowedOrigins?: string[]; iceServers?: unknown[] }): Promise<{
+    handle(req: http.IncomingMessage, res: http.ServerResponse, url: URL): boolean;
+    close(): void;
+  }>;
+}
+
 /**
  * Locate the repo root by walking up from this module. The same file runs as
  * `src/index.ts` (tsx) and `dist/src/index.js` (built), which sit at different
@@ -72,17 +80,29 @@ function repoRoot(): string {
   throw new Error("cannot locate the repository root (web/scripts is missing)");
 }
 
-async function channelModules(): Promise<{ bridge: BridgeModule; serve: StaticModule }> {
+async function channelModules(): Promise<{ bridge: BridgeModule; serve: StaticModule; peer: PeerModule | null }> {
   const root = repoRoot();
   const load = <T>(rel: string): Promise<T> =>
     import(pathToFileURL(path.join(root, rel)).href) as Promise<T>;
+  let peer: PeerModule | null = null;
+  try {
+    peer = await load<PeerModule>(path.join("dist", "bridge", "bridge.mjs"));
+  } catch (err) {
+    console.warn(
+      `[peer] desktop/server peer unavailable (${err instanceof Error ? err.message : String(err)}). ` +
+        "Run npm run build:bridge (or npm run bob).",
+    );
+  }
   return {
     bridge: await load<BridgeModule>(path.join("web", "scripts", "storage-server.mjs")),
     serve: await load<StaticModule>(path.join("web", "scripts", "serve.mjs")),
+    peer,
   };
 }
 
 const HOST = "127.0.0.1";
+/** Channel APIs can be exposed for a remote server peer; default loopback. */
+const CHANNEL_HOST = process.env.BOB_CHANNEL_HOST?.trim() || HOST;
 /** One port for both channel APIs (telegram moved here; the bridge never moves). */
 const CHANNEL_PORT = Number(process.env.BOB_CHANNEL_PORT ?? process.env.STORAGE_PORT ?? "8795");
 const APP_PORT = Number(process.env.PORT ?? "8080");
@@ -91,6 +111,18 @@ const ALLOWED_ORIGINS = (process.env.BOB_APP_ORIGINS ?? "http://localhost:8080,h
   .split(",")
   .map((s) => s.trim().replace(/\/$/, ""))
   .filter(Boolean);
+/** STUN/TURN advertised to remote browsers (JSON array of RTCIceServer). */
+const ICE_SERVERS = (() => {
+  const raw = process.env.BOB_ICE_SERVERS?.trim();
+  if (!raw) return [];
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return Array.isArray(value) ? value : [];
+  } catch {
+    console.warn("[peer] BOB_ICE_SERVERS is not valid JSON; ignoring");
+    return [];
+  }
+})();
 
 const MAX_BODY = 1024 * 1024;
 
@@ -294,7 +326,7 @@ function startBot(bot: Bot): void {
 }
 
 async function main(): Promise<void> {
-  const { bridge, serve } = await channelModules();
+  const { bridge, serve, peer } = await channelModules();
   const bot = config.telegramToken
     ? createBot({
         token: config.telegramToken,
@@ -308,9 +340,12 @@ async function main(): Promise<void> {
     : null;
 
   const bridgeRoot = bridge.configureStorageBridge(process.env.WORKSPACE_DIR ?? process.cwd());
+  const peerServer = peer
+    ? await peer.configurePeerServer({ allowedOrigins: ALLOWED_ORIGINS, iceServers: ICE_SERVERS })
+    : null;
 
-  // ── everything on one channel port: telegram routes first (disjoint), then
-  //    the storage bridge (owns OPTIONS + /stt itself) ──────────────────────
+  // ── everything on one channel port: peer mailbox/admin, telegram routes,
+  //    then the storage bridge (STT/health for the app) ─────────────────────
   const server = http.createServer((req, res) => {
     let url: URL;
     try {
@@ -321,11 +356,20 @@ async function main(): Promise<void> {
       return;
     }
     const pathname = url.pathname;
+    if (peerServer?.handle(req, res, url)) return;
     if (pathname === "/healthz" || pathname.startsWith("/api/")) {
       void handleTelegram(req, res, url, bot);
       return;
     }
-    bridge.handleStorageRequest(req, res);
+    // The product path carries files/ops over the authenticated peer channel.
+    // The legacy HTTP bridge surface stays available only to the standalone
+    // debug CLI; here it serves health + the opt-in STT pass-through.
+    if (pathname === "/health" || pathname === "/stt" || req.method === "OPTIONS") {
+      bridge.handleStorageRequest(req, res);
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: `no route ${req.method} ${pathname}` }));
   });
 
   server.on("error", (err: NodeJS.ErrnoException) => {
@@ -336,10 +380,13 @@ async function main(): Promise<void> {
     throw err;
   });
 
-  server.listen(CHANNEL_PORT, HOST, () => {
-    console.log(`[channel] http://${HOST}:${CHANNEL_PORT} — storage bridge + telegram mailbox (loopback only)`);
+  server.listen(CHANNEL_PORT, CHANNEL_HOST, () => {
+    console.log(`[channel] http://${CHANNEL_HOST}:${CHANNEL_PORT} — peer mailbox + telegram API`);
     console.log(`[channel] bridge root: ${bridgeRoot}`);
     console.log(`[channel] allowed origins: ${ALLOWED_ORIGINS.join(", ")}`);
+    if (CHANNEL_HOST !== HOST) {
+      console.warn("[channel] peer mailbox is exposed beyond loopback — put HTTPS in front of it");
+    }
   });
 
   startSweep();
@@ -373,6 +420,7 @@ async function main(): Promise<void> {
     bot?.stop();
     server.close();
     staticServer?.close();
+    peerServer?.close();
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);

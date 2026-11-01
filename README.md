@@ -45,11 +45,12 @@ every change it makes is **git-committed automatically**.
   workspaces (switchable in the toolbar, each with its own chats, patterns, log
   and git history), and a profile can be bound to a **BobSwap seed** for
   updates.
-  - A profile can also keep a **desktop mirror**: a folder on the machine
-    running the storage bridge, kept in sync both ways (`~/.bobkat/folders/<name>`
-    by default, registered in `~/.bobkat/channels.json`). OPFS stays canonical;
-    desktop-only operations (real git against local paths, node:sqlite) run
-    against the mirrored folder through the same bridge.
+  - A profile can **pair with a desktop/server** as another WebRTC peer: the
+    desktop runs `npm run pair`, prints a channel id + one-time code, and both
+    sides compare the DTLS verification phrase before approval. The desktop
+    folder becomes the profile's mirror and an allowlisted exec surface; the
+    per-profile keys are pinned for silent reconnects. Local and remote servers
+    use the same channel flow.
   A **single-host lease** guarantees only one tab runs the agent per workspace
   (a second tab is read-only, with a *take over* button). A tab can also answer
   Telegram: the "bridge" toggle drains the channel's mailbox against a web
@@ -72,7 +73,7 @@ every change it makes is **git-committed automatically**.
 ```
 ┌───────────── browser tab — the only UI and the only agent host ─────────────┐
 │  web/ + ui/  ·  agent tree runs here  ·  workspace: OPFS (per profile)     │
-│  a profile can keep a synced mirror folder on the desktop                   │
+│  a profile can pair with a desktop/server that mirrors its folder          │
 └──────┬───────────────────┬──────────────────────────┬──────────────────────┘
        │                   │                          │
   channels: one process (`npm run bob`)
@@ -85,8 +86,8 @@ every change it makes is **git-committed automatically**.
 
 Everything is a **pass-through channel**: small loopback processes with no UI
 and no agent. The browser tab runs the agent, holds the OPFS workspace, drains
-the Telegram mailbox, and syncs with other replicas; a mirror binding lets it
-exchange that workspace with a real folder on the desktop. BobSwap remains the
+the Telegram mailbox, and syncs with other replicas; a paired desktop/server
+peer mirrors that workspace to a real folder and runs allowlisted desktop ops. BobSwap remains the
 seed shelf + zero-storage relay it always was. The shared core lives in
 `web/src` — `web/` must never import outside `web/` + `ui/`
 (`npm run test:standalone` enforces it).
@@ -152,8 +153,9 @@ web/                 the app — UI host + agent host + shared core
   src/server/        the in-browser backend (all /api/* answered client-side)
   src/agent/         worker: tree runner, tools, run log
   src/platform/      OPFS adapter + bridge clients, sqlite-wasm worker
-  src/profiles.ts    OPFS profiles + desktop mirror bindings, registry
-  src/mirror.ts      two-way OPFS ↔ desktop-folder mirror (bridge /mirror)
+  src/profiles.ts    OPFS profiles + paired-server bindings, registry
+  src/server-link.ts browser side of server pairing (mailbox, SAS, reconnect)
+  src/bridge/        Node peer: mailbox, werift channel, engine, exec ops
   src/host-lease.ts  single-host lease per workspace (Web Locks + heartbeat)
   src/sync/          Lamport journal + pull-only reconcile + transports
   src/swap.ts        BobSwap seeds + zero-storage relay client
@@ -326,13 +328,12 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    `~/.bobkat/.env` when present; `ENV_FILE=/path` overrides.
    `npm run bob` picks it up automatically (loopback API on `:8795`); without
    a token the same process just leaves the bot off.
-4. **Desktop mirror (optional)**: `npm run bob` serves `$WORKSPACE_DIR`
-   (default `~/grandma-workspace`) on `127.0.0.1:8795`.
-   A profile can bind a mirror folder with the app's Profiles → *desktop
-   mirror* flow (the bridge stores the folder registry in
-   `~/.bobkat/channels.json`); the tab's OPFS workspace stays canonical and
-   syncs both ways. Start the process with `BOB_STT=1` to expose the `/stt`
-   pass-through for in-tab voice transcription.
+4. **Desktop/server peer (optional)**: `npm run bob` serves the app plus the
+   mailbox on `127.0.0.1:8795`. Run `npm run pair` on the desktop to print a
+   channel id, one-time code and the approval prompt; the tab joins from
+   Sync… → Pair… → Desktop / server. Exec is opt-in via `--exec git,make,…`.
+   Start the process with `BOB_STT=1` to expose the `/stt` pass-through for
+   in-tab voice transcription.
 5. **Voice (optional)**: the browser records are transcribed by the bridge
    (`BOB_STT=1`); Telegram voice notes are transcribed by the channel. Both
    use whisper-server:
@@ -416,12 +417,16 @@ log; one composer is shown on the tile whose tree is paused at `.human()`.
 
 **Storage & profiles.** The workspace always lives in the tab's OPFS sandbox
 (Export/Import move a whole workspace as JSON); there is no storage backend to
-choose. A profile can bind a **desktop mirror** — a real folder on the machine
-running the loopback storage bridge — which syncs both ways in the background;
-OPFS is canonical and the folder is the surface for desktop-only operations.
-Profiles have their own chats, patterns, run log and git history. A
-**single-host lease** makes sure only one tab runs the agent per workspace: a
-second tab is read-only (with a *take over* button). A failed turn keeps a retry
+choose. A profile can **pair with a desktop/server** — the same WebRTC channel
+flow as two browsers, with a code + SAS approval — to mirror the workspace to a
+real folder and run allowlisted desktop exec through the authenticated channel.
+Profiles have their own chats, patterns, run log, git history and board layout.
+A profile can also choose which tiles stay visible (**Profiles** →
+**Hidden… except:**); every other app starts in the hidden rail. A new chat
+opens on trunk alone; as apps run, their tiles raise themselves (up to two beside trunk), and
+a third active app pulses in the rail until opened. A **single-host lease** makes
+sure only one tab runs the agent per workspace: a second tab is read-only (with
+a *take over* button). A failed turn keeps a retry
 composer; the Stop button aborts the run.
 
 **Voice.** The composer's 🎙/📎 routes audio to the bridge's `/stt`

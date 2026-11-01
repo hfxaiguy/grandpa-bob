@@ -15,6 +15,13 @@ const EXCLUDED = [
   /^logs\//,
   /^assets\/inbox\//,
   /(^|\/)\.gpb-sync\//,
+  // Build/dependency trees are machine-local; syncing them would flood the
+  // engine (and a mirror folder after `npm install`/`cargo build`).
+  /(^|\/)node_modules\//,
+  /(^|\/)\.venv\//,
+  /(^|\/)__pycache__\//,
+  /(^|\/)\.cache\//,
+  /(^|\/)target\//,
   // Conflict copies are sync-generated: they must never round-trip (a copy
   // of a copy of a copy) — the plan's rule, enforced here.
   /\.conflict-[0-9T-]+$/,

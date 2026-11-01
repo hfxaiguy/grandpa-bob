@@ -14,7 +14,7 @@
  * Excluded from sync by design: `.git/`, `logs/`, `.gpb-*`, `assets/inbox/`
  * (see hashmap.ts) — git history and run logs stay per-replica.
  */
-import { SyncEngine, type SyncState } from "./engine";
+import { SyncEngine, type SyncPeer, type SyncState } from "./engine";
 import type { Platform } from "../platform/types";
 import { broadcastPeer } from "./transport-broadcast";
 import {
@@ -28,6 +28,9 @@ export interface SyncHandle {
   engine: SyncEngine;
   state(): SyncState;
   onState(cb: (state: SyncState) => void): () => void;
+  /** Attach another peer (desktop/server) to the same engine. */
+  attach(peer: SyncPeer): void;
+  detach(peerId?: string): void;
   /**
    * Start a manual (no-service) pairing. `onOutgoing` receives the blob to
    * hand the other side; `accept` feeds the blob the other side produced;
@@ -77,6 +80,15 @@ export async function startSync(platform: Platform, opts: { id: string; channelN
     };
   }
 
+  // The cross-device peer is the only one `unpair` may close: same-origin
+  // BroadcastChannel and a paired desktop/server must keep running.
+  let crossPeer: SyncPeer | null = null;
+  const attachCross = (peer: SyncPeer): void => {
+    crossPeer?.close();
+    crossPeer = peer;
+    engine.attach(peer);
+  };
+
   const stateListeners = new Set<(state: SyncState) => void>();
   let state: SyncState = { status: "idle", detail: "", conflicts: [], lastSyncAt: null };
   engine.onState((next) => {
@@ -92,11 +104,17 @@ export async function startSync(platform: Platform, opts: { id: string; channelN
       cb(state);
       return () => stateListeners.delete(cb);
     },
+    attach(peer) {
+      engine.attach(peer);
+    },
+    detach(peerId) {
+      engine.detach(peerId);
+    },
     startManualPairing(role, onOutgoing) {
       const provider = new ManualSignaling(role);
       void provider.outgoing.then(onOutgoing).catch((err) => onOutgoing(`error: ${String(err)}`));
       const done = rtcPeer(provider, engine.id, { createChannel: role === "offerer" }).then(({ peer, phrase }) => {
-        engine.attach(peer);
+        attachCross(peer);
         return phrase;
       });
       return { accept: (blob: string) => provider.accept(blob), done };
@@ -110,11 +128,12 @@ export async function startSync(platform: Platform, opts: { id: string; channelN
         iceServers: channel.iceServers,
         createChannel: channel.role === "offerer",
       });
-      engine.attach(peer);
+      attachCross(peer);
       return phrase;
     },
     unpair() {
-      engine.detach();
+      crossPeer?.close();
+      crossPeer = null;
     },
   };
   return active;

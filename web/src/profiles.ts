@@ -68,6 +68,13 @@ export interface ProfileRecord {
    */
   kind?: "opfs" | "desktop";
   folder?: string;
+  /**
+   * Top-level tiles this profile keeps on the board ("hidden… except:"). Every
+   * other app starts parked in the hidden rail. Absent means the trunk-only
+   * default; an explicit list — including an empty one — replaces it, so
+   * `["contacts", "files"]` hides kinit, email and everything else.
+   */
+  visibleApps?: string[];
 }
 
 export interface ProfileRegistry {
@@ -123,6 +130,21 @@ function validSeedBinding(raw: unknown): SeedBinding | null {
   return binding;
 }
 
+/**
+ * App names as stored on a profile. Names come from `app/<dir>/` (the top-level
+ * folder name), so accept any non-empty string without control characters and
+ * de-duplicate. An absent field means the trunk-only default; an empty array is
+ * the explicit "only trunk" choice.
+ */
+function validVisibleApps(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const names = raw
+    .filter((name): name is string => typeof name === "string")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0 && name.length <= 128 && !/[\u0000-\u001f]/.test(name));
+  return [...new Set(names)].slice(0, 200);
+}
+
 /** Validate a parsed `/profiles.json`; throws a user-facing message. */
 export function parseProfileRegistry(raw: unknown): ProfileRegistry {
   if (!isRecord(raw)) throw new Error("not a profile registry (expected a JSON object)");
@@ -139,6 +161,8 @@ export function parseProfileRegistry(raw: unknown): ProfileRegistry {
       createdAt: typeof entry.createdAt === "string" ? entry.createdAt : new Date(0).toISOString(),
     };
     if (typeof entry.lastUsedAt === "string") record.lastUsedAt = entry.lastUsedAt;
+    const visibleApps = validVisibleApps(entry.visibleApps);
+    if (visibleApps) record.visibleApps = visibleApps;
     const binding = validSeedBinding(entry.seed);
     if (binding) record.seed = binding;
     if (entry.kind === "desktop") {
@@ -750,6 +774,25 @@ export async function deleteProfile(name: string): Promise<ProfileRegistry> {
   const profilesDir = await root.getDirectoryHandle(PROFILE_DIR);
   await profilesDir.removeEntry(name, { recursive: true });
   const next = patchRegistry(registry, name, () => null);
+  await writeRegistry(next);
+  return next;
+}
+
+/**
+ * Set the profile's board exceptions. `null` clears the list so a new chat
+ * falls back to trunk alone; `[]` means only trunk is on the board.
+ */
+export async function setProfileVisibleApps(
+  name: string,
+  apps: string[] | null,
+): Promise<ProfileRegistry> {
+  const registry = await loadRegistry();
+  const next = patchRegistry(registry, name, (record) => {
+    const updated = { ...record };
+    if (apps === null) delete updated.visibleApps;
+    else updated.visibleApps = validVisibleApps(apps) ?? [];
+    return updated;
+  });
   await writeRegistry(next);
   return next;
 }

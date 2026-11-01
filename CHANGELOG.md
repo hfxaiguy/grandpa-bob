@@ -2,12 +2,61 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — one pairing model: every endpoint is a peer
+
+The desktop mirror's private poll engine is gone. A desktop/server is now just
+another WebRTC peer using the same BobSwap-shaped channel flow as two browsers:
+
+- `npm run pair` (on the desktop/server) creates a mailbox channel on the
+  combined process's existing `:8795` and prints the channel id, single-use
+  code, capabilities and later the SAS. The tab joins from the same pair
+  dialog (`Desktop / server`); both SAS phrases must match before approval.
+- After approval the server mints a per-profile client key and pins a
+  per-profile server proof key. Reconnects use those keys plus the same
+  `SyncEngine`; no human step. `npm run pair -- --revoke <profile>` revokes.
+- Mirror + exec are **capabilities** approved on the server console. Exec is
+  `src/tools/shell.ts` (allowlist + cwd + argument escape guard + git deny),
+  never a shell string. Ops from the agent worker are routed to the peer over a
+  MessagePort; changed files converge before the tool result returns.
+- The interim `/mirror/*` routes, base-manifest reconciler, `web/src/mirror.ts`
+  and the browser-generated token/CLI-token-paste design are deleted. The
+  combined process no longer exposes `/fs`, `/git`, `/sql` or `/roots`; the
+  standalone `storage-server` CLI keeps them for tests/debug. STT/health stay.
+- All peers (BroadcastChannel, tab↔tab, tab↔server) attach to one multi-peer
+  engine; the journal can live outside the mirror folder; large envelopes are
+  chunked over SCTP; a round barrier makes convergence awaitable.
+- New `web/scripts/server-peer-smoke.mjs` (`npm run smoke:peer`) covers the real
+  dialog, SAS match, approval, mirror push, silent reconnect, desktop→OPFS
+  propagation and an allowlisted exec. `test:sync`, `test:desktop-profile`,
+  `smoke:browser`, `smoke:profiles` and `smoke:lease` still pass.
+
+## 2026-10-31 — new chats open on trunk alone; active apps raise two tiles
+
+A fresh chat (and a plain page load, which starts one) now parks every
+top-level app in the left rail; only the trunk tile is on the board. As apps
+become active their tiles raise themselves, up to two beside trunk. A third
+active app stays in the rail and its square pulses until clicked (manual
+opens are never capped), so the bot never evicts a tile mid-read. Profile
+**Hidden… except:** lists still override the trunk-only default.
+
 ## 2026-10-31 — tile descriptions open in a modal
 
 The ellipsized description under a tile's title is now a button: clicking it
 opens the app's full description in a scrollable modal, with the README's
 `## Guide` below when the app has one. The modal is portaled past the tile's
 clipping and closes on backdrop click or ✕.
+
+## 2026-10-31 — profiles choose which tiles stay visible (hidden… except:)
+
+Each profile now stores its own **Hidden… except:** list, set from the Profiles
+dialog. The checked top-level apps stay on the board; every other app starts in
+the hidden rail. A list such as `contacts, files` therefore hides `kinit`,
+`email` and the rest, while an empty list leaves trunk alone.
+**Use trunk-only default** clears the field, and board layouts are stored per
+profile (`gpb.tiled.layout:<profile>`; the old unscoped key still seeds
+`default`), so switching workspaces no longer carries hidden tiles across.
+Exceptions are re-applied on boot; active apps can still raise up to two tiles
+beside trunk.
 
 ## 2026-10-31 — Profiles moves beside Sync…
 
@@ -92,7 +141,7 @@ newest version with no read key while it is public:
   offer/apply, 304 re-check, private-again lockout); `test:seed-freshness`
   covers the ETag parser; `web/README.md` documents the public-version contract.
 
-## 2026-10-30 — one workspace (OPFS), desktop becomes a synced mirror
+## 2026-10-30 — one workspace (OPFS), desktop becomes a synced mirror (superseded)
 
 The header's **Storage** selector (Browser OPFS / Desktop server) and its
 server-URL input are gone. The tab's workspace now always lives in OPFS; the

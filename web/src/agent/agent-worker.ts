@@ -60,6 +60,35 @@ setSqliteOpfsPrefix(OPFS_PREFIX);
 const ready = initSqlite();
 const platforms = new Map<string, Platform>();
 
+/** Desktop/server ops routing (configured by the main thread). */
+let opsPort: MessagePort | null = null;
+let opsConfig: { enabled: boolean; allow: string[] } = { enabled: false, allow: [] };
+const opsPending = new Map<string, { resolve: (value: string) => void; reject: (err: Error) => void }>();
+
+function wrapShellWithOps(platform: Platform): Platform {
+  const marked = platform.shell as { __bobOpsWrapped?: boolean };
+  if (marked.__bobOpsWrapped) return platform;
+  const base = platform.shell;
+  const shell = {
+    async runCommand(command: string, args: string[]): Promise<string> {
+      const port = opsPort;
+      if (!port || !opsConfig.enabled || !opsConfig.allow.includes(command)) {
+        return base.runCommand(command, args);
+      }
+      return await new Promise<string>((resolve, reject) => {
+        const id = crypto.randomUUID();
+        opsPending.set(id, { resolve, reject });
+        port.postMessage({ type: "ops-request", id, command, args });
+        setTimeout(() => {
+          if (opsPending.delete(id)) reject(new Error("the desktop op timed out"));
+        }, 10 * 60_000 + 15_000);
+      });
+    },
+  };
+  (shell as { __bobOpsWrapped?: boolean }).__bobOpsWrapped = true;
+  return { ...platform, shell };
+}
+
 /**
  * The worker runs one turn at a time. The stop message aborts this controller;
  * a fetch wrapper adds its signal to every model/tool request, and the engine
@@ -83,7 +112,7 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Resp
 async function getPlatform(): Promise<Platform> {
   let platform = platforms.get("opfs");
   if (!platform) {
-    platform = createBrowserPlatform("/workspace");
+    platform = wrapShellWithOps(createBrowserPlatform("/workspace"));
     platforms.set("opfs", platform);
   }
   return platform;
@@ -703,7 +732,39 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
 }
 
 self.onmessage = async (ev: MessageEvent) => {
-  const msg = ev.data as (RunOptions & { type: string }) | LogMessage | { type: "stop"; id?: number };
+  const msg = ev.data as
+    | (RunOptions & { type: string })
+    | LogMessage
+    | { type: "stop"; id?: number }
+    | { type: "ops-port"; port: MessagePort }
+    | { type: "ops-config"; enabled: boolean; allow: string[] }
+    | { type: "ops-result"; id: string; output?: string; error?: string };
+  if (msg.type === "ops-port") {
+    const port = (msg as { port: MessagePort }).port;
+    opsPort = port;
+    port.onmessage = (event: MessageEvent) => {
+      const result = event.data as { type?: string; id?: string; output?: string; error?: string };
+      if (result.type !== "ops-result" || !result.id) return;
+      const pending = opsPending.get(result.id);
+      if (!pending) return;
+      opsPending.delete(result.id);
+      if (result.error) pending.reject(new Error(result.error));
+      else pending.resolve(result.output ?? "");
+    };
+    return;
+  }
+  if (msg.type === "ops-config") {
+    const config = msg as { enabled?: boolean; allow?: string[] };
+    opsConfig = {
+      enabled: !!config.enabled,
+      allow: Array.isArray(config.allow) ? config.allow.map(String) : [],
+    };
+    return;
+  }
+  if (msg.type === "ops-result") {
+    // A stray reply; the dedicated port handles them.
+    return;
+  }
   if (msg.type === "stop") {
     if (
       activeStop &&

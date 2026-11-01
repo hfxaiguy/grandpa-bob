@@ -316,7 +316,44 @@ assert(b.seed?.account === "personal" && b.seed?.seedName === "trunk", "seed bin
 assert(b.seed?.baseUrl === "https://bobswap.example.com", "binding records the service URL");
 assert(b.services.includes("https://bobswap.example.com"), "service + keys persist in localStorage");
 
-// 5. Switch back to default through the picker.
+// 5. A profile's "hidden… except:" list is editable from its row and persists.
+await evaluate(`document.getElementById("seed-close").click()`);
+await evaluate(`(() => {
+  const row = [...document.querySelectorAll("#profile-list .profile-row")]
+    .find((candidate) => candidate.textContent.includes("travel"));
+  [...row.querySelectorAll("button")].find((button) => button.textContent === "Hidden… except:").click();
+  return "opened board exceptions";
+})()`);
+await waitFor(
+  `document.querySelectorAll("#hidden-app-list input[type=checkbox]").length > 0`,
+  "board-exception app list",
+);
+await evaluate(`(() => {
+  for (const box of document.querySelectorAll("#hidden-app-list input[type=checkbox]")) {
+    if (box.value === "email" || box.value === "insight") box.checked = true;
+  }
+  document.getElementById("hidden-save").click();
+  return "saved board exceptions";
+})()`);
+await waitFor(`!document.getElementById("hidden-dialog").open`, "board-exceptions save");
+const exposed = await evaluate(`(async () => {
+  const root = await navigator.storage.getDirectory();
+  const registry = JSON.parse(await (await (await root.getFileHandle("profiles.json")).getFile()).text());
+  const travel = registry.profiles.find((profile) => profile.name === "travel");
+  return JSON.stringify({ visibleApps: travel?.visibleApps, active: window.__bobProfileVisibleApps });
+})()`);
+const e = JSON.parse(exposed);
+const exceptionNames = (value) => JSON.stringify([...(value || [])].sort());
+assert(
+  exceptionNames(e.visibleApps) === exceptionNames(["email", "insight"]),
+  "the profile's visible exceptions persist in the registry",
+);
+assert(
+  exceptionNames(e.active) === exceptionNames(["email", "insight"]),
+  "the active profile publishes its visible exceptions to the chat UI",
+);
+
+// 6. Switch back to default through the picker.
 await evaluate(`(() => {
   const select = document.getElementById("profile-select");
   select.value = "default";
@@ -330,7 +367,7 @@ await waitFor(
 const back = await evaluate(`localStorage.getItem("bob:profile")`);
 assert(back === "default", "profile switch persists");
 
-// 6. A zero-byte profiles.json (Gecko can leave one after a torn write) must
+// 7. A zero-byte profiles.json (Gecko can leave one after a torn write) must
 //    not be read as "no profiles": the mirror + directories repair it.
 await evaluate(`(async () => {
   const root = await navigator.storage.getDirectory();

@@ -2,7 +2,7 @@
  * Bridge-backed platform for desktop-only operations on a real folder.
  *
  * The tab's workspace always lives in OPFS; a desktop mirror folder is kept in
- * sync through the bridge (see `web/src/mirror.ts`). This adapter exposes the
+ * sync through the bridge (see `web/src/server-link.ts`). This adapter exposes the
  * folder's real files/git/SQLite over the same loopback bridge for operations
  * that OPFS cannot perform (git against local paths, node:sqlite, archives).
  */

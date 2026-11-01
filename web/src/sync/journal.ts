@@ -42,11 +42,14 @@ export class Journal {
   private lamportByPath = new Map<string, number>();
   private clock = 0;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Where the journal lives — the workspace by default, or an external
+   *  state directory for a server peer whose folder must stay a plain copy. */
+  private readonly root: string;
 
   /** Load the persisted journal for this replica (fresh when none). */
-  static async load(platform: Platform): Promise<Journal> {
-    const journal = new Journal(platform);
-    const file = platform.path.join(platform.workspaceRoot, JOURNAL_FILE);
+  static async load(platform: Platform, journalRoot?: string): Promise<Journal> {
+    const journal = new Journal(platform, journalRoot);
+    const file = platform.path.join(journal.root, JOURNAL_FILE);
     let raw: string;
     try {
       raw = await platform.fs.readFile(file, "utf8");
@@ -69,7 +72,9 @@ export class Journal {
     return journal;
   }
 
-  private constructor(private platform: Platform) {}
+  private constructor(private platform: Platform, journalRoot?: string) {
+    this.root = journalRoot ?? platform.workspaceRoot;
+  }
 
   /** Last op recorded for a path (write or tombstone) — null when never touched. */
   lastOpFor(path: string): SyncOp | null {
@@ -151,8 +156,8 @@ export class Journal {
   }
 
   async persist(): Promise<void> {
-    const file = this.platform.path.join(this.platform.workspaceRoot, JOURNAL_FILE);
-    await this.platform.fs.mkdir(this.platform.path.join(this.platform.workspaceRoot, JOURNAL_DIR), { recursive: true });
+    const file = this.platform.path.join(this.root, JOURNAL_FILE);
+    await this.platform.fs.mkdir(this.platform.path.join(this.root, JOURNAL_DIR), { recursive: true });
     await this.platform.fs.writeFile(file, `${this.ops.map((op) => JSON.stringify(op)).join("\n")}\n`);
   }
 }

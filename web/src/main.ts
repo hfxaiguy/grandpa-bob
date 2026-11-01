@@ -21,12 +21,10 @@ import { hostUi } from "./ui-host";
 import {
   loadEnv,
   loadRemote,
-  loadStorageServer,
   loadTelegramChannel,
   loadModelsJson,
   loadCdp,
   saveCdp,
-  normalizeStorageServer,
 } from "./settings";
 import {
   buildWorkspaceArchive,
@@ -64,25 +62,34 @@ import {
 import { cloneWorkspace } from "./platform/git-opfs";
 import { applyDatabaseDumps } from "./db-sync";
 import { createAutoSync, DEFAULT_INTERVAL_MS } from "./auto-sync";
-import { createDesktopMirror, type MirrorStatus } from "./mirror";
+import type { MirrorStatus } from "./peer-status";
+import { loadServerLink, resumeServer, type ServerConnection } from "./server-link";
 import { listTreeSources } from "./tree-sources";
 import { resolveTreeEntry } from "./tree-files";
 import { patternLabel } from "./agent/pattern-path";
 import { createHostLease } from "./host-lease";
-import { startSync, activeSync } from "./sync";
+import { startSync, activeSync, type SyncHandle } from "./sync";
 import { wireSyncUi } from "./sync-ui";
 import { parseSeedMeta, seedFreshness, SEED_CLOCK_TOLERANCE_MS, type SeedMeta } from "./seed-version";
 import type { Platform } from "./platform/types";
 
 const params = new URLSearchParams(location.search);
-/** Storage bridge origin (desktop mirror + desktop-only ops). */
-const storageServer = normalizeStorageServer(params.get("server") ?? loadStorageServer());
 let configuredRemote = params.get("remote") ?? loadRemote();
 
 /** The OPFS profile this tab hosts. */
 let profileRegistry: ProfileRegistry | null = null;
 let activeProfile: string = DEFAULT_PROFILE;
 let activeProfileSegments: string[] = [];
+
+/**
+ * Hand the active profile's "hidden… except:" list to the chat UI. `null` (no
+ * field) keeps the trunk-only default; an empty array also leaves only trunk.
+ */
+function publishProfileVisibleApps(): void {
+  const record = profileRegistry?.profiles.find((profile) => profile.name === activeProfile);
+  (window as unknown as { __bobProfileVisibleApps?: string[] | null }).__bobProfileVisibleApps =
+    Array.isArray(record?.visibleApps) ? [...record.visibleApps] : null;
+}
 // The launcher (`npm run chrome`) opens the app with ?cdp=<browser ws url>;
 // persist it so a plain reload keeps the browser tools connected. An explicit
 // empty value (BOB_NO_CDP=1) clears a previously persisted socket instead.
@@ -223,27 +230,65 @@ let archiveAgent: AgentClient | null = null;
  */
 let lease: ReturnType<typeof createHostLease> | null = null;
 
-/** The running desktop mirror, when this profile has a folder bound. */
-let mirror: ReturnType<typeof createDesktopMirror> | null = null;
+/** The connected desktop/server peer, when this profile has one. */
+let serverConnection: ServerConnection | null = null;
+let syncHandle: SyncHandle | null = null;
+let serverConnecting = false;
+let serverRetryTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Reconnect to the profile's paired desktop/server. Used at boot (before
+ * indexing) and by a retry timer when the server was offline or the channel
+ * dropped. Resolves true when the engine round completed.
+ */
+async function connectServerPeer(): Promise<boolean> {
+  const info = loadServerLink(activeProfile);
+  const folder = mirrorFolder();
+  if (!info || !folder || !syncHandle || serverConnecting || serverConnection) return false;
+  if (lease?.status() !== "primary") return false;
+  serverConnecting = true;
+  try {
+    const connection = await resumeServer({
+      info,
+      localId: syncHandle.engine.id,
+      onStatus: (text) => flashStatus(`desktop: ${text}`, 4000),
+      onSas: (phrase) => console.log(`[peer] verification phrase ${phrase}`),
+    });
+    serverConnection = connection;
+    syncHandle.attach(connection.peer);
+    connection.peer.onClosed(() => {
+      if (serverConnection !== connection) return;
+      serverConnection = null;
+      renderMirrorStatus({ phase: "offline", detail: "disconnected", folder, lastSyncAt: null });
+      archiveAgent?.setOpsConfig({ enabled: false, allow: [] });
+    });
+    renderMirrorStatus({
+      phase: "idle",
+      detail: "connected",
+      folder,
+      lastSyncAt: new Date().toISOString(),
+    });
+    await syncHandle.engine.reconcileAndWait(connection.peer, 15_000);
+    (window as unknown as { __bobServer?: unknown }).__bobServer = connection;
+    return true;
+  } catch (err) {
+    renderMirrorStatus({
+      phase: "error",
+      detail: `pairing needed: ${errorText(err)}`,
+      folder,
+      lastSyncAt: null,
+    });
+    flashStatus(`desktop pairing needed: ${errorText(err)}`, 10_000);
+    return false;
+  } finally {
+    serverConnecting = false;
+  }
+}
 
 /** The active profile's desktop mirror folder, when one is bound. */
 function mirrorFolder(): string | null {
   const record = profileRegistry?.profiles.find((profile) => profile.name === activeProfile);
   return record?.kind === "desktop" && record.folder ? record.folder : null;
-}
-
-/** Build the mirror for a bound folder (status wiring included). */
-function createProfileMirror(folder: string): NonNullable<typeof mirror> {
-  const created = createDesktopMirror({
-    platform,
-    server: storageServer,
-    folder,
-    log: (message, status) =>
-      console.log(`[mirror] ${message}${status.detail ? `: ${status.detail}` : ""}`),
-  });
-  created.onStatus(renderMirrorStatus);
-  (window as unknown as { __bobMirror?: unknown }).__bobMirror = created;
-  return created;
 }
 
 /** The platform selected at boot; all callers share it (and its handles). */
@@ -1144,6 +1189,7 @@ async function main(): Promise<void> {
   await initSqlite(activeProfileSegments);
   bootStage = "touchProfile";
   profileRegistry = await touchProfile(activeProfile);
+  publishProfileVisibleApps();
 
   platform = createBrowserPlatform("/workspace");
   setActiveFs(platform.fs);
@@ -1156,33 +1202,58 @@ async function main(): Promise<void> {
   wireLeaseUi(lease);
   await lease.whenSettled();
 
-  // A mirror-bound profile takes its initial content from the desktop folder.
-  // Sync before indexing so pattern detection and the agent see those files.
+  // One engine for every peer (BroadcastChannel, cross-device, desktop/server).
+  // It exists before workspace preparation so a mirror-bound profile pulls its
+  // folder before pattern detection and indexing.
+  bootStage = "startSync";
+  if (lease.status() === "primary") {
+    const syncIdKey = `bob:sync-id:opfs:${activeProfile}`;
+    let syncId = "";
+    try {
+      syncId = localStorage.getItem(syncIdKey) ?? "";
+      if (!syncId) {
+        syncId = crypto.randomUUID();
+        localStorage.setItem(syncIdKey, syncId);
+      }
+    } catch {
+      syncId = crypto.randomUUID();
+    }
+    syncHandle = await startSync(platform, {
+      id: syncId,
+      channelName: `bob-sync:opfs:${activeProfile}`,
+    });
+    (window as unknown as { __bobSync?: unknown }).__bobSync = syncHandle;
+    syncHandle.onState((state) => {
+      const bound = mirrorFolder();
+      if (!bound) return;
+      renderMirrorStatus({
+        phase: state.status === "error" ? "error" : state.status === "syncing" ? "syncing" : "idle",
+        detail: state.detail || "connected",
+        folder: bound,
+        lastSyncAt: state.lastSyncAt,
+      });
+    });
+  }
+
   const folder = mirrorFolder();
   if (folder && lease.status() === "primary") {
-    bootProgress("syncing the desktop mirror…", 24);
-    bootStage = "mirrorBootstrap";
-    mirror = createProfileMirror(folder);
-    await mirror.syncNow();
+    bootProgress("connecting the desktop…", 24);
+    bootStage = "serverResume";
+    const connected = await connectServerPeer();
+    if (!connected && !loadServerLink(activeProfile)) {
+      renderMirrorStatus({ phase: "offline", detail: "pairing needed", folder, lastSyncAt: null });
+    }
   } else if (folder) {
     renderMirrorStatus({
       phase: "offline",
-      detail: "another tab hosts this workspace and keeps the mirror current",
+      detail: "another tab hosts this workspace",
       folder,
       lastSyncAt: null,
     });
   } else {
-    renderMirrorStatus({ phase: "unlinked", detail: "no desktop mirror bound", folder: "", lastSyncAt: null });
+    renderMirrorStatus({ phase: "unlinked", detail: "no desktop server paired", folder: "", lastSyncAt: null });
   }
-
-  // A takeover makes this tab the writer: start the mirror then too.
-  lease.subscribe((status) => {
-    if (status !== "primary" || mirror) return;
-    const bound = mirrorFolder();
-    if (!bound) return;
-    mirror = createProfileMirror(bound);
-    void mirror.syncNow().then(() => mirror?.start());
-  });
+  wireSyncUi(() => activeSync());
 
   bootProgress("preparing the workspace…", 25);
   bootStage = "prepareBrowserWorkspace";
@@ -1221,34 +1292,32 @@ async function main(): Promise<void> {
   const agent = new AgentClient(activeProfileSegments);
   archiveAgent = agent;
 
-  // Real-time sync: journal + BroadcastChannel transports (same-origin tabs
-  // reconcile live — an OPFS profile and a desktop-folder profile on this
-  // machine converge with nothing to set up). Cross-device peers pair through
-  // Sync… → Live sync. Only the lease holder syncs, so a read-only tab never
-  // writes the workspace.
-  bootStage = "startSync";
-  if (lease?.status() === "primary") {
-    const syncIdKey = `bob:sync-id:opfs:${activeProfile}`;
-    let syncId = "";
-    try {
-      syncId = localStorage.getItem(syncIdKey) ?? "";
-      if (!syncId) {
-        syncId = crypto.randomUUID();
-        localStorage.setItem(syncIdKey, syncId);
-      }
-    } catch {
-      syncId = crypto.randomUUID();
-    }
-    const syncHandle = await startSync(platform, {
-      id: syncId,
-      channelName: `bob-sync:opfs:${activeProfile}`,
-    });
-    (window as unknown as { __bobSync?: unknown }).__bobSync = syncHandle;
-
-    // Keep the (already bootstrapped) mirror current while this tab is primary.
-    if (mirror) mirror.start();
+  // Desktop/server ops: only allowlisted executables leave the worker; the
+  // rest keep using the local virtual shell.
+  const linked = loadServerLink(activeProfile);
+  agent.setOpsHandler(async (command, args) => {
+    if (!serverConnection) throw new Error("the desktop/server is not connected");
+    const result = await serverConnection.run(command, args);
+    if (result.error) throw new Error(result.error);
+    return result.output ?? "";
+  });
+  agent.setOpsConfig({
+    enabled: !!serverConnection && (serverConnection.info.exec.length > 0 || !!linked?.exec.length),
+    allow: serverConnection?.info.exec ?? linked?.exec ?? [],
+  });
+  if (serverConnection) {
+    (window as unknown as { __bobServer?: unknown }).__bobServer = serverConnection;
   }
-  wireSyncUi(() => activeSync());
+  // A paired server may have been offline at boot; keep trying while this tab
+  // hosts the workspace. The manual pair dialog is still the recovery path.
+  serverRetryTimer = setInterval(() => {
+    void connectServerPeer();
+  }, 20_000);
+  window.addEventListener("pagehide", () => {
+    if (serverRetryTimer) clearInterval(serverRetryTimer);
+    serverRetryTimer = null;
+  });
+
   // When the admin serves this page, use ITS models.json (and /api/llm proxy)
   // so the browser, the chat UI and Telegram all share one model config.
   bootStage = "servedByAdmin";
@@ -1277,21 +1346,27 @@ async function main(): Promise<void> {
   wireProfileUi({
     activeProfile: () => activeProfile,
     registry: () => profileRegistry ?? { version: 1, profiles: [{ name: activeProfile, createdAt: "" }] },
-    bridgeUrl: () => storageServer,
     flash: flashStatus,
     reload: () => location.reload(),
     refreshRegistry: async () => {
       profileRegistry = await loadRegistry();
+      publishProfileVisibleApps();
       return profileRegistry ?? { version: 1, profiles: [{ name: activeProfile, createdAt: "" }] };
     },
     applySeedUpdate: (binding, _meta, version) => applyBoundSeedUpdate(binding, version),
     buildActiveArchive,
     importInto: importIntoWorkspace,
     syncMirror: async () => {
-      if (mirror) await mirror.syncNow();
-      else throw new Error("this profile has no desktop mirror");
+      if (!syncHandle) throw new Error("this tab does not host the workspace");
+      await syncHandle.engine.reconcile();
     },
-    mirrorStatus: () => mirror?.status() ?? null,
+    mirrorStatus: () => {
+      const bound = mirrorFolder();
+      if (!bound) return null;
+      return serverConnection
+        ? { phase: "idle", detail: "connected", folder: bound, lastSyncAt: new Date().toISOString() }
+        : { phase: "offline", detail: "pairing needed", folder: bound, lastSyncAt: null };
+    },
   });
   void checkSeedUpdate();
   startSeedWatcher();
