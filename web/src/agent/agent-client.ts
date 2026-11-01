@@ -67,6 +67,7 @@ export class AgentClient {
   private opsPort: MessagePort | null = null;
   private opsHandler: ((command: string, args: string[]) => Promise<string>) | null = null;
   private opsConfig: { enabled: boolean; allow: string[] } = { enabled: false, allow: [] };
+  private probePending = new Map<number, { resolve: (value: string) => void; reject: (error: Error) => void }>();
 
   constructor(opfsPrefix: readonly string[] = []) {
     this.worker = new Worker(new URL("./agent-worker.ts", import.meta.url), {
@@ -107,6 +108,14 @@ export class AgentClient {
         stopped?: boolean;
         mode?: "resumed" | "restored" | "fresh";
       };
+      if (msg.type === "ops-probe-result") {
+        const probe = this.probePending.get(msg.id);
+        if (!probe) return;
+        this.probePending.delete(msg.id);
+        if (typeof msg.result === "string") probe.resolve(msg.result);
+        else probe.reject(new Error(String(msg.error ?? "ops probe failed")));
+        return;
+      }
       if (msg.type === "log-result") {
         const lp = this.logPending.get(msg.id);
         if (!lp) return;
@@ -151,6 +160,19 @@ export class AgentClient {
   setOpsConfig(config: { enabled: boolean; allow: string[] }): void {
     this.opsConfig = { enabled: !!config.enabled, allow: [...config.allow] };
     this.worker.postMessage({ type: "ops-config", ...this.opsConfig });
+  }
+
+  /** Test hook: exercise the worker's desktop-op routing directly. */
+  probeOps(command: string, args: string[] = []): Promise<string> {
+    const id = this.nextId++;
+    return new Promise<string>((resolve, reject) => {
+      this.probePending.set(id, { resolve, reject });
+      this.worker.postMessage({ id, type: "ops-probe", command, args });
+      setTimeout(() => {
+        if (!this.probePending.delete(id)) return;
+        reject(new Error("ops probe timed out"));
+      }, 30_000);
+    });
   }
 
   run(opts: AgentRunOptions = {}, hooks?: AgentRunHooks): AgentRunPromise {

@@ -8,7 +8,6 @@ import { ownedDbApp, ownedDbError } from "../tools/app-dbs";
 import { CsvTools, CSV_QUERY_DEFINITION } from "../tools/csv";
 import { ExaSearchTools, EXA_SEARCH_DEFINITION } from "../tools/websearch";
 import { READ_JSON_DEFINITION, readJsonValue } from "../tools/json";
-import { runCommand } from "../platform/coreutils";
 import { writeDatabaseDumps } from "../db-sync";
 import { createSqliteWasm } from "../platform/sqlite-wasm";
 import { withLogDb } from "./log-store";
@@ -208,15 +207,15 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         }),
     },
     run_command: {
-      description: "Run an allowlisted command over the virtual workspace filesystem.",
+      description:
+        "Run a command. Allowlisted commands run on the paired desktop/server when one is connected; everything else uses the virtual workspace shell.",
       parameters: {
         type: "object",
         properties: { command: { type: "string" }, args: { type: "array", items: { type: "string" } } },
         required: ["command"],
       },
       execute: async (a) =>
-        await runCommand(
-          { fs: platform.fs, path: platform.path, workspaceRoot: root },
+        await platform.shell.runCommand(
           String(a.command ?? ""),
           Array.isArray(a.args) ? (a.args as unknown[]).map(String) : [],
         ),

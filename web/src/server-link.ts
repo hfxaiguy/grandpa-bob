@@ -336,8 +336,15 @@ function negotiate(
           reject(new Error("server identity check failed"));
           return;
         }
+        const capabilities = (control.capabilities ?? {}) as { mirror?: string; exec?: string[] };
         opts.onStatus("reconnected");
-        done(opts.info);
+        done({
+          ...opts.info,
+          mirror: capabilities.mirror ?? opts.info.mirror,
+          exec: Array.isArray(capabilities.exec)
+            ? capabilities.exec.filter((x): x is string => typeof x === "string")
+            : opts.info.exec,
+        });
       })().catch(reject);
       return;
     }

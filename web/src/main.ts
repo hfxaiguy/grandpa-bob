@@ -256,6 +256,10 @@ async function connectServerPeer(): Promise<boolean> {
     });
     serverConnection = connection;
     syncHandle.attach(connection.peer);
+    archiveAgent?.setOpsConfig({
+      enabled: connection.info.exec.length > 0,
+      allow: connection.info.exec,
+    });
     connection.peer.onClosed(() => {
       if (serverConnection !== connection) return;
       serverConnection = null;
@@ -1307,6 +1311,8 @@ async function main(): Promise<void> {
   });
   if (serverConnection) {
     (window as unknown as { __bobServer?: unknown }).__bobServer = serverConnection;
+    (window as unknown as { __bobOpsProbe?: unknown }).__bobOpsProbe = (command: string, args: string[]) =>
+      agent.probeOps(command, args);
   }
   // A paired server may have been offline at boot; keep trying while this tab
   // hosts the workspace. The manual pair dialog is still the recovery path.

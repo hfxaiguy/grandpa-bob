@@ -165,9 +165,11 @@ A pair is **two independent copies**, not a cache hierarchy:
   divergent desktop edit becomes a `.conflict-*` file next to it).
 - The replica journal (`.gpb-sync/journal.jsonl`) lives in each workspace and
   is how deferred changes catch up; it is never mirrored to the desktop.
-- No server ever receives workspace bytes. Git remotes, if configured, are a
-  separate optional backup/versioning path and still carry DB dumps under
-  `logs/scratch` for cross-device database continuity.
+- No **signaling/relay service** receives workspace bytes (SDP/ICE only). A
+  paired desktop/server is a peer endpoint whose mirror folder deliberately
+  holds a copy. Git remotes, if configured, are a separate optional
+  backup/versioning path and still carry DB dumps under `logs/scratch` for
+  cross-device database continuity.
 
 ## 6. Desktop/server peer
 

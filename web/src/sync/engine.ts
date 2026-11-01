@@ -27,8 +27,9 @@
  * per engine, so pushes/replies/requests never interleave mid-apply.
  *
  * The transport is pluggable (BroadcastChannel, WebRTC DataChannel): the
- * engine speaks one envelope and never knows which wire it is on. No server
- * ever holds workspace bytes.
+ * engine speaks one envelope and never knows which wire it is on. A signaling
+ * relay sees only SDP/ICE; a paired desktop/server is a peer endpoint and its
+ * mirror folder deliberately holds a copy.
  */
 import type { Platform } from "../platform/types";
 import { buildHashmap, type Hashmap } from "./hashmap";

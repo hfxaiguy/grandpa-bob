@@ -91,7 +91,7 @@ function answerChannel(
     let phrase = "";
     let settled = false;
     const pending: unknown[] = [];
-    const timer = setTimeout(() => fail(new Error("timed out waiting for the browser's offer")), 120_000);
+    const timer = setTimeout(() => fail(new Error("timed out waiting for the browser's offer")), 600_000);
 
     const fail = (err: Error): void => {
       if (settled) return;
@@ -231,6 +231,7 @@ export class PeerSession {
     channel: MailboxChannel,
     capabilities: PeerCapabilities,
     private iceServers: unknown[] = [],
+    private onReady?: (session: PeerSession) => void,
     private onClosed?: (session: PeerSession) => void,
   ) {
     this.mode = mode;
@@ -412,6 +413,7 @@ export class PeerSession {
     this.known = await buildHashmap(platform, platform.workspaceRoot);
     this.engine.onState((state: SyncState) => this.emit("sync", { status: state.status, detail: state.detail }));
     if (this.link) this.engine.attach(this.link);
+    this.onReady?.(this);
     this.watchTimer = setTimeout(() => void this.scanExternal(), 800);
     try {
       this.watcher = watch(folder, { recursive: true }, () => {
@@ -533,11 +535,16 @@ export class PeerManager {
 
   private register(session: PeerSession, code = ""): void {
     this.sessions.set(session.id, session);
-    this.liveByProfile.get(session.profile)?.dispose();
-    this.liveByProfile.set(session.profile, session);
     if (code) this.codes.set(session.id, code);
     session.done = false;
     void session.start();
+  }
+
+  /** A session becomes the profile's live writer only after it is ready. */
+  private makeLive(session: PeerSession): void {
+    const previous = this.liveByProfile.get(session.profile);
+    if (previous && previous !== session) previous.dispose();
+    this.liveByProfile.set(session.profile, session);
   }
 
   async createPairing(profile: string, capabilities: Partial<PeerCapabilities> = {}): Promise<PairingInfo> {
@@ -551,7 +558,15 @@ export class PeerManager {
       exec: Array.isArray(capabilities.exec) ? capabilities.exec.map(String).filter(Boolean) : [],
     };
     const created = this.mailbox.createPairing(profile);
-    const session = new PeerSession(this.mailbox, "pairing", created.channel, caps, this.iceServers, (s) => this.unregister(s));
+    const session = new PeerSession(
+      this.mailbox,
+      "pairing",
+      created.channel,
+      caps,
+      this.iceServers,
+      (s) => this.makeLive(s),
+      (s) => this.unregister(s),
+    );
     this.register(session, created.code);
     session.channel.onJoined = () => undefined;
     return session.info(created.code ?? "");
@@ -559,9 +574,19 @@ export class PeerManager {
 
   /** A reconnect channel for an already-paired profile (client-key create). */
   createReconnect(profile: string, record: PeerRecord): { session: PeerSession; channelId: string; roleToken: string } {
+    // A reconnect replaces the old connection for this profile.
+    this.liveByProfile.get(profile)?.dispose();
     const created = this.mailbox.createReconnect(profile);
     const caps = record.capabilities;
-    const session = new PeerSession(this.mailbox, "reconnect", created.channel, caps, this.iceServers, (s) => this.unregister(s));
+    const session = new PeerSession(
+      this.mailbox,
+      "reconnect",
+      created.channel,
+      caps,
+      this.iceServers,
+      (s) => this.makeLive(s),
+      (s) => this.unregister(s),
+    );
     this.register(session);
     return { session, channelId: created.channel.id, roleToken: created.clientToken };
   }

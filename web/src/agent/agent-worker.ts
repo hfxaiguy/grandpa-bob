@@ -738,7 +738,8 @@ self.onmessage = async (ev: MessageEvent) => {
     | { type: "stop"; id?: number }
     | { type: "ops-port"; port: MessagePort }
     | { type: "ops-config"; enabled: boolean; allow: string[] }
-    | { type: "ops-result"; id: string; output?: string; error?: string };
+    | { type: "ops-result"; id: string; output?: string; error?: string }
+    | { type: "ops-probe"; id: number; command: string; args?: string[] };
   if (msg.type === "ops-port") {
     const port = (msg as { port: MessagePort }).port;
     opsPort = port;
@@ -763,6 +764,26 @@ self.onmessage = async (ev: MessageEvent) => {
   }
   if (msg.type === "ops-result") {
     // A stray reply; the dedicated port handles them.
+    return;
+  }
+  if (msg.type === "ops-probe") {
+    const probe = msg as { id: number; command: string; args?: string[] };
+    void (async () => {
+      try {
+        const platform = await getPlatform();
+        const output = await platform.shell.runCommand(
+          String(probe.command ?? ""),
+          Array.isArray(probe.args) ? probe.args.map(String) : [],
+        );
+        post({ id: probe.id, type: "ops-probe-result", result: output });
+      } catch (err) {
+        post({
+          id: probe.id,
+          type: "ops-probe-result",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
     return;
   }
   if (msg.type === "stop") {

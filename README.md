@@ -6,15 +6,16 @@ _BOB = **B**etter **O**rganizational **B**ot_
 > UI and the only agent host. Node processes are **pass-through channels**:
 > the **telegram channel** (grammY long-poll; messages are *parked* in a
 > file-backed mailbox and answered by your browser tab — Node never runs the
-> agent), the **storage bridge** (`web/scripts/storage-server.mjs` — desktop
-> mirror folders and real-path ops, plus opt-in STT with `BOB_STT=1`),
+> agent), the **peer mailbox** (`:8795` — desktop/server pairing, mirror and
+> allowlisted ops; standalone `storage-server.mjs` is debug-only), plus opt-in
+> STT with `BOB_STT=1`),
 > and **BobSwap** (seeds + zero-storage relay). The shared core lives in
 > `web/src` now; `web/` imports nothing outside `web/` + `ui/`
 > (`npm run test:standalone` is the gate).
 >
 > Run one command:
 > ```sh
-> npm run bob              # app :8080 + storage bridge/telegram :8795
+> npm run bob              # app :8080 + peer mailbox/telegram :8795
 > npm run whisper:up       # optional voice backend (:8178)
 > ```
 > `npm run bob` serves the built app and both channel APIs from **one
@@ -77,7 +78,7 @@ every change it makes is **git-committed automatically**.
 └──────┬───────────────────┬──────────────────────────┬──────────────────────┘
        │                   │                          │
   channels: one process (`npm run bob`)
-  :8795  storage bridge  ·  telegram mailbox API  sync channel (peer-to-peer)
+  :8795  peer mailbox     ·  telegram mailbox API  sync channel (peer-to-peer)
    · folders (profiles)    · grammY long-poll      BroadcastChannel (same origin)
    · /stt (BOB_STT=1)      · park & forward mailbox WebRTC DataChannel (cross-device;
    · loopback only         · no agent               BobSwap REST or manual-paste
@@ -159,7 +160,7 @@ web/                 the app — UI host + agent host + shared core
   src/host-lease.ts  single-host lease per workspace (Web Locks + heartbeat)
   src/sync/          Lamport journal + pull-only reconcile + transports
   src/swap.ts        BobSwap seeds + zero-storage relay client
-  scripts/           serve / storage bridge / make-seed / smokes
+  scripts/           serve / pairing CLI / make-seed / smokes
 ui/                  SolidJS tiled UI (bundled into web)
 scripts/             offline tests for the shared core and channels
 workspace/ patterns  (seed content lives in the workspace, not the repo)
@@ -365,7 +366,7 @@ npm run whisper:up       # voice transcription — :8178  (optional)
 
 # isolation/debug only:
 npm run web:standalone   # app only — :8080
-npm run storage-server   # storage bridge only — :8795
+npm run storage-server   # standalone debug bridge (not the product path)
 npm run dev              # alias of `bob`
 ```
 
@@ -439,8 +440,9 @@ dialog. Cross-device pairing (WebRTC; BobSwap REST mailbox or manual paste, with
 a 6-word verification phrase derived from both DTLS certificates) is in the
 Sync… dialog under **Live sync → Pair…**; the BobSwap path needs a service that
 implements the sync-channel endpoints, and says so plainly when it does not.
-Sync never sends workspace bytes to a server: blobs carry only WebRTC
-addressing. Full guide: [docs/pairing-and-sync.md](docs/pairing-and-sync.md).
+Signaling blobs carry only WebRTC addressing; workspace bytes travel over the
+authenticated data channel (a paired desktop/server is a peer endpoint and its
+mirror folder holds a copy). Full guide: [docs/pairing-and-sync.md](docs/pairing-and-sync.md).
 
 Telegram is wired through the channel: the session panel's **bridge** toggle
 drains the channel mailbox into the selected session, and **✈ send to

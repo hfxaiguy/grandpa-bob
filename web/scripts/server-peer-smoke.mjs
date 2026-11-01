@@ -5,7 +5,7 @@
 // then reloads again to exercise silent reconnect.
 //
 // Run: `npm run smoke:peer` (needs a built web/dist and Chromium).
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -33,6 +33,12 @@ const WS = path.join(tmp, "workspace");
 const PROFILE = path.join(tmp, "chrome");
 await mkdir(STATE, { recursive: true });
 await mkdir(WS, { recursive: true });
+
+// The smoke runs src/index.ts directly, so build the Node peer bundle first.
+execFileSync(process.execPath, [path.join(repo, "scripts/build-bridge.mjs")], {
+  cwd: repo,
+  stdio: "ignore",
+});
 
 const bob = spawn(path.join(repo, "node_modules/.bin/tsx"), ["src/index.ts"], {
   cwd: repo,
@@ -164,6 +170,10 @@ await send("Runtime.enable");
 await send("Page.enable");
 
 try {
+  if (process.env.BOOTSTRAP === "1") {
+    await mkdir(path.join(STATE, "folders/default"), { recursive: true });
+    await writeFile(path.join(STATE, "folders/default/desktop-only.txt"), "from the desktop");
+  }
   const pairing = await admin("/admin/pairing", {
     method: "POST",
     body: { profile: "default", mirror: "default", exec: ["git", "sh"] },
@@ -217,16 +227,45 @@ try {
     60_000,
   );
 
-  // OPFS → mirror: the seeded workspace arrives in the folder.
-  const seeded = await waitFile(path.join(STATE, "folders/default/models.json"), 60_000);
-  assert(seeded.length > 0, "the workspace reached the mirror folder");
-  const files = await waitDirEntry(path.join(STATE, "folders/default"), "app", 30_000);
-  assert(files.includes("patterns"), "workspace trees reached the mirror");
-  console.log("mirror folder:", files.slice(0, 8).join(", "));
+  if (process.env.BOOTSTRAP === "1") {
+    // A non-empty desktop folder replaces the tab's seeded workspace.
+    await waitFor(
+      `(async () => {
+        const root = await navigator.storage.getDirectory();
+        const profiles = await root.getDirectoryHandle("profiles");
+        const dir = await profiles.getDirectoryHandle("default");
+        const workspace = await dir.getDirectoryHandle("workspace");
+        const file = await workspace.getFileHandle("desktop-only.txt");
+        return (await (await file.getFile()).text()) === "from the desktop";
+      })()`,
+      "bootstrap copied the desktop workspace",
+      60_000,
+    );
+    const seeded = await evaluate(`(async () => {
+      const root = await navigator.storage.getDirectory();
+      const profiles = await root.getDirectoryHandle("profiles");
+      const dir = await profiles.getDirectoryHandle("default");
+      const workspace = await dir.getDirectoryHandle("workspace");
+      return workspace.getFileHandle("models.json").then(() => true, () => false);
+    })()`);
+    assert(!seeded, "the old seeded workspace was replaced");
+    const files = await readdir(path.join(STATE, "folders/default"));
+    assert(!files.includes("app"), "the tab did not push its seed over the desktop copy");
+    console.log("bootstrap: desktop copy replaced the workspace");
+  } else {
+    // OPFS → mirror: the seeded workspace arrives in the folder.
+    const seeded = await waitFile(path.join(STATE, "folders/default/models.json"), 60_000);
+    assert(seeded.length > 0, "the workspace reached the mirror folder");
+    const files = await waitDirEntry(path.join(STATE, "folders/default"), "app", 30_000);
+    assert(files.includes("patterns"), "workspace trees reached the mirror");
+    console.log("mirror folder:", files.slice(0, 8).join(", "));
+  }
 
   await waitFor(`!!window.__bobServer`, "desktop ops link", 60_000);
   const ops = await evaluate(`window.__bobServer.run("git", ["--version"])`);
   assert(String(ops?.output ?? "").includes("git version"), "an allowlisted op reached the desktop");
+  const workerOps = await evaluate(`window.__bobOpsProbe("git", ["--version"])`);
+  assert(String(workerOps ?? "").includes("git version"), "the worker routed an allowlisted op");
   const wrote = await evaluate(`window.__bobServer.run("sh", ["-c", "echo made-by-op > from-op.txt"])`);
   assert(!wrote?.error, `desktop op failed: ${wrote?.error ?? ""}`);
   assert(
