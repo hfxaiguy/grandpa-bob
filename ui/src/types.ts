@@ -31,6 +31,13 @@ export interface EmitButton {
   value: string;
 }
 
+/** A workspace UI module attached to an emit (rendered in a sandboxed iframe). */
+export interface EmitComponent {
+  /** `ui.mjs` beside the emitting app's tree, or an `app/…` path. */
+  src: string;
+  props?: unknown;
+}
+
 /** Per-turn model token totals, summed over the turn's `llm_call` events. */
 export interface TurnTokens {
   input: number;
@@ -55,6 +62,8 @@ export interface Turn {
   emits?: string[] | null;
   levels?: (string | null)[] | null;
   emitApps?: (string | null)[] | null;
+  /** Visual component per emit (same index as `emits`); null = text bubble. */
+  components?: (EmitComponent | null)[] | null;
   awaiting?: string | null;
   buttons?: EmitButton[] | null;
   /** How the turn entered its tree (see `TurnRecord.runMode`). */

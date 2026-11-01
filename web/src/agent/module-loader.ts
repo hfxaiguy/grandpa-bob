@@ -25,6 +25,12 @@ import utilShim from "../shims/node-util";
 import childProcessShim from "../shims/node-child-process";
 import sqliteShim from "../shims/node-sqlite";
 import type { Platform } from "../platform/types";
+import { BOB_UI_MODULE, withUiEmit } from "./ui-emit";
+
+// The workspace-facing grandma-kat namespace: the bundled engine plus the
+// host's component-aware Emit (see ui-emit.ts). Trees destructure Emit from
+// here, so `Emit(data, component("ui.mjs"))` works without forking the engine.
+const gkUi = withUiEmit(gk as unknown as Record<string, unknown>);
 
 // Mirrors the Vite alias set, so a module behaves the same whether it is
 // bundled (shared code) or evaluated from the workspace at runtime. A missing
@@ -81,8 +87,10 @@ export function createModuleLoader(platform: Platform): ModuleLoader {
     for (const spec of specs) {
       if (spec in BUILTINS) {
         resolved.set(spec, BUILTINS[spec]);
+      } else if (spec === "bob/ui") {
+        resolved.set(spec, BOB_UI_MODULE);
       } else if (spec === "grandma-kat" || spec.includes("grandma-kat")) {
-        resolved.set(spec, gk);
+        resolved.set(spec, gkUi);
       } else if (spec.startsWith("./") || spec.startsWith("../") || spec.startsWith("/")) {
         resolved.set(spec, await load(await resolveFile(dir, spec)));
       } else {
@@ -98,7 +106,7 @@ export function createModuleLoader(platform: Platform): ModuleLoader {
     };
     // eslint-disable-next-line no-new-func
     const fn = new Function("require", "module", "exports", "__gk", code);
-    fn(require, moduleObj, exportsObj, gk);
+    fn(require, moduleObj, exportsObj, gkUi);
     return exportsObj;
   }
 

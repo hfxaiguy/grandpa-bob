@@ -1,11 +1,13 @@
 /** Tile, memory, per-tile event log, global stream, session panel. */
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { appIconUrl } from "./app-icons";
 import { describeEvent, streamLines, type EventLine } from "./describe";
 import { copyEventStream, copyText, downloadEventStream } from "./event-dump";
 import { JsonView } from "./json-view";
+import { getJSON } from "./api";
+import { componentDoc, type ComponentTheme } from "./emit-component";
 import {
   state,
   send,
@@ -41,7 +43,7 @@ import {
   sendFile,
   transcribeFileStream,
 } from "./store";
-import type { AppInfo, ProvPiece, ProvWriter, Provenance, RefTarget, Turn, TurnTokens } from "./types";
+import type { AppInfo, EmitComponent, ProvPiece, ProvWriter, Provenance, RefTarget, Turn, TurnTokens } from "./types";
 import { newTurnApps, tagEventApp } from "../../web/src/app-attribution";
 import { Markdown } from "./markdown";
 import { liveActivity, toolLabel } from "./live-tool";
@@ -55,15 +57,59 @@ interface Bubble {
   text: string;
   kind: "user" | "bot" | "err";
   emitIndex?: number;
+  component?: EmitComponent | null;
   lastOfTurn?: boolean;
+}
+
+/** A component's cache identity: the module path plus its (small) props. */
+function componentKey(c?: EmitComponent | null): string {
+  if (!c) return "";
+  let props = "";
+  try {
+    props = JSON.stringify(c.props ?? null);
+  } catch {
+    props = "?";
+  }
+  return `${c.src}\u0000${props}`;
+}
+
+/**
+ * Reuse a bubble across recomputes when its content is unchanged. Text rows are
+ * cheap to rebuild, but a component bubble owns an iframe: tearing it down on
+ * every emit/turn-end would reload (and visibly flicker) the guest. The key is
+ * per turn, and `lastOfTurn` is part of the identity so the token/note line a
+ * row renders cannot go stale.
+ */
+const bubbleCache = new WeakMap<Turn, Map<string, Bubble>>();
+function reuseBubble(turn: Turn, key: string, next: Bubble): Bubble {
+  let map = bubbleCache.get(turn);
+  if (!map) {
+    map = new Map();
+    bubbleCache.set(turn, map);
+  }
+  const prev = map.get(key);
+  if (
+    prev &&
+    prev.text === next.text &&
+    prev.kind === next.kind &&
+    prev.emitIndex === next.emitIndex &&
+    prev.lastOfTurn === next.lastOfTurn &&
+    componentKey(prev.component) === componentKey(next.component)
+  ) {
+    return prev;
+  }
+  map.set(key, next);
+  return next;
 }
 
 /** Chat bubbles for one app, across every turn. */
 function bubblesFor(app: string): Bubble[] {
   const out: Bubble[] = [];
   for (const t of state.turns) {
-    const from = out.length;
-    if ((t.inputApp ?? "trunk") === app && t.input) out.push({ turn: t, text: t.input, kind: "user" });
+    // Build this turn's rows first, then mark its last reply, so the reuse key
+    // can carry `lastOfTurn`.
+    const rows: Bubble[] = [];
+    if ((t.inputApp ?? "trunk") === app && t.input) rows.push({ turn: t, text: t.input, kind: "user" });
     const emits = t.emits ?? [];
     const apps = t.emitApps ?? [];
     for (let i = 0; i < emits.length; i++) {
@@ -75,22 +121,142 @@ function bubblesFor(app: string): Bubble[] {
       if (t.levels?.[i] === "machine" && !state.showMachine) continue;
       // emitIndex: the bubble's position in the turn's emit list — the anchor
       // the provenance endpoint resolves back to the log's emit row.
-      out.push({ turn: t, text: emits[i], kind: "bot", emitIndex: i });
+      rows.push({ turn: t, text: emits[i], kind: "bot", emitIndex: i, component: t.components?.[i] ?? null });
     }
     if (app === "trunk" && (t.status === "done" || t.status === "stopped") && !emits.length && t.output) {
-      out.push({ turn: t, text: t.output, kind: "bot" });
+      rows.push({ turn: t, text: t.output, kind: "bot" });
     }
     if ((t.inputApp ?? "trunk") === app && t.status === "error" && t.error) {
-      out.push({ turn: t, text: t.error, kind: "err" });
+      rows.push({ turn: t, text: t.error, kind: "err" });
     }
-    for (let i = out.length - 1; i >= from; i--) {
-      if (out[i].kind === "bot") {
-        out[i].lastOfTurn = true;
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].kind === "bot") {
+        rows[i].lastOfTurn = true;
         break;
       }
     }
+    for (const b of rows) {
+      const kindKey = b.kind === "user" ? "user" : b.emitIndex != null ? `emit:${b.emitIndex}` : b.kind === "err" ? "err" : "out";
+      out.push(reuseBubble(t, `${kindKey}${b.lastOfTurn ? ":last" : ""}`, b));
+    }
   }
   return out;
+}
+
+// ── emit components ────────────────────────────────────────────────────
+// A tree may attach a workspace UI module to an emit (`ui.mjs` beside its
+// tree.prod.mjs). The bubble becomes that component instead of text: the host
+// fetches the source through /api/component and mounts it in a sandboxed
+// iframe (see emit-component.ts). The host document is same-origin with OPFS,
+// keys and sync, so workspace code never runs in it. The emitted text stays
+// the fallback for Telegram and for any load/render error.
+
+/** The host's palette, handed to the guest so it can blend in. */
+function hostComponentTheme(): ComponentTheme {
+  const cs = getComputedStyle(document.documentElement);
+  const read = (name: string, fallback: string): string => cs.getPropertyValue(name).trim() || fallback;
+  return {
+    "--bob-fg": read("--fg", "#dbe4f5"),
+    "--bob-card": read("--card", "#16203a"),
+    "--bob-border": read("--border", "#26324f"),
+    "--bob-accent": read("--accent", "#6ea8fe"),
+    "--bob-font": cs.fontFamily || "system-ui, sans-serif",
+    "--bob-font-size": cs.fontSize || "14px",
+  };
+}
+
+function ComponentBubble(props: { component: EmitComponent; app: string; text: string }) {
+  const [source, setSource] = createSignal<string | null>(null);
+  const [error, setError] = createSignal("");
+  const [ready, setReady] = createSignal(false);
+  // The guest reports its own content height; the iframe grows to it.
+  const [height, setHeight] = createSignal(28);
+  let frame: HTMLIFrameElement | undefined;
+  let loadedKey = "";
+
+  createEffect(() => {
+    const comp = props.component;
+    const app = props.app;
+    const key = `${app}\u0000${comp.src}`;
+    if (key === loadedKey) return;
+    loadedKey = key;
+    setSource(null);
+    setError("");
+    setReady(false);
+    setHeight(28);
+    let cancelled = false;
+    getJSON<{ source?: string; error?: string }>(
+      `/api/component?app=${encodeURIComponent(app)}&src=${encodeURIComponent(comp.src)}`,
+    )
+      .then((d) => {
+        if (cancelled) return;
+        if (typeof d.source === "string") setSource(d.source);
+        else setError(d.error || "component source unavailable");
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : "component source unavailable");
+      });
+    onCleanup(() => {
+      cancelled = true;
+    });
+  });
+
+  createEffect(() => {
+    const onMessage = (ev: MessageEvent): void => {
+      // Only this bubble's guest: the window handle is unforgeable, unlike an
+      // origin (a sandboxed iframe is opaque).
+      if (!frame || ev.source !== frame.contentWindow) return;
+      const d = ev.data as { type?: unknown; height?: unknown; value?: unknown; message?: unknown };
+      if (!d || typeof d.type !== "string") return;
+      if (d.type === "bob-component-size") {
+        const h = Number(d.height);
+        if (Number.isFinite(h)) setHeight(Math.max(24, Math.min(4000, Math.ceil(h))));
+      } else if (d.type === "bob-component-ready") {
+        setReady(true);
+      } else if (d.type === "bob-component-action" && typeof d.value === "string" && d.value.trim()) {
+        // Same contract as an emitted button: feed the value as the reply.
+        void send(d.value);
+      } else if (d.type === "bob-component-error") {
+        setError(String(d.message || "component failed"));
+      }
+    };
+    window.addEventListener("message", onMessage);
+    onCleanup(() => window.removeEventListener("message", onMessage));
+  });
+
+  const doc = createMemo(() => {
+    const src = source();
+    return src == null ? null : componentDoc(src, props.component.props, hostComponentTheme());
+  });
+
+  const fallbackText = () => props.text || (error() ? "(component unavailable)" : "");
+
+  return (
+    <Show
+      when={!error()}
+      fallback={
+        <span class="component-fallback" title={error()}>
+          {fallbackText()}
+        </span>
+      }
+    >
+      <Show when={doc()} fallback={<span class="component-loading">loading view…</span>}>
+        {(html) => (
+          <span class="emit-component" classList={{ ready: ready() }} data-src={props.component.src}>
+            <iframe
+              ref={(el) => (frame = el)}
+              // No allow-same-origin: the guest is opaque and cannot touch the
+              // host tab (OPFS, keys, sync). Scripts only, and postMessage out.
+              sandbox="allow-scripts"
+              srcdoc={html()}
+              title={props.text || `component ${props.component.src}`}
+              style={{ height: `${height()}px` }}
+            />
+          </span>
+        )}
+      </Show>
+    </Show>
+  );
 }
 
 /** Compact token count: 987, 1.2k, 12k, 1.3M. */
@@ -1280,6 +1446,7 @@ export function Tile(props: { app: AppInfo }) {
                         user: b.kind === "user",
                         bot: b.kind === "bot",
                         err: b.kind === "err",
+                        "has-component": !!b.component,
                         machine:
                           b.kind === "bot" &&
                           b.emitIndex != null &&
@@ -1292,7 +1459,15 @@ export function Tile(props: { app: AppInfo }) {
                           b.turn.levels?.[b.emitIndex] !== "machine",
                       }}
                     >
-                      <RefText text={b.text} />
+                      <Show when={b.component} fallback={<RefText text={b.text} />}>
+                        {(comp) => (
+                          <ComponentBubble
+                            component={comp()}
+                            app={trunkOf(b.turn.emitApps?.[b.emitIndex ?? 0])}
+                            text={b.text}
+                          />
+                        )}
+                      </Show>
                       <Show
                         when={
                           b.kind === "bot" &&

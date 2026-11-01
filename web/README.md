@@ -85,6 +85,79 @@ notes and hand-offs visible without mixing them into the normal reply stream.
 | Served at `:8080` by the admin server (chat = front page) | done — falls back to `ui/dist` when `web/dist` is missing |
 | Voice input (mic button) | **removed** — transcription is Telegram-only; the web UI ships no STT, no in-browser model (`/api/transcribe*` answers 501 in browser mode) |
 
+## Emit components — app UI in the chat (2026-11-01)
+
+An app tree can render a visual component in its chat tile instead of a text
+bubble. The component lives beside the tree, in the app folder, under the same
+child-module rules the module editor enforces:
+
+```
+app/contacts/
+  tree.prod.mjs               ← the contacts app tree
+  ui.mjs                      ← the contacts tile's component
+  app/graph/                  ← a boilerplate input → emit sub-app
+    tree.prod.mjs
+    ui.mjs                    ← the contacts.graph tile's component
+  ui/                         ← optional extra components (allowed: any .mjs)
+    graph-card.mjs
+```
+
+Nested `app/` folders belong to sub-apps, so each sub-app keeps its own
+`ui.mjs`; resolution is app-relative, which means `ui.mjs` emitted from
+`contacts.graph` is `app/contacts/app/graph/ui.mjs`. Files must already exist
+and must end in `.mjs` — the same confined-write rule as any child module.
+
+The emit attaches the component and still carries the fallback text. The
+portable shape works anywhere a tree runs (including plain `node --test`):
+
+```js
+Emit({
+  text: "Keith · 3 calls",
+  component: "ui.mjs",
+  props: { who: "Keith", count: 3 },
+})
+```
+
+In BOB's browser host there is also sugar — the module loader injects a
+component-aware `Emit` and a virtual `bob/ui` module:
+
+```js
+import { Emit } from "grandma-kat";
+import { component } from "bob/ui";
+
+Emit({ text: "Keith · 3 calls", who: "Keith", count: 3 }, component("ui.mjs"))
+```
+
+It merges into the same value: `props` is the object data minus
+`text`/`buttons`/`level`, and `component("ui.mjs", props)` overrides the props
+explicitly. The `bob/ui` import exists only in the browser loader, so a tree
+that must also knit under Node should use the plain object shape. A path
+starting with `app/` or `patterns/` is workspace-relative; trunk emits resolve
+that way.
+
+The module contract is vanilla JavaScript:
+
+```js
+// app/contacts/ui.mjs — runs in the sandboxed guest, default export:
+export default function render(root, props, api) {
+  root.textContent = `${props.who}: ${props.count} calls`;
+  // api.action("value") feeds a reply back as if the user typed it
+}
+```
+
+The chat fetches the source through `/api/component` and mounts it in an
+iframe with `sandbox="allow-scripts"` — **no** `allow-same-origin` — so
+workspace code is an opaque origin and can never touch the host tab, OPFS,
+keys or sync. The guest reports its own height, and its messages come back
+over postMessage (`bob-component-size`, `bob-component-ready`,
+`bob-component-action`, `bob-component-error`). The emitted `text` is the
+fallback whenever the source cannot be loaded or rendered, and it is what
+Telegram shows — always include it. Components are single-file for now: the
+guest imports one data-URL module, so sibling imports do not resolve.
+
+Tests: `npm run test:emit-value` (parsing/fallback) and
+`npm run test:emit-component` (the sandboxed guest document).
+
 ### Telegram bridge (browser target)
 
 The session drawer's *bridge this chat to Telegram while the tab is open*

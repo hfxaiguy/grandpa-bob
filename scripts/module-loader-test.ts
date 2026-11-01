@@ -88,6 +88,43 @@ try {
   const flagApp = await loader.load("flag.js");
   assert.deepEqual(flagApp.el.record.flags, ["machine"], "Emit flags survive the browser loader");
 
+  // The host widens Emit with the `component(...)` marker: the emitted value
+  // carries the component path plus its props, and flags still pass through.
+  await writeFile(
+    path.join(workspace, "ui-emit.js"),
+    [
+      'import { Emit, flag } from "grandma-kat";',
+      'import { component } from "bob/ui";',
+      'export const el = Emit({ text: "fallback", who: "Keith", count: 3 }, component("ui.mjs"));',
+      'export const flagged = Emit("hi", component("ui.mjs"), flag("machine"));',
+      'export const markerOnly = Emit(component("ui.mjs"), flag("trace"));',
+    ].join("\n"),
+  );
+  const uiApp = await loader.load("ui-emit.js");
+  assert.deepEqual(
+    await uiApp.el.record.fn({}),
+    {
+      text: "fallback",
+      who: "Keith",
+      count: 3,
+      component: "ui.mjs",
+      props: { who: "Keith", count: 3 },
+    },
+    "Emit(data, component(path)) carries the data as props",
+  );
+  assert.deepEqual(uiApp.flagged.record.flags, ["machine"], "component emits keep Emit flags");
+  assert.deepEqual(
+    await uiApp.flagged.record.fn({}),
+    { text: "hi", component: "ui.mjs" },
+    "a plain string emit gains the component marker",
+  );
+  assert.deepEqual(uiApp.markerOnly.record.flags, ["trace"], "a marker-only emit keeps its flags");
+  assert.deepEqual(
+    await uiApp.markerOnly.record.fn({}),
+    { text: "", component: "ui.mjs" },
+    "a marker-only emit has an empty fallback text",
+  );
+
   // Unknown bare specifiers still fail loudly, with the specifier named.
   await writeFile(
     path.join(workspace, "bad.js"),

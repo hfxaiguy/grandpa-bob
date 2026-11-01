@@ -82,4 +82,32 @@ assert.deepEqual(
   { text: "idle", level: "trace" },
 );
 
+// ── 10. a visual component rides on the emit value ──
+assert.deepEqual(
+  emitValue({ text: "Keith owes 3 calls", component: "ui.mjs", props: { who: "Keith", count: 3 } }),
+  {
+    text: "Keith owes 3 calls",
+    component: { src: "ui.mjs", props: { who: "Keith", count: 3 } },
+  },
+);
+// The explicit object form (`{ src, props }`) and the `path` alias both work.
+assert.deepEqual(
+  emitValue({ text: "card", component: { src: "ui.mjs", props: { a: 1 } } }),
+  { text: "card", component: { src: "ui.mjs", props: { a: 1 } } },
+);
+assert.deepEqual(
+  emitValue({ text: "card", component: { path: "ui.mjs" }, props: { a: 1 } }),
+  { text: "card", component: { src: "ui.mjs", props: { a: 1 } } },
+);
+// No text of its own: the props are the text fallback for channels that
+// cannot render the component — never the whole envelope.
+assert.deepEqual(
+  emitValue({ component: "app/contacts/ui.mjs", props: { name: "Keith" } }),
+  { text: '{"name":"Keith"}', component: { src: "app/contacts/ui.mjs", props: { name: "Keith" } } },
+);
+// Malformed/unsupported component values are dropped, so the emit still works.
+assert.deepEqual(emitValue({ text: "plain", component: 42 }), { text: "plain" });
+assert.deepEqual(emitValue({ text: "plain", component: "ui.js" }), { text: "plain" });
+assert.deepEqual(emitValue({ text: "plain", component: "  " }), { text: "plain" });
+
 console.log("emit-value-test: emit value parsing OK");

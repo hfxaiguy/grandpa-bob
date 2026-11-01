@@ -473,6 +473,13 @@ body.dragging-tile { user-select: none !important; }
   font-size: 12px;
 }
 .bubble.err { align-self: flex-start; background: #3a1f24; border-color: #5b2b2b; color: #ffd7d7; }
+/* A component bubble is a frame, not a text run: the guest draws its own
+   card with the theme vars the host hands it. */
+.bubble.has-component { width: 100%; max-width: 100%; padding: 6px; white-space: normal; }
+.emit-component { display: block; width: 100%; }
+.emit-component iframe { display: block; width: 100%; border: 0; background: transparent; overflow: hidden; }
+.component-loading, .component-fallback { display: block; color: #94a3b8; font-size: 12px; }
+.component-fallback { white-space: pre-wrap; }
 .turn-tokens {
   align-self: flex-start;
   margin: -5px 0 2px 2px;

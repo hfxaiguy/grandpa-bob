@@ -16,6 +16,10 @@ declare module "grandma-kat" {
   export function Call(...args: unknown[]): unknown;
   export function Check(...args: unknown[]): unknown;
   export function Return(...args: unknown[]): unknown;
+  export function flag(name: string): unknown;
+  export function when(cond: unknown): unknown;
+  export function isFlag(v: unknown): boolean;
+  export function isWhen(v: unknown): boolean;
   export interface RunLogTool {
     name: string;
     description: string;

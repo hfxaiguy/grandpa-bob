@@ -12,11 +12,11 @@
 import type { AgentClient } from "../agent/agent-client";
 import type { Platform } from "../platform/types";
 import { listAppTrees, listPatterns, listTreeSources } from "../tree-sources";
-import { resolveTreeEntry } from "../tree-files";
+import { resolveModuleEntry, resolveTreeEntry } from "../tree-files";
 import { serializeTree } from "../tree-serialize";
 import { newTurnApps, seedPausedApp, tagEventApp, type TurnApps } from "../app-attribution";
 import { createMemoryTracker, type MemoryWrite } from "../memory-track";
-import { emitValue } from "../util/emit-text";
+import { emitValue, type EmitComponent } from "../util/emit-text";
 import type { TurnTokens } from "../web-log-types";
 import { createModuleLoader } from "../agent/module-loader";
 import { patternLabel } from "../agent/pattern-path";
@@ -73,6 +73,8 @@ interface TurnRecord {
   emits: string[];
   levels: (string | null)[];
   emitApps: string[];
+  /** Visual component per emit (same index as `emits`); null = text bubble. */
+  components: (EmitComponent | null)[];
   awaiting: string | null;
   buttons: unknown[];
   /** How the turn entered its tree: continued the in-memory checkpoint,
@@ -457,6 +459,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
             emits: record.emits,
             levels: record.levels,
             emitApps: record.emitApps,
+            components: record.components,
             buttons: record.buttons,
             awaiting: record.awaiting,
             runMode: record.runMode,
@@ -552,6 +555,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       emits: [],
       levels: [],
       emitApps: [],
+      components: [],
       awaiting: null,
       buttons: [],
       events: [],
@@ -598,16 +602,19 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
           broadcast({ type: "event", turnId, event: tagged });
         },
         onEmit: (value) => {
-          const { text: t, buttons, level } = emitValue(value);
+          const { text: t, buttons, level, component } = emitValue(value);
           const app = apps.current;
-          if (t) {
+          // A component-only bubble is still a bubble: keep every parallel
+          // array (emits/levels/emitApps/components) aligned by the same index.
+          if (t || component) {
             record.emits.push(t);
             record.levels.push(level ?? null);
             record.emitApps.push(app);
-            record.output = record.output ? record.output + "\n\n" + t : t;
+            record.components.push(component ?? null);
+            if (t) record.output = record.output ? record.output + "\n\n" + t : t;
           }
           if (buttons?.length) record.buttons = buttons;
-          broadcast({ type: "emit", turnId, text: t, buttons, level, app });
+          broadcast({ type: "emit", turnId, text: t, buttons, level, component, app });
         },
       },
     );
@@ -632,6 +639,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       broadcast({
         type: "turn_end", turnId, status: "done", error: null, output: record.output,
         buttons: record.buttons, emits: record.emits, levels: record.levels, emitApps: record.emitApps,
+        components: record.components,
         awaiting: record.awaiting, runMode: record.runMode, contextLost: record.contextLost,
         tokens: record.tokens ?? null, ts: record.endedAt,
       });
@@ -651,6 +659,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         broadcast({
           type: "turn_end", turnId, status: "stopped", error: null, output: record.output,
           buttons: record.buttons, emits: record.emits, levels: record.levels, emitApps: record.emitApps,
+          components: record.components,
           awaiting: record.awaiting, tokens: record.tokens ?? null, ts: record.endedAt,
         });
       } else {
@@ -1125,6 +1134,40 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       await platform.fs.mkdir(platform.path.dirname(target), { recursive: true });
       await platform.fs.writeFile(target, bytes);
       return { status: 200, body: { ok: true, name: file.name } };
+    }
+
+    // ── UI components (emit bubbles) ──────────────────────────────────────
+    // A component is a workspace `.mjs` module rendered by the chat in a
+    // sandboxed iframe. With an app name, `src` is relative to that app's
+    // folder (`ui.mjs` beside its `tree.prod.mjs`); a path starting with
+    // `app/` or `patterns/` is workspace-relative, and trunk emits resolve
+    // that way too.
+    if (pathname === "/api/component" && method === "GET") {
+      const app = (search.get("app") ?? "").trim();
+      const src = (search.get("src") ?? "").trim();
+      if (!src) return { status: 400, body: { error: "src required" } };
+      const invalid = (): BackendResponse => ({ status: 400, body: { error: `invalid component path: ${src}` } });
+      try {
+        if (app && app !== "trunk" && !/^(?:app|patterns)\//.test(src)) {
+          // App-relative: the same confined child-module rule writes use.
+          const mod = await resolveModuleEntry(platform.workspaceRoot, app, src);
+          if (!mod) return { status: 404, body: { error: `component not found: ${app} ${src}` } };
+          const source = await platform.fs.readFile(mod.abs, "utf8");
+          return { status: 200, body: { path: mod.file, source } };
+        }
+        const rel = src.replace(/\\/g, "/").replace(/^\.\//, "");
+        if (platform.path.isAbsolute(rel) || !rel.endsWith(".mjs")) return invalid();
+        if (rel.split("/").some((s) => !s || s === "." || s === ".." || s.startsWith(".") || s === "node_modules")) {
+          return invalid();
+        }
+        const root = platform.path.resolve(platform.workspaceRoot);
+        const abs = platform.path.resolve(root, rel);
+        if (!abs.startsWith(root + platform.path.sep)) return invalid();
+        const source = await platform.fs.readFile(abs, "utf8");
+        return { status: 200, body: { path: rel, source } };
+      } catch (err) {
+        return { status: 404, body: { error: err instanceof Error ? err.message : String(err) } };
+      }
     }
 
     // ── patterns ──────────────────────────────────────────────────────────

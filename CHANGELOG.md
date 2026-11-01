@@ -2,6 +2,39 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — app chats can render workspace UI components
+
+An emit can now carry a visual component instead of a text bubble. The
+component is an app-owned workspace module (`app/<name>/ui.mjs`, or the
+sub-app's own `app/<parent>/app/<child>/ui.mjs`), so the UI lives beside the
+tree that produces its data.
+
+- **Emit shape.** The portable form is `Emit({ text, component: "ui.mjs",
+  props })`; BOB's browser module loader also injects a component-aware `Emit`
+  plus the virtual `bob/ui` module, so a tree may write `Emit(data,
+  component(path))` (browser-only import — use the object shape for Node
+  tests). The sugar merges into the same value: `props` defaults to the object
+  data without its transport fields, and `text` stays the fallback; no
+  grandma-kat fork is needed.
+- **Sandboxed rendering.** The chat fetches the module through
+  `/api/component` and mounts it in an `allow-scripts` iframe with no
+  `allow-same-origin`, so workspace code cannot reach OPFS, keys, the sync
+  stack or the host DOM. The guest default-exports `render(root, props, api)`,
+  reports its height, surfaces errors, and can send a reply with
+  `api.action(value)`. The host palette is passed as CSS variables.
+- **Persistence and fallback.** Components are stored per emit (same index as
+  `emits`) in the turn marker, so replayed sessions keep their visual bubbles;
+  a missing/broken component falls back to the emitted text. Telegram and other
+  text-only surfaces are unchanged and show the fallback.
+- **Resolution.** The source path is app-relative (`ui.mjs` beside the emitting
+  app's `tree.prod.mjs`), or workspace-relative when it starts with `app/` /
+  `patterns/`; `.mjs` only, must exist, and app paths use the same confined
+  child-module rule (`resolveModuleEntry`) as the module editor.
+- **Guidance and docs.** `HOST_GUIDES` teaches the emit shape and the
+  single-file sandbox contract; `web/README.md` documents the folder layout and
+  the guest API. `test:emit-value` covers parsing/fallback and
+  `test:emit-component` covers the guest document.
+
 ## 2026-11-01 — BobSwap drops the Supabase relay; WebRTC is the one transfer path
 
 Toolbar **Sync…** no longer offers **Send…**/**Receive…**. That flow (shipped

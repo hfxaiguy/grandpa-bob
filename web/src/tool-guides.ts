@@ -82,6 +82,22 @@ export const HOST_GUIDES: HostGuide[] = [
       "read_json over read_file whenever the file is JSON.",
   },
   {
+    tools: ["write_file", "edit_file"],
+    guide:
+      "APP UI COMPONENTS: an app tree can render a visual component in the web chat instead of a text " +
+      'bubble. Put the component beside the app\'s tree as `app/<name>/ui.mjs` (a nested sub-app keeps its ' +
+      'own `app/<parent>/app/<child>/ui.mjs`). Attach it with the portable emit shape: ' +
+      '`Emit({ text: "Keith · 3 calls", component: "ui.mjs", props: { who: "Keith", count: 3 } })` — ' +
+      "`text` is what Telegram and every non-rendering surface show, and `props` is what the component " +
+      'renders. The module default-exports `render(root, props, api)`: `api.action(value)` feeds `value` ' +
+      'back as the user\'s reply. In BOB\'s browser host the sugar `Emit(data, component("ui.mjs"))` also ' +
+      'works (import `{ component }` from "bob/ui"), but that import is browser-only; use the plain object ' +
+      "shape when the tree must run under `node --test`. Components are single-file (the sandbox imports " +
+      "one module, so no sibling imports) and run in a sandboxed iframe: plain DOM only, and the host " +
+      "palette arrives as `--bob-fg`, `--bob-card`, `--bob-border`, `--bob-accent`, `--bob-font`, " +
+      "`--bob-font-size`. Keep the component a pure function of `props`.",
+  },
+  {
     tools: ["inspect_memory"],
     guide:
       "INSPECTING A HANDLE: a truncated tool result carries a ref://<name>.<seq> " +

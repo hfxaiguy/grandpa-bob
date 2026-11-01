@@ -1172,6 +1172,7 @@ export function handleSSE(msg: any): void {
             emits: [],
             levels: [],
             emitApps: [],
+            components: [],
             events: [],
           });
           s.awaiting = null;
@@ -1222,11 +1223,14 @@ export function handleSSE(msg: any): void {
         produce((s) => {
           const t = s.turns.find((x) => x.turnId === msg.turnId);
           if (!t) return;
-          if (msg.text) {
-            (t.emits ??= []).push(msg.text);
+          // A component-only bubble is still a bubble, so a component keeps
+          // the emit arrays aligned even without fallback text.
+          if (msg.text || msg.component) {
+            (t.emits ??= []).push(msg.text ?? "");
             (t.levels ??= []).push(msg.level ?? null);
             (t.emitApps ??= []).push(msg.app ?? "trunk");
-            t.output = t.output ? t.output + "\n\n" + msg.text : msg.text;
+            (t.components ??= []).push(msg.component ?? null);
+            if (msg.text) t.output = t.output ? t.output + "\n\n" + msg.text : msg.text;
           }
           if (msg.buttons?.length) t.buttons = msg.buttons;
         }),
@@ -1247,6 +1251,7 @@ export function handleSSE(msg: any): void {
             if (msg.emits) t.emits = msg.emits;
             if (msg.levels) t.levels = msg.levels;
             if (msg.emitApps) t.emitApps = msg.emitApps;
+            if (msg.components) t.components = msg.components;
             if (msg.buttons) t.buttons = msg.buttons;
             if (msg.tokens) t.tokens = msg.tokens;
             t.fallback = msg.fallback ?? null;

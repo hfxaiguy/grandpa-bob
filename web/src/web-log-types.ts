@@ -6,7 +6,7 @@
  * web tsconfig maps to browser stubs and cannot type-check).
  */
 import type { SanitizedEvent } from "./sanitize.js";
-import type { EmitButton } from "./util/emit-text.js";
+import type { EmitButton, EmitComponent } from "./util/emit-text.js";
 
 /** Per-turn model token accounting, summed over the turn's `llm_call` events. */
 export interface TurnTokens {
@@ -34,6 +34,8 @@ export interface TurnMarker {
   emits?: string[] | null;
   levels?: (string | null)[] | null;
   emitApps?: (string | null)[] | null;
+  /** Visual component per emit (same index as `emits`); null = text bubble. */
+  components?: (EmitComponent | null)[] | null;
   buttons?: EmitButton[] | null;
   fallback?: EmitButton[] | null;
   awaiting?: string | null;
@@ -65,6 +67,8 @@ export interface DerivedTurn {
   emits?: string[] | null;
   levels?: (string | null)[] | null;
   emitApps?: (string | null)[] | null;
+  /** Visual component per emit (same index as `emits`); null = text bubble. */
+  components?: (EmitComponent | null)[] | null;
   buttons?: EmitButton[] | null;
   fallback?: EmitButton[] | null;
   awaiting?: string | null;

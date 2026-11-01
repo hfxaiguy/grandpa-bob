@@ -647,6 +647,7 @@ export async function getTurns(
         emits: m.emits ?? null,
         levels: m.levels ?? null,
         emitApps: m.emitApps ?? null,
+        components: m.components ?? null,
         buttons: m.buttons ?? null,
         fallback: m.fallback ?? null,
         awaiting: m.awaiting ?? null,
