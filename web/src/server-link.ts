@@ -142,8 +142,10 @@ function unreachable(base: string, err: unknown): Error {
   const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
   return new Error(
     `cannot reach ${base}${detail} — is \`npm run bob\` running on this machine? ` +
-      "The desktop mailbox is loopback-only; open the app at http://localhost:8080 " +
-      "or http://127.0.0.1:8080 and check http://127.0.0.1:8795/health.",
+      "The desktop mailbox is loopback-only; if the browser asks for Local Network Access, " +
+      "allow it for this site (Chrome blocks public pages from reaching 127.0.0.1), " +
+      "or open the app at http://localhost:8080 or http://127.0.0.1:8080 and check " +
+      "http://127.0.0.1:8795/health.",
   );
 }
 

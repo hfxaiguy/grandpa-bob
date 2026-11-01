@@ -51,9 +51,11 @@ instead of moving into `web/src/`, so every click answered
 
 `https://bobkat.hfxaiguy.com` is now in the default channel-API allowlist, so
 the hosted app can join the local `:8795` mailbox without setting
-`BOB_APP_ORIGINS`. The bridge still requires the one-time code, a matching SAS
-and console approval before it mirrors files or runs anything;
-`BOB_APP_ORIGINS` still replaces the default list.
+`BOB_APP_ORIGINS`. CORS preflights now opt into Chrome's Local Network Access
+(`Access-Control-Allow-Private-Network: true`); the browser still asks the user
+to allow Local Network Access for the hosted origin. The bridge still requires
+the one-time code, a matching SAS and console approval before it mirrors files
+or runs anything; `BOB_APP_ORIGINS` still replaces the default list.
 
 ## 2026-11-01 — pairing is code-only; channel ids stay internal
 

@@ -431,7 +431,10 @@ browsers** — a code, a DTLS verification phrase, then the same `SyncEngine`.
   setting the variable replaces that list. The peer mailbox also accepts any
   loopback hostname/port. The admin API stays loopback-only; the
   mailbox/Telegram/STT share the port, so an operator exposing it must front it
-  with HTTPS and a firewall.
+  with HTTPS and a firewall. CORS preflights opt into Chrome's Local Network
+  Access with `Access-Control-Allow-Private-Network: true`; the browser still
+  asks the user to allow Local Network Access for a public HTTPS origin the
+  first time.
 - `/fs`, `/git`, `/sql` and `/roots` are **not mounted** by the product
   process. The standalone `storage-server.mjs` CLI keeps them for tests/debug;
   `/health` and the opt-in `/stt` remain on the channel server.

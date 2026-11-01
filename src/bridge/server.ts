@@ -90,6 +90,11 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
       "content-type": "application/json",
       "access-control-allow-methods": "GET,POST,PUT,OPTIONS",
       "access-control-allow-headers": "content-type,authorization,x-bob-profile,x-bob-admin",
+      // Chrome's Local Network Access / Private Network Access preflight blocks
+      // a public HTTPS page from reaching a loopback mailbox unless the
+      // loopback response opts in. The origin allowlist above still decides
+      // which pages can read the response.
+      "access-control-allow-private-network": "true",
       "cache-control": "no-store",
     };
     if (origin) {
