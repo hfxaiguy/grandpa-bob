@@ -452,12 +452,12 @@ anonymously: mark the seed **public latest** in the BobSwap dashboard (future
 uploads included), or mark the individual newest version public — no read key
 is shipped.
 
-- The **BobSwap…** dialog stores the service URL, realtime endpoint/key, account
-  and API keys in this browser's localStorage (`bob:swap`); **Seed…** only asks
-  which service and the seed name. Keys never enter the workspace or an
-  export. New setups prefill the deployed service at
-  `https://bobswap.hfxaiguy.com`; any saved service overrides it. API keys are
-  operator-issued (`read`/`upload`/`manage` scopes); there is no public signup.
+- The **BobSwap…** dialog stores the service URL, account and API keys in this
+  browser's localStorage (`bob:swap`); **Seed…** only asks which service and the
+  seed name. Keys never enter the workspace or an export. New setups prefill the
+  deployed service at `https://bobswap.hfxaiguy.com`; any saved service overrides
+  it. API keys are operator-issued (`read`/`upload`/`manage` scopes); there is no
+  public signup.
 - On boot — and every five minutes while the tab stays open, plus whenever it
   becomes visible again — the profile asks `/api/v1/<account>/<seed>/latest/meta`
   (with a read key) and, when the seed is newer, shows the usual **Workspace
@@ -482,30 +482,25 @@ is shipped.
   from a plain link with no key, and `?key=` URLs remain supported for keyed
   services.
 
-## Sharing a workspace between devices (zero storage)
+## Moving a workspace between devices
 
-Toolbar **Sync…** → **Send…**/**Receive…** move a workspace copy between two
-open tabs through a BobSwap relay:
+Two REST/peer paths cover this; neither stores workspace bytes on BobSwap:
 
-- Each share creates a fresh channel; the sender shows a 6-digit pairing code
-  and a 4-character visual check that must match on both screens. Nothing is
-  stored on the service — both tabs must stay open, and losing a connection
-  discards the transfer (nothing to resume). Copy mode only; ownership swaps are
-  a later step.
-- Data is sliced into 192 KiB chunks (~256 KiB base64 messages) over the
-  ephemeral broadcast topic named by the service (event `relay`), acked
-  individually and verified with SHA-256. The receiving tab reassembles in
-  memory and only then imports. The control plane (state, status, delete) is
-  driven with the role tokens from the offer/join responses.
-- The receiver chooses **current profile** or **as a new profile** (created on
-  the spot). Relay copies include `workspace/logs/`; seed *updates* do not
-  overwrite an existing log.
-- Pairing codes must never be put in URLs (the service rejects URL API keys and
-  this would leak the secret). Share the channel id and code out-of-band.
-- The default service's realtime endpoint is Supabase (`iqrsezxlgcfqxaiytsjj`)
-  with its public publishable key; both fields are editable in the BobSwap…
-  dialog for other deployments. See `/docs/agents` on the service for the
-  authoritative API reference.
+- **New device:** bind it to a seed (**Profiles** → **Seed…** or the new-profile
+  picker). The client downloads the newest version over plain REST and verifies
+  its SHA-256. A public version needs no key; private versions need a read key.
+- **Two live tabs:** **Sync…** → **Pair…** opens a WebRTC DataChannel and
+  reconciles changes peer-to-peer. Signaling is either the BobSwap REST mailbox
+  (channel id + pairing code exchanged out-of-band) or a manual paste; the
+  mailbox carries SDP/ICE only. Both sides show the same 6-word verification
+  phrase before any data moves; a MITM relay changes the DTLS fingerprints and
+  the phrases stop matching.
+- **No service at all:** **Sync…** → **Export**/**Import** moves a JSON archive
+  by hand.
+
+Pairing codes must never be put in URLs (the service rejects URL API keys and
+this would leak the secret). See `/docs/agents` on the service for the
+authoritative API reference.
 
 ## Standalone (historical: there is no admin to stop)
 The standalone-vs-admin split is gone — `npm run web:standalone` is simply *the* run command. The notes below describe the old mode boundary and stay for the record:

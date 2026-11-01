@@ -111,11 +111,39 @@ export function clearServerLink(profile: string): void {
 function normalizeUrl(url: string): string {
   const trimmed = String(url ?? "").trim();
   if (!trimmed) throw new Error("server URL is required");
-  const parsed = new URL(trimmed.includes("://") ? trimmed : `http://${trimmed}`);
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed.includes("://") ? trimmed : `http://${trimmed}`);
+  } catch {
+    throw new Error(`invalid server URL: ${trimmed}`);
+  }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error("server URL must be http(s)");
   }
   return parsed.origin + (parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, ""));
+}
+
+/** Firefox reports connection and CORS failures with the same bare TypeError. */
+function failedToFetch(err: unknown): boolean {
+  return (
+    err instanceof TypeError ||
+    (err instanceof Error && /networkerror|failed to fetch|load failed|fetch failed/i.test(err.message))
+  );
+}
+
+/**
+ * Turn a browser-level fetch failure into something the operator can act on.
+ * The mailbox binds loopback and only accepts loopback page origins, so the
+ * old bare "NetworkError when attempting to fetch resource" hid both the URL
+ * and the two realistic causes.
+ */
+function unreachable(base: string, err: unknown): Error {
+  const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
+  return new Error(
+    `cannot reach ${base}${detail} — is \`npm run bob\` running on this machine? ` +
+      "The desktop mailbox is loopback-only; open the app at http://localhost:8080 " +
+      "or http://127.0.0.1:8080 and check http://127.0.0.1:8795/health.",
+  );
 }
 
 async function joinServerChannel(
@@ -124,11 +152,16 @@ async function joinServerChannel(
   code: string,
   profile: string,
 ): Promise<JoinResponse> {
-  const res = await fetch(`${base}/api/v1/sync/channels/${encodeURIComponent(channelId)}/join`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code, profile }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${base}/api/v1/sync/channels/${encodeURIComponent(channelId)}/join`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code, profile }),
+    });
+  } catch (err) {
+    throw unreachable(base, err);
+  }
   const data = (await res.json().catch(() => ({}))) as JoinResponse & { error?: string };
   if (!res.ok) throw new Error(data.error ?? `join failed: HTTP ${res.status}`);
   if (!data.role_token) throw new Error("the server did not return a role token");
@@ -140,15 +173,20 @@ async function createReconnectChannel(
   profile: string,
   clientKey: string,
 ): Promise<{ channel_id: string; role_token: string; ice_servers?: unknown[] }> {
-  const res = await fetch(`${base}/api/v1/sync/channels`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${clientKey}`,
-      "x-bob-profile": profile,
-    },
-    body: "{}",
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${base}/api/v1/sync/channels`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${clientKey}`,
+        "x-bob-profile": profile,
+      },
+      body: "{}",
+    });
+  } catch (err) {
+    throw unreachable(base, err);
+  }
   const data = (await res.json().catch(() => ({}))) as {
     channel_id?: string;
     role_token?: string;
@@ -290,7 +328,13 @@ function negotiate(
       serverNonce = String(control.nonce ?? "");
       const pairing = control.pairing === true;
       if (pairing) {
-        opts.onStatus("waiting for approval on the desktop console…");
+        const capabilities = (control.capabilities ?? {}) as { mirror?: string; exec?: string[] };
+        const exec = Array.isArray(capabilities.exec)
+          ? capabilities.exec.filter((x): x is string => typeof x === "string")
+          : [];
+        opts.onStatus(
+          `waiting for approval on the desktop console — mirror ${capabilities.mirror ?? "?"} · exec: ${exec.join(", ") || "none"}`,
+        );
       } else {
         void (async () => {
           if (!opts.info) {
@@ -372,7 +416,12 @@ export async function pairWithServer(opts: {
   opts.onStatus("joining the server channel…");
   const joined = await joinServerChannel(base, opts.channelId, opts.code, opts.profile);
   opts.onStatus("connecting…");
-  const opened = await openLink(base, opts.channelId, joined.role_token, opts.localId, opts.onSas, joined.ice_servers);
+  let opened: Opened;
+  try {
+    opened = await openLink(base, opts.channelId, joined.role_token, opts.localId, opts.onSas, joined.ice_servers);
+  } catch (err) {
+    throw failedToFetch(err) ? unreachable(base, err) : err;
+  }
   return new Promise<ServerConnection>((resolve, reject) => {
     negotiate(
       { opened, mode: "pairing", url: base, profile: opts.profile, onStatus: opts.onStatus },
@@ -391,14 +440,19 @@ export async function resumeServer(opts: {
   const base = normalizeUrl(opts.info.url);
   opts.onStatus?.("finding the server…");
   const channel = await createReconnectChannel(base, opts.info.profile, opts.info.clientKey);
-  const opened = await openLink(
-    base,
-    channel.channel_id,
-    channel.role_token,
-    opts.localId,
-    opts.onSas ?? (() => {}),
-    channel.ice_servers,
-  );
+  let opened: Opened;
+  try {
+    opened = await openLink(
+      base,
+      channel.channel_id,
+      channel.role_token,
+      opts.localId,
+      opts.onSas ?? (() => {}),
+      channel.ice_servers,
+    );
+  } catch (err) {
+    throw failedToFetch(err) ? unreachable(base, err) : err;
+  }
   return new Promise<ServerConnection>((resolve, reject) => {
     negotiate(
       {

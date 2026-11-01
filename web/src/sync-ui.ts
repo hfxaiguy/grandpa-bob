@@ -12,6 +12,7 @@
 import { activeSwapService, type SwapService } from "./swap";
 import { pairWithServer } from "./server-link";
 import { bindDesktopMirror } from "./profiles";
+import { loadStorageServer } from "./settings";
 import { toIceServers } from "./sync/transport-webrtc";
 import type { SyncHandle } from "./sync";
 import type { SyncState } from "./sync/engine";
@@ -103,14 +104,18 @@ export function wireSyncUi(getSync: SyncGetter): void {
   const setStatus = (text: string): void => setText("pair-status", text);
   const setVerify = (phrase: string): void => setText("pair-verify", phrase);
   const setServerStatus = (text: string): void => setText("pair-server-status", text);
+  const activeProfile = (): string => localStorage.getItem("bob:profile") || "default";
   const serverUrl = (): string => {
     const input = el<HTMLInputElement>("pair-server-url");
-    const fallback = localStorage.getItem("bob:storage-server") || "http://127.0.0.1:8795";
+    // Normalize the saved bridge URL: a stale file:/// or bare host value would
+    // otherwise reach fetch() and surface as Firefox's bare NetworkError.
+    const fallback = loadStorageServer();
     if (input && !input.value) input.value = fallback;
     return input?.value.trim() || fallback;
   };
   const serverChannel = (): string => el<HTMLInputElement>("pair-server-channel")?.value.trim() ?? "";
   const serverCode = (): string => el<HTMLInputElement>("pair-server-code")?.value.trim() ?? "";
+  const showActiveProfile = (): void => setText("pair-server-profile", activeProfile());
 
   // Live status line in the Sync… dialog.
   const updateLiveStatus = (): void => {
@@ -123,12 +128,16 @@ export function wireSyncUi(getSync: SyncGetter): void {
   };
   open.addEventListener("click", () => {
     updateLiveStatus();
+    showActiveProfile();
+    const input = el<HTMLInputElement>("pair-server-url");
+    if (input && !input.value) input.value = loadStorageServer();
     dialog.showModal();
   });
   close?.addEventListener("click", () => dialog.close());
   const sync = getSync();
   sync?.onState(() => updateLiveStatus());
   updateLiveStatus();
+  showActiveProfile();
 
   const requireSync = (): SyncHandle | null => {
     const handle = getSync();
@@ -273,7 +282,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
     if (!handle) return;
     void (async () => {
       try {
-        const profile = localStorage.getItem("bob:profile") || "default";
+        const profile = activeProfile();
         const url = serverUrl();
         const channel = serverChannel();
         const code = serverCode();
@@ -281,7 +290,8 @@ export function wireSyncUi(getSync: SyncGetter): void {
           setServerStatus("enter the channel id and the 8-digit code from npm run pair");
           return;
         }
-        setServerStatus("joining the server channel…");
+        showActiveProfile();
+        setServerStatus(`joining ${url}…`);
         const connection = await pairWithServer({
           url,
           channelId: channel,

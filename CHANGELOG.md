@@ -2,6 +2,28 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — BobSwap drops the Supabase relay; WebRTC is the one transfer path
+
+Toolbar **Sync…** no longer offers **Send…**/**Receive…**. That flow (shipped
+2026-10-23, before the sync channel existed) streamed whole archives over an
+ephemeral Supabase broadcast topic, which meant every deployment needed the
+project's realtime URL and publishable key even though seeds and pairing never
+touched them.
+
+- **Removed:** the relay client (`sendWorkspace`/`receiveWorkspace`, relay
+  channel create/join, role-token control plane, chunk/ack framing), the
+  `realtimeUrl`/`realtimeKey` service fields and their Supabase defaults, the
+  Send/Receive dialogs, and the `@supabase/supabase-js` dependency.
+- **Unchanged:** the seed shelf (REST, ETag/SHA-256, public or keyed reads) and
+  cross-device **Pair…** — WebRTC DataChannel with the BobSwap REST mailbox or
+  manual-paste signaling. Neither ever carried workspace bytes through the
+  service.
+- **Moving a workspace now:** a new device binds a seed (REST), two live tabs
+  pair and reconcile P2P, and **Export**/**Import** remain the no-service path.
+  Saved `bob:swap` entries with the old realtime keys are read fine; the keys
+  are ignored and disappear on the next save.
+- Docs, the BobSwap… dialog and the profile smoke were updated to match.
+
 ## 2026-11-01 — story: the forest is the product; a trunk call is an ask
 
 Story now has two entrances. A trunk/app call carrying `input` takes

@@ -3,8 +3,8 @@
  *
  * Kept out of `main.ts` so boot stays a readable sequence: this module only
  * wires dialogs to the pure-ish layers in `profiles.ts` / `swap.ts`. All
- * content that moves through a relay is assembled and imported by the browser;
- * this file never persists it.
+ * content that moves between devices (seed archives, cross-device pairs) is
+ * assembled or imported by the browser; this file never persists it.
  */
 import {
   DEFAULT_PROFILE,
@@ -32,22 +32,16 @@ import {
   loadSwapStore,
   probeLatestSeed,
   publishSeed,
-  receiveWorkspace,
   resolveSwapService,
   saveSwapService,
-  sendWorkspace,
-  type RelayChannelInfo,
-  type RelayProgress,
   type RemoteSeedMeta,
   type SwapService,
 } from "./swap";
 import {
   buildWorkspaceArchive,
   summarizeWorkspace,
-  validateWorkspaceArchive,
   type WorkspaceArchive,
 } from "./workspace-transfer";
-import { loadOrCreateDevice, saveDeviceName } from "./device-keys";
 import { clearServerLink } from "./server-link";
 import type { MirrorStatus } from "./peer-status";
 
@@ -61,8 +55,6 @@ export interface ProfileUiHooks {
   applySeedUpdate(binding: SeedBinding, meta: RemoteSeedMeta, version?: string): Promise<void>;
   /** Archive whatever workspace BOB currently operates on. */
   buildActiveArchive(): Promise<WorkspaceArchive>;
-  /** Merge into an OPFS profile. */
-  importInto(target: string, archive: WorkspaceArchive): Promise<number>;
   /** Run the active profile's desktop mirror now. */
   syncMirror(): Promise<void>;
   /** Current desktop-mirror status (null when this profile has none). */
@@ -97,8 +89,6 @@ let hooks: ProfileUiHooks | null = null;
 let seedDialogProfile = "";
 let seedDialogMode: "binding" | "service" = "binding";
 let pendingSeedCheck: { meta: RemoteSeedMeta; version?: string } | null = null;
-let shareAbort: AbortController | null = null;
-let receiveAbort: AbortController | null = null;
 /** Cached top-level app names; the workspace's app folders rarely change. */
 let appNames: string[] | null = null;
 let hiddenProfile = "";
@@ -114,8 +104,6 @@ function serviceFromSeedFields(): SwapService | null {
   if (!baseUrl) return null;
   return {
     baseUrl,
-    realtimeUrl: el<HTMLInputElement>("seed-realtime-url")?.value.trim() || undefined,
-    realtimeKey: el<HTMLInputElement>("seed-realtime-key")?.value.trim() || undefined,
     account: el<HTMLInputElement>("seed-account")?.value.trim() || undefined,
     readKey: el<HTMLInputElement>("seed-read-key")?.value.trim() || undefined,
     uploadKey: el<HTMLInputElement>("seed-upload-key")?.value.trim() || undefined,
@@ -131,8 +119,6 @@ function fillServiceFields(service: SwapService | null): void {
   // and per-profile bindings still win.
   const value = service ?? defaultSwapService();
   set("seed-base-url", value.baseUrl);
-  set("seed-realtime-url", value.realtimeUrl);
-  set("seed-realtime-key", value.realtimeKey);
   set("seed-account", value.account);
   set("seed-read-key", value.readKey);
   set("seed-upload-key", value.uploadKey);
@@ -698,8 +684,6 @@ function setSeedDialogChrome(title: string, profileName: string): void {
   // Service configuration (URLs, account, keys) belongs to BobSwap….
   for (const id of [
     "seed-base-url-label",
-    "seed-realtime-url-label",
-    "seed-realtime-key-label",
     "seed-account-label",
     "seed-read-key-label",
     "seed-upload-key-label",
@@ -721,7 +705,7 @@ function setSeedDialogChrome(title: string, profileName: string): void {
   if (hint) {
     hint.textContent = binding
       ? "Bind this profile to a seed on the configured BobSwap service. Updates appear in the toolbar; the run log and chat history are kept."
-      : "Configure a BobSwap service once (URL, account, keys), then either bind a profile to a seed or use Send/Receive.";
+      : "Configure a BobSwap service once (URL, account, keys), then bind a profile to a seed or pair a device in Live sync.";
   }
 }
 
@@ -923,8 +907,6 @@ function wireSeedDialog(): void {
       if (!saved) return;
       setSeedStatus(`service saved: ${saved.baseUrl}`);
       getHooks().flash("BobSwap service saved", 5000);
-      fillServiceSelect(el<HTMLSelectElement>("share-service"));
-      fillServiceSelect(el<HTMLSelectElement>("recv-service"));
       return;
     }
     void saveSeedBinding()
@@ -962,7 +944,7 @@ function wireSeedDialog(): void {
   });
 }
 
-// ── share (send) ─────────────────────────────────────────────────────────
+// ── service picker + seed progress ───────────────────────────────────────
 
 function fillServiceSelect(select: HTMLSelectElement | null, preferred?: string): void {
   if (!select) return;
@@ -1007,245 +989,6 @@ export function clearSeedProgress(barId: string): void {
   bar.value = 0;
 }
 
-function setShareProgress(progress: RelayProgress): void {
-  const bar = el<HTMLProgressElement>("share-bar");
-  if (bar) {
-    bar.max = progress.total || 1;
-    bar.value = progress.sent || 0;
-  }
-  const line = el<HTMLDivElement>("share-progress");
-  if (line) {
-    const pct = progress.total ? Math.round((progress.sent / progress.total) * 100) : 0;
-    line.textContent = `${progress.message}${progress.total ? ` · ${pct}%` : ""}`;
-  }
-  if (progress.check) {
-    const check = el<HTMLElement>("share-check");
-    if (check) check.textContent = progress.check;
-  }
-  if (progress.code) {
-    const code = el<HTMLElement>("share-code");
-    if (code) code.textContent = progress.code;
-  }
-}
-
-async function startShare(): Promise<void> {
-  const ui = getHooks();
-  const selected = el<HTMLSelectElement>("share-service")?.value ?? "";
-  const service = resolveSwapService(selected);
-  if (!service) {
-    ui.flash("add a BobSwap service first (BobSwap…)", 8000);
-    return;
-  }
-  const nameInput = el<HTMLInputElement>("share-device-name");
-  if (nameInput?.value.trim()) saveDeviceName(nameInput.value);
-  const current = await loadOrCreateDevice();
-
-  const archive = await ui.buildActiveArchive();
-  const proceed = confirm(
-    `Share "${ui.activeProfile()}" (${archive.files.length} files) to another device?\n\n` +
-      "Nothing is stored on the service. This tab must stay open until the other " +
-      "device has joined and received the copy.",
-  );
-  if (!proceed) return;
-
-  shareAbort?.abort();
-  shareAbort = new AbortController();
-  const offer = el<HTMLDivElement>("share-offer");
-  if (offer) offer.hidden = false;
-  const channel = el<HTMLElement>("share-channel");
-  if (channel) channel.textContent = "";
-  const start = el<HTMLButtonElement>("share-start");
-  if (start) start.disabled = true;
-
-  try {
-    await sendWorkspace({
-      service,
-      archive,
-      device: current,
-      signal: shareAbort.signal,
-      onChannel: (info: RelayChannelInfo) => {
-        const code = el<HTMLElement>("share-code");
-        if (code) code.textContent = info.code;
-        const check = el<HTMLElement>("share-check");
-        if (check) check.textContent = info.visualCheck ?? "—";
-        if (channel) channel.textContent = info.channelId;
-      },
-      onProgress: setShareProgress,
-    });
-    ui.flash("workspace delivered", 8000);
-  } catch (err) {
-    setShareProgress({
-      phase: "error",
-      sent: 0,
-      total: 0,
-      message: errorText(err),
-    });
-    if (!/cancel/i.test(errorText(err))) ui.flash(`share failed: ${errorText(err)}`, 10_000);
-  } finally {
-    const startButton = el<HTMLButtonElement>("share-start");
-    if (startButton) startButton.disabled = false;
-  }
-}
-
-function wireShareDialog(): void {
-  const dialog = el<HTMLDialogElement>("share-dialog");
-  el<HTMLButtonElement>("share-send")?.addEventListener("click", () => {
-    if (!dialog) return;
-    fillServiceSelect(el<HTMLSelectElement>("share-service"));
-    void loadOrCreateDevice().then((device) => {
-      const name = el<HTMLInputElement>("share-device-name");
-      if (name) name.value = device.name;
-    });
-    const offer = el<HTMLDivElement>("share-offer");
-    if (offer) offer.hidden = true;
-    setShareProgress({ phase: "offered", sent: 0, total: 0, message: "ready" });
-    dialog.showModal();
-  });
-  el<HTMLButtonElement>("share-start")?.addEventListener("click", () => void startShare());
-  el<HTMLButtonElement>("share-cancel")?.addEventListener("click", () => {
-    shareAbort?.abort();
-    setShareProgress({ phase: "error", sent: 0, total: 0, message: "cancelled" });
-  });
-  el<HTMLButtonElement>("share-close")?.addEventListener("click", () => {
-    shareAbort?.abort();
-    dialog?.close();
-  });
-  dialog?.addEventListener("close", () => shareAbort?.abort());
-}
-
-// ── receive ──────────────────────────────────────────────────────────────
-
-function renderReceiveTargets(): void {
-  const select = el<HTMLSelectElement>("recv-target");
-  if (!select) return;
-  const ui = getHooks();
-  const wrap = el<HTMLElement>("recv-new-wrap");
-  const registry = ui.registry();
-  const current = `current:${ui.activeProfile()}`;
-  const options: HTMLOptionElement[] = [];
-  for (const profile of registry.profiles) {
-    const option = document.createElement("option");
-    option.value = profile.name === ui.activeProfile() ? current : `profile:${profile.name}`;
-    option.textContent =
-      profile.name === ui.activeProfile()
-        ? `current profile (${profile.name})`
-        : `existing profile (${profile.name})`;
-    options.push(option);
-  }
-  const fresh = document.createElement("option");
-  fresh.value = "new";
-  fresh.textContent = "as a new profile…";
-  options.push(fresh);
-  select.replaceChildren(...options);
-  select.value = current;
-  if (wrap) wrap.hidden = select.value !== "new";
-}
-
-async function startReceive(): Promise<void> {
-  const ui = getHooks();
-  const selected = el<HTMLSelectElement>("recv-service")?.value ?? "";
-  const service = resolveSwapService(selected);
-  const channelId = el<HTMLInputElement>("recv-channel")?.value.trim() ?? "";
-  const code = el<HTMLInputElement>("recv-code")?.value.trim() ?? "";
-  if (!service) {
-    ui.flash("add a BobSwap service first (BobSwap…)", 8000);
-    return;
-  }
-  if (!channelId || !/^\d{6}$/.test(code)) {
-    setReceiveStatus("enter the channel id and the 6-digit pairing code");
-    return;
-  }
-  const target = el<HTMLSelectElement>("recv-target")?.value ?? "new";
-  const newName = el<HTMLInputElement>("recv-new-name")?.value.trim() ?? "";
-  if (target === "new" && !isValidProfileName(newName)) {
-    setReceiveStatus("new profile names use lowercase letters, digits, dot, dash or underscore");
-    return;
-  }
-
-  const device = await loadOrCreateDevice();
-  receiveAbort?.abort();
-  receiveAbort = new AbortController();
-  const join = el<HTMLButtonElement>("recv-join");
-  if (join) join.disabled = true;
-
-  try {
-    setReceiveStatus("pairing…");
-    const received = await receiveWorkspace({
-      service,
-      channelId,
-      code,
-      device,
-      signal: receiveAbort.signal,
-      onProgress: (progress) => {
-        const bar = el<HTMLProgressElement>("recv-bar");
-        if (bar) {
-          bar.max = progress.total || 1;
-          bar.value = progress.sent || 0;
-        }
-        setReceiveStatus(
-          `pairing check ${progress.check ?? "—"} · ${progress.message}` +
-            (progress.peer ? ` · from ${progress.peer}` : ""),
-        );
-      },
-    });
-
-    const archive = validateWorkspaceArchive(received.archive);
-    const profileName = target.startsWith("current:")
-      ? ui.activeProfile()
-      : target.slice("profile:".length);
-    if (target === "new") {
-      await createProfile(newName);
-    }
-    const targetName = target === "new" ? newName : profileName;
-    setReceiveStatus("importing…");
-    const written = await ui.importInto(targetName, archive);
-
-    ui.flash(
-      `received ${written} files from ${received.ownerName} into "${targetName}" ` +
-        `(check ${received.visualCheck ?? "—"})`,
-      10_000,
-    );
-    activateProfile(targetName);
-    ui.reload();
-  } catch (err) {
-    setReceiveStatus(`receive failed: ${errorText(err)}`);
-    if (!/cancel/i.test(errorText(err))) ui.flash(`receive failed: ${errorText(err)}`, 10_000);
-  } finally {
-    const button = el<HTMLButtonElement>("recv-join");
-    if (button) button.disabled = false;
-  }
-}
-
-function setReceiveStatus(text: string): void {
-  const status = el<HTMLDivElement>("recv-status");
-  if (status) status.textContent = text;
-}
-
-function wireReceiveDialog(): void {
-  const dialog = el<HTMLDialogElement>("receive-dialog");
-  const open = (): void => {
-    if (!dialog) return;
-    fillServiceSelect(el<HTMLSelectElement>("recv-service"));
-    renderReceiveTargets();
-    dialog.showModal();
-  };
-  el<HTMLButtonElement>("share-receive")?.addEventListener("click", open);
-  el<HTMLSelectElement>("recv-target")?.addEventListener("change", () => {
-    const wrap = el<HTMLElement>("recv-new-wrap");
-    const select = el<HTMLSelectElement>("recv-target");
-    if (wrap && select) wrap.hidden = select.value !== "new";
-  });
-  el<HTMLButtonElement>("recv-join")?.addEventListener("click", () => void startReceive());
-  el<HTMLButtonElement>("recv-cancel")?.addEventListener("click", () => {
-    receiveAbort?.abort();
-    setReceiveStatus("cancelled");
-  });
-  el<HTMLButtonElement>("recv-close")?.addEventListener("click", () => {
-    receiveAbort?.abort();
-    dialog?.close();
-  });
-  dialog?.addEventListener("close", () => receiveAbort?.abort());
-}
 
 // ── sync menu (collapsed toolbar controls) ───────────────────────────────
 
@@ -1406,12 +1149,10 @@ export function wireProfileUi(profileHooks: ProfileUiHooks): void {
   wireProfileManager();
   wireHiddenDialog();
   wireSeedDialog();
-  wireShareDialog();
-  wireReceiveDialog();
   wireBrowserDialog();
   wireSyncDialog();
 
-  // Keep the receive dialog able to target the active profile after changes.
+  // Keep the profile picker current after the manager dialog changes it.
   const dialog = el<HTMLDialogElement>("profile-dialog");
   dialog?.addEventListener("close", () => renderProfileSelect());
 }

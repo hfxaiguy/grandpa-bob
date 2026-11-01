@@ -178,11 +178,16 @@ channel flow used between two browsers:
 
 1. On the desktop/server, `npm run pair` creates a mailbox channel on the
    combined process's `:8795` and prints the channel id, single-use code,
-   mirror folder and requested exec allowlist. (`--exec git,make,…` grants
-   ops; `--list` / `--revoke <profile>` manage paired profiles.)
+   mirror folder and requested exec allowlist. The tab's active profile must
+   match `--profile` (default `default`), while `--mirror` / `--mirror-path`
+   pick the folder independently — so one desktop can host a separate mirror
+   per browser profile. (`--exec git,make,…` grants ops; `--list` /
+   `--revoke <profile>` manage paired profiles.)
 2. In the tab, **Sync… → Pair… → Desktop / server** joins with the URL,
-   channel id and code. Both sides derive the same SAS from the DTLS
-   fingerprints; the operator compares it on the console before approving.
+   channel id and code. The dialog shows the active profile and, once the
+   channel opens, the mirror + exec capabilities the console is approving.
+   Both sides derive the same SAS from the DTLS fingerprints; the operator
+   compares it on the console before approving.
 3. On approval the server mints a per-profile **client key** and the tab pins
    a per-profile **server proof key**. Reconnects use a client-key channel and
    mutual HMAC proofs — no human step. Revoking on the server drops the key and
@@ -208,8 +213,10 @@ the opt-in `/stt` remain on the channel server.
 | "this tab does not host the workspace — take over the workspace first" | Only the lease holder can pair. Use the lease banner's **take over**. |
 | "not running here — this tab is not the workspace host" | The Live sync status of a read-only tab. |
 | "sync channels may not be deployed yet" | The BobSwap service lacks `/api/v1/sync/channels…`; use manual paste. |
+| "pairing failed: NetworkError when attempting to fetch resource." / `cannot reach http://…` | The tab could not reach the mailbox. Open the app at `http://localhost:8080` or `http://127.0.0.1:8080` on the machine running `npm run bob`; type `http://127.0.0.1:8795` explicitly in Server URL and check `/health` in that tab. A non-loopback page origin is rejected, and a browser on another device cannot reach the loopback mailbox — pair browser↔browser instead. |
 | "data channel never opened" | NAT/firewall; try same-LAN, or configure TURN via a service's `ice_servers`. |
 | Phrases differ | Do not trust the link — signaling was altered or the peers see different certificates; close and retry. |
+| "this code is for browser profile …" | The tab's active profile differs from the console's `--profile`; switch to that profile or rerun `npm run pair -- --profile <tab profile>`. |
 | Pair connected but files don't move | Both tabs must stay open; check the Live sync status line and the conflict counter. |
 | "opfs-sahpool" / persistence warnings | The browser refused persistent origin storage; the workspace still works but can be evicted. |
 | `desktop: offline` chip | `npm run bob` is not running, the mailbox URL is wrong, or the profile needs re-pairing (`npm run pair`). |

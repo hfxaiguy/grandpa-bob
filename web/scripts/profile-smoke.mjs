@@ -245,6 +245,8 @@ const serviceFields = JSON.parse(await evaluate(`(() => {
     uploadKey: shown("seed-upload-key-label"),
     seedName: shown("seed-name-label"),
     service: shown("seed-service-label"),
+    realtimeGone: !document.getElementById("seed-realtime-url") && !document.getElementById("seed-realtime-key"),
+    relayGone: !document.getElementById("share-send") && !document.getElementById("share-receive"),
   });
 })()`));
 assert(
@@ -254,6 +256,10 @@ assert(
     !serviceFields.seedName &&
     !serviceFields.service,
   "the BobSwap service dialog shows account/keys but not the seed name or service picker",
+);
+assert(
+  serviceFields.realtimeGone && serviceFields.relayGone,
+  "the removed Supabase relay settings and Send/Receive controls stay gone",
 );
 await evaluate(`(() => {
   document.getElementById("seed-base-url").value = "https://bobswap.example.com";

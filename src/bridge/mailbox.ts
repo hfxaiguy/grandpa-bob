@@ -103,10 +103,10 @@ export class Mailbox {
   /** Spend the code and return the offerer (browser) token. */
   join(id: string, code: string, profile: string): { channel: MailboxChannel; roleToken: string } {
     const channel = this.get(id);
-    if (!channel || channel.closed) throw new Error("unknown or closed channel");
-    if (channel.used) throw new Error("pairing code already used");
+    if (!channel || channel.closed) throw new Error("unknown or closed channel — run npm run pair again");
+    if (channel.used) throw new Error("pairing code already used — run npm run pair again");
     if (!channel.codeHash || !channel.codeExpiresAt) throw new Error("channel is not joinable");
-    if (Date.now() > channel.codeExpiresAt) throw new Error("pairing code expired");
+    if (Date.now() > channel.codeExpiresAt) throw new Error("pairing code expired — run npm run pair again");
     const normalized = String(code).replace(/[^0-9A-Fa-f]/g, "");
     if (hash(normalized) !== channel.codeHash) {
       channel.failedJoins++;
@@ -114,7 +114,10 @@ export class Mailbox {
       throw new Error("pairing code does not match");
     }
     if (profile && channel.profile && profile !== channel.profile) {
-      throw new Error(`channel belongs to profile ${channel.profile}`);
+      throw new Error(
+        `this code is for browser profile "${channel.profile}", but this tab is "${profile}" — ` +
+          `rerun \`npm run pair -- --profile ${profile}\``,
+      );
     }
     channel.used = true;
     channel.profile = profile || channel.profile;

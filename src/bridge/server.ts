@@ -81,7 +81,10 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
   // Ensure the secrets exist before the CLI tries to read them.
   await adminKey();
 
-  const headersFor = (req: http.IncomingMessage): Record<string, string> => {
+  const headersFor = (
+    req: http.IncomingMessage,
+    options: { allowRejectedOrigin?: boolean } = {},
+  ): Record<string, string> => {
     const origin = String(req.headers.origin ?? "");
     const headers: Record<string, string> = {
       "content-type": "application/json",
@@ -89,7 +92,12 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
       "access-control-allow-headers": "content-type,authorization,x-bob-profile,x-bob-admin",
       "cache-control": "no-store",
     };
-    if (origin && originAllowed(origin, extraOrigins)) headers["access-control-allow-origin"] = origin;
+    if (origin) {
+      headers.vary = "origin";
+      if (options.allowRejectedOrigin || originAllowed(origin, extraOrigins)) {
+        headers["access-control-allow-origin"] = origin;
+      }
+    }
     return headers;
   };
 
@@ -117,8 +125,22 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
     if (!isMailbox && !isAdmin) return false;
 
     const origin = String(req.headers.origin ?? "");
-    if (isMailbox && !originAllowed(origin, extraOrigins)) {
-      send(req, res, 403, { error: "origin not allowed" });
+    if (isMailbox && !originAllowed(origin, extraOrigins) && req.method !== "OPTIONS") {
+      // Answer the preflight (below) and reflect this origin on the rejection
+      // so the page can show "origin not allowed" instead of Firefox's opaque
+      // CORS `NetworkError`. No mailbox data is served to a rejected origin.
+      console.warn(
+        `[peer] mailbox origin rejected: ${origin || "(none)"} — ` +
+          "open the app from localhost/127.0.0.1 or add it to BOB_APP_ORIGINS",
+      );
+      res.writeHead(403, headersFor(req, { allowRejectedOrigin: true }));
+      res.end(
+        JSON.stringify({
+          error:
+            `origin ${origin || "(none)"} is not allowed — open the app at ` +
+            "http://localhost:8080 or http://127.0.0.1:8080, or add it to BOB_APP_ORIGINS",
+        }),
+      );
       return true;
     }
     if (isAdmin && origin) {
@@ -128,7 +150,8 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
     }
 
     if (req.method === "OPTIONS") {
-      send(req, res, 204, {});
+      res.writeHead(204, headersFor(req, { allowRejectedOrigin: true }));
+      res.end();
       return true;
     }
 

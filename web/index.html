@@ -129,8 +129,6 @@
       #hidden-app-list { display: flex; flex-wrap: wrap; gap: 0.35rem 1.1rem; margin: 0.4rem 0; }
       .hidden-app-row { display: flex; align-items: center; gap: 0.4rem; width: auto; margin: 0; color: var(--fg); }
       .hidden-app-row input { display: inline; width: auto; margin: 0; }
-      #share-code { font-size: 28px; letter-spacing: 0.25em; color: var(--accent); }
-      #share-check { font-size: 20px; letter-spacing: 0.15em; color: var(--accent); }
       /* Pre-UI boot splash. The web target prepares the workspace (profiles,
          OPFS, seeding, git clone, file index) before the chat app mounts and
          replaces #app's children. Same look as the chat app's own splash so
@@ -266,8 +264,6 @@
       <div class="grid">
         <label id="seed-service-label">Service<select id="seed-service"></select></label>
         <label id="seed-base-url-label">Service URL<input id="seed-base-url" placeholder="https://bobswap.example.com" /></label>
-        <label id="seed-realtime-url-label">Realtime URL (optional)<input id="seed-realtime-url" placeholder="defaults to the service URL" /></label>
-        <label id="seed-realtime-key-label">Realtime key (optional)<input id="seed-realtime-key" placeholder="Supabase publishable key" /></label>
         <label id="seed-account-label">Account<input id="seed-account" placeholder="personal" /></label>
         <label id="seed-name-label">Seed name<input id="seed-name" placeholder="trunk" /></label>
         <label id="seed-read-key-label">Read key<input id="seed-read-key" placeholder="bsk_live_…" /></label>
@@ -281,42 +277,6 @@
         <button id="seed-publish" type="button">Publish this profile</button>
         <button id="seed-unbind" type="button">Unbind</button>
         <button id="seed-close" type="button">Close</button>
-      </div>
-    </dialog>
-
-    <dialog id="share-dialog">
-      <h3>Send this workspace</h3>
-      <p class="muted">The service stores nothing. Keep this tab open until the other device has joined and the copy is delivered.</p>
-      <label>Service<select id="share-service"></select></label>
-      <label>This device<input id="share-device-name" placeholder="desktop" /></label>
-      <div id="share-offer" hidden>
-        <p>Pairing code <strong id="share-code">…</strong></p>
-        <p>Visual check <strong id="share-check">—</strong> <span class="muted">(must match the other device)</span></p>
-        <p class="muted">Channel <code id="share-channel"></code></p>
-      </div>
-      <progress id="share-bar" max="100" value="0"></progress>
-      <div id="share-progress" class="muted"></div>
-      <div class="row-actions">
-        <button id="share-start" type="button">Start</button>
-        <button id="share-cancel" type="button">Cancel</button>
-        <button id="share-close" type="button">Close</button>
-      </div>
-    </dialog>
-
-    <dialog id="receive-dialog">
-      <h3>Receive a workspace</h3>
-      <p class="muted">Enter the channel id and the pairing code shown on the sending device. Codes are never put in links.</p>
-      <label>Service<select id="recv-service"></select></label>
-      <label>Channel<input id="recv-channel" placeholder="chan_…" autocomplete="off" /></label>
-      <label>Pairing code<input id="recv-code" inputmode="numeric" maxlength="6" placeholder="123456" autocomplete="off" /></label>
-      <label>Import into<select id="recv-target"></select></label>
-      <label id="recv-new-wrap" hidden>New profile name<input id="recv-new-name" placeholder="phone-copy" autocomplete="off" /></label>
-      <progress id="recv-bar" max="100" value="0"></progress>
-      <div id="recv-status" class="muted"></div>
-      <div class="row-actions">
-        <button id="recv-join" type="button">Join</button>
-        <button id="recv-cancel" type="button">Cancel</button>
-        <button id="recv-close" type="button">Close</button>
       </div>
     </dialog>
 
@@ -371,14 +331,6 @@
         <button id="swap-settings" type="button" title="Configure BobSwap services and keys">BobSwap…</button>
         <span class="muted">Configure BobSwap services and keys.</span>
       </div>
-      <div class="sync-row">
-        <button id="share-send" type="button" title="Send a copy of this profile to another device through BobSwap">Send…</button>
-        <span class="muted">Send a copy of this profile to another device through BobSwap.</span>
-      </div>
-      <div class="sync-row">
-        <button id="share-receive" type="button" title="Receive a workspace copy from another device">Receive…</button>
-        <span class="muted">Receive a workspace copy from another device.</span>
-      </div>
       <h4>Browser automation</h4>
       <div class="sync-row">
         <button id="browser-menu" type="button" title="Copy a command that opens a Chrome BOB can drive">Connect browser…</button>
@@ -395,6 +347,7 @@
       </p>
       <h4>Desktop / server</h4>
       <p class="muted">The desktop console runs <code>npm run pair</code> and prints a channel id + code. Joining is the same channel flow as BobSwap; the verification phrase must match the console. If the desktop folder already has a workspace, it replaces this profile's files on first pairing; an empty folder receives this workspace.</p>
+      <p class="muted">This tab is profile <strong id="pair-server-profile">default</strong>; the desktop session must use <code>--profile</code> with the same name. The mirror folder and exec allowlist are chosen on the desktop console (<code>--mirror</code>, <code>--mirror-path</code>, <code>--exec</code>) and shown here before approval.</p>
       <div class="grid">
         <label>Server URL<input id="pair-server-url" placeholder="http://127.0.0.1:8795" autocomplete="off" /></label>
         <label>Channel id<input id="pair-server-channel" placeholder="sc_…" autocomplete="off" /></label>

@@ -37,7 +37,6 @@ import {
   DEFAULT_PROFILE,
   bootProfiles,
   loadRegistry,
-  profileHandle,
   profileSegmentsFor,
   recordSeedVersion,
   resolveActiveProfileName,
@@ -334,21 +333,6 @@ async function buildBrowserArchive(): Promise<WorkspaceArchive> {
   // No snapshot (unavailable log): keep the raw legacy file the walk found, so
   // the log can still be backed up and recovered by hand.
   return archive;
-}
-
-/**
- * Merge an archive into `target` (a profile name) and stamp the workspace so
- * the shipped seed cannot overlay it on the next boot.
- */
-async function importIntoWorkspace(target: string, archive: WorkspaceArchive): Promise<number> {
-  const root = await profileHandle(target);
-  const written = await importWorkspace(archive, root);
-  const workspace = await root.getDirectoryHandle("workspace", { create: true });
-  const stamped = await workspace.getFileHandle(".seeded", { create: true });
-  const writable = await stamped.createWritable();
-  await writable.write(new Date().toISOString());
-  await writable.close();
-  return written;
 }
 
 // ── browser (OPFS) workspace preparation ────────────────────────────────
@@ -1361,7 +1345,6 @@ async function main(): Promise<void> {
     },
     applySeedUpdate: (binding, _meta, version) => applyBoundSeedUpdate(binding, version),
     buildActiveArchive,
-    importInto: importIntoWorkspace,
     syncMirror: async () => {
       if (!syncHandle) throw new Error("this tab does not host the workspace");
       await syncHandle.engine.reconcile();

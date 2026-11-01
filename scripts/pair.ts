@@ -74,6 +74,10 @@ function printHelp(): void {
   --list                show paired profiles
   --revoke <profile>    revoke a profile's client key
   --url <url>           admin API origin (default: ${DEFAULT_URL})
+
+The tab's active browser profile must match --profile. --mirror and
+--mirror-path choose the desktop folder independently, so one desktop can host
+a separate mirror per browser profile.
 `);
 }
 
@@ -148,15 +152,16 @@ async function runPairing(args: Args): Promise<void> {
     },
   });
 
-  console.log(`profile:   ${info.profile}`);
-  console.log(`mirror:    ${args.mirrorPath ?? `~/.bobkat/folders/${args.mirror}`}`);
+  console.log(`browser:   profile "${info.profile}" (the tab must be on this profile)`);
+  console.log(`mirror:    ${args.mirror} → ${args.mirrorPath ?? `~/.bobkat/folders/${args.mirror}`}`);
   console.log(`exec:      ${args.exec.length ? args.exec.join(", ") : "(none)"}`);
   console.log("");
   console.log(`channel:   ${info.channelId}`);
   console.log(`code:      ${info.code}`);
   console.log("");
-  console.log("In the browser: Sync… → Pair… → Join server, then enter the URL and code.");
+  console.log(`In the browser (profile "${info.profile}"): Sync… → Pair… → Desktop / server.`);
   console.log(`URL:       ${args.url}`);
+  console.log("Tab on another profile? Stop (Ctrl-C) and rerun with --profile <name>.");
   console.log("Waiting for the browser…\n");
 
   let after = -1;
@@ -212,13 +217,21 @@ async function runPairing(args: Args): Promise<void> {
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (args.list) {
-    const data = await api<{ peers: Array<{ profile: string; fingerprint: string; capabilities: { mirror?: string; exec: string[] } }> }>(
-      args,
-      "/admin/peers",
-    );
+    const data = await api<{
+      peers: Array<{
+        profile: string;
+        fingerprint: string;
+        capabilities: { mirror?: string; mirrorPath?: string; exec: string[] };
+      }>;
+    }>(args, "/admin/peers");
     if (!data.peers.length) console.log("no paired profiles");
     for (const peer of data.peers) {
-      console.log(`${peer.profile} · ${peer.capabilities.mirror ?? "(no mirror)"} · exec: ${peer.capabilities.exec.join(",") || "none"} · ${peer.fingerprint}`);
+      const mirror = peer.capabilities.mirror ?? peer.profile;
+      const path = peer.capabilities.mirrorPath ?? `~/.bobkat/folders/${mirror}`;
+      const exec = Array.isArray(peer.capabilities.exec) ? peer.capabilities.exec : [];
+      console.log(
+        `${peer.profile} · mirror ${mirror} → ${path} · exec: ${exec.join(",") || "none"} · ${peer.fingerprint}`,
+      );
     }
     return;
   }

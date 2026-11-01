@@ -9,7 +9,7 @@ _BOB = **B**etter **O**rganizational **B**ot_
 > agent), the **peer mailbox** (`:8795` — desktop/server pairing, mirror and
 > allowlisted ops; standalone `storage-server.mjs` is debug-only), plus opt-in
 > STT with `BOB_STT=1`),
-> and **BobSwap** (seeds + zero-storage relay). The shared core lives in
+> and **BobSwap** (seed shelf). The shared core lives in
 > `web/src` now; `web/` imports nothing outside `web/` + `ui/`
 > (`npm run test:standalone` is the gate).
 >
@@ -89,7 +89,7 @@ Everything is a **pass-through channel**: small loopback processes with no UI
 and no agent. The browser tab runs the agent, holds the OPFS workspace, drains
 the Telegram mailbox, and syncs with other replicas; a paired desktop/server
 peer mirrors that workspace to a real folder and runs allowlisted desktop ops. BobSwap remains the
-seed shelf + zero-storage relay it always was. The shared core lives in
+seed shelf it always was. The shared core lives in
 `web/src` — `web/` must never import outside `web/` + `ui/`
 (`npm run test:standalone` enforces it).
 
@@ -159,7 +159,7 @@ web/                 the app — UI host + agent host + shared core
   src/bridge/        Node peer: mailbox, werift channel, engine, exec ops
   src/host-lease.ts  single-host lease per workspace (Web Locks + heartbeat)
   src/sync/          Lamport journal + pull-only reconcile + transports
-  src/swap.ts        BobSwap seeds + zero-storage relay client
+  src/swap.ts        BobSwap seed shelf client
   scripts/           serve / pairing CLI / make-seed / smokes
 ui/                  SolidJS tiled UI (bundled into web)
 scripts/             offline tests for the shared core and channels
