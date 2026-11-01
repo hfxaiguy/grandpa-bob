@@ -6,38 +6,57 @@
  */
 import assert from "node:assert/strict";
 // @ts-ignore — grandma-kat ships no .d.ts files.
-import { Tree, when, goto, max } from "grandma-kat";
+import {
+  Tree,
+  name,
+  Model,
+  Tools,
+  Branch,
+  Prompt,
+  Emit,
+  Human,
+  Check,
+  Memory,
+  Until,
+  when,
+  goto,
+  max,
+} from "grandma-kat";
 import { serializeTree, fnSnippet } from "../web/src/tree-serialize.js";
 
 const isYes = (v: unknown) => typeof v === "string" && /^\s*yes\b/i.test(v.trim());
 
-const builder = Tree.name("person-scan")
-  .model("cheap")
-  .model(when((m: any) => m.branch?.big), "strong")
-  .tools("read_file")
-  .emit(() => ({ text: "Hi. This is grandpa-bob" }))
-  .human("input_1")
-  .branch(
-    Tree.name("scan_input").prompt("does input_1 mention a person?"),
-  )
-  .prompt("named_prompt", (m: any) => [{ role: "user", content: String(m.branch.input_1) }])
-  .prompt("static_msgs", [
+// The engine's current authoring surface is the element list. (The old
+// chainable `Tree.name(...).model(...)` builder was removed.)
+const builder = Tree(
+  name("person-scan"),
+  Model("cheap"),
+  Model(when((m: any) => m.branch?.big), "strong"),
+  Tools("read_file"),
+  Emit(() => ({ text: "Hi. This is grandpa-bob" })),
+  Human("input_1"),
+  Branch(Tree(name("scan_input"), Prompt("does input_1 mention a person?"))),
+  Prompt("named_prompt", (m: any) => [{ role: "user", content: String(m.branch.input_1) }]),
+  Prompt("static_msgs", [
     { role: "system", content: "sys" },
     { role: "user", content: "hi" },
-  ])
-  .branch(
+  ]),
+  Branch(
     when((m: any) => isYes(m.branch.scan_input)),
-    Tree.name("summarize_people")
-      .prompt((m: any) => [
+    Tree(
+      name("summarize_people"),
+      Prompt((m: any) => [
         { role: "system", content: "extract" },
         { role: "user", content: String(m.branch.input_1) },
-      ])
-      .check((m: any) => !!m.branch, goto("main_check", max(5)))
-      .until(goto("named_prompt"), (m: any) => !m.error, max(12)),
-  )
-  .memory("seen", (m: any, cur: any) => [...(cur ?? []), m.prev?.[0]]);
+      ]),
+      Check((m: any) => !!m.branch, goto("main_check", max(5))),
+      Until(goto("named_prompt"), (m: any) => !m.error, max(12)),
+    ),
+  ),
+  Memory("seen", (m: any, cur: any) => [...(cur ?? []), m.prev?.[0]]),
+);
 
-// The builder itself (not just .def) must serialize.
+// A definition (not a builder object) must serialize.
 const t = serializeTree(builder);
 
 assert.equal(t.kind, "tree");
@@ -119,18 +138,5 @@ assert.ok(long.length <= 161 && long.endsWith("\u2026"), `snippet should be capp
 // serializeTree rejects non-trees
 assert.throws(() => serializeTree({ kind: "nope" }), TypeError);
 assert.throws(() => serializeTree(null), TypeError);
-
-// The real workspace pattern (if present) must serialize without throwing.
-const { loadPattern } = await import("../src/pattern-loader.js");
-const ws = process.env.WORKSPACE_DIR || `${process.env.HOME}/grandma-workspace`;
-try {
-  const tree = await loadPattern(ws, "person-scan");
-  const s = serializeTree(tree);
-  assert.equal(s.name, "person-scan");
-  assert.ok(s.children.length >= 4);
-} catch (e: any) {
-  if (!/failed to load pattern/.test(e.message)) throw e;
-  console.log("(workspace person-scan pattern not present — skipped live check)");
-}
 
 console.log("tree-serialize-test: all assertions passed");

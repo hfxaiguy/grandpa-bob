@@ -1227,6 +1227,11 @@ export function Tile(props: { app: AppInfo }) {
   // opened ones render side-by-side beside this tile's chat (open order).
   const kids = createMemo(() => subApps(name()));
   const openKids = createMemo(() => openSubApps(name()));
+  // An expanded sub-app takes over this tile's frame (the strip gets the whole
+  // width and this tile's own chat steps aside); `⤢` on the sub-tile restores.
+  const expandedKid = createMemo(() =>
+    openKids().some((a) => state.layout.expanded.includes(a.name)),
+  );
   // The ✕ parks the tile: a board tile into the board's left rail, a parented
   // one into its parent's sub rail — the parent's square list is the seat.
   const park = () => (props.app.parent ? toggleSub(name()) : toggleHidden(name()));
@@ -1392,7 +1397,7 @@ export function Tile(props: { app: AppInfo }) {
           the tile's chat full height in the middle, opened sub-app tiles
           side-by-side on the right. A tile without sub-apps renders the main
           column alone — same look as before. */}
-      <div class="tile-frame">
+      <div class="tile-frame" classList={{ "subs-max": expandedKid() }}>
         <Show when={kids().length}>
           <SubRail parent={name()} />
         </Show>
@@ -1412,14 +1417,36 @@ export function Tile(props: { app: AppInfo }) {
               >
                 📌
               </button>
-              <button title={wide() ? "stop spanning two columns" : "wide — span two columns"} onClick={() => toggleWide(name())}>
+              <button
+                title={
+                  props.app.parent
+                    ? wide()
+                      ? "restore the compact width"
+                      : "wide — double this tile's width"
+                    : wide()
+                      ? "stop spanning two columns"
+                      : "wide — span two columns"
+                }
+                onClick={() => toggleWide(name())}
+              >
                 ↔
               </button>
             </Show>
             {/* The trunk dock expands too: its height is a user choice like
                 every tile's. Pin and wide stay hidden there — the dock has no
                 grid seat to pin and already spans every column. */}
-            <button title={expanded() ? "restore" : "expand"} onClick={() => toggleExpanded(name())}>
+            <button
+              title={
+                props.app.parent
+                  ? expanded()
+                    ? "restore — share the frame with the parent again"
+                    : "expand — take over the parent tile's frame"
+                  : expanded()
+                    ? "restore"
+                    : "expand"
+              }
+              onClick={() => toggleExpanded(name())}
+            >
               {expanded() ? "⤡" : "⤢"}
             </button>
             <Show
@@ -1597,7 +1624,7 @@ export function Tile(props: { app: AppInfo }) {
           </Show>
         </div>
         <Show when={openKids().length}>
-          <div class="tile-subs-area">
+          <div class="tile-subs-area" classList={{ "has-expanded": expandedKid() }}>
             <For each={openKids()}>{(a) => <Tile app={a} />}</For>
           </div>
         </Show>

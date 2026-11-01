@@ -79,6 +79,71 @@ to allow Local Network Access for the hosted origin. The bridge still requires
 the one-time code, a matching SAS and console approval before it mirrors files
 or runs anything; `BOB_APP_ORIGINS` still replaces the default list.
 
+## 2026-11-01 — sub-apps are tools of their parent, not of the trunk
+
+The fractal folder tree drove tile layout but not tool visibility: the trunk's
+recursive `appTreeNames()` made `contacts.graph` a trunk tool, while the
+contacts tree itself never saw its own sub-app. The host now scopes a loaded
+tree definition to the app boundary (`web/src/agent/tree-scope.ts`):
+
+- **The trunk (and every other non-app pattern) sees top-level app trees only.**
+  Nested app names are stripped from its `Tools(...)` rules (and from the
+  separately loaded `trunk_ask`), plus from the host guide it receives.
+- **An app tree gets the app trees directly below it.** When the engine loads
+  `contacts`, its definition gains `contacts.graph` automatically — the same
+  discovery the trunk gets from `app/`, one level down. Grandchildren stay
+  invisible to the grandparent; each parent drives its own children.
+- **Discovery/tiles are unchanged.** `listAppTrees` still tags `parent`,
+  `contacts.graph` still opens in the contacts tile's sub-app rail, and the
+  dotted name still owns its events and component path. Only the call routing
+  changed.
+
+Tests: `npm run test:tree-scope` (parent grants, sibling leaks and grandchildren
+are stripped, nested rules scrub, idempotent re-scope); `npm run typecheck`,
+`npm --prefix web run typecheck`, `npm run build:web`.
+
+## 2026-11-01 — sub-app tiles resize with the board's own controls
+
+`↔` and `⤢` on a sub-app tile used to be dead: the sub strip's fixed 240px
+width and the square-grid reset overrode them, so an open sub-app could never
+grow. Inside a parent's strip, `↔` now doubles the sub-tile's width (400px on
+the phone breakpoint), and `⤢` gives the strip the parent's whole frame — the
+parent chat steps aside and the sub-tile's `⤡` restores it. Both states stay in
+the existing per-profile layout (`wide`/`expanded`), so they survive a reload.
+
+## 2026-11-01 — story: the gate ends a visit; villains, people and the power-up shelf
+
+Story's turn loop no longer assumes the chat should wait forever. After every
+turn — after the tools wrote and the reply exists — a cheap **gate** reads the
+forest and shelf and returns `{mode, reason}`: `loop` pauses at `main_input`,
+`done` emits one closing line and ends the run. The gate never writes; if it
+cannot answer it defaults to `loop`, so a bad model response cannot end a visit
+by accident. `return_to_trunk` stays the explicit exit, and on the ask path an
+open item travels back inside the reply as `(Open: …)`.
+
+Three story-first objects arrive with it:
+
+- **Villains.** A story may carry `kind: villain` (also `arc` / `project`). A
+  recurring problem becomes a `sighting` chapter on the existing villain, not a
+  new task; a new villain is created with its first header. Review reads the
+  full sighting history before suggesting a fix, and `story_graph` marks
+  villains and arcs.
+- **People.** `person: <slug> — ally|stakeholder — why` lines are parsed,
+  rendered, returned by `story_read` and carried in the action ledger.
+  `story_record` and `story_direct` accept a `people` field; the slug can be
+  resolved by the contacts app.
+- **The power-up shelf.** `powerups/<slug>.md` holds a card — the move,
+  `helps when:` and `not for:`. A pickup is a fixed-shape `powerup` log entry
+  on a story (`Took <card> — … — helped: yes|partly|no`). `story_record` writes
+  the chapter without rewriting the header; `deck_read` returns the shelf with
+  computed uses/outcomes; `story_suggest` offers at most one card (or none);
+  `story_shelf_grow` writes a card from a pickup that worked; `deck_pass`
+  remembers a declined suggestion for the conversation. `story_direct`
+  preloads the shelf and treats a repeatedly helpful card as a routine.
+
+Regression: `node --test app/story/test/tree.test.mjs` (20 pass); seed
+re-packed with `npm run make-seed`.
+
 ## 2026-11-01 — pairing is code-only; channel ids stay internal
 
 BobSwap's sync channels now join by a single 8-digit code, so the Pair dialog
@@ -138,6 +203,25 @@ tree that produces its data.
   single-file sandbox contract; `web/README.md` documents the folder layout and
   the guest API. `test:emit-value` covers parsing/fallback and
   `test:emit-component` covers the guest document.
+
+## 2026-11-01 — story: the chat can return to the trunk
+
+Story's chat path had no exit: every turn rewound to `main_input` forever, so
+the orchestrator could not end a visit it had finished.
+
+- **`return_to_trunk` is a tree-backed register.** One pass, no model call:
+  `Needs("summary")`, a `Memory(update(), "exit_trunk", …)` that walks up to
+  the root's declared slot, and a `Return` that exports `{handoff}` — or an
+  `{error}` when the summary is blank, which leaves the loop running.
+- **`story_chat`'s `Until` reads `exit_trunk`.** When it is set the loop stops,
+  the app completes, and the root exports
+  `{returned_to_trunk: true, handoff}` to the trunk's turn, which folds it as a
+  normal tool result and carries on. Opened directly, the same call simply
+  finishes the conversation instead of pausing.
+- **Spec and examples updated.** The tree header, the root prompt, the README
+  and the app changelog document the exit; the tree test covers both the happy
+  path (finished result, emitted goodbye) and a blank handoff (error, still
+  waiting).
 
 ## 2026-11-01 — BobSwap drops the Supabase relay; WebRTC is the one transfer path
 

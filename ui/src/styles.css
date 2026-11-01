@@ -292,6 +292,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
    tile's height; the strip scrolls horizontally rather than shrinking the
    parent's chat to nothing. */
 .tile-subs-area {
+  --sub-tile-w: 240px;
   flex: none;
   display: flex;
   gap: 8px;
@@ -303,13 +304,25 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
   border-left: 1px solid var(--border);
 }
 /* Inside the strip the grid's square/span rules mean nothing — keep sub-tiles
-   compact and let them fill the strip's height instead. */
+   compact and let them fill the strip's height instead. `↔` doubles the width
+   in place, the same way it buys two tracks on the board. */
 .tile-subs-area .tile {
   flex: none;
-  width: 240px;
+  width: var(--sub-tile-w);
   min-height: 0;
   max-height: none;
   aspect-ratio: auto;
+}
+.tile-subs-area .tile.wide { width: calc(var(--sub-tile-w) * 2); }
+/* `⤢` on a sub-tile takes over the parent's frame: the strip claims the whole
+   width and the parent's own chat steps aside. The sub-tile's header (with its
+   `⤡`) stays in the strip, so the restore gesture is always in reach. */
+.tile-frame.subs-max > .tile-main { display: none; }
+.tile-subs-area.has-expanded { flex: 1 1 auto; max-width: none; }
+.tile-subs-area .tile.expanded {
+  flex: 1 1 0;
+  width: auto;
+  min-width: var(--sub-tile-w);
 }
 .tile-subs-area .tile.expanded,
 .tile-subs-area .tile.wide { grid-column: auto; aspect-ratio: auto; }
@@ -888,7 +901,7 @@ body.dragging-tile { user-select: none !important; }
   .tiles > .tile.trunk-dock { height: 56vh; min-height: 260px; }
   .tiles > .tile.trunk-dock.expanded { height: 100%; }
   .tile-rail { width: 30px; }
-  .tile-subs-area .tile { width: 200px; }
+  .tile-subs-area { --sub-tile-w: 200px; }
 
   /* A 2-column span would create an implicit track on a single-column grid. */
   .tile.wide { grid-column: auto; aspect-ratio: 1 / 1; }

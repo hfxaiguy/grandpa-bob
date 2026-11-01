@@ -15,6 +15,7 @@ import { browserCdpTools } from "./browser-cdp";
 import { createAppStore } from "../app-store";
 import { setActiveFs, setFsIndex } from "../shims/node-fs-promises";
 import { listAppTrees } from "../tree-sources";
+import { scopeTreeTools } from "./tree-scope";
 import { resolveTreeEntryByName } from "../tree-files";
 import { assembleGuides, HOST_GUIDES } from "../tool-guides";
 import { createWorkspaceLogger, type MemoryLogger, type WorkspaceLogger, type KatEvent } from "./logger";
@@ -406,7 +407,11 @@ async function loadTreeRef(platform: Platform, name: string): Promise<unknown> {
       const entry = await resolveTreeEntryByName(platform.workspaceRoot, name);
       const file = entry?.file ?? `app/${name}/tree.prod.mjs`;
       const mod = await createModuleLoader(platform).load(file);
-      return (mod as { default?: unknown }).default ?? mod;
+      const def = (mod as { default?: unknown }).default ?? mod;
+      // App tools are scoped by the folder tree: a parent sees its direct
+      // sub-apps, a non-app pattern sees only top-level apps.
+      const apps = await listAppTrees(platform.workspaceRoot).catch(() => []);
+      return scopeTreeTools(def, apps, name);
     })();
     const p = pending;
     // A failed load must not be cached for the worker's lifetime: after the
@@ -427,8 +432,9 @@ async function loadTreeRef(platform: Platform, name: string): Promise<unknown> {
 /** Every runnable app tree (`app/<name>/tree.prod.mjs`) as a callable tree tool, plus its guide. */
 async function buildAppTreeTools(
   platform: Platform,
+  discovered?: Awaited<ReturnType<typeof listAppTrees>>,
 ): Promise<{ tools: Record<string, unknown>; guides: Map<string, string> }> {
-  const apps = await listAppTrees(platform.workspaceRoot).catch(() => []);
+  const apps = discovered ?? (await listAppTrees(platform.workspaceRoot).catch(() => []));
   const tools: Record<string, unknown> = {};
   const guides = new Map<string, string>();
   for (const app of apps) {
@@ -623,19 +629,26 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   // Replace them with the native CDP implementations (or, without a ?cdp=
   // endpoint, a stub that says how to start the local Chrome).
   Object.assign(toolsMap, await browserCdpTools(platform, { cdp: opts.cdp }));
+  // One discovery pass feeds the tree-tool map, the guide filter and the
+  // parent/sub-app scoping below.
+  const apps = await listAppTrees(platform.workspaceRoot).catch(() => []);
   const tools = withStopTools(withStubs(toolsMap), signal);
-  const appTree = await buildAppTreeTools(platform);
+  const appTree = await buildAppTreeTools(platform, apps);
   Object.assign(toolsMap, appTree.tools);
   throwIfStopped(signal);
 
   // Host + app guidance comes from the shared module, so the browser and Node
   // targets teach the model the same tool etiquette. Stubs are excluded so a
-  // guide never points at a tool this target only stands in for.
+  // guide never points at a tool this target only stands in for. Sub-apps are
+  // excluded too: the trunk cannot call them, so its guide must not teach them.
+  const nestedApps = new Set(apps.filter((app) => app.parent != null).map((app) => app.name));
   const appGuides = new Map([...appTools.guides, ...appTree.guides]);
   const guide = assembleGuides({
     hostGuides: HOST_GUIDES,
     appGuides,
-    inScope: Object.keys(toolsMap).filter((name) => !STUB_TOOL_NAMES.includes(name)),
+    inScope: Object.keys(toolsMap).filter(
+      (name) => !STUB_TOOL_NAMES.includes(name) && !nestedApps.has(name),
+    ),
   });
 
   const runtime = {
@@ -658,7 +671,10 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   /** Knit a fresh tree and deliver this turn's message into its first pause. */
   const runFresh = async (): Promise<typeof res | null> => {
     throwIfStopped(signal);
-    const pattern = await loadPattern(platform, patternPath);
+    // The root pattern (trunk, or another pattern) is not an app: it gets the
+    // top-level apps only. Nested app trees become tools of their parent when
+    // the engine loads that parent through `loadTree`.
+    const pattern = scopeTreeTools(await loadPattern(platform, patternPath), apps, null);
     let out = (await withModelContext(models, () =>
       knit(pattern, { ...runtime, memory: { guide } }),
     )) as typeof res;
