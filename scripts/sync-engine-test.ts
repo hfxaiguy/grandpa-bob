@@ -26,6 +26,8 @@ import { pairingPhrase, toIceServers } from "../web/src/sync/transport-webrtc";
 class FakePeer implements SyncPeer {
   readonly id: string;
   counterpart: FakePeer | null = null;
+  /** Everything this side put on the wire (the tests inspect replies). */
+  readonly sent: SyncEnvelope[] = [];
   private handler: ((e: SyncEnvelope) => void) | null = null;
 
   constructor(id: string) {
@@ -41,6 +43,7 @@ class FakePeer implements SyncPeer {
   }
 
   send(envelope: SyncEnvelope): void {
+    this.sent.push(envelope);
     queueMicrotask(() => this.counterpart?.deliver(envelope));
   }
   private deliver(envelope: SyncEnvelope): void {
@@ -98,6 +101,13 @@ const fileIs = async (platform: typeof platformA, name: string, want: string): P
   (await readFile(platform.path.join(platform.workspaceRoot, name), "utf8").catch(() => null)) === want;
 const fileGone = async (platform: typeof platformA, name: string): Promise<boolean> =>
   platform.fs.stat(platform.path.join(platform.workspaceRoot, name)).then(() => false).catch(() => true);
+
+/** The wire/base64 form the engine hashes (see hashOfBase64). */
+const b64Of = (bytes: Uint8Array): string => {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+};
 
 /** Let queued microtasks/timers drain. */
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 150));
@@ -246,6 +256,102 @@ try {
   } finally {
     await bDb.close();
   }
+
+  // ── a mixed-version peer cannot push an excluded path ─────────────────
+  // An older engine's map still advertises root `*.db` (the exclusion is new).
+  // Applying that raw copy would race the local whole-file engine persisting
+  // its image — the torn-database failure the exclusion exists to prevent.
+  const bDbBytes = "B's live database bytes";
+  await platformB.fs.writeFile(abs(platformB, "contacts.db"), bDbBytes);
+  const aDbBytes = new Uint8Array(await readFile(abs(platformA, "contacts.db")));
+  const aDbB64 = b64Of(aDbBytes);
+  const oldPeer = "old-replica"; // predates the *.db exclusion
+  wireB.sent.length = 0; // inspect only the replies to these probes
+
+  wireA.send({
+    v: 1,
+    kind: "hashmap",
+    from: oldPeer,
+    hashmap: {
+      "contacts.db": { hash: platformA.crypto.sha256hex(aDbB64), bytes: aDbBytes.length },
+    },
+    lamports: { "contacts.db": 9000 },
+    deletes: {},
+  });
+  await settle();
+  assert.equal(
+    await readFile(abs(platformB, "contacts.db"), "utf8"),
+    bDbBytes,
+    "an old peer's map cannot raw-copy a live .db over this replica's",
+  );
+
+  // A .db tombstone from the same peer must not delete the live file either.
+  wireA.send({
+    v: 1,
+    kind: "hashmap",
+    from: oldPeer,
+    hashmap: {},
+    lamports: {},
+    deletes: { "contacts.db": 9500 },
+  });
+  await settle();
+  assert.equal(
+    await readFile(abs(platformB, "contacts.db"), "utf8"),
+    bDbBytes,
+    "an old peer's .db tombstone cannot delete the live file",
+  );
+
+  // A raw ops push is the other old path to the same hazard. The same push
+  // for an ordinary file must still apply.
+  wireA.send({
+    v: 1,
+    kind: "ops",
+    from: oldPeer,
+    ops: [{ path: "contacts.db", op: "write", base64: aDbB64, lamport: 9600 }],
+  });
+  wireA.send({
+    v: 1,
+    kind: "ops",
+    from: oldPeer,
+    ops: [
+      {
+        path: "from-old-peer.txt",
+        op: "write",
+        base64: b64Of(new TextEncoder().encode("ordinary\n")),
+        lamport: 9700,
+      },
+    ],
+  });
+  await settle();
+  assert.equal(
+    await readFile(abs(platformB, "contacts.db"), "utf8"),
+    bDbBytes,
+    "a raw ops push cannot overwrite a live .db",
+  );
+  assert.equal(
+    await readFile(abs(platformB, "from-old-peer.txt"), "utf8"),
+    "ordinary\n",
+    "ordinary ops still apply",
+  );
+
+  // A file request for an excluded path is answered at once with an empty
+  // payload — never a tombstone, which the requester would read as a delete.
+  wireA.send({ v: 1, kind: "file-req", from: oldPeer, req: "probe-db", path: "contacts.db" });
+  await waitFor(
+    async () => wireB.sent.some((e) => e.kind === "ops" && e.req === "probe-db"),
+    "the excluded path's file request is answered",
+  );
+  const refusal = wireB.sent.find((e) => e.kind === "ops" && e.req === "probe-db");
+  assert.deepEqual(refusal?.ops, [], "an excluded path is answered empty, not with a tombstone");
+
+  // Ordinary file requests still serve their bytes.
+  wireA.send({ v: 1, kind: "file-req", from: oldPeer, req: "probe-file", path: "notes.md" });
+  await waitFor(
+    async () => wireB.sent.some((e) => e.kind === "ops" && e.req === "probe-file"),
+    "an ordinary file request is answered",
+  );
+  const served = wireB.sent.find((e) => e.kind === "ops" && e.req === "probe-file");
+  assert.equal(atob(served?.ops?.[0]?.base64 ?? ""), "from A\n", "ordinary files are still served");
 
   // ── a locally-initiated round advances this side's completion clock ───
   // The toolbar's "desktop: synced HH:MM" comes from lastSyncAt. A map this

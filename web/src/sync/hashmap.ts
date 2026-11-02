@@ -37,7 +37,14 @@ const EXCLUDED = [
   /\.conflict-[0-9T-]+$/,
 ];
 
-function excluded(rel: string): boolean {
+/**
+ * Whether a workspace-relative path must never sync. Exported because the
+ * receive side applies the same rule: a mixed-version or misbehaving peer can
+ * still advertise a path this replica excludes (its map predates the rule),
+ * and applying it would reintroduce exactly the raw-file write the exclusion
+ * exists to prevent.
+ */
+export function excluded(rel: string): boolean {
   return EXCLUDED.some((re) => re.test(rel));
 }
 

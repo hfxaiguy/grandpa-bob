@@ -32,7 +32,7 @@
  * mirror folder deliberately holds a copy.
  */
 import type { Platform } from "../platform/types";
-import { buildHashmap, type Hashmap } from "./hashmap";
+import { buildHashmap, excluded, type Hashmap } from "./hashmap";
 import { Journal, type SyncOp } from "./journal";
 
 /** One wire message. Write ops carry the file content base64-encoded. */
@@ -322,6 +322,11 @@ export class SyncEngine {
    * No side ever pushes proactively, so the two decision copies cannot
    * cross or swap primaries. Tombstones win like any op: the loser pulls and
    * applies the delete.
+   *
+   * Paths the local replica excludes are ignored entirely, even when a peer's
+   * map lists them (a mixed-version peer predates the exclusion): applying
+   * such a path would raw-write a file the local engine owns — e.g. a live
+   * `contacts.db` — which is the torn-copy race the exclusion prevents.
    */
   private async applyDifference(
     peer: SyncPeer,
@@ -341,6 +346,7 @@ export class SyncEngine {
     // delete wins when its lamport beats my last write; my newer write wins
     // otherwise (they pull it back on their side).
     for (const [path, delLamport] of Object.entries(theirDeletes)) {
+      if (excluded(path)) continue; // never applied from the wire
       if (!(path in mine)) continue; // already gone here
       const myLast = journal.lastOpFor(path);
       const myLamport = myLast?.lamport ?? 0;
@@ -349,6 +355,7 @@ export class SyncEngine {
     }
 
     for (const path of new Set([...Object.keys(mine), ...Object.keys(theirs)])) {
+      if (excluded(path)) continue; // not part of this replica's sync surface
       const m = mine[path];
       const t = theirs[path];
       if (m && t && m.hash === t.hash) continue; // identical
@@ -500,8 +507,16 @@ export class SyncEngine {
     }
   }
 
-  /** Answer one file request (content, or our tombstone when missing). */
+  /** Answer one file request: the content, our tombstone when missing, or an
+   *  empty answer for a path this replica never serves (an excluded path an
+   *  older peer still advertises). Never a tombstone there — a peer would read
+   *  it as "delete that file". An empty `ops` resolves the requester's pull as
+   *  null at once instead of burning its timeout. */
   private async answerFile(peer: SyncPeer, token: string, path: string): Promise<void> {
+    if (excluded(path)) {
+      peer.send({ v: 1, kind: "ops", from: this.id, req: token, ops: [] });
+      return;
+    }
     const bytes = await readBase64(this.platform, path).catch(() => null);
     peer.send({
       v: 1,
@@ -609,6 +624,11 @@ export class SyncEngine {
       // preserve the loser deterministically (smaller replica id wins the
       // path; when the peer wins, my content becomes the conflict copy).
       for (const op of envelope.ops) {
+        // Same receive-side rule as the map diff: an old peer can still push a
+        // path this replica excludes (its map predates the exclusion), and a
+        // raw write/delete of a live database file is exactly what must not
+        // happen. Ignore it; the dump transport moves app DBs.
+        if (excluded(op.path)) continue;
         const mineLamport = journal.lamportFor(op.path);
         if (op.lamport !== undefined && op.lamport < mineLamport) continue; // I hold newer
         if (op.lamport !== undefined && op.lamport === mineLamport && mineLamport > 0) {

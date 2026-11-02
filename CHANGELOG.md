@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-02 — peer sync ignores excluded paths on the receive side too
+
+Root `*.db` files (and their sidecars) no longer sync as binaries, but the
+exclusion was only enforced where a replica *builds* its map. A peer running an
+older engine still advertises `contacts.db`, and the new side would faithfully
+pull and raw-write it over the live whole-file database — reintroducing the
+torn-image race the exclusion exists to prevent, and a tombstone would even
+delete the file. The receive side now applies the same rule.
+
+- `web/src/sync/hashmap.ts`: `excluded()` is exported as the one predicate; the
+  map builder and the receive path cannot drift apart.
+- `web/src/sync/engine.ts`: `applyDifference` skips excluded paths in both the
+  tombstone loop and the `mine ∪ theirs` loop (so no pull, no apply, no
+  conflict copy, and no conflict flag), and the `ops` push loop skips them too.
+  A file request for an excluded path is answered at once with an empty `ops`
+  payload — never a tombstone, which the requester would read as a delete; the
+  requester resolves its pull as null instead of waiting out the timeout.
+- Mixed-version pairs degrade to stale-not-corrupt: the old peer keeps its own
+  database bytes and catches up through the dump transport once updated.
+- Tests: `npm run test:sync` (an old peer's map cannot copy or delete a live
+  `contacts.db`, a raw ops push is ignored while ordinary ops still apply, and
+  an excluded file request is answered empty, not with a tombstone).
+
 ## 2026-11-02 — app databases travel as dumps, never as raw files
 
 The peer engine copied a root `contacts.db` byte-for-byte while the browser's
