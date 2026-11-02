@@ -2,6 +2,37 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-02 — the overhearer only hears an app's message, and cannot fail the run
+
+`Hook(onHuman())` on the trunk session root used to fire for every human input,
+including the trunk's own message. The observer's `side_work` prompt ran a cheap
+model with every app as a tool; when it kept calling tools, the engine's
+auto-loop exhaustion threw out of the hook and failed the delivery (`agent run
+failed: prompt 'side_work': auto tool loop exhausted …`).
+
+- `patterns/trunk.prod.mjs`: the hook is gated on the mic marker
+  (`suspended_app`), so only a message that landed in an app parked on its
+  `Human()` fires the observer; the trunk's own message and its review-gate
+  words never reach it. The trunk clears `hook_actions` on every delivery so an
+  old account cannot leak into the next prompt.
+- The observer is now a registered tree tool (`trunk_overhear`) called from the
+  hook: a model or app failure inside it returns `{ error }` at the tool
+  boundary and is reported as one machine note — the person's handler always
+  receives the message. Its loop is structural, not the engine auto-loop: one
+  `disableAuto()` proposal round, one dispatch round with `auto: true` in each
+  call's args (tool hooks are suppressed inside a human hook, so the old
+  `Hook(toolBefore())` spread never actually applied), and one text-only
+  verdict round.
+- `app/browser/tree.prod.mjs`: the success-exit `summarize` prompt now carries
+  the `disableAuto()` its comment always promised, so a stray tool call on the
+  summary round is recorded and ignored instead of starting a second auto loop
+  (`prompt 'summarize': auto tool loop exhausted …`).
+- Tests: `patterns/trunk.test.mjs` 19 pass — the hook is silent on a trunk
+  message, side work still happens for a parked app, a throwing observer does
+  not fail the delivery, a tool-happy observer is bounded at two rounds, and a
+  later message does not replay an earlier account from session memory.
+  `app/browser/test/tree.test.mjs` 5 pass (summary stray call). Seed re-packed.
+
 ## 2026-11-01 — Stop reaches the JavaScript BOB injected into Chrome
 
 The stop chain ended at the worker's `AbortController`: the tree unwound, but
