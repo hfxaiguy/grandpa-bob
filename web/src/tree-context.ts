@@ -146,7 +146,14 @@ export function makeTreeContext(
       const valid = kind === "pattern" ? PATTERN_NAME_RE.test(logical) : APP_NAME_RE.test(logical);
       if (!valid) throw new Error(`'${logical}' is not a valid ${kind} name`);
 
-      const rel = treePathFor(logical, kind);
+      // An existing tree may live at a path the name alone does not spell — a
+      // flat `app/a.b/` folder is still the logical app `a.b`. Save the file
+      // that was loaded, not a dotted-path twin.
+      const existing = await resolveTreeEntry(workspaceDir, logical);
+      if (existing && existing.kind !== kind) {
+        throw new Error(`'${logical}' is a ${existing.kind} tree; refusing to save it as ${kind}`);
+      }
+      const rel = existing?.file ?? treePathFor(logical, kind);
       const abs = path.join(workspaceDir, rel);
 
       // Guard: refuse when the file on disk is not the one that was loaded.

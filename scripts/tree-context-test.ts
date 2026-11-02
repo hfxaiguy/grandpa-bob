@@ -150,6 +150,28 @@ try {
     "// ## demo.child: app/demo/app/child/tree.prod.mjs\nexport default 9;\n",
   );
 
+  // A flat folder whose name contains a dot keeps its own file on save.
+  const flatDir = path.join(root, "app", "flat.name");
+  await fs.mkdir(flatDir, { recursive: true });
+  await fs.writeFile(path.join(flatDir, "tree.prod.mjs"), "// ## flat.name\nexport default 10;\n");
+  const flatLoaded = await ctx.load({ name: "flat.name", kind: "app" });
+  assert.equal(flatLoaded.file, path.join("app", "flat.name", "tree.prod.mjs"));
+  const flatSaved = await ctx.save({
+    name: "flat.name",
+    kind: "app",
+    base_hash: flatLoaded.hash,
+    module: "// ## flat.name\nexport default 11;\n",
+  });
+  assert.equal(flatSaved.file, path.join("app", "flat.name", "tree.prod.mjs"));
+  assert.equal(
+    await fs.readFile(path.join(flatDir, "tree.prod.mjs"), "utf8"),
+    "// ## flat.name\nexport default 11;\n",
+  );
+  await assert.rejects(
+    fs.access(path.join(root, "app", "flat", "app", "name", "tree.prod.mjs")),
+    "a flat dotted app must not gain a nested twin",
+  );
+
   await assert.rejects(
     ctx.save({ name: "../escape", kind: "app", module: "x" }),
     /not a valid app name/,
@@ -159,6 +181,11 @@ try {
     ctx.save({ name: "a.b", kind: "pattern", module: "x" }),
     /not a valid pattern name/,
     "a dotted pattern name is refused",
+  );
+  await assert.rejects(
+    ctx.save({ name: "trunk", kind: "app", module: "x" }),
+    /is a pattern tree; refusing to save it as app/,
+    "a save cannot overwrite the other kind",
   );
 
   // ── child modules ──────────────────────────────────────────────────────

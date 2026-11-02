@@ -2,6 +2,28 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — browser host: the tree context knit wakes up to
+
+`knit` died on its first register (`list_targets`) because the standalone
+refactor removed the Node host's `context.trees` and never replaced it for the
+browser. The worker now builds one per run and passes it as
+`runtime.context.trees`; KAT already forwards that object to every register.
+
+- `web/src/tree-context.ts` exposes `list`/`load`/`save` for a tree's single
+  `.prod.mjs` and `listModules`/`loadModule`/`saveModule` for the existing child
+  `.mjs` modules inside an app folder. Writes are atomic and hash-guarded;
+  addressability/confinement stay in `web/src/tree-files.ts` (no `..`, hidden,
+  `node_modules`, sub-app or symlink escapes).
+- Tree saves keep an existing flat dotted app at its own path (`app/a.b/`)
+  instead of creating a nested twin, never overwrite an existing README, and
+  refuse the wrong kind. Child-module saves refuse to create/rename/delete or
+  touch the tree file.
+- `onWrite` evicts the worker's loaded-tree cache, so a save is visible to the
+  next turn and a module write clears the owning app's cached definition.
+- Tests: `npm run test:tree-context` drives list/load, stale hashes, README
+  creation, nested/flat app paths, module listing/load/save and confinement,
+  plus the exact `Register(..., context)` seam through `knit()`.
+
 ## 2026-11-01 — trunk: an overhearer sees every human input
 
 The conversation trunk now carries a `Hook(onHuman())` on its session root.
