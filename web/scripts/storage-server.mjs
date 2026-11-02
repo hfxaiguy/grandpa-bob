@@ -136,20 +136,25 @@ async function handleStt(req, res, send, query) {
   }
   const ext = (query.get("ext") ?? ".webm").replace(/[^.a-z0-9]/gi, "").slice(0, 8) || ".webm";
   const language = query.get("language") ?? "";
-  const tmpIn = path.join(os.tmpdir(), `bob-stt-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-  const tmpOut = tmpIn.replace(/\.[^.]+$/, ".wav");
+  // Distinct stems: a .wav upload would otherwise collide input==output and
+  // ffmpeg would sit at its "Overwrite? [y/N]" prompt forever (no stdin).
+  const id = `bob-stt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const tmpIn = path.join(os.tmpdir(), `${id}-in${ext}`);
+  const tmpOut = path.join(os.tmpdir(), `${id}-out.wav`);
   try {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     await fs.writeFile(tmpIn, Buffer.concat(chunks));
     await execFileAsync("ffmpeg", [
-      "-hide_banner", "-loglevel", "error",
+      "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
       "-i", tmpIn,
       "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
       tmpOut,
     ]);
     const text = await whisperInference(tmpOut, language);
     send(200, { text });
+  } catch (err) {
+    send(400, { error: err instanceof Error ? err.message : String(err) });
   } finally {
     await fs.rm(tmpIn, { force: true }).catch(() => {});
     await fs.rm(tmpOut, { force: true }).catch(() => {});
