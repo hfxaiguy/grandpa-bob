@@ -367,6 +367,13 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    llama.cpp, LM Studio, HF router); `protocol: "ollama"` is only for Ollama's
    native `/api/chat`. The **Test** button probes a slot from the tab.
    Per-conversation overrides: the cheap/strong pickers in the session panel.
+   With no usable key in the browser workspace, a load-time dialog offers a
+   free temporary **BobSwap AI** key (~25k tokens / 20 requests); accepting
+   points `v4`/`v4.1` at `https://bobswap.hfxaiguy.com/api/v1/ai` and stores
+   the key as `BOBSWAP_AI_KEY` in browser settings. Never put that
+   `bsk_live_…` key in `NEURALWATT_API_KEY` — the direct Neuralwatt endpoint
+   rejects it. **Not now** is remembered; the Models card has a **Claim free
+   key** button. Admin-served pages skip the offer (the server owns the keys).
 
 ## Run
 

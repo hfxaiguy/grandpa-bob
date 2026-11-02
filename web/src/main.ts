@@ -72,6 +72,8 @@ import { startSync, activeSync, type SyncHandle } from "./sync";
 import { wireSyncUi } from "./sync-ui";
 import { parseSeedMeta, seedFreshness, SEED_CLOCK_TOLERANCE_MS, type SeedMeta } from "./seed-version";
 import type { Platform } from "./platform/types";
+import { needsFreeKey } from "./ai-claim";
+import type { LocalBackend } from "./server/local-backend";
 
 const params = new URLSearchParams(location.search);
 let configuredRemote = params.get("remote") ?? loadRemote();
@@ -670,6 +672,124 @@ async function ensureModels(target: Platform): Promise<void> {
     template = JSON.stringify(LEGACY_MOCK_MODELS);
   }
   await target.fs.writeFile(file, template);
+}
+
+/** Persisted "not now" for the free-key offer (per browser, not per profile). */
+const FREE_KEY_OFFER_DISMISSED = "bob:ai-claim-dismissed";
+
+/**
+ * Offer BobSwap's free AI key when the active registry's Neuralwatt slots have
+ * no usable key. Non-blocking: the chat mounts first, and a dismissed or
+ * failed offer never holds up boot. The claim itself is done by the browser
+ * backend (`POST /api/ai/claim`), which rewrites `models.json` and stores the
+ * key in browser settings.
+ */
+async function maybeOfferFreeKey(
+  target: Platform,
+  backend: LocalBackend,
+  serverModels: boolean,
+): Promise<void> {
+  // The admin owns its models.json and .env; a tab cannot write either.
+  if (serverModels) return;
+  try {
+    if (localStorage.getItem(FREE_KEY_OFFER_DISMISSED)) return;
+  } catch {
+    /* private mode: offer anyway */
+  }
+  let registryJson = loadModelsJson();
+  if (!registryJson.trim()) {
+    try {
+      registryJson = await target.fs.readFile(
+        target.path.join(target.workspaceRoot, "models.json"),
+        "utf8",
+      );
+    } catch {
+      return;
+    }
+  }
+  if (!needsFreeKey(registryJson, loadEnv())) return;
+
+  const dialog = document.getElementById("free-key-dialog") as HTMLDialogElement | null;
+  const accept = document.getElementById("free-key-accept") as HTMLButtonElement | null;
+  const dismiss = document.getElementById("free-key-dismiss") as HTMLButtonElement | null;
+  const status = document.getElementById("free-key-status");
+  if (!dialog || !accept || !dismiss || !status) return;
+
+  const rememberDismissal = (): void => {
+    try {
+      localStorage.setItem(FREE_KEY_OFFER_DISMISSED, "1");
+    } catch {
+      /* private mode: offer again next boot */
+    }
+  };
+
+  status.textContent = "";
+  accept.disabled = false;
+  dismiss.disabled = false;
+  accept.textContent = "Claim free key";
+  let claiming = false;
+
+  accept.onclick = (): void => {
+    claiming = true;
+    accept.disabled = true;
+    dismiss.disabled = true;
+    status.textContent = "Claiming a free key from BobSwap…";
+    void (async () => {
+      const res = await backend.request("POST", "/api/ai/claim", new URLSearchParams(), "");
+      const body = (res.body ?? {}) as {
+        ok?: boolean;
+        error?: string;
+        tokensRemaining?: number | null;
+        requestsRemaining?: number | null;
+        expiresAt?: string | null;
+      };
+      if (res.status !== 200 || body.ok !== true) {
+        claiming = false;
+        status.textContent = body.error || `claim failed (HTTP ${res.status})`;
+        accept.disabled = false;
+        dismiss.disabled = false;
+        return;
+      }
+      const parts: string[] = [];
+      if (typeof body.tokensRemaining === "number") {
+        parts.push(`${body.tokensRemaining.toLocaleString()} tokens`);
+      }
+      if (typeof body.requestsRemaining === "number") {
+        parts.push(`${body.requestsRemaining} requests`);
+      }
+      const budget = parts.length ? ` — ${parts.join(" · ")}` : "";
+      const expiry = body.expiresAt
+        ? ` (expires ${new Date(body.expiresAt).toLocaleString()})`
+        : "";
+      status.textContent = `Key claimed${budget}${expiry}. The v4 / v4.1 slots now use the BobSwap proxy; reloading…`;
+      flashStatus(`free AI key claimed${budget}`, 8000);
+      setTimeout(() => location.reload(), 1600);
+    })().catch((err: unknown) => {
+      claiming = false;
+      status.textContent = err instanceof Error ? err.message : String(err);
+      accept.disabled = false;
+      dismiss.disabled = false;
+    });
+  };
+  dismiss.onclick = (): void => {
+    rememberDismissal();
+    dialog.close();
+  };
+  // Esc closes the dialog without a click; treat it as "not now" so the offer
+  // does not return on every boot. While the claim is in flight, keep the
+  // dialog open so its result is visible.
+  dialog.oncancel = (event: Event): void => {
+    event.preventDefault();
+    if (claiming) return;
+    rememberDismissal();
+    dialog.close();
+  };
+
+  try {
+    dialog.showModal();
+  } catch {
+    /* another dialog is already modal; the settings card can claim instead */
+  }
 }
 
 /**
@@ -1407,6 +1527,10 @@ async function main(): Promise<void> {
   });
   void checkSeedUpdate();
   startSeedWatcher();
+  // First-run convenience: offer BobSwap's free AI key when the Neuralwatt
+  // slots have no usable key. Runs after the chat mounts so it never blocks
+  // boot (and browser smokes that pre-set a registry never see it).
+  void maybeOfferFreeKey(platform, backend, serverModels);
   // Persistence may prompt (Firefox) or be denied outright; the status line
   // must not wait on it forever — check the settled result, cap the wait.
   await Promise.race([persistence, new Promise<void>((resolve) => setTimeout(resolve, 2_000))]);

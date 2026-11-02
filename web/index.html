@@ -396,6 +396,32 @@
       <p class="muted">A desktop mirror is unbound from <strong>Profiles</strong>; the local workspace is kept.</p>
     </dialog>
 
+    <dialog id="free-key-dialog" aria-labelledby="free-key-title">
+      <h3 id="free-key-title">No AI key yet — claim a free one?</h3>
+      <p>
+        This workspace's <code>v4</code> / <code>v4.1</code> model slots point at
+        Neuralwatt, but their key is not set. BobSwap offers a free temporary key
+        that works through its OpenAI-compatible AI proxy.
+      </p>
+      <h4>What you get</h4>
+      <ul class="muted" style="margin:0 0 0.6rem; padding-left:1.1rem">
+        <li>About <strong>25,000 tokens</strong> across <strong>20 requests</strong>, until the key expires.</li>
+        <li>Chat and tool use via BobSwap → Neuralwatt; the upstream provider key stays on their server.</li>
+        <li>The claim rewrites only the <code>v4</code> and <code>v4.1</code> slots to the proxy URL.</li>
+        <li>The key is stored in this browser's settings, <strong>not</strong> in the synced workspace file.</li>
+      </ul>
+      <p class="muted">
+        One claim per user, please — the pool is shared. When the budget runs
+        out, add your own key in Settings → Credentials &amp; .env.
+        <a href="https://bobswap.hfxaiguy.com/docs/agents" target="_blank" rel="noreferrer">Details</a>
+      </p>
+      <p id="free-key-status" class="muted" role="status" aria-live="polite"></p>
+      <div class="row-actions">
+        <button id="free-key-accept" type="button">Claim free key</button>
+        <button id="free-key-dismiss" type="button">Not now</button>
+      </div>
+    </dialog>
+
     <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
       <form method="dialog">
         <h3 id="confirm-title">Confirm</h3>

@@ -2,6 +2,34 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-02 — free BobSwap AI key on first load
+
+The standalone browser workspace ships `v4`/`v4.1` Neuralwatt slots, but a new
+profile has no key. When those slots resolve to an empty key, the shell now
+offers BobSwap's free AI proxy in a load-time dialog (claimed once; the pool is
+shared and the budget is small: ~25k tokens / 20 requests).
+
+- `web/src/ai-claim.ts` (new): pure detection (only Neuralwatt/BobSwap AI
+  endpoints count; invalid registries are left for Settings), claim-response
+  mapping, and the registry rewrite. Accepting points `v4`/`v4.1` at
+  `https://bobswap.hfxaiguy.com/api/v1/ai`, picks ids from the key's allowlist
+  when it names one, and stores `apiKey` as `${BOBSWAP_AI_KEY}` so the synced
+  workspace file never carries the secret.
+- `web/src/server/local-backend.ts`: `POST /api/ai/claim` claims one key,
+  rewrites the registry in the source that is actually in effect (Settings
+  override vs workspace `models.json`), and stores the key under
+  `BOBSWAP_AI_KEY` in browser settings, updating the live env map for the next
+  turn. Admin-served pages answer 400 (the server owns its keys).
+- `web/src/main.ts` + `web/index.html`: the offer dialog, shown after the chat
+  mounts so boot and browser smokes never block. **Not now**/Esc is remembered
+  (`bob:ai-claim-dismissed`); a successful claim reloads to apply the registry.
+  The Models card gained a **Claim free key** button for a manual retry.
+- Budget/expiry come from the claim response (`tokens_remaining`,
+  `requests_remaining`, `expires_at`); 403 (claiming off) and 429 (pool busy)
+  are named errors. Docs: `README.md` → "LLM backend", `web/README.md` →
+  "Models in standalone". Test: `test:ai-claim`.
+
+
 ## 2026-11-02 — the overhearer only hears an app's message, and cannot fail the run
 
 `Hook(onHuman())` on the trunk session root used to fire for every human input,

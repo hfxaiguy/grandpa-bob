@@ -22,6 +22,12 @@ import { createModuleLoader } from "../agent/module-loader";
 import { patternLabel } from "../agent/pattern-path";
 import { loadEnv, saveEnv, saveModelsJson } from "../settings";
 import { parseModels, type ModelRegistry } from "../model-config";
+import {
+  BOBSWAP_AI_KEY_ENV,
+  ClaimError,
+  applyClaimedKey,
+  claimFreeKey,
+} from "../ai-claim";
 import { refTargetFromRow } from "../ref-target";
 import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "../db-sync";
 import { AgentStoppedError, isAgentStopped } from "../stop-error";
@@ -1281,6 +1287,67 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       modelsJson = json;
       saveModelsJson(json);
       return { status: 200, body: { ok: true } };
+    }
+    if (pathname === "/api/ai/claim" && method === "POST") {
+      // One-shot claim from the load-time offer or the Models card. Writes the
+      // registry in place and keeps the key in browser settings (never in the
+      // workspace file, which may sync to a desktop).
+      if (opts.serverModels) {
+        return {
+          status: 400,
+          body: {
+            error:
+              "free-key claiming works only in the standalone app; " +
+              "add BOBSWAP_AI_KEY to the server's .env instead",
+          },
+        };
+      }
+      try {
+        const raw = await effectiveModelJson();
+        if (!raw.trim()) {
+          return {
+            status: 409,
+            body: {
+              error: "no model registry yet — open Settings → Models and save one first",
+            },
+          };
+        }
+        const claim = await claimFreeKey();
+        const json = applyClaimedKey(raw, claim.allowedModels);
+        const fromSettings = modelsJson.trim().length > 0;
+        if (fromSettings) {
+          modelsJson = json;
+          saveModelsJson(json);
+        } else {
+          await platform.fs.writeFile(
+            platform.path.join(platform.workspaceRoot, "models.json"),
+            json,
+          );
+        }
+        const env = loadEnv();
+        env[BOBSWAP_AI_KEY_ENV] = claim.key;
+        saveEnv(env);
+        // The agent worker receives this map per run; update it in place so
+        // the next turn resolves ${BOBSWAP_AI_KEY} without a reload.
+        opts.env[BOBSWAP_AI_KEY_ENV] = claim.key;
+        return {
+          status: 200,
+          body: {
+            ok: true,
+            json,
+            source: fromSettings ? "settings" : "workspace",
+            tokensRemaining: claim.tokensRemaining,
+            requestsRemaining: claim.requestsRemaining,
+            expiresAt: claim.expiresAt,
+            allowedModels: claim.allowedModels,
+          },
+        };
+      } catch (err) {
+        return {
+          status: err instanceof ClaimError && err.status ? err.status : 502,
+          body: { error: err instanceof Error ? err.message : String(err) },
+        };
+      }
     }
 
     // ── env (browser settings) ────────────────────────────────────────────

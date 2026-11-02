@@ -149,6 +149,7 @@ export function buildSettingsHtml(config: UiConfig): string {
   <div class="actions">
     <button class="secondary" onclick="addModelSlot()">+ Add model</button>
     <button onclick="saveModels()">Save models</button>
+    <button class="secondary" onclick="claimFreeKey()" title="Claim BobSwap's free temporary key and point the v4/v4.1 slots at its proxy">Claim free key</button>
     <button class="secondary" onclick="toggleRawModels()">Raw JSON</button>
     <span id="models-status"></span>
   </div>
@@ -869,6 +870,19 @@ async function saveModels() {
       bad.length > 0,
     );
   } catch (e) { toast("models save failed: " + e.message, true); }
+}
+
+async function claimFreeKey() {
+  try {
+    const d = await api("/api/ai/claim", { method: "POST" });
+    if (d.json) $("models-json").value = d.json;
+    await loadModels();
+    const parts = [];
+    if (typeof d.tokensRemaining === "number") parts.push(d.tokensRemaining.toLocaleString() + " tokens");
+    if (typeof d.requestsRemaining === "number") parts.push(d.requestsRemaining + " requests");
+    const until = d.expiresAt ? " until " + new Date(d.expiresAt).toLocaleString() : "";
+    toast("free BobSwap key claimed" + (parts.length ? " - " + parts.join(" / ") + until : ""));
+  } catch (e) { toast(e.message || "claim failed", true); }
 }
 
 async function refreshAll() {

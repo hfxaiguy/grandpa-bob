@@ -649,6 +649,19 @@ on the right — then **Save all keys**. The Settings **Models JSON** editor
 overrides the seed file, and the **Test** button probes an endpoint from the
 tab.
 
+When those slots have no usable key, the app offers **BobSwap's free temporary
+AI key** in a load-time dialog (about 25k tokens / 20 requests, OpenAI-
+compatible). Accepting claims one key and rewrites `v4`/`v4.1` to
+`https://bobswap.hfxaiguy.com/api/v1/ai` with `apiKey: "${BOBSWAP_AI_KEY}"`;
+the key itself is stored in browser settings, so the workspace file (which can
+sync to a desktop) never carries the secret. The claim uses BobSwap's `/api/v1/ai`
+proxy, not Neuralwatt directly — a `bsk_live_…` key is rejected by
+`api.neuralwatt.com`. **Not now** is remembered for this browser; the Models
+card's **Claim free key** button can retry later. When the page is served by
+the admin, the offer is skipped (its `models.json` and `.env` belong to the
+server). A desktop mirror that runs this registry needs `BOBSWAP_AI_KEY` in
+its own `.env`; the browser-written file carries only the reference.
+
 The picker marks the auto-generated `:8787` registry ("mock models only") when
 no real registry is configured. Profiles seeded before this change are upgraded
 automatically while their `models.json` is still that old mock file; a
