@@ -13,11 +13,9 @@
  *      a `..` escape, an absolute path, or a symlink planted in the app.
  *   3. modulePathFor rejects every unsafe shape by construction.
  *
- * NOTE: the write surface (hash-guarded loadModule/saveModule) lived in the
- * Node `tree-context.ts`, which the standalone-only refactor removed with the
- * Node agent host. The browser host does not expose tree-module editing yet —
- * see `feature-plans/standalone-only.md` (open gaps). The guards below are
- * what any future host must go through.
+ * The hash-guarded write surface above these guards lives in
+ * `web/src/tree-context.ts` and is covered by `scripts/tree-context-test.ts`.
+ * This file keeps the shared addressability/confinement rules.
  *
  * No network. Run: `npm run test:tree-modules`.
  */
@@ -70,7 +68,7 @@ try {
   rejects("app/child/deep.mjs");
   assert.ok(modulePathFor("demo", "src/ingest.mjs"), "nested src modules are addressable");
 
-  console.log("tree-modules: shared guards passed (write surface pending a browser host)");
+  console.log("tree-modules: shared guards passed");
 } finally {
   await fs.rm(root, { recursive: true, force: true });
 }

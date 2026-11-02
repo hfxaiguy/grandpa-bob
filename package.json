@@ -31,6 +31,7 @@
     "test:bridge-mdns": "tsx scripts/bridge-mdns-test.ts",
     "test:spec-lint": "tsx scripts/spec-lint-test.ts",
     "test:tree-modules": "tsx scripts/tree-modules-test.ts",
+    "test:tree-context": "tsx scripts/tree-context-test.ts",
     "test:tree": "tsx scripts/tree-serialize-test.ts",
     "test:seed-freshness": "tsx scripts/seed-freshness-test.ts",
     "test:runlog-tiers": "tsx scripts/runlog-tiers-test.ts",

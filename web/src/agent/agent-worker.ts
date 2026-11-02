@@ -15,6 +15,7 @@ import { browserCdpTools } from "./browser-cdp";
 import { createAppStore } from "../app-store";
 import { setActiveFs, setFsIndex } from "../shims/node-fs-promises";
 import { listAppTrees } from "../tree-sources";
+import { makeTreeContext } from "../tree-context";
 import { scopeTreeTools } from "./tree-scope";
 import { resolveTreeEntryByName } from "../tree-files";
 import { assembleGuides, HOST_GUIDES } from "../tool-guides";
@@ -368,6 +369,14 @@ async function ensureIndex(platform: Platform, key: string): Promise<void> {
 
 const treeCache = new Map<string, Promise<unknown>>();
 
+/** Drop a loaded tree after the host writes its file or a child module. */
+function forgetTreeRef(platform: Platform, name: string): void {
+  const names = new Set([name]);
+  if (name.includes("_")) names.add(name.replace(/_/g, "-"));
+  else if (name.includes("-")) names.add(name.replace(/-/g, "_"));
+  for (const n of names) treeCache.delete(`${platform.workspaceRoot}|${n}`);
+}
+
 /**
  * A tree load failure with the fix the model can relay. The usual cause in
  * the browser is a workspace copy that predates the host-owned store (a
@@ -653,10 +662,18 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
     ),
   });
 
+  const treeContext = makeTreeContext(platform.workspaceRoot, {
+    // A save must be visible to the next turn, not after a reload. Child-module
+    // writes clear the owning app's cached definition too.
+    onWrite: ({ name }) => forgetTreeRef(platform, name),
+  });
   const runtime = {
     models,
     tools,
     logger: withStopLogger(session.logger, signal),
+    // Host-owned capabilities for register bodies (`context.trees` is what knit
+    // reads and writes through). KAT forwards this verbatim as `runtime.context`.
+    context: { trees: treeContext },
     loadTree: (name: string) => loadTreeRef(platform, name),
     // Session memory: a tree invoked as a TOOL keeps its slots across calls
     // within this conversation, keyed (sessionId × tree name) — the same
