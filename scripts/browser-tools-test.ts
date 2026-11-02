@@ -31,6 +31,7 @@ interface SentMessage {
 class FakeSocket {
   static last: FakeSocket | null = null;
   static all: SentMessage[] = [];
+  /** Return `null` to leave a call pending (the stop tests need a live script). */
   static handler: ((msg: SentMessage) => unknown) | null = null;
   url: string;
   sent: SentMessage[] = [];
@@ -48,12 +49,25 @@ class FakeSocket {
     this.listeners.set(type, list);
   }
 
+  removeEventListener(type: string, fn: Listener): void {
+    this.listeners.set(type, (this.listeners.get(type) ?? []).filter((f) => f !== fn));
+  }
+
   send(raw: string): void {
     const msg = JSON.parse(raw) as SentMessage;
     this.sent.push(msg);
     FakeSocket.all.push(msg);
-    const response = FakeSocket.handler?.(msg) ?? { error: { message: `no handler for ${msg.method}` } };
-    queueMicrotask(() => this.emit("message", { data: JSON.stringify({ id: msg.id, ...response }) }));
+    if (!FakeSocket.handler) {
+      queueMicrotask(() =>
+        this.emit("message", {
+          data: JSON.stringify({ id: msg.id, error: { message: `no handler for ${msg.method}` } }),
+        }),
+      );
+      return;
+    }
+    const response = FakeSocket.handler(msg);
+    if (response === null) return; // deliberate: wait for the test to settle it
+    queueMicrotask(() => this.emit("message", { data: JSON.stringify({ id: msg.id, ...(response as object) }) }));
   }
 
   close(): void {
@@ -68,6 +82,16 @@ class FakeSocket {
 const workspace =
   process.env.WORKSPACE_DIR ?? path.join(os.homedir(), "grandma-workspace");
 const verbsPath = path.join(workspace, "app/browser/src/verbs.js");
+
+/** Poll until `check` passes (cleanup is fired and forgotten). */
+const until = async (check: () => boolean, ms = 1_000): Promise<boolean> => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (check()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return check();
+};
 
 if (!existsSync(verbsPath)) {
   console.log(`browser-tools: skipped (no ${verbsPath})`);
@@ -139,8 +163,133 @@ if (!existsSync(verbsPath)) {
     assert.equal(refused.ok, false);
     assert.match(refused.error, /npm run chrome/);
 
+    // ── stop: kill the running snippet, then blank the tab BOB owns ─────
+    FakeSocket.all.length = 0;
+    FakeSocket.handler = (msg) => {
+      if (msg.method === "Target.createTarget") return { result: { targetId: "work1" } };
+      if (msg.method === "Target.getTargets") {
+        return {
+          result: {
+            targetInfos: [{ targetId: "work1", type: "page", url: "https://page.example", title: "P" }],
+          },
+        };
+      }
+      if (msg.method === "Target.attachToTarget") return { result: { sessionId: "work-session" } };
+      if (msg.method === "Runtime.evaluate") return null; // a snippet that never settles
+      return { result: {} };
+    };
+
+    const stopCtrl = new AbortController();
+    const stoppable = await browserCdpTools(platform, {
+      cdp: "ws://test/devtools/browser/x",
+      signal: stopCtrl.signal,
+    });
+    const stopRun = stoppable.browser_exec.execute({ code: "await new Promise(() => {})" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    stopCtrl.abort();
+    const stopped = await stopRun;
+    assert.equal(stopped.ok, false, "the stopped call reports why");
+    assert.match(String(stopped.error), /stopped by user/);
+    assert.ok(
+      FakeSocket.all.some(
+        (m) => m.method === "Runtime.terminateExecution" && m.sessionId === "work-session",
+      ),
+      "stop terminates the script running in the work tab",
+    );
+    assert.ok(
+      FakeSocket.all.some(
+        (m) =>
+          m.method === "Page.navigate" &&
+          m.sessionId === "work-session" &&
+          m.params.url === "about:blank",
+      ),
+      "stop recycles the work tab so leftover loops die with the context",
+    );
+    assert.equal(
+      FakeSocket.all.filter((m) => m.method === "Runtime.evaluate").length,
+      1,
+      "stop injects nothing more",
+    );
+
+    // ── stop between tools: tabs left behind by earlier snippets ────────
+    FakeSocket.all.length = 0;
+    FakeSocket.handler = (msg) => {
+      if (msg.method === "Target.createTarget") return { result: { targetId: "work2" } };
+      if (msg.method === "Target.getTargets") {
+        return {
+          result: {
+            targetInfos: [{ targetId: "work2", type: "page", url: "https://page.example", title: "P" }],
+          },
+        };
+      }
+      if (msg.method === "Target.attachToTarget") return { result: { sessionId: "work2-session" } };
+      if (msg.method === "Runtime.evaluate") return { result: { result: { type: "number", value: 2 } } };
+      return { result: {} };
+    };
+
+    const idleCtrl = new AbortController();
+    const idleTools = await browserCdpTools(platform, {
+      cdp: "ws://test/devtools/browser/x",
+      signal: idleCtrl.signal,
+    });
+    const settled = await idleTools.browser_exec.execute({ code: "1 + 1" });
+    assert.equal(settled.ok, true, "the verb completes before the stop");
+    FakeSocket.all.length = 0;
+
+    idleCtrl.abort(); // the model is "thinking"; no browser call is in flight
+    assert.ok(
+      await until(() =>
+        FakeSocket.all.some(
+          (m) =>
+            m.method === "Page.navigate" &&
+            m.sessionId === "work2-session" &&
+            m.params.url === "about:blank",
+        ),
+      ),
+      "a stop after the verb still recycles the pinned tab",
+    );
+    assert.ok(
+      !FakeSocket.all.some((m) => m.method === "Runtime.terminateExecution"),
+      "nothing is executing, so nothing is terminated",
+    );
+
+    // ── stop without a tab BOB owns: never navigate the user's tab ──────
+    FakeSocket.all.length = 0;
+    FakeSocket.handler = (msg) => {
+      if (msg.method === "Target.createTarget") return { error: { message: "cannot create a tab" } };
+      if (msg.method === "Target.getTargets") {
+        return {
+          result: {
+            targetInfos: [{ targetId: "user1", type: "page", url: "https://user.example", title: "U" }],
+          },
+        };
+      }
+      if (msg.method === "Target.attachToTarget") return { result: { sessionId: "user-session" } };
+      if (msg.method === "Runtime.evaluate") return null;
+      return { result: {} };
+    };
+
+    const fallbackCtrl = new AbortController();
+    const fallbackTools = await browserCdpTools(platform, {
+      cdp: "ws://test/devtools/browser/x",
+      signal: fallbackCtrl.signal,
+    });
+    const fallbackRun = fallbackTools.browser_exec.execute({ code: "await new Promise(() => {})" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    fallbackCtrl.abort();
+    const fallbackStopped = await fallbackRun;
+    assert.equal(fallbackStopped.ok, false);
+    assert.ok(
+      FakeSocket.all.some((m) => m.method === "Runtime.terminateExecution"),
+      "the injected script is terminated even on a borrowed tab",
+    );
+    assert.ok(
+      !FakeSocket.all.some((m) => m.method === "Page.navigate"),
+      "a tab BOB did not open is never navigated away",
+    );
+
     console.log(
-      "browser-tools: worker loads app/browser/src/verbs.js, runs over flat sessions, and stubs without ?cdp",
+      "browser-tools: worker loads app/browser/src/verbs.js, runs over flat sessions, stops the page, and stubs without ?cdp",
     );
   } finally {
     globalThis.WebSocket = RealWebSocket;

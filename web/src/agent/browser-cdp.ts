@@ -21,10 +21,11 @@
  * a deployed web build runs whatever `app/browser/src/verbs.js` it was seeded
  * with — no second copy to keep in step.
  */
-import { BrowserCdp, isLoopbackPage } from "./cdp";
+import { BrowserCdp, isLoopbackPage, type CdpTarget } from "./cdp";
 import { createModuleLoader } from "./module-loader";
 import type { KatTool } from "./browser-tools";
 import type { Platform } from "../platform/types";
+import { AgentStoppedError, throwIfStopped } from "../stop-error";
 
 const NOT_CONNECTED = isLoopbackPage()
   ? "browser tools are not connected. Run `npm run chrome` in the grandpa-bob repo and open " +
@@ -57,6 +58,57 @@ interface VerbTool extends KatTool {
 
 interface VerbsModule {
   makeTools(session: Session): VerbTool[];
+}
+
+/** A page call in flight, so a stop can clean up the tab it is using. */
+interface PageCall {
+  client: BrowserCdp;
+  sessionId: string;
+  /** True when BOB opened this tab (never the user's newest tab). */
+  ownsTab: boolean;
+  /** True while an evaluate/evaluateHandles request is on the wire. */
+  evaluating: boolean;
+  cleaning: Promise<void> | null;
+}
+
+/** Wait for a cleanup request, but never let a wedged tab hold the stop. */
+function settleWithin(promise: Promise<unknown>, ms = 2_000): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    const done = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    promise.then(done, done);
+  });
+}
+
+/**
+ * What a stop does to a page call: terminate the injected snippet that is
+ * running right now (Runtime.terminateExecution), then — only for a tab BOB
+ * opened — navigate it back to about:blank. The navigation destroys the page
+ * context, which is the only reliable way to kill loops, timers and listeners
+ * an earlier snippet left behind. Best effort: failures are ignored because
+ * the tab may already be gone.
+ */
+function recycle(call: PageCall): Promise<void> {
+  if (!call.cleaning) {
+    call.cleaning = (async () => {
+      if (call.evaluating) {
+        await settleWithin(
+          call.client.send("Runtime.terminateExecution", {}, call.sessionId).catch(() => undefined),
+        );
+      }
+      if (call.ownsTab) {
+        await settleWithin(
+          call.client
+            .send("Page.navigate", { url: "about:blank" }, call.sessionId)
+            .catch(() => undefined),
+        );
+      }
+    })();
+  }
+  return call.cleaning;
 }
 
 const verbsCache = new Map<string, Promise<VerbsModule>>();
@@ -99,7 +151,7 @@ function unavailableTools(reason: string): Record<string, KatTool> {
 
 export async function browserCdpTools(
   platform: Platform,
-  { cdp }: { cdp?: string } = {},
+  { cdp, signal }: { cdp?: string; signal?: AbortSignal } = {},
 ): Promise<Record<string, KatTool>> {
   const endpoint = String(cdp ?? "").trim();
 
@@ -115,12 +167,58 @@ export async function browserCdpTools(
       .then((target) => target.targetId)
       .catch(() => null);
 
-  const pageForRun = async (client: BrowserCdp) => {
+  /** Page calls in flight; a stop also reaches tabs left behind by earlier ones. */
+  const activeCalls = new Set<PageCall>();
+
+  /**
+   * Stop cleanup when no browser verb is running: reconnect, find the pinned
+   * work tab, and blank it. Loops installed by an earlier snippet in the same
+   * turn are still alive even while the model is thinking, so the stop must
+   * reach the tab, not just the calls.
+   */
+  const recyclePinnedTab = async (): Promise<void> => {
+    try {
+      const targetId = await workTab;
+      if (!targetId) return; // no tab of ours: never touch the user's newest tab
+      const client = await BrowserCdp.connect(endpoint);
+      try {
+        const { sessionId } = await client.pageSession(targetId);
+        await settleWithin(
+          client
+            .send("Page.navigate", { url: "about:blank" }, sessionId)
+            .catch(() => undefined),
+        );
+      } finally {
+        await client.close();
+      }
+    } catch {
+      // The tab is gone (or Chrome is unreachable): nothing left to clean.
+    }
+  };
+
+  let stopCleanup = false;
+  const onStop = (): void => {
+    if (stopCleanup) return;
+    stopCleanup = true;
+    if (activeCalls.size) {
+      for (const call of activeCalls) void recycle(call);
+    } else {
+      void recyclePinnedTab();
+    }
+  };
+  if (signal) {
+    if (signal.aborted) onStop();
+    else signal.addEventListener("abort", onStop, { once: true });
+  }
+
+  const pageForRun = async (
+    client: BrowserCdp,
+  ): Promise<{ target: CdpTarget; sessionId: string; ownsTab: boolean }> => {
     if (!workTab) workTab = createWorkTab(client);
     const targetId = await workTab;
     if (targetId) {
       try {
-        return await client.pageSession(targetId);
+        return { ...(await client.pageSession(targetId)), ownsTab: true };
       } catch {
         // Closed between verbs: replace it below, never read the newest tab.
         workTab = null;
@@ -132,14 +230,14 @@ export async function browserCdpTools(
       if (fresh) {
         workTab = Promise.resolve(fresh);
         try {
-          return await client.pageSession(fresh);
+          return { ...(await client.pageSession(fresh)), ownsTab: true };
         } catch {
           workTab = null;
         }
       }
     }
     // Tab creation itself failed: today's behavior is the only option left.
-    return client.pageSession();
+    return { ...(await client.pageSession()), ownsTab: false };
   };
 
   const session: Session = {
@@ -151,18 +249,46 @@ export async function browserCdpTools(
     async withPage(fn) {
       if (!endpoint) throw new Error(NOT_CONNECTED);
       const client = await BrowserCdp.connect(endpoint);
+      let call: PageCall | null = null;
+      const onPageStop = (): void => {
+        if (call) void recycle(call);
+      };
+      signal?.addEventListener("abort", onPageStop, { once: true });
       try {
-        const { target, sessionId } = await pageForRun(client);
+        throwIfStopped(signal);
+        const { target, sessionId, ownsTab } = await pageForRun(client);
+        call = { client, sessionId, ownsTab, evaluating: false, cleaning: null };
+        activeCalls.add(call);
+        if (signal?.aborted) {
+          // The stop landed while the tab was being opened: clean it up before
+          // the first snippet can be injected.
+          await recycle(call);
+          throw new AgentStoppedError();
+        }
+        /** Track evaluation so a stop terminates only a running snippet. */
+        const track = <T>(run: () => Promise<T>): Promise<T> => {
+          call!.evaluating = true;
+          return run().finally(() => {
+            call!.evaluating = false;
+          });
+        };
         return await fn({
           url: target.url ?? null,
           launched: false,
-          evaluate: (code) => client.evaluate(code, sessionId),
-          evaluateHandles: (expression) => client.evaluateHandles(expression, sessionId),
+          evaluate: (code) => track(() => client.evaluate(code, sessionId, { signal })),
+          evaluateHandles: (expression) =>
+            track(() => client.evaluateHandles(expression, sessionId, undefined, signal)),
           callFunction: (objectId, functionDeclaration) =>
-            client.callFunction(objectId, functionDeclaration, sessionId),
-          eventListenerTypes: (objectId) => client.eventListenerTypes(objectId, sessionId),
+            client.callFunction(objectId, functionDeclaration, sessionId, signal),
+          eventListenerTypes: (objectId) =>
+            client.eventListenerTypes(objectId, sessionId, undefined, signal),
         });
       } finally {
+        signal?.removeEventListener("abort", onPageStop);
+        if (call) activeCalls.delete(call);
+        // A stop recycles the tab; let the cleanup finish before the socket
+        // holding its session closes, or target/page calls fail half-done.
+        if (call?.cleaning) await call.cleaning;
         await client.close();
       }
     },

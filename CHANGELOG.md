@@ -2,6 +2,26 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — Stop reaches the JavaScript BOB injected into Chrome
+
+The stop chain ended at the worker's `AbortController`: the tree unwound, but
+snippets already evaluated in the run's work tab kept running — timers, fetches
+and listeners installed by an earlier `browser_exec` survived the stop, and the
+CDP client's navigation-race retry could even inject the snippet again after it.
+
+- `web/src/agent/cdp.ts`: requests carry the turn's stop signal, so a pending
+  CDP call rejects as `AgentStoppedError`; the evaluate retry loop checks the
+  signal before re-sending, so a stop never re-injects code.
+- `web/src/agent/browser-cdp.ts`: on stop it sends `Runtime.terminateExecution`
+  to kill the snippet running now, then navigates the run's pinned work tab
+  back to `about:blank` so lingering loops/listeners die with the context. A
+  stop with no verb in flight reconnects and recycles the pinned tab; a
+  borrowed newest tab is never navigated.
+- Tests: `test:cdp` (pending evaluate, pre-stopped evaluate, retry during a
+  stop) and `test:browser-tools` (in-flight stop, idle stop, borrowed tab).
+  The failed-handshake case now fails every retry attempt instead of only the
+  first, which is what its assertion always meant.
+
 ## 2026-11-01 — the desktop chip's clock advances on a tab-sent round
 
 `desktop: synced HH:MM` read `lastSyncAt`, which only moved when this side

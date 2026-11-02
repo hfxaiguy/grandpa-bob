@@ -18,6 +18,8 @@
  * purpose: the snippets in app/browser/src/*.js are shared between targets.
  */
 
+import { AgentStoppedError, throwIfStopped } from "../stop-error";
+
 export type WebSocketCtor = new (url: string) => WebSocket;
 
 export interface CdpConnectOptions {
@@ -196,24 +198,47 @@ export class BrowserCdp {
   }
 
   /** One JSON-RPC request; `sessionId` targets an attached page (flat mode). */
-  send<T = unknown>(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<T> {
+  send<T = unknown>(
+    method: string,
+    params: Record<string, unknown> = {},
+    sessionId?: string,
+    signal?: AbortSignal,
+  ): Promise<T> {
     if (this.closed) return Promise.reject(this.closed);
+    if (signal?.aborted) return Promise.reject(new AgentStoppedError());
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      };
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        cleanup();
         reject(new Error("CDP timeout"));
       }, this.timeoutMs);
+      const onAbort = (): void => {
+        this.pending.delete(id);
+        cleanup();
+        reject(new AgentStoppedError());
+      };
       this.pending.set(id, {
-        resolve: resolve as (value: unknown) => void,
-        reject,
+        resolve: (value) => {
+          cleanup();
+          resolve(value as T);
+        },
+        reject: (err) => {
+          cleanup();
+          reject(err);
+        },
         timer,
       });
+      signal?.addEventListener("abort", onAbort, { once: true });
       try {
         this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
       } catch (err) {
-        clearTimeout(timer);
         this.pending.delete(id);
+        cleanup();
         reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
@@ -296,22 +321,36 @@ export class BrowserCdp {
   async evaluate(
     code: string,
     sessionId: string,
-    { timeoutMs = this.timeoutMs, retries = 2 }: { timeoutMs?: number; retries?: number } = {},
+    {
+      timeoutMs = this.timeoutMs,
+      retries = 2,
+      signal,
+    }: { timeoutMs?: number; retries?: number; signal?: AbortSignal } = {},
   ): Promise<unknown> {
     const source = String(code ?? "");
     const raw = (expression: string): Promise<unknown> =>
-      this.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, timeout: timeoutMs }, sessionId);
+      this.send(
+        "Runtime.evaluate",
+        { expression, awaitPromise: true, returnByValue: true, timeout: timeoutMs },
+        sessionId,
+        signal,
+      );
     for (let attempt = 0; ; attempt++) {
+      throwIfStopped(signal);
       try {
         try {
           return unwrap(await raw(source));
         } catch (err) {
+          // A stop is final: never re-wrap (and re-inject) after one lands.
+          throwIfStopped(signal);
           if ((err as Error).name !== "SyntaxError") throw err;
           return unwrap(await raw(asyncWrap(source)));
         }
       } catch (err) {
         if (attempt >= retries || !RACE.test(String((err as Error)?.message ?? ""))) throw err;
         await sleep(400);
+        // A navigation race is retried only while the turn is still running.
+        throwIfStopped(signal);
       }
     }
   }
@@ -321,11 +360,21 @@ export class BrowserCdp {
    * for each item (returnByValue:false) — the bridge to CDP calls that need a
    * real objectId (DOMDebugger.getEventListeners above all).
    */
-  async evaluateHandles(expression: string, sessionId: string, timeoutMs = this.timeoutMs): Promise<string[]> {
+  async evaluateHandles(
+    expression: string,
+    sessionId: string,
+    timeoutMs = this.timeoutMs,
+    signal?: AbortSignal,
+  ): Promise<string[]> {
     const result = await this.send<{
       exceptionDetails?: { exception?: { description?: string; className?: string }; text?: string };
       result?: { objectId?: string };
-    }>("Runtime.evaluate", { expression: String(expression ?? ""), awaitPromise: true, returnByValue: false, timeout: timeoutMs }, sessionId);
+    }>(
+      "Runtime.evaluate",
+      { expression: String(expression ?? ""), awaitPromise: true, returnByValue: false, timeout: timeoutMs },
+      sessionId,
+      signal,
+    );
     const details = result?.exceptionDetails;
     if (details) {
       const error = new Error(details.exception?.description || details.text || "evaluation failed");
@@ -336,7 +385,7 @@ export class BrowserCdp {
     if (!objectId) return [];
     const { result: props = [] } = await this.send<{
       result?: Array<{ name?: string; value?: { objectId?: string } }>;
-    }>("Runtime.getProperties", { objectId, ownProperties: true }, sessionId);
+    }>("Runtime.getProperties", { objectId, ownProperties: true }, sessionId, signal);
     return props
       .filter((prop) => /^\d+$/.test(prop.name ?? "") && prop.value?.objectId)
       .sort((a, b) => Number(a.name) - Number(b.name))
@@ -344,21 +393,33 @@ export class BrowserCdp {
   }
 
   /** Event types registered on the node behind `objectId` (DOMDebugger). */
-  async eventListenerTypes(objectId: string, sessionId: string, timeoutMs = this.timeoutMs): Promise<string[]> {
+  async eventListenerTypes(
+    objectId: string,
+    sessionId: string,
+    timeoutMs = this.timeoutMs,
+    signal?: AbortSignal,
+  ): Promise<string[]> {
     const { listeners = [] } = await this.send<{ listeners?: Array<{ type?: string }> }>(
       "DOMDebugger.getEventListeners",
       { objectId },
       sessionId,
+      signal,
     );
     return listeners.map((listener) => listener.type ?? "");
   }
 
   /** Call a function on an object handle and return its value. */
-  async callFunction(objectId: string, functionDeclaration: string, sessionId: string): Promise<unknown> {
+  async callFunction(
+    objectId: string,
+    functionDeclaration: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     const { result } = await this.send<{ result?: { value?: unknown } }>(
       "Runtime.callFunctionOn",
       { objectId, functionDeclaration, returnByValue: true },
       sessionId,
+      signal,
     );
     return result?.value;
   }

@@ -27,17 +27,20 @@ interface SentMessage {
 class FakeSocket {
   static last: FakeSocket | null = null;
   static failNext = false;
+  /** Fail every handshake (BrowserCdp retries, so `failNext` alone recovers). */
+  static failAll = false;
   url: string;
   readyState = 0;
   sent: SentMessage[] = [];
-  handler: ((msg: SentMessage) => Response) | null = null;
+  /** Return `null` to leave a call pending (the stop tests need a live script). */
+  handler: ((msg: SentMessage) => Response | null) | null = null;
   private listeners = new Map<string, Listener[]>();
 
   constructor(url: string) {
     this.url = url;
     FakeSocket.last = this;
     queueMicrotask(() => {
-      if (FakeSocket.failNext) {
+      if (FakeSocket.failAll || FakeSocket.failNext) {
         FakeSocket.failNext = false;
         this.emit("error", {});
         return;
@@ -60,10 +63,17 @@ class FakeSocket {
   send(raw: string): void {
     const msg = JSON.parse(raw) as SentMessage;
     this.sent.push(msg);
-    const response = this.handler?.(msg) ?? {
-      error: { message: `no handler for ${msg.method}` },
-    };
-    queueMicrotask(() => this.emit("message", { data: JSON.stringify({ id: msg.id, ...response }) }));
+    if (this.handler) {
+      const response = this.handler(msg);
+      if (response === null) return; // deliberate: wait for the test to settle it
+      queueMicrotask(() => this.emit("message", { data: JSON.stringify({ id: msg.id, ...response }) }));
+      return;
+    }
+    queueMicrotask(() =>
+      this.emit("message", {
+        data: JSON.stringify({ id: msg.id, error: { message: `no handler for ${msg.method}` } }),
+      }),
+    );
   }
 
   close(): void {
@@ -164,6 +174,67 @@ const connect = (): Promise<BrowserCdp> =>
   await client.close();
 }
 
+// ── stop: a pending evaluate is abandoned, never re-injected ────────────
+{
+  const client = await connect();
+  const ws = FakeSocket.last!;
+  ws.handler = (msg) =>
+    msg.method === "Runtime.evaluate" ? null : { error: { message: `unexpected ${msg.method}` } };
+
+  const ctrl = new AbortController();
+  let rejected: unknown;
+  const pending = client.evaluate("await new Promise(() => {})", "s1", { signal: ctrl.signal });
+  pending.catch((err) => {
+    rejected = err;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10)); // the snippet is on the wire
+  assert.equal(ws.sent.filter((m) => m.method === "Runtime.evaluate").length, 1);
+
+  ctrl.abort();
+  await assert.rejects(pending, /stopped by user/);
+  assert.equal((rejected as Error)?.name, "AbortError", "the stop stays abort-shaped");
+  assert.equal(
+    ws.sent.filter((m) => m.method === "Runtime.evaluate").length,
+    1,
+    "a stop never re-sends the snippet",
+  );
+  await client.close();
+}
+
+// ── stop before an evaluate: nothing reaches Chrome ─────────────────────
+{
+  const client = await connect();
+  const ws = FakeSocket.last!;
+  ws.handler = () => ({ result: { result: { type: "number", value: 1 } } });
+  const ctrl = new AbortController();
+  ctrl.abort();
+  await assert.rejects(
+    client.evaluate("1 + 1", "s1", { signal: ctrl.signal }),
+    /stopped by user/,
+    "a stopped turn injects no code",
+  );
+  assert.equal(ws.sent.length, 0);
+  await client.close();
+}
+
+// ── stop during the navigation-race retry: no second evaluate ───────────
+{
+  const client = await connect();
+  const ws = FakeSocket.last!;
+  let evals = 0;
+  ws.handler = (msg) => {
+    if (msg.method !== "Runtime.evaluate") return { error: { message: `unexpected ${msg.method}` } };
+    evals += 1;
+    return { error: { message: "Execution context was destroyed." } };
+  };
+  const ctrl = new AbortController();
+  const pending = client.evaluate("location.href", "s1", { signal: ctrl.signal });
+  setTimeout(() => ctrl.abort(), 50); // lands during the 400ms retry delay
+  await assert.rejects(pending, /stopped by user/);
+  assert.equal(evals, 1, "the retry loop checks the stop signal");
+  await client.close();
+}
+
 // ── object handles, DOMDebugger listeners, callFunctionOn ───────────────
 {
   const client = await connect();
@@ -198,8 +269,12 @@ const connect = (): Promise<BrowserCdp> =>
 
 // ── connection failure carries the fix ──────────────────────────────────
 {
-  FakeSocket.failNext = true;
-  await assert.rejects(connect, /npm run chrome/, "a failed upgrade points at the launcher");
+  FakeSocket.failAll = true;
+  try {
+    await assert.rejects(connect, /npm run chrome/, "a failed upgrade points at the launcher");
+  } finally {
+    FakeSocket.failAll = false;
+  }
 }
 
 // ── optional live check against a real Chrome ──────────────────────────

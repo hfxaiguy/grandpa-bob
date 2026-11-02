@@ -639,7 +639,7 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   // app/browser's tools spawn Chrome from Node, which a worker cannot do.
   // Replace them with the native CDP implementations (or, without a ?cdp=
   // endpoint, a stub that says how to start the local Chrome).
-  Object.assign(toolsMap, await browserCdpTools(platform, { cdp: opts.cdp }));
+  Object.assign(toolsMap, await browserCdpTools(platform, { cdp: opts.cdp, signal }));
   // One discovery pass feeds the tree-tool map, the guide filter and the
   // parent/sub-app scoping below.
   const apps = await listAppTrees(platform.workspaceRoot).catch(() => []);
