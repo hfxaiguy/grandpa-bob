@@ -2,6 +2,34 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — trunk: an overhearer sees every human input
+
+The conversation trunk now carries a `Hook(onHuman())` on its session root.
+Every human reply — the trunk's message, a steering word at the `tool_check`
+gate, or a message that lands inside an app parked on its own `Human()` — is
+shown to a cheap observer tree *before* delivery. The observer can take side
+actions besides whatever handles the message, and can take the message back
+when it plainly belongs to the trunk.
+
+- `patterns/trunk.prod.mjs`: the `overhear` tree (cheap model) reads the words,
+  the recent thread and `suspended_app` (the app on the mic); it calls apps for
+  side work, with every call forced into `auto` mode by a `Hook(toolBefore())`.
+  It writes `hook_actions`, which the main SYSTEM prompt reads ("do not repeat
+  that work"), and emits its side_work account as a `[overhear] …` machine note
+  beside the existing app-return notes.
+- A take-over is a `Goto("start_input", m => m.input)` from the hook: the
+  parked app's frames drop, the words become the trunk's next message, and a
+  machine note records it. The trunk clears the mic marker on that delivery.
+- The workspace standard for pausing apps (docs in `patterns/agents.md`): an
+  `auto: true` call arg = "run without a person"; each `Human()` is gated on
+  `!auto`, action buttons are not emitted in auto, and the app returns early
+  with `pending: "<slot>"` without writing. email (draft/profile/signature/
+  remove), caller-list (present + park) and knit (spec/module) adopt it;
+  `story` is foreground-only and stays out of the overhearer's tool list.
+- Tests: `patterns/trunk.test.mjs` 16 pass (three new: quiet observer, auto
+  side work reaching the main prompt, take-over from a parked app), plus auto
+  tests in the email, caller-list and knit suites. Seed re-packed.
+
 ## 2026-11-01 — a shown sub-app docks its parent like the trunk
 
 Opening a sub-app used to squeeze the parent's chat between its parked-square
