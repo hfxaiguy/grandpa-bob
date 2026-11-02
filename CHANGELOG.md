@@ -2,6 +2,39 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — the desktop chip's clock advances on a tab-sent round
+
+`desktop: synced HH:MM` read `lastSyncAt`, which only moved when this side
+received a map. A normal reconcile sent its map one-way, so a tab that pushed
+every change to the desktop still displayed the time of the last map the
+desktop sent — on a quiet mirror it looked frozen for an hour. `reconcile`
+now sends `wantReply`; the peer answers after applying the diff with a
+`reply` map, and the initiator's clock means "the peer converged", not "my
+map left the wire". Replies and our own rounds are never answered again, so
+a late answer or a mixed-version peer cannot ping-pong. Test: `test:sync`
+pins a local mutation advancing the initiator's completion clock.
+
+## 2026-11-01 — read_runs: encoded filters and the log's edge
+
+The insight tree concluded "the knit failures aren't in the log" because
+`read_runs` was called with `type` as a JSON-encoded string. It matched one
+literal kind, returned `rows: []`, and the empty result was read as absence.
+
+- `web/src/agent/runlog-args.ts` normalizes `type` (a JSON list or a quoted
+  kind), coerces numeric-string filters, and annotates condensed results with
+  `meta.max_seq`. A filtered read that matches nothing now carries a note saying
+  the filter is not proof of absence.
+- `web/src/agent/browser-tools.ts` applies the shim before the shared-handle
+  query; every condensed read reports the log's current edge, so an empty id
+  probe is no longer mistaken for the end of the log.
+- grandma-kat's `normalizeTypes()` takes the same JSON-encoded shapes (Node and
+  browser paths), and its tool description says to pass a real array.
+- The insight tree's LOCATE/EXPLAIN prompts (workspace app) now treat an empty
+  filtered read as a filter result, not absence, and use `meta.max_seq` instead
+  of probing ids.
+- Tests: `npm run test:read-runs-args`, `npm run test:read-runs-handle`;
+  `npm test` in grandma-kat (339 passing).
+
 ## 2026-11-01 — browser host: the tree context knit wakes up to
 
 `knit` died on its first register (`list_targets`) because the standalone

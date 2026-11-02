@@ -37,6 +37,7 @@
     "test:runlog-tiers": "tsx scripts/runlog-tiers-test.ts",
     "test:runlog-boot": "tsx scripts/runlog-boot-test.ts",
     "test:read-runs-handle": "tsx scripts/read-runs-handle-test.ts",
+    "test:read-runs-args": "tsx scripts/runlog-args-test.ts",
     "test:runlog-retention": "tsx scripts/runlog-retention-test.ts",
     "test:web-restore": "tsx scripts/web-session-restore-test.ts",
     "test:resume-guard": "tsx scripts/resume-guard-test.ts",

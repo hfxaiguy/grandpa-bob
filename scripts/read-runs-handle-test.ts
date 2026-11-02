@@ -25,6 +25,7 @@ const workspace = await mkdtemp(path.join(os.tmpdir(), "grandpa-bob-readruns-"))
 const base = createNodePlatform(workspace);
 
 const opens: Array<{ path: string; readOnly: boolean; scratch?: boolean }> = [];
+const queries: Array<{ sql: string; params: unknown[] }> = [];
 let closes = 0;
 let prepared = 0;
 
@@ -44,14 +45,18 @@ const sqlite: SqliteFactory = {
       async prepare(sql) {
         prepared += 1;
         // Open-time housekeeping probes (legacy-kind guard, size check) see
-        // "nothing to do"; the run-log SELECT gets the sample row.
+        // "nothing to do"; the max-seq probe reports the sample row's edge; the
+        // run-log SELECT gets the sample row.
         const rows = sql.includes("kind = 'memory'")
           ? []
           : sql.includes("pragma_page_count")
             ? [{ bytes: 0 }]
-            : [ROW];
+            : sql.includes("MAX(seq)")
+              ? [{ m: ROW.seq }]
+              : [ROW];
         return {
-          async all() {
+          async all(...params: unknown[]) {
+            queries.push({ sql, params });
             return rows;
           },
           async get() {
@@ -85,9 +90,11 @@ const tools = browserTools(platform, {
 try {
   const first = (await tools.read_runs.execute({ limit: 5 })) as {
     rows?: Array<{ text?: string }>;
+    meta?: { max_seq?: number };
   };
   assert.ok(Array.isArray(first.rows), "read_runs returns rows");
   assert.equal(first.rows?.[0]?.text, "hello from the log", "rows come back through the shared handle");
+  assert.equal(first.meta?.max_seq, ROW.seq, "condensed reads carry the log's current max seq");
   assert.equal(opens.length, 1, "the first read opens the log once");
   assert.equal(opens[0].path, path.posix.join(workspace, "logs/grandma-kat.db"), "it opens the workspace run log");
   assert.equal(opens[0].readOnly, false, "read_runs shares the writable log-store handle");
@@ -100,7 +107,24 @@ try {
   assert.equal(opens.length, 1, "later reads reuse the cached handle — no per-call open");
   assert.equal(closes, 0, "the shared handle is never closed per call");
   assert.equal(flushes, 3, "every read flushes the log first");
-  assert.equal(prepared - preparedAtOpen, 2, "each read runs one prepared SELECT on the shared handle");
+  assert.equal(
+    prepared - preparedAtOpen,
+    4,
+    "each condensed read runs one SELECT plus one max-seq probe",
+  );
+
+  const coerced = (await tools.read_runs.execute({ type: '["emit","human"]' })) as {
+    note?: string;
+    rows?: unknown[];
+  };
+  const select = [...queries].reverse().find((q) => q.sql.includes("kind IN"));
+  assert.ok(select, "the filter reached SQL");
+  assert.deepEqual(
+    select.params.slice(-3),
+    ["emit", "human", 20],
+    "the JSON-encoded type list was expanded into real bind params",
+  );
+  assert.match(coerced.note ?? "", /type arrived as a JSON string/, "the caller is told the filter was normalized");
 
   console.log("read-runs-handle: one shared log connection reused across reads OK");
 } finally {

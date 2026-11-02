@@ -11,6 +11,7 @@ import { READ_JSON_DEFINITION, readJsonValue } from "../tools/json";
 import { writeDatabaseDumps } from "../db-sync";
 import { createSqliteWasm } from "../platform/sqlite-wasm";
 import { withLogDb } from "./log-store";
+import { annotateReadRunsResult, normalizeReadRunsArgs } from "./runlog-args";
 import { runLogToolFromQuery } from "grandma-kat";
 import type { Platform } from "../platform/types";
 import type { AppStore } from "../app-store";
@@ -158,7 +159,33 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
       parameters: runLog.parameters,
       execute: async (a) => {
         await opts.flushLog?.();
-        return runLog.execute(a);
+        // Models sometimes send `type` as a JSON-encoded string; read_runs
+        // would take that as one literal kind and return rows: []. Normalize
+        // before the query, then tell the caller what happened.
+        const { args, warnings } = normalizeReadRunsArgs(a);
+        const result = await runLog.execute(args);
+        if (
+          !result ||
+          typeof result !== "object" ||
+          !Array.isArray((result as { rows?: unknown }).rows)
+        ) {
+          return result;
+        }
+        // Condensed results get the log's current edge. Without it, callers
+        // probe ids and read an empty id above the edge as "the log ends here".
+        // The annotation is best-effort: a failed probe must not fail the read.
+        let maxSeq: number | null = null;
+        try {
+          maxSeq = await withLogDb(platform, async (db) => {
+            const row = (await (
+              await db.prepare("SELECT COALESCE(MAX(seq), 0) m FROM calls")
+            ).get()) as { m?: number } | undefined;
+            return Number(row?.m ?? 0) || 0;
+          });
+        } catch {
+          maxSeq = null;
+        }
+        return annotateReadRunsResult(result, args, maxSeq, warnings);
       },
     },
     csv_query: {
