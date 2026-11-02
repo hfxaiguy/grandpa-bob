@@ -2,6 +2,19 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-02 — uploads cross the settings iframe's realm
+
+The settings page runs in a sandboxed iframe and passes its `FormData` and
+`File` objects to the backend in the parent realm. There, `instanceof` compares
+against the parent's constructors and is always false, so well-formed uploads
+were rejected as empty: `/api/chat/upload`, `/api/files/upload` and
+`/api/secrets` answered `400 multipart required` or `no file`.
+
+- `web/src/server/local-backend.ts`: `isFormData()` (has `get`/`getAll`) and
+  `isFile()` (has `arrayBuffer` and a string `name`) identify both objects
+  structurally. Same-realm uploads keep working, and the iframe's uploads now
+  reach the workspace and the secret store.
+
 ## 2026-11-02 — peer sync ignores excluded paths on the receive side too
 
 Root `*.db` files (and their sidecars) no longer sync as binaries, but the

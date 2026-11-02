@@ -33,6 +33,21 @@ import { withSyncLock, writeDatabaseDumps } from "../db-sync";
 import { AgentStoppedError, isAgentStopped } from "../stop-error";
 import type { LogRow, SessionSummary } from "../agent/log-store";
 
+/**
+ * Cross-realm safe checks. The settings page runs in an iframe and hands its
+ * FormData/File objects to this backend across realms, where `instanceof`
+ * against the parent window's constructors is always false.
+ */
+const isFormData = (value: unknown): value is FormData =>
+  !!value &&
+  typeof (value as FormData).get === "function" &&
+  typeof (value as FormData).getAll === "function";
+
+const isFile = (value: unknown): value is File =>
+  !!value &&
+  typeof (value as File).arrayBuffer === "function" &&
+  typeof (value as File).name === "string";
+
 export interface BackendResponse {
   status: number;
   contentType?: string;
@@ -989,9 +1004,9 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     if (pathname === "/api/chat/upload" && method === "POST") {
       const guard = await opts.beforeTurn?.().catch(() => null) ?? null;
       if (guard) return { status: 503, body: { error: guard } };
-      if (!(body instanceof FormData)) return { status: 400, body: { error: "multipart required" } };
+      if (!isFormData(body)) return { status: 400, body: { error: "multipart required" } };
       const file = body.get("file");
-      if (!(file instanceof File)) return { status: 400, body: { error: "no file" } };
+      if (!isFile(file)) return { status: 400, body: { error: "no file" } };
       const caption = String(body.get("caption") ?? "");
       const bytes = new Uint8Array(await file.arrayBuffer());
       const safe = (file.name || "upload").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "upload";
@@ -1192,10 +1207,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     // (falls through to the /api/ 501 below, so the UI degrades cleanly)
 
     if (pathname === "/api/files/upload" && method === "POST") {
-      if (!(body instanceof FormData)) return { status: 400, body: { error: "multipart required" } };
+      if (!isFormData(body)) return { status: 400, body: { error: "multipart required" } };
       const dir = String(body.get("path") ?? "");
       const file = body.get("file");
-      if (!(file instanceof File)) return { status: 400, body: { error: "no file" } };
+      if (!isFile(file)) return { status: 400, body: { error: "no file" } };
       const bytes = new Uint8Array(await file.arrayBuffer());
       const target = platform.path.join(platform.workspaceRoot, dir, file.name);
       await platform.fs.mkdir(platform.path.dirname(target), { recursive: true });
@@ -1456,11 +1471,11 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       return { status: 200, body: { secrets } };
     }
     if (pathname === "/api/secrets" && method === "POST") {
-      if (!(body instanceof FormData)) return { status: 400, body: { error: "multipart required" } };
+      if (!isFormData(body)) return { status: 400, body: { error: "multipart required" } };
       const appName = search.get("app") ?? "";
       const secretName = search.get("name") ?? "";
       const file = body.get("file");
-      if (!(file instanceof File)) return { status: 400, body: { error: "no file" } };
+      if (!isFile(file)) return { status: 400, body: { error: "no file" } };
       const bytes = new Uint8Array(await file.arrayBuffer());
       if (bytes.length > 1024 * 1024) return { status: 413, body: { error: "secret too large (max 1 MB)" } };
       const map = readSecrets();
