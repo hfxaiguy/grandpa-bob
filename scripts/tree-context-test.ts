@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Call, Register, Return, Tree, knit } from "grandma-kat";
+import { Call, Register, Return, Tree, knit, name } from "grandma-kat";
 import { headerSpecOf, makeTreeContext } from "../web/src/tree-context.js";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "gpb-tree-context-"));
@@ -246,6 +246,28 @@ try {
       `loadModule should not resolve ${name}/${module}`,
     );
   }
+
+  // The exact seam knit uses: a Register's fourth argument is runtime.context.
+  const probe = Tree(
+    name("tree_context_probe"),
+    Register("list_targets", "list the trees", async (_m, _args, _tools, context) => {
+      assert.ok(context?.trees?.list, "the register receives runtime.context.trees");
+      return context.trees.list();
+    }),
+    Call("list", "list_targets", () => ({})),
+    Return((m) => m.branch.list),
+  );
+  const out = await knit(probe, {
+    models: { default: { model: "mock", handler: async () => ({ content: "" }) } },
+    tools: {},
+    logger: false,
+    context: { trees: ctx },
+  });
+  assert.ok(Array.isArray(out.result), "list_targets returns the host's tree list");
+  assert.ok(
+    out.result.some((t: { name?: string }) => t.name === "demo"),
+    "the register sees the same workspace the context reads",
+  );
 
   console.log(
     `tree-context: ${listed.length} trees, ${writes.length} writes, guarded tree + module paths all passed`,
