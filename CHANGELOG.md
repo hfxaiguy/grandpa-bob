@@ -2,6 +2,24 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — a shown sub-app docks its parent like the trunk
+
+Opening a sub-app used to squeeze the parent's chat between its parked-square
+rail and the side-by-side strip. The frame now takes the board's own posture
+one level down: with a sub shown, `Tile` adds `.subs-dock` and the strip claims
+the top seat across the tile's width while the parent's own chat docks
+full-width along the bottom — the same relation the trunk has to the board's
+apps — with the trunk dock's lift/shadow scaled down. The parked squares keep
+running down the left edge, the split is the trunk's ~55/45 with a floor under
+the dock (180px, 150px on phones) so a square tile keeps a usable chat, and the
+panel lists scroll inside the shorter box instead of cutting off mid-row.
+
+`⤢` on a sub still takes the whole frame (`subs-max`) and hides the parent;
+parking the last sub restores the middle column. Recursion comes free: a
+sub-app with its own open children docks the same way, trunk tile included.
+
+Tests: `npm run test:ui` (typecheck + build), `npm run test:ui-order`.
+
 ## 2026-11-01 — emitted views blow up to full screen
 
 Every visual component bubble — the contacts graph included — now has a `⤢`

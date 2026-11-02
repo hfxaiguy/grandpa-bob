@@ -1487,8 +1487,13 @@ export function Tile(props: { app: AppInfo }) {
       {/* The fractal frame: this tile's own rail of parked sub-apps on the left,
           the tile's chat full height in the middle, opened sub-app tiles
           side-by-side on the right. A tile without sub-apps renders the main
-          column alone — same look as before. */}
-      <div class="tile-frame" classList={{ "subs-max": expandedKid() }}>
+          column alone — same look as before. With a sub-app shown, the frame
+          flips to the board's own posture: the strip takes the grid's seat on
+          top and this tile's chat docks full-width along the bottom. */}
+      <div
+        class="tile-frame"
+        classList={{ "subs-max": expandedKid(), "subs-dock": !expandedKid() && openKids().length > 0 }}
+      >
         <Show when={kids().length}>
           <SubRail parent={name()} />
         </Show>

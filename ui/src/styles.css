@@ -256,8 +256,11 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
    sub-apps stand as squares in a narrow rail on the tile's LEFT edge, the
    tile's own chat stays full height in the middle (the tile is the trunk of
    its own little board), and opened sub-app tiles sit side-by-side on the
-   right, smaller — the board's zones, one level down. A tile without
-   sub-apps renders the main column alone: the same look as before. */
+   right, smaller — the board's zones, one level down. As soon as a sub-app is
+   shown the frame flips to the board's own posture (`.subs-dock`): the strip
+   takes the grid's seat on top and the tile's own chat docks full-width along
+   the bottom, the way the trunk docks under its apps. A tile without sub-apps
+   renders the main column alone: the same look as before. */
 .tile-frame {
   display: flex;
   flex: 1 1 auto;
@@ -326,6 +329,54 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
 }
 .tile-subs-area .tile.expanded,
 .tile-subs-area .tile.wide { grid-column: auto; aspect-ratio: auto; }
+
+/* The board posture, one level down: a shown sub-app turns the strip into the
+   tile's "grid" (top, all remaining width) and docks the tile's own chat
+   full-width along the bottom — the same relation the trunk has to the board's
+   apps. The parked-square rail keeps running down the left edge across both
+   rows. The rows split the frame the trunk's way, ~55/45, with a floor under
+   the dock (its header and chat need that much, just as the trunk dock keeps a
+   280px floor) instead of letting the chat and the strip compete: opening a
+   sub never squeezes the parent away, and the strip scrolls inside its seat. */
+.tile-frame.subs-dock {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1.2fr) minmax(180px, 1fr);
+}
+.tile-frame.subs-dock > .tile-rail {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+.tile-frame.subs-dock > .tile-subs-area {
+  grid-column: 2;
+  grid-row: 1;
+  max-width: none;
+  border-left: none;
+}
+.tile-frame.subs-dock > .tile-main {
+  position: relative;
+  z-index: 1;
+  grid-column: 2;
+  grid-row: 2;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  /* Docked above the strip rather than beside it: the same lift + deeper
+     shadow gesture as the trunk dock, scaled to a tile. */
+  box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(110, 168, 254, 0.08);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.tile-frame.subs-dock > .tile-main:hover,
+.tile-frame.subs-dock > .tile-main:focus-within {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+  box-shadow: 0 -14px 32px rgba(0, 0, 0, 0.55), 0 0 16px rgba(110, 168, 254, 0.18);
+}
+/* The dock is a share of the tile, not a full board: its panel lists keep to a
+   short box and the panel area itself shrinks and scrolls when the chat needs
+   the room, so nothing is cut off mid-row in a square tile. */
+.tile-frame.subs-dock .mem-list,
+.tile-frame.subs-dock .ev-list { max-height: 72px; }
+.tile-frame.subs-dock > .tile-main > .tile-panels { min-height: 0; overflow: auto; }
 
 /* The trunk dock: the board's home conversation spans the full width below the
    square grid and stays docked to the bottom of the tiles viewport while the app
@@ -722,6 +773,7 @@ body.dragging-tile { user-select: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .boot-splash .empty-logo { animation: none; }
   .hidden-app.denied { animation: none; box-shadow: 0 0 9px var(--accent); }
+  .tile-frame.subs-dock > .tile-main { transition: none; }
 }
 .boot-status { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 20px; margin-bottom: 10px; font-size: 13px; }
 .boot-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -931,6 +983,9 @@ body.dragging-tile { user-select: none !important; }
   .tiles > .tile.trunk-dock.expanded { height: 100%; }
   .tile-rail { width: 30px; }
   .tile-subs-area { --sub-tile-w: 200px; }
+  /* The dock keeps its bottom seat on a phone with a shorter floor, so the
+     strip still gets a share of a short landscape frame. */
+  .tile-frame.subs-dock { grid-template-rows: minmax(0, 1.2fr) minmax(150px, 1fr); }
 
   /* A 2-column span would create an implicit track on a single-column grid. */
   .tile.wide { grid-column: auto; aspect-ratio: 1 / 1; }
