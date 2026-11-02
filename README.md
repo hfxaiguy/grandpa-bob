@@ -111,7 +111,9 @@ Tree.name("agent")
 - **`.human()`** pauses the tree and checkpoints it into the renderer's run
   log (`.gpb-runlog`, the OPFS-backed SQLite stream). A reload restores a
   paused run; `/clear` (or a new chat) starts fresh. The run log always lives
-  in the profile's OPFS directory; a desktop mirror never carries it.
+  in the profile's OPFS directory; a desktop mirror never carries it. A paired
+  tab does stream its rows to the desktop (`npm run peer:log -- --profile
+  <name>`), which is how browser errors become readable there.
 - **`.emit()`** streams output to the tile without stopping the tree.
 - **History** lives in the tree's `messages` memory slot; the continuation
   token persists the full scope chain (memory, history, execution position)
@@ -337,7 +339,11 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    the `npm run bob` process, so restarting it means running `npm run pair`
    again. Add `--debug` to that command to log each
    pairing event.
-   Start the process with `BOB_STT=1` to expose the `/stt` pass-through for
+   While the tab is paired, it streams its run log to
+   `~/.bobkat/peers/<profile>/logs/grandma-kat.db`; read it with
+   `npm run peer:log -- --profile <name>` (latest errors by default, `--all`
+   for every kind, `--stats`/`--follow` for the rest). Start the process with
+   `BOB_STT=1` to expose the `/stt` pass-through for
    in-tab voice transcription.
 5. **Voice (optional)**: the browser records are transcribed by the bridge
    (`BOB_STT=1`); Telegram voice notes are transcribed by the channel. Both

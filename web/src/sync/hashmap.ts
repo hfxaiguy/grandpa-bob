@@ -2,10 +2,11 @@
  * Workspace → `{path: sha256}` map for the sync reconcile.
  *
  * Excludes what must never sync: git internals (each replica keeps its own
- * history), the run log (`logs/` — DBs travel as snapshots, never raw copies,
- * and the OPFS run log lives under `.gpb-runlog` which is not even a plain
- * file), the sync journal itself (`.gpb-sync/`), and uploaded attachment
- * bins (`assets/inbox/`).
+ * history), the run log (`logs/` — the OPFS run log lives under `.gpb-runlog`
+ * which is not even a plain file, and the logical log travels as an event
+ * stream over a paired channel instead, see `web/src/peer-log.ts`), the sync
+ * journal itself (`.gpb-sync/`), and uploaded attachment bins
+ * (`assets/inbox/`).
  */
 import type { Platform } from "../platform/types";
 

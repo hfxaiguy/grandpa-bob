@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import type http from "node:http";
 import { adminKey, readPeers, sameSecret, type PeerCapabilities } from "./store.js";
 import { Mailbox, sha256 } from "./mailbox.js";
+import { readPeerLog, statsPeerLog } from "./peer-log.js";
 import { PeerManager } from "./peer.js";
 
 const MAX_BODY = 2 * 1024 * 1024;
@@ -196,6 +197,25 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
           if (parts[1] === "peers" && req.method === "GET" && !parts[2]) {
             const peers = await manager.peers();
             return send(req, res, 200, { peers });
+          }
+          if (parts[1] === "peers" && parts[2] && parts[3] === "log" && req.method === "GET") {
+            // The desktop mirror of the tab's run log (fed by the log stream;
+            // see src/bridge/peer-log.ts). `kind` is a comma list, newest last.
+            if (!PROFILE_RE.test(parts[2])) return send(req, res, 400, { error: "invalid profile name" });
+            if (url.searchParams.get("stats") === "1") {
+              const stats = await statsPeerLog(parts[2]);
+              return send(req, res, 200, { profile: parts[2], ...stats });
+            }
+            const kinds = String(url.searchParams.get("kind") ?? "")
+              .split(",")
+              .map((kind) => kind.trim())
+              .filter(Boolean)
+              .slice(0, 20);
+            const limit = Math.max(1, Math.min(1000, Number(url.searchParams.get("limit") ?? "20") || 20));
+            const after = Math.max(0, Number(url.searchParams.get("after") ?? "0") || 0);
+            const errorOnly = url.searchParams.get("errors") === "1";
+            const log = await readPeerLog(parts[2], { kinds, limit, after, errorOnly });
+            return send(req, res, 200, { profile: parts[2], ...log });
           }
           if (parts[1] === "peers" && parts[2] && parts[3] === "revoke" && req.method === "POST") {
             await manager.revoke(parts[2]);

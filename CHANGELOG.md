@@ -48,6 +48,39 @@ sub-app with its own open children docks the same way, trunk tile included.
 
 Tests: `npm run test:ui` (typecheck + build), `npm run test:ui-order`.
 
+## 2026-11-01 — browser errors now reach the desktop's log
+
+A paired tab streams its run-log rows to the desktop over the existing peer
+control channel, so `llm_error` / `tool_error` rows (and everything else the
+engine logs) are readable on this machine. The file itself still never syncs:
+`logs/` is excluded from the workspace reconcile and db-sync skips the run log,
+which is exactly why the desktop copy was always empty.
+
+- **Stream, not snapshot.** New control ops `log-handshake` → `log-cursor`,
+  `log-batch` → `log-ack`, `log-error`. The tab sends one batch in flight,
+  ascending by `seq`; the desktop ignores seqs at or below its cursor, so
+  resends after a lost ack are free. No LWW/conflict logic: the log is
+  append-only and the hosting tab is its only writer.
+- **Every logged row, failed turns included.** The tap carries engine rows from
+  `AgentClient.onEngineEvent` and the `web_turn_end` marker the worker writes
+  after each turn — a failed turn (`status: "error"`) is the top-level error a
+  chat shows, so it must land in the desktop copy too.
+- **Backfill on connect.** The shipper reads from the tab's log DB from the
+  desktop's cursor (`rowsAfter`), so rows logged while the desktop was offline
+  still arrive. A new stream identity (`epoch`, per browser profile) or a
+  regressed max seq resets the desktop copy instead of mixing sequence spaces.
+- **Where it lands.** `~/.bobkat/peers/<profile>/logs/grandma-kat.db` — beside
+  the sync journal, deliberately outside the mirror folder (the tab stays the
+  only writer of its own log).
+- **Read it.** `npm run peer:log -- --profile <name>` prints the latest errors
+  by default — `llm_error`/`tool_error` rows plus turns whose marker says
+  `status: "error"` (a server-side filter, so the limit is a limit on errors,
+  not on everything). `--all`, `--kind`, `--stats` and `--follow` cover the
+  rest. Admin API: `GET /admin/peers/<profile>/log` (`?errors=1` for the same
+  default window).
+- **Regression**: `npm run test:peer-log` covers dedupe/overlap/reset/epoch
+  handling in the desktop store and batching/backfill/ack flow in the shipper.
+
 ## 2026-11-01 — emitted views blow up to full screen
 
 Every visual component bubble — the contacts graph included — now has a `⤢`

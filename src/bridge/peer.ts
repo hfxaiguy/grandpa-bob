@@ -23,6 +23,7 @@ import { createNodePlatform } from "../platform/node.js";
 import { ShellTools } from "../tools/shell.js";
 import { Mailbox, type MailboxChannel, type SignalEntry } from "./mailbox.js";
 import { expandLocalCandidate, expandLocalSdp, localMdnsHosts } from "./mdns.js";
+import { appendPeerLog, handshakePeerLog } from "./peer-log.js";
 import {
   defaultMirrorDir,
   peerJournalDir,
@@ -390,6 +391,7 @@ export class PeerSession {
           }),
         );
         this.paired = true;
+        this.authed = true;
         this.emit("paired", { profile: this.profile, fingerprint: record.fingerprint });
       } else {
         const record = (await readPeers()).peers[this.profile];
@@ -423,6 +425,17 @@ export class PeerSession {
   private pendingNonce = "";
   private pendingProofKey = "";
   private pendingClientNonce = "";
+  /** The peer proved its client key on this connection (or finished pairing). */
+  private authed = false;
+
+  /**
+   * Log-stream access needs a proven peer: during first pairing the data
+   * channel is open before the operator approves, and pairing codes are
+   * short-lived but not secrets we want writing rows.
+   */
+  private logAuthed(): boolean {
+    return this.authed;
+  }
 
   private async onControl(control: Record<string, unknown>, link: SyncPeer): Promise<void> {
     const op = String(control.op ?? "");
@@ -463,6 +476,7 @@ export class PeerSession {
         return;
       }
       this.emit("sas", { sas: this.sas });
+      this.authed = true;
       this.pendingClientNonce = String(control.clientNonce ?? randomBytes(16).toString("hex"));
       link.send(
         controlEnvelope(channelPeerId(this.profile), {
@@ -477,6 +491,82 @@ export class PeerSession {
     if (op === "ready") {
       if (this.engine) return;
       await this.attachEngine();
+      return;
+    }
+    if (op === "log-handshake" || op === "log-batch") {
+      // The control channel exists during pairing too; only a proven peer may
+      // write the desktop log copy.
+      if (!this.logAuthed()) {
+        link.send(
+          controlEnvelope(channelPeerId(this.profile), {
+            op: "log-error",
+            error: "log stream requires a paired session",
+          }),
+        );
+        return;
+      }
+    }
+    if (op === "log-handshake") {
+      // The tab's run log lives only in its OPFS workspace (logs/ is excluded
+      // from file sync and db-sync); this control stream is how the desktop
+      // gets the rows. The cursor acknowledges what this profile already has.
+      try {
+        const status = await handshakePeerLog(this.profile, {
+          epoch: String(control.epoch ?? ""),
+          // Absent means the tab could not read its max; do not treat unknown
+          // as 0, or a transient failure would wipe the desktop copy.
+          max:
+            typeof control.max === "number" && Number.isFinite(control.max)
+              ? control.max
+              : undefined,
+        });
+        this.emit("log-stream", { epoch: status.epoch, cursor: status.cursor, rows: status.total });
+        link.send(
+          controlEnvelope(channelPeerId(this.profile), {
+            op: "log-cursor",
+            epoch: status.epoch,
+            cursor: status.cursor,
+          }),
+        );
+      } catch (err) {
+        link.send(
+          controlEnvelope(channelPeerId(this.profile), {
+            op: "log-error",
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
+      return;
+    }
+    if (op === "log-batch") {
+      try {
+        const result = await appendPeerLog(
+          this.profile,
+          String(control.epoch ?? ""),
+          Array.isArray(control.events) ? control.events : [],
+        );
+        if (result.error) {
+          link.send(controlEnvelope(channelPeerId(this.profile), { op: "log-error", error: result.error }));
+          return;
+        }
+        if (result.inserted > 0) {
+          this.emit("log-rows", { inserted: result.inserted, cursor: result.cursor, rows: result.total });
+        }
+        link.send(
+          controlEnvelope(channelPeerId(this.profile), {
+            op: "log-ack",
+            upTo: result.cursor,
+            inserted: result.inserted,
+          }),
+        );
+      } catch (err) {
+        link.send(
+          controlEnvelope(channelPeerId(this.profile), {
+            op: "log-error",
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
       return;
     }
     if (op === "ops-run") {

@@ -117,3 +117,18 @@ export function defaultMirrorDir(profile: string): string {
 export function peerJournalDir(profile: string): string {
   return statePath("peers", profile);
 }
+
+/**
+ * The desktop copy of a profile's run log (fed by the paired tab's log event
+ * stream, see `peer-log.ts`). Deliberately outside the mirror folder: the tab
+ * stays the only writer of `logs/grandma-kat.db`, and the mirror folder must
+ * remain a plain synced copy.
+ */
+export function peerLogPath(profile: string): string {
+  // Defense in depth: every current caller validates first, but this path is a
+  // filesystem boundary (statePath joins segments without a sandbox).
+  if (!/^[a-z0-9._-]{1,64}$/.test(profile) || profile === "." || profile === "..") {
+    throw new Error("invalid profile name");
+  }
+  return statePath("peers", profile, "logs", "grandma-kat.db");
+}

@@ -208,6 +208,16 @@ export async function ensureLogCursor(platform: Platform): Promise<void> {
   await seedCursor(platform);
 }
 
+/** The log DB's current max seq (0 when it has no rows yet). */
+export async function maxLogSeq(platform: Platform): Promise<number> {
+  const row = (await withLogDb(platform, async (db) => {
+    return (await (await db.prepare("SELECT COALESCE(MAX(seq), 0) m FROM calls")).get()) as
+      | { m: number }
+      | undefined;
+  })) as { m?: number } | undefined;
+  return Number(row?.m ?? 0) || 0;
+}
+
 /** The next row seq. Requires ensureLogCursor() to have completed. */
 export function nextLogSeq(platform: Platform): number {
   const key = logDbPath(platform);
@@ -276,18 +286,28 @@ async function insertMarker(
   runId: string,
   kind: string,
   content: unknown,
-): Promise<void> {
+): Promise<LogRow> {
   const seq = nextLogSeq(platform);
   const stmt = await db.prepare(
     "INSERT INTO calls (seq, run_id, definition_id, branch_path, iteration, scope_id, kind, content) VALUES (?, ?, 'web', NULL, 0, NULL, ?, ?)",
   );
   await stmt.run(seq, runId, kind, JSON.stringify(content));
+  return {
+    seq,
+    run_id: runId,
+    definition_id: "web",
+    branch_path: null,
+    iteration: 0,
+    scope_id: null,
+    kind,
+    content,
+  };
 }
 
 /** Persist a finished turn; computes the event-seq bounds from the run id. */
-export async function writeTurnEnd(platform: Platform, m: TurnMarker): Promise<void> {
+export async function writeTurnEnd(platform: Platform, m: TurnMarker): Promise<LogRow> {
   await ensureLogCursor(platform);
-  await withLogDb(platform, async (db) => {
+  return withLogDb(platform, async (db) => {
     let fromSeq: number | null = null;
     let toSeq: number | null = null;
     if (m.runId) {
@@ -310,7 +330,7 @@ export async function writeTurnEnd(platform: Platform, m: TurnMarker): Promise<v
       }
       fromSeq = prevMarker && prevMarker.runId === m.runId ? (prevMarker.toSeq ?? 0) : 0;
     }
-    await insertMarker(db, platform, m.key, MARKER_TURN, {
+    const row = await insertMarker(db, platform, m.key, MARKER_TURN, {
       ...m,
       fromSeq,
       toSeq,
@@ -319,6 +339,7 @@ export async function writeTurnEnd(platform: Platform, m: TurnMarker): Promise<v
     // Turn boundaries are the natural retention point: the log just grew, and
     // no engine run is mid-flight. Throttled inside maybeTrim.
     await maybeTrim(platform, db);
+    return row;
   });
 }
 
@@ -493,6 +514,33 @@ export async function readRow(platform: Platform, seq: number): Promise<LogRow |
       ...(row as unknown as Omit<LogRow, "content">),
       content: parseJson(row.content),
     } as LogRow;
+  });
+}
+
+/**
+ * Rows with seq > `after`, oldest first, at most `limit` — the backfill window
+ * for the peer log stream (a reconnecting desktop is behind by definition).
+ */
+export async function loadRowsAfter(
+  platform: Platform,
+  after: number,
+  limit: number,
+): Promise<LogRow[]> {
+  const floor = Number.isFinite(after) ? Math.max(0, Math.floor(after)) : 0;
+  const take = Math.max(1, Math.min(1000, Number(limit) || 200));
+  return withLogDb(platform, async (db) => {
+    const rows = (await (
+      await db.prepare(
+        "SELECT * FROM calls WHERE seq > ? ORDER BY seq ASC LIMIT ?",
+      )
+    ).all(floor, take)) as { content: string | null }[];
+    return rows.map(
+      (row) =>
+        ({
+          ...(row as unknown as Omit<LogRow, "content">),
+          content: parseJson(row.content),
+        }) as LogRow,
+    );
   });
 }
 

@@ -68,6 +68,7 @@ export class AgentClient {
   private opsHandler: ((command: string, args: string[]) => Promise<string>) | null = null;
   private opsConfig: { enabled: boolean; allow: string[] } = { enabled: false, allow: [] };
   private probePending = new Map<number, { resolve: (value: string) => void; reject: (error: Error) => void }>();
+  private eventSubs = new Set<(event: unknown) => void>();
 
   constructor(opfsPrefix: readonly string[] = []) {
     this.worker = new Worker(new URL("./agent-worker.ts", import.meta.url), {
@@ -106,6 +107,7 @@ export class AgentClient {
         error?: string;
         ok?: boolean;
         stopped?: boolean;
+        row?: unknown;
         mode?: "resumed" | "restored" | "fresh";
       };
       if (msg.type === "ops-probe-result") {
@@ -124,11 +126,33 @@ export class AgentClient {
         else lp.reject(new Error(msg.error ?? "session log error"));
         return;
       }
+      if (msg.type === "log-row") {
+        // A calls row written outside an engine stream (a turn marker). The
+        // run's message id may already be settled, so notify host observers
+        // directly instead of looking the run up.
+        for (const sub of this.eventSubs) {
+          try {
+            sub(msg.row);
+          } catch {
+            /* an observer must not break the turn */
+          }
+        }
+        return;
+      }
       const p = this.pending.get(msg.id);
       if (!p) return;
       if (msg.type === "event") {
         p.events.push(msg.event);
         p.hooks?.onEvent?.(msg.event);
+        // Every streamed engine row, for host-wide observers that are not a
+        // single run (the peer log stream; see web/src/peer-log.ts).
+        for (const sub of this.eventSubs) {
+          try {
+            sub(msg.event);
+          } catch {
+            /* an observer must not break the run */
+          }
+        }
       } else if (msg.type === "emit") {
         p.emits.push(msg.value);
         p.hooks?.onEmit?.(msg.value);
@@ -154,6 +178,17 @@ export class AgentClient {
   /** Route allowlisted shell commands to the connected desktop/server. */
   setOpsHandler(handler: ((command: string, args: string[]) => Promise<string>) | null): void {
     this.opsHandler = handler;
+  }
+
+  /**
+   * Observe every streamed engine row (calls-log shape: seq, run_id, kind,
+   * content), not just the rows of one `run()`. Returns an unsubscribe.
+   * The peer log stream uses this to mirror the browser's run log on the
+   * desktop; see web/src/peer-log.ts.
+   */
+  onEngineEvent(handler: (event: unknown) => void): () => void {
+    this.eventSubs.add(handler);
+    return () => this.eventSubs.delete(handler);
   }
 
   /** Tell the worker which commands should go to the desktop. */

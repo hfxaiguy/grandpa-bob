@@ -63,6 +63,7 @@ import { applyDatabaseDumps } from "./db-sync";
 import { createAutoSync, DEFAULT_INTERVAL_MS } from "./auto-sync";
 import type { MirrorStatus } from "./peer-status";
 import { loadServerLink, resumeServer, type ServerConnection } from "./server-link";
+import { PeerLogShipper, type PeerLogRow } from "./peer-log";
 import { listTreeSources } from "./tree-sources";
 import { resolveTreeEntry } from "./tree-files";
 import { patternLabel } from "./agent/pattern-path";
@@ -234,6 +235,50 @@ let serverConnection: ServerConnection | null = null;
 let syncHandle: SyncHandle | null = null;
 let serverConnecting = false;
 let serverRetryTimer: ReturnType<typeof setInterval> | null = null;
+/** Streams this tab's run-log rows to the desktop (see web/src/peer-log.ts). */
+let logShipper: PeerLogShipper | null = null;
+/** Detaches the current stream's listeners (a new connection replaces it). */
+let detachLogStream: (() => void) | null = null;
+
+/**
+ * Attach the run-log stream to a live desktop connection. The agent worker is
+ * created after the boot-time reconnect, so this is called again once the
+ * worker exists; attaching twice replaces the previous stream.
+ */
+function attachLogStream(connection: ServerConnection): void {
+  const agent = archiveAgent;
+  if (!agent) return;
+  detachLogStream?.();
+  detachLogStream = null;
+  const shipper = new PeerLogShipper({
+    profile: activeProfile,
+    send: (control) => connection.sendControl(control),
+    load: (after, limit) =>
+      agent
+        .log<PeerLogRow[]>("rowsAfter", { after, limit })
+        .then((rows) => (Array.isArray(rows) ? rows : [])),
+    maxSeq: () => agent.log<number>("maxSeq").then((max) => Number(max) || 0),
+    onNote: (message) => console.log(`[peer-log] ${message}`),
+  });
+  logShipper = shipper;
+  const offControl = connection.onControl((control) => shipper.handleControl(control));
+  const offEvents = agent.onEngineEvent((event) => shipper.push(event));
+  // Rows flushed to the datachannel before the page goes away; anything not
+  // sent is still in the run log and streams in on the next connection.
+  const onPageHide = (): void => shipper.flush();
+  window.addEventListener("pagehide", onPageHide);
+  const cleanup = (): void => {
+    offControl();
+    offEvents();
+    window.removeEventListener("pagehide", onPageHide);
+    shipper.close();
+    if (logShipper === shipper) logShipper = null;
+    if (detachLogStream === cleanup) detachLogStream = null;
+  };
+  detachLogStream = cleanup;
+  connection.peer.onClosed(cleanup);
+  shipper.start();
+}
 
 /**
  * Reconnect to the profile's paired desktop/server. Used at boot (before
@@ -255,6 +300,7 @@ async function connectServerPeer(): Promise<boolean> {
     });
     serverConnection = connection;
     syncHandle.attach(connection.peer);
+    attachLogStream(connection);
     archiveAgent?.setOpsConfig({
       enabled: connection.info.exec.length > 0,
       allow: connection.info.exec,
@@ -1279,6 +1325,8 @@ async function main(): Promise<void> {
   const pattern = await detectPattern(platform);
   const agent = new AgentClient(activeProfileSegments);
   archiveAgent = agent;
+  // The boot-time reconnect ran before the worker existed; attach its tail now.
+  if (serverConnection) attachLogStream(serverConnection);
 
   // Desktop/server ops: only allowlisted executables leave the worker; the
   // rest keep using the local virtual shell.

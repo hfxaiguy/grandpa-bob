@@ -15,7 +15,9 @@
 //     (Node's real git), by a remote lock ref.
 //
 // The run log (logs/grandma-kat.db) is intentionally NOT synced here — it is
-// append-only and large; it has its own retention.
+// append-only and large; it has its own retention. A paired desktop receives
+// its rows over the peer control channel instead (web/src/peer-log.ts →
+// src/bridge/peer-log.ts).
 
 import type { Platform, SqliteDatabase } from "./platform/types.js";
 

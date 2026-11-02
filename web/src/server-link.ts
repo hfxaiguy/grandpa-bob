@@ -39,6 +39,13 @@ export interface ServerConnection {
   info: ServerLinkInfo;
   /** Run an allowlisted executable on the desktop/server. */
   run(binary: string, args: string[], timeoutMs?: number): Promise<ServerOpResult>;
+  /**
+   * Send one control frame (the peer log stream multiplexes over this; see
+   * web/src/peer-log.ts). Frames are chunked by the transport.
+   */
+  sendControl(control: Record<string, unknown>): void;
+  /** Observe non-ops control frames. Returns an unsubscribe. */
+  onControl(handler: (control: Record<string, unknown>) => void): () => void;
   close(): void;
 }
 
@@ -286,24 +293,42 @@ interface HandshakeOptions {
 function finishHandshake(opts: HandshakeOptions, info: ServerLinkInfo): ServerConnection {
   const { opened } = opts;
   const pendingOps = new Map<string, (result: ServerOpResult) => void>();
+  const controlSubs = new Set<(control: Record<string, unknown>) => void>();
   opts.opened.setControl((control) => {
-    if (control.op !== "ops-result") return;
-    const id = String(control.id ?? "");
-    const resolve = pendingOps.get(id);
-    if (!resolve) return;
-    pendingOps.delete(id);
-    resolve({
-      output: typeof control.output === "string" ? control.output : undefined,
-      error: typeof control.error === "string" ? control.error : undefined,
-      changed: Array.isArray(control.changed) ? control.changed.map(String) : undefined,
-      changedCount: typeof control.changedCount === "number" ? control.changedCount : undefined,
-    });
+    if (control.op === "ops-result") {
+      const id = String(control.id ?? "");
+      const resolve = pendingOps.get(id);
+      if (resolve) {
+        pendingOps.delete(id);
+        resolve({
+          output: typeof control.output === "string" ? control.output : undefined,
+          error: typeof control.error === "string" ? control.error : undefined,
+          changed: Array.isArray(control.changed) ? control.changed.map(String) : undefined,
+          changedCount: typeof control.changedCount === "number" ? control.changedCount : undefined,
+        });
+        return;
+      }
+    }
+    for (const sub of controlSubs) {
+      try {
+        sub(control);
+      } catch {
+        /* a subscriber must not break the link */
+      }
+    }
   });
   opened.send({ op: "ready" });
   saveServerLink(info);
   return {
     peer: opened.peer,
     info,
+    sendControl(control) {
+      opened.send(control);
+    },
+    onControl(handler) {
+      controlSubs.add(handler);
+      return () => controlSubs.delete(handler);
+    },
     run(binary, args, timeoutMs) {
       const id = crypto.randomUUID();
       const result = new Promise<ServerOpResult>((resolve) => {

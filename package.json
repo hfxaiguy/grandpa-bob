@@ -59,6 +59,7 @@
     "test:models": "tsx scripts/model-config-test.ts",
     "test:sqlite": "tsx scripts/sqlite-tools-test.ts",
     "test:db-sync": "tsx scripts/db-sync-test.ts",
+    "test:peer-log": "tsx scripts/peer-log-test.ts",
     "test:browser-sql-guard": "tsx scripts/browser-sql-guard-test.ts",
     "test:exa-browser-wire": "tsx scripts/exa-browser-wire-test.ts",
     "test:coreutils": "tsx scripts/coreutils-test.ts",
@@ -75,6 +76,7 @@
     "test:app-attribution": "tsx scripts/app-attribution-test.ts",
     "build:bridge": "node scripts/build-bridge.mjs",
     "pair": "tsx scripts/pair.ts",
+    "peer:log": "tsx scripts/peer-log.ts",
     "smoke:peer": "npm --prefix web run smoke:peer"
   },
   "dependencies": {

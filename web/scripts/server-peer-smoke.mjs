@@ -313,6 +313,40 @@ try {
   assert(before === after, "reconnect did not create a new pairing");
   console.log("reconnect: silent");
 
+  // Run-log stream: the tab announces its log stream and the desktop accepts
+  // rows over the same control channel (see web/src/peer-log.ts).
+  await waitFor(`!!window.__bobServer`, "desktop ops link after reload", 60_000);
+  await waitFor(
+    `!!localStorage.getItem("bob:peer-log:default")`,
+    "log-stream epoch",
+    30_000,
+  );
+  const epoch = await evaluate(`localStorage.getItem("bob:peer-log:default")`);
+  let logView = null;
+  for (let i = 0; i < 100; i++) {
+    logView = await admin("/admin/peers/default/log?limit=5");
+    if (logView.epoch) break;
+    await sleep(200);
+  }
+  assert(logView?.epoch === epoch, "the desktop accepted the tab's log handshake");
+  await evaluate(
+    `window.__bobServer.sendControl({ op: "log-batch", epoch: ${JSON.stringify(epoch)}, events: ` +
+      `[{ seq: 424242, run_id: "smoke", definition_id: "web", kind: "llm_error", ` +
+      `content: { error: "smoke failure" } }] })`,
+  );
+  let streamed = [];
+  for (let i = 0; i < 100; i++) {
+    const view = await admin("/admin/peers/default/log?kind=llm_error&limit=5");
+    streamed = view.rows ?? [];
+    if (streamed.some((row) => row.seq === 424242)) break;
+    await sleep(200);
+  }
+  assert(
+    streamed.some((row) => row.seq === 424242 && row.content?.error === "smoke failure"),
+    "the streamed error reached the desktop log",
+  );
+  console.log("log stream: tab → desktop OK");
+
   // Desktop → OPFS: a file written on the server side reaches the tab.
   await writeFile(path.join(STATE, "folders/default/from-desktop.txt"), "written on the desktop");
   await waitFor(

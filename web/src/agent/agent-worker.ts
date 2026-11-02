@@ -26,6 +26,8 @@ import {
   labelOf,
   lastAwaiting,
   listSessions,
+  loadRowsAfter,
+  maxLogSeq,
   memoryWrites,
   readRow,
   resumableCheckpoint,
@@ -901,7 +903,10 @@ async function handleLog(msg: LogMessage): Promise<void> {
         if (session) await session.logger.flush();
         const marker = p.marker as TurnMarker;
         if (!marker || typeof marker.key !== "string") throw new Error("turnEnd needs a marker");
-        await writeTurnEnd(session?.platform ?? platform, marker);
+        const row = await writeTurnEnd(session?.platform ?? platform, marker);
+        // The marker is a calls row like any engine event; host-wide observers
+        // (the peer log stream) see it through the same tap as run events.
+        post({ id: msg.id, type: "log-row", row });
         if (session && typeof p.run === "number") runs.delete(p.run);
         result = { ok: true };
         break;
@@ -931,6 +936,16 @@ async function handleLog(msg: LogMessage): Promise<void> {
         break;
       case "readRow":
         result = await readRow(platform, Number(p.seq));
+        break;
+      case "maxSeq":
+        result = await maxLogSeq(platform);
+        break;
+      case "rowsAfter":
+        result = await loadRowsAfter(
+          platform,
+          Number(p.after ?? 0) || 0,
+          Number(p.limit ?? 200) || 200,
+        );
         break;
       case "exportRunLog": {
         // A logical snapshot for workspace export: the archive cannot copy the
