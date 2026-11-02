@@ -59,7 +59,7 @@ import {
   type BootstrapSeed,
 } from "./seed-bootstrap";
 import { cloneWorkspace } from "./platform/git-opfs";
-import { applyDatabaseDumps } from "./db-sync";
+import { applyDatabaseDumps, isDatabaseDumpPath, onDatabaseDumpsWritten } from "./db-sync";
 import { createAutoSync, DEFAULT_INTERVAL_MS } from "./auto-sync";
 import type { MirrorStatus } from "./peer-status";
 import { loadServerLink, resumeServer, type ServerConnection } from "./server-link";
@@ -1375,8 +1375,29 @@ async function main(): Promise<void> {
     syncHandle = await startSync(platform, {
       id: syncId,
       channelName: `bob-sync:opfs:${activeProfile}`,
+      onApplied: (paths, previous) => {
+        if (!paths.some(isDatabaseDumpPath)) return;
+        // `previous` is keyed by workspace path; the applier is keyed by DB
+        // name. These hashes are the strongest clean-replica baseline: they
+        // are the dump that was on disk before this delivery replaced it.
+        const baseline: Record<string, string> = {};
+        for (const [path, hash] of Object.entries(previous)) {
+          if (isDatabaseDumpPath(path)) baseline[path.slice("db/".length, -".sql".length)] = hash;
+        }
+        // The worker owns the one writable DB handle; before it exists the
+        // main thread may replay (boot-time, no app connection is open yet).
+        return (archiveAgent
+          ? archiveAgent.applyDatabaseDumps({ applyClean: true, previous: baseline })
+          : applyDatabaseDumps(platform, { applyClean: true, previous: baseline })
+        ).then(() => undefined);
+      },
     });
     (window as unknown as { __bobSync?: unknown }).__bobSync = syncHandle;
+    // Main-thread dump writers (auto-sync, the admin commit/push path) journal
+    // here; worker-written dumps arrive over AgentClient.onDatabaseDumps.
+    onDatabaseDumpsWritten((paths) => {
+      void syncHandle?.engine.noteMutation(paths);
+    });
     syncHandle.onState((state) => {
       const bound = mirrorFolder();
       if (!bound) return;
@@ -1437,6 +1458,10 @@ async function main(): Promise<void> {
       remote: () => configuredRemote,
       intervalMs,
       log: (m, r) => console.log(`[auto-sync] ${m}${r?.error ? `: ${r.error}` : ""}`),
+      // Route replays through the agent worker's one-writer store once it
+      // exists; before boot it does not, and no app connection is open.
+      applyDumps: () =>
+        archiveAgent ? archiveAgent.applyDatabaseDumps() : applyDatabaseDumps(platform),
     }).start();
   }
 
@@ -1445,6 +1470,12 @@ async function main(): Promise<void> {
   const pattern = await detectPattern(platform);
   const agent = new AgentClient(activeProfileSegments);
   archiveAgent = agent;
+  // App-DB dumps are written by the worker (it owns the sqlite stores); hand
+  // their paths to the main-thread sync engine so it journals them and starts
+  // a round. Without this a quiet app's dump waits for an unrelated reconcile.
+  agent.onDatabaseDumps((paths) => {
+    void syncHandle?.engine.noteMutation(paths);
+  });
   // The boot-time reconnect ran before the worker existed; attach its tail now.
   if (serverConnection) attachLogStream(serverConnection);
 

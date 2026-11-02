@@ -62,6 +62,7 @@
     "test:ai-claim": "tsx scripts/ai-claim-test.ts",
     "test:sqlite": "tsx scripts/sqlite-tools-test.ts",
     "test:db-sync": "tsx scripts/db-sync-test.ts",
+    "test:app-store": "tsx scripts/app-store-test.ts",
     "test:peer-log": "tsx scripts/peer-log-test.ts",
     "test:browser-sql-guard": "tsx scripts/browser-sql-guard-test.ts",
     "test:exa-browser-wire": "tsx scripts/exa-browser-wire-test.ts",

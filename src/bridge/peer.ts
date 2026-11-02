@@ -19,6 +19,7 @@ import { buildHashmap, type Hashmap } from "../../web/src/sync/hashmap.js";
 import { chunkedPeer } from "../../web/src/sync/chunking.js";
 import { controlEnvelope, controlPeer } from "../../web/src/sync/control-peer.js";
 import { pairingPhrase } from "../../web/src/sync/sas.js";
+import { applyDatabaseDumps, isDatabaseDumpPath } from "../../web/src/db-sync.js";
 import { createNodePlatform } from "../platform/node.js";
 import { ShellTools } from "../tools/shell.js";
 import { Mailbox, type MailboxChannel, type SignalEntry } from "./mailbox.js";
@@ -580,8 +581,23 @@ export class PeerSession {
     const platform = createNodePlatform(folder, this.capabilities.exec);
     this.engine = new SyncEngine(platform, channelPeerId(this.profile), {
       journalRoot: peerJournalDir(this.profile),
+      // The tab no longer sends the raw .db (hashmap excludes it); a delivered
+      // dump is replayed here so the mirror's DBs stay usable by desktop SQL.
+      onApplied: (paths, previous) => {
+        if (!paths.some(isDatabaseDumpPath)) return undefined;
+        const baseline: Record<string, string> = {};
+        for (const [path, hash] of Object.entries(previous)) {
+          if (isDatabaseDumpPath(path)) baseline[path.slice("db/".length, -".sql".length)] = hash;
+        }
+        return applyDatabaseDumps(platform, { applyClean: true, previous: baseline }).then(
+          () => undefined,
+        );
+      },
     });
     this.known = await buildHashmap(platform, platform.workspaceRoot);
+    // Materialize app DBs from the dumps already in the mirror: the raw .db
+    // is no longer a synced file, and a fresh attach may have no DB yet.
+    await applyDatabaseDumps(platform).catch(() => undefined);
     this.engine.onState((state: SyncState) => this.emit("sync", { status: state.status, detail: state.detail }));
     if (this.link) this.engine.attach(this.link);
     this.onReady?.(this);

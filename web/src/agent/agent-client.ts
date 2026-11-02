@@ -68,7 +68,9 @@ export class AgentClient {
   private opsHandler: ((command: string, args: string[]) => Promise<string>) | null = null;
   private opsConfig: { enabled: boolean; allow: string[] } = { enabled: false, allow: [] };
   private probePending = new Map<number, { resolve: (value: string) => void; reject: (error: Error) => void }>();
+  private dbPending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private eventSubs = new Set<(event: unknown) => void>();
+  private dumpSubs = new Set<(paths: string[]) => void>();
 
   constructor(opfsPrefix: readonly string[] = []) {
     this.worker = new Worker(new URL("./agent-worker.ts", import.meta.url), {
@@ -108,6 +110,7 @@ export class AgentClient {
         ok?: boolean;
         stopped?: boolean;
         row?: unknown;
+        paths?: unknown;
         mode?: "resumed" | "restored" | "fresh";
       };
       if (msg.type === "ops-probe-result") {
@@ -137,6 +140,25 @@ export class AgentClient {
             /* an observer must not break the turn */
           }
         }
+        return;
+      }
+      if (msg.type === "db-dumps-written") {
+        const paths = Array.isArray(msg.paths) ? msg.paths.map(String) : [];
+        for (const sub of this.dumpSubs) {
+          try {
+            sub(paths);
+          } catch {
+            /* an observer must not break the turn */
+          }
+        }
+        return;
+      }
+      if (msg.type === "db-apply-result") {
+        const pending = this.dbPending.get(msg.id);
+        if (!pending) return;
+        this.dbPending.delete(msg.id);
+        if (msg.error) pending.reject(new Error(msg.error));
+        else pending.resolve(msg.result);
         return;
       }
       const p = this.pending.get(msg.id);
@@ -172,6 +194,8 @@ export class AgentClient {
       const err = new Error(`agent worker failed: ${ev.message}`);
       for (const p of this.pending.values()) p.reject(err);
       this.pending.clear();
+      for (const p of this.dbPending.values()) p.reject(err);
+      this.dbPending.clear();
     };
   }
 
@@ -189,6 +213,35 @@ export class AgentClient {
   onEngineEvent(handler: (event: unknown) => void): () => void {
     this.eventSubs.add(handler);
     return () => this.eventSubs.delete(handler);
+  }
+
+  /**
+   * Observe `db/<name>.db.sql` dumps the worker wrote (after a committed app-DB
+   * write). The main thread's sync engine journals these paths and starts a
+   * round; the worker cannot reach the engine directly.
+   */
+  onDatabaseDumps(handler: (paths: string[]) => void): () => void {
+    this.dumpSubs.add(handler);
+    return () => this.dumpSubs.delete(handler);
+  }
+
+  /**
+   * Replay pending app-DB dumps through the worker's one-writer store. The
+   * sync engine calls this after it pulls a `db/*.sql` from the peer; the
+   * worker defers it while a turn is running so a cached handle is never
+   * closed under an active query.
+   */
+  applyDatabaseDumps(opts: { applyClean?: boolean; previous?: Record<string, string> } = {}): Promise<unknown> {
+    const id = this.nextId++;
+    return new Promise<unknown>((resolve, reject) => {
+      this.dbPending.set(id, { resolve, reject });
+      this.worker.postMessage({
+        id,
+        type: "db-apply",
+        applyClean: opts.applyClean === true,
+        previous: opts.previous ?? {},
+      });
+    });
   }
 
   /** Tell the worker which commands should go to the desktop. */

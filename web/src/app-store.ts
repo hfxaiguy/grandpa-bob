@@ -51,6 +51,13 @@ declare global {
 /**
  * A store over a target's `Platform.sqlite`. Writable handles are cached by
  * name; a read-only handle is opened per request and closed by the caller.
+ *
+ * The writable wrapper resolves its handle by NAME on every call instead of
+ * closing over one connection. `close(name)` (used by the dump replay path) can
+ * therefore invalidate the handle while app modules still hold the wrapper
+ * `open()` returned; their next call reopens from the freshly applied file
+ * rather than using a dead handle. One writer per file per store is preserved
+ * because `writers` holds at most one promise.
  */
 export function createAppStore(platform: Platform): AppStore {
   const writers = new Map<string, Promise<SqliteDatabase>>();
@@ -61,17 +68,64 @@ export function createAppStore(platform: Platform): AppStore {
     }
   }
 
-  function wrap(name: string, raw: SqliteDatabase, readOnly: boolean): AppDatabase {
-    const dirty = async (): Promise<void> => {
-      if (!readOnly) await markDatabaseDirty(platform, name);
-    };
+  function dirty(name: string): Promise<void> {
+    return markDatabaseDirty(platform, name);
+  }
 
+  /** The cached writable connection for `name`, opened on first use. */
+  function openWriter(name: string): Promise<SqliteDatabase> {
+    let pending = writers.get(name);
+    if (!pending) {
+      const abs = platform.path.join(platform.workspaceRoot, name);
+      pending = platform.sqlite.open(abs, { readOnly: false });
+      writers.set(name, pending);
+      pending.catch(() => {
+        if (writers.get(name) === pending) writers.delete(name);
+      });
+    }
+    return pending;
+  }
+
+  async function closeWriter(name: string): Promise<void> {
+    const pending = writers.get(name);
+    writers.delete(name);
+    if (!pending) return;
+    let db: SqliteDatabase;
+    try {
+      db = await pending;
+    } catch {
+      return; // the open failed; nothing was cached to close
+    }
+    // A persist failure here is real: the caller (the dump replay) must not
+    // record the baseline as if the applied image had reached disk.
+    await db.close();
+  }
+
+  function wrapReadOnly(raw: SqliteDatabase): AppDatabase {
+    const wrapStatement = (stmt: SqliteStatement): AppStatement => ({
+      all: (...params) => stmt.all(...params),
+      get: (...params) => stmt.get(...params),
+      run: async (...params) => stmt.run(...params),
+      columns: () => stmt.columns(),
+    });
+    return {
+      async prepare(sql) {
+        return wrapStatement(await raw.prepare(sql));
+      },
+      async exec(sql) {
+        await raw.exec(sql);
+      },
+      close: () => raw.close(),
+    };
+  }
+
+  function wrapWriter(name: string): AppDatabase {
     const wrapStatement = (stmt: SqliteStatement): AppStatement => ({
       all: (...params) => stmt.all(...params),
       get: (...params) => stmt.get(...params),
       run: async (...params) => {
         const result = await stmt.run(...params);
-        await dirty();
+        await dirty(name);
         return result;
       },
       columns: () => stmt.columns(),
@@ -79,53 +133,32 @@ export function createAppStore(platform: Platform): AppStore {
 
     return {
       async prepare(sql) {
-        return wrapStatement(await raw.prepare(sql));
+        return wrapStatement(await (await openWriter(name)).prepare(sql));
       },
       async exec(sql) {
-        await raw.exec(sql);
-        await dirty();
+        await (await openWriter(name)).exec(sql);
+        await dirty(name);
       },
-      close: () => raw.close(),
+      close: () => closeWriter(name),
     };
   }
 
   return {
     async open(name, opts = {}) {
       assertName(name);
-      const readOnly = opts.readOnly === true;
-      if (readOnly) {
+      if (opts.readOnly === true) {
         const abs = platform.path.join(platform.workspaceRoot, name);
-        return wrap(name, await platform.sqlite.open(abs, { readOnly: true }), true);
+        return wrapReadOnly(await platform.sqlite.open(abs, { readOnly: true }));
       }
-      let pending = writers.get(name);
-      if (!pending) {
-        const abs = platform.path.join(platform.workspaceRoot, name);
-        pending = platform.sqlite.open(abs, { readOnly: false });
-        writers.set(name, pending);
-      }
-      try {
-        return wrap(name, await pending, false);
-      } catch (err) {
-        writers.delete(name);
-        throw err;
-      }
+      // Surface an unreadable/corrupt DB here, where the caller expects the
+      // open to fail, but hand back a name-resolving wrapper (see above).
+      await openWriter(name);
+      return wrapWriter(name);
     },
 
     async close(name?: string) {
       const names = name ? [name] : [...writers.keys()];
-      const pending = names.map((n) => {
-        const p = writers.get(n);
-        writers.delete(n);
-        return p;
-      });
-      for (const p of pending) {
-        if (!p) continue;
-        try {
-          await (await p).close();
-        } catch {
-          /* already closed */
-        }
-      }
+      for (const n of names) await closeWriter(n);
     },
   };
 }

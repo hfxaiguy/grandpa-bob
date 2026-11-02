@@ -12,7 +12,8 @@ import { parseOpfsPrefix, setOpfsRootSegments } from "../platform/opfs-root";
 import type { Platform } from "../platform/types";
 import { browserTools, STUB_TOOL_NAMES } from "./browser-tools";
 import { browserCdpTools } from "./browser-cdp";
-import { createAppStore } from "../app-store";
+import { createAppStore, type AppStore } from "../app-store";
+import { applyDatabaseDumps, onDatabaseDumpsWritten } from "../db-sync";
 import { setActiveFs, setFsIndex } from "../shims/node-fs-promises";
 import { listAppTrees } from "../tree-sources";
 import { makeTreeContext } from "../tree-context";
@@ -102,6 +103,35 @@ function wrapShellWithOps(platform: Platform): Platform {
  * session's previous checkpoint survives the stop.
  */
 let activeStop: { id: number; ctrl: AbortController } | null = null;
+/** A dump arrived while a turn was running; replay it once the turn ends. */
+let pendingDbApply = false;
+/** Whether the deferred replay came from the peer path (clean replicas). */
+let pendingDbApplyClean = false;
+/** Pre-replacement dump hashes carried by deferred peer applies, by DB name. */
+let pendingDbApplyPrevious: Record<string, string> = {};
+/** Serializes dump replays so two rounds cannot open the same DB together. */
+let dbApplyChain: Promise<unknown> = Promise.resolve();
+
+function queueDatabaseApply(
+  applyClean = false,
+  previous: Record<string, string> = {},
+): Promise<unknown> {
+  const run = dbApplyChain.then(async () => {
+    if (activeStop) {
+      pendingDbApply = true;
+      pendingDbApplyClean ||= applyClean;
+      // The local DB matches the OLDEST un-applied delivery's previous image;
+      // later deliveries replaced the file on disk. Keep the earliest hash so
+      // the clean check is against the state the DB actually has.
+      pendingDbApplyPrevious = { ...previous, ...pendingDbApplyPrevious };
+      return null;
+    }
+    const platform = await getPlatform();
+    return applyDatabaseDumps(platform, { store: appStoreFor(platform), applyClean, previous });
+  });
+  dbApplyChain = run.catch(() => {});
+  return run;
+}
 const nativeFetch = globalThis.fetch.bind(globalThis);
 globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const signal = activeStop?.ctrl.signal;
@@ -124,9 +154,34 @@ async function getPlatform(): Promise<Platform> {
   return platform;
 }
 
+/**
+ * One app store per worker (not per run). The store caches the single writable
+ * handle per file, and a fresh store each turn left the previous handle open in
+ * the sqlite worker — two in-memory copies of `contacts.db` that could each
+ * export over the other. The platform is stable for the worker's life.
+ */
+let appStore: AppStore | null = null;
+let appStorePlatform: Platform | null = null;
+
+function appStoreFor(platform: Platform): AppStore {
+  if (!appStore || appStorePlatform !== platform) {
+    appStore = createAppStore(platform);
+    appStorePlatform = platform;
+  }
+  return appStore;
+}
+
 function post(message: unknown): void {
   (self as unknown as Worker).postMessage(message);
 }
+
+// A dump written after an app-DB write is ordinary workspace content: tell the
+// main thread so its sync engine journals the dump path and starts a round.
+// Without this the worker's dump would sit unsynced until some unrelated
+// reconcile picked it up.
+onDatabaseDumpsWritten((paths) => {
+  if (paths.length) post({ type: "db-dumps-written", paths });
+});
 
 /**
  * The registry a tree should see: each overridden role (e.g. "strong")
@@ -541,7 +596,8 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   // One store for app code and the SQL tools below: they must share the same
   // cached writable handle per file or two connections can allocate the same
   // row id over the browser's OPFS seam (sqlite_sequence snapshots diverge).
-  const appStore = createAppStore(platform);
+  // It is per worker, not per run: see appStoreFor().
+  const appStore = appStoreFor(platform);
   globalThis.__BOB_STORE__ = appStore;
   await ready;
   throwIfStopped(signal);
@@ -776,7 +832,8 @@ self.onmessage = async (ev: MessageEvent) => {
     | { type: "ops-port"; port: MessagePort }
     | { type: "ops-config"; enabled: boolean; allow: string[] }
     | { type: "ops-result"; id: string; output?: string; error?: string }
-    | { type: "ops-probe"; id: number; command: string; args?: string[] };
+    | { type: "ops-probe"; id: number; command: string; args?: string[] }
+    | { type: "db-apply"; id: number; applyClean?: boolean; previous?: Record<string, string> };
   if (msg.type === "ops-port") {
     const port = (msg as { port: MessagePort }).port;
     opsPort = port;
@@ -823,6 +880,36 @@ self.onmessage = async (ev: MessageEvent) => {
     })();
     return;
   }
+  if (msg.type === "db-apply") {
+    const apply = msg as {
+      id: number;
+      applyClean?: boolean;
+      previous?: Record<string, unknown>;
+    };
+    const previous: Record<string, string> = {};
+    if (apply.previous && typeof apply.previous === "object" && !Array.isArray(apply.previous)) {
+      for (const [name, hash] of Object.entries(apply.previous)) {
+        if (typeof hash === "string") previous[name] = hash;
+      }
+    }
+    void (async () => {
+      try {
+        // Apply through the worker's one store: it owns the cached writable
+        // handle, so a dump replay must close that handle first (db-sync does)
+        // rather than opening a second in-memory copy. Mid-turn the replay is
+        // deferred (closing a handle under an active query would break it).
+        const result = await queueDatabaseApply(apply.applyClean === true, previous);
+        post({ id: apply.id, type: "db-apply-result", result });
+      } catch (err) {
+        post({
+          id: apply.id,
+          type: "db-apply-result",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+    return;
+  }
   if (msg.type === "stop") {
     if (
       activeStop &&
@@ -853,6 +940,16 @@ self.onmessage = async (ev: MessageEvent) => {
     });
   } finally {
     if (activeStop?.ctrl === ctrl) activeStop = null;
+    // A dump that arrived mid-turn was deferred so it could not close a live
+    // handle; replay it now that the tree has finished.
+    if (pendingDbApply) {
+      const clean = pendingDbApplyClean;
+      const previous = pendingDbApplyPrevious;
+      pendingDbApply = false;
+      pendingDbApplyClean = false;
+      pendingDbApplyPrevious = {};
+      void queueDatabaseApply(clean, previous);
+    }
   }
 };
 

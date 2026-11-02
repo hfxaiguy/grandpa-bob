@@ -480,8 +480,10 @@ them (Sync… → Pair…). The pair runs peer-to-peer over a WebRTC data channe
 same-origin tabs need no pairing at all. Conflict policy: the per-path
 Lamport stamp decides, ties break deterministically by replica id, and the
 loser's bytes are preserved as `<path>.conflict-<timestamp>` — never silently
-dropped. `logs/`, `.git/`, `.gpb-*` and `assets/inbox/` never sync (git
-history and run logs stay per-replica).
+dropped. `logs/`, `.git/`, `.gpb-*`, `assets/inbox/`, and raw `*.db` files
+(plus their `-journal`/`-wal`/`-shm` sidecars) never sync — app databases
+travel as the `db/*.db.sql` dumps instead (git history and run logs stay
+per-replica).
 
 The old LAN git-daemon path (bare repo + `git://` pull/push on the phone) is
 retired for the app: it remains possible by hand against a profile's mirror

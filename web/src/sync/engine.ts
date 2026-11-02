@@ -118,6 +118,9 @@ export class SyncEngine {
   private state: SyncState = { status: "idle", detail: "", conflicts: [], lastSyncAt: null };
   private listeners = new Set<StateListener>();
   private journal: Journal | null = null;
+  /** Called after remote writes/deletes are applied (workspace-relative paths).
+   *  `previous` maps each replaced path to the hash of the bytes it replaced. */
+  private onApplied?: (paths: string[], previous: Record<string, string>) => void | Promise<void>;
   /** Outstanding file requests by token. */
   private pendingFile = new Map<string, {
     peer: SyncPeer;
@@ -134,10 +137,18 @@ export class SyncEngine {
 
   readonly id: string;
 
-  constructor(platform: Platform, peerId: string, opts: { journalRoot?: string } = {}) {
+  constructor(
+    platform: Platform,
+    peerId: string,
+    opts: {
+      journalRoot?: string;
+      onApplied?: (paths: string[], previous: Record<string, string>) => void | Promise<void>;
+    } = {},
+  ) {
     this.platform = platform;
     this.id = peerId;
     this.journalRoot = opts.journalRoot;
+    this.onApplied = opts.onApplied;
   }
 
   /** The engine's journal (loads once per engine instance). */
@@ -319,10 +330,12 @@ export class SyncEngine {
     theirLamports: Record<string, number>,
     theirDeletes: Record<string, number>,
     theirId: string,
-  ): Promise<void> {
+  ): Promise<{ applied: string[]; previous: Record<string, string> }> {
     const journal = await this.j();
     const conflicts: string[] = [];
     const pull: string[] = [];
+    const applied: string[] = [];
+    const previous: Record<string, string> = {};
 
     // Tombstones travel explicitly (a map lists existing files only). Their
     // delete wins when its lamport beats my last write; my newer write wins
@@ -362,12 +375,15 @@ export class SyncEngine {
       if (!fetched) continue;
       if (fetched.base64 === "") {
         await this.applyRemoteDelete(path, fetched.lamport);
+        applied.push(path);
         continue;
       }
       // Hash-verified: a response that no longer matches the map snapshot is
       // stale (the peer moved on) — discard it; the next round re-decides.
       if (expected && hashOfBase64(this.platform, fetched.base64) !== expected) continue;
-      await this.applyRemoteWrite(path, fetched.base64, fetched.lamport);
+      const before = await this.applyRemoteWrite(path, fetched.base64, fetched.lamport);
+      if (before != null) previous[path] = hashOfBase64(this.platform, before);
+      applied.push(path);
     }
     if (conflicts.length) {
       const fresh = conflicts.filter((c) => !this.state.conflicts.includes(c));
@@ -382,11 +398,13 @@ export class SyncEngine {
         }, 150);
       }
     }
+    return { applied, previous };
   }
 
   /** Write the peer's bytes locally under the ORIGIN's lamport; a differing
-   *  local loser becomes a conflict copy (a local file, stamped locally). */
-  private async applyRemoteWrite(path: string, base64: string, originLamport: number): Promise<void> {
+   *  local loser becomes a conflict copy (a local file, stamped locally).
+   *  Returns the local bytes that were replaced (null when the path was absent). */
+  private async applyRemoteWrite(path: string, base64: string, originLamport: number): Promise<string | null> {
     const journal = await this.j();
     const hash = hashOfBase64(this.platform, base64);
     const localB64 = await readBase64(this.platform, path).catch(() => null);
@@ -397,6 +415,7 @@ export class SyncEngine {
     }
     await writeBase64(this.platform, path, base64);
     journal.recordRemoteOp({ path, op: "write", hash, lamport: originLamport });
+    return localB64;
   }
 
   /** Ask the peer for one file (content, "" = tombstone there; null on
@@ -532,13 +551,30 @@ export class SyncEngine {
       // the two diffs are idempotent (each side pulls only what it lacks or
       // lost), so there is no push-crossing to guard against.
       const mine = (await this.myMap()).hashmap;
-      await this.applyDifference(peer, mine, envelope.hashmap, theirLamports, envelope.deletes ?? {}, envelope.from);
+      const { applied, previous } = await this.applyDifference(
+        peer,
+        mine,
+        envelope.hashmap,
+        theirLamports,
+        envelope.deletes ?? {},
+        envelope.from,
+      );
       this.setState({
         status: "syncing",
         detail: "in sync",
         lastSyncAt: new Date().toISOString(),
       });
       await journal.persist();
+      if (applied.length && this.onApplied) {
+        // A delivered app-DB dump is a file on the wire but a SQL replay
+        // locally; let the host replay it (the worker may defer while a turn
+        // owns the DB, in which case the caller returns immediately).
+        try {
+          await this.onApplied(applied, previous);
+        } catch (err) {
+          console.warn("[sync] applied-path handler failed:", err);
+        }
+      }
       if (shouldReply) {
         // Reply after the diff: the map advertises the state this side just
         // applied, and the initiator's completion clock means "converged",

@@ -29,7 +29,7 @@ import {
   claimFreeKey,
 } from "../ai-claim";
 import { refTargetFromRow } from "../ref-target";
-import { applyDatabaseDumps, withSyncLock, writeDatabaseDumps } from "../db-sync";
+import { withSyncLock, writeDatabaseDumps } from "../db-sync";
 import { AgentStoppedError, isAgentStopped } from "../stop-error";
 import type { LogRow, SessionSummary } from "../agent/log-store";
 
@@ -1395,7 +1395,9 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
           const out = platform.git.pull
             ? await platform.git.pull(url, branch)
             : await platform.git.fetch?.(url);
-          const dbSync = await applyDatabaseDumps(platform).catch(() => null);
+          // Apply in the agent worker, where the one writable handle per DB
+          // lives; a main-thread open would be a second in-memory copy.
+          const dbSync = await agent.applyDatabaseDumps().catch(() => null);
           return { status: 200, body: { ok: true, output: typeof out === "string" ? out : JSON.stringify(out ?? {}), dbSync } };
         }
         const out = await withSyncLock(platform, { remote: url }, async () => {

@@ -256,9 +256,27 @@ function writeAllowed(rec: DbRecord): boolean {
   return !rec.readOnly;
 }
 
+/**
+ * Is a SQL transaction open on this connection? A whole-file export while a
+ * transaction is open would write uncommitted pages to OPFS, so the journal
+ * (and the rollback on a crash) would be defeated. Only export a committed
+ * state; apps may issue BEGIN and COMMIT across several statements, and the
+ * contacts upsert does exactly that.
+ */
+function inTransaction(rec: DbRecord): boolean {
+  try {
+    return sqlite3.capi.sqlite3_get_autocommit(rec.db.pointer) === 0;
+  } catch {
+    return false;
+  }
+}
+
 async function persist(rec: DbRecord): Promise<void> {
   // A streaming database writes its own pages; a read-only one never persists.
   if (rec.readOnly || rec.scratch || rec.stream) return;
+  // Mid-transaction: keep the change in memory. The COMMIT (or the close that
+  // rolls back) is the point where the file image is consistent.
+  if (inTransaction(rec)) return;
   const bytes = sqlite3.capi.sqlite3_js_db_export(rec.db.pointer) as Uint8Array;
   try {
     const handle = await fileHandleFor(rec.path);

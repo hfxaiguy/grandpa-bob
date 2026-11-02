@@ -5,8 +5,8 @@
  * history), the run log (`logs/` — the OPFS run log lives under `.gpb-runlog`
  * which is not even a plain file, and the logical log travels as an event
  * stream over a paired channel instead, see `web/src/peer-log.ts`), the sync
- * journal itself (`.gpb-sync/`), and uploaded attachment bins
- * (`assets/inbox/`).
+ * journal itself (`.gpb-sync/`), uploaded attachment bins (`assets/inbox/`),
+ * and SQLite databases/sidecars (they travel as SQL dumps, see db-sync.ts).
  */
 import type { Platform } from "../platform/types";
 
@@ -16,6 +16,15 @@ const EXCLUDED = [
   /^logs\//,
   /^assets\/inbox\//,
   /(^|\/)\.gpb-sync\//,
+  // SQLite databases are live files, not workspace documents. A browser app
+  // DB is a whole-file engine (sqlite-wasm loads it into memory and exports
+  // the whole image after each commit), so a raw peer copy can race that
+  // persist and has no version history to recover from. App DBs travel as
+  // their deterministic SQL dumps under db/ instead (db-sync.ts); a raw copy
+  // of a DB that is open (or mid-transaction) can be torn, and the receiving
+  // side has no journal to repair it. Sidecars are runtime state, not data.
+  /^[^/]+\.db$/,
+  /\.db-(?:journal|wal|shm)$/,
   // Build/dependency trees are machine-local; syncing them would flood the
   // engine (and a mirror folder after `npm install`/`cargo build`).
   /(^|\/)node_modules\//,
@@ -65,7 +74,7 @@ export async function buildHashmap(platform: Platform, root: string): Promise<Ha
   return map;
 }
 
-function hashBytes(platform: Platform, bytes: Uint8Array): string {
+export function hashBytes(platform: Platform, bytes: Uint8Array): string {
   // sha256hex hashes text; hash the binary via its base64-safe latin1 form.
   let binary = "";
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);

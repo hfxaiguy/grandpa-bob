@@ -8,13 +8,17 @@ Two different mechanisms share the word "sync":
 
 | | Git | Replica sync (this document's main subject) |
 |---|---|---|
-| What moves | commits, plus SQL dumps of app DBs | workspace files, peer-to-peer |
+| What moves | commits, plus SQL dumps of app DBs | workspace files and the `db/*.db.sql` dumps, peer-to-peer |
 | Where | git remote (push/pull, 5-min auto-sync) | WebRTC DataChannel (cross-device) or BroadcastChannel (same-origin tabs) |
 | History | yes — per-write commits, agent `git_*` tools | no — the journal is not a history |
 | Server sees | whatever your git remote sees | nothing but SDP/ICE; no workspace bytes |
 
 Git history stays **per replica**: `.git/`, `logs/`, `.gpb-*` and
-`assets/inbox/` are excluded from replica sync.
+`assets/inbox/` are excluded from replica sync. Root `*.db` files and their
+`-journal`/`-wal`/`-shm` sidecars are not copied either: an app database is a
+live whole-file sqlite-wasm image in the browser, so replicas exchange its
+deterministic dump from `db/` instead and replay it locally (see
+`web/src/db-sync.ts`).
 
 ## 1. Where a workspace lives
 
@@ -179,7 +183,7 @@ A pair is **two independent copies**, not a cache hierarchy:
 - No **signaling/relay service** receives workspace bytes (SDP/ICE only). A
   paired desktop/server is a peer endpoint whose mirror folder deliberately
   holds a copy. Git remotes, if configured, are a separate optional
-  backup/versioning path and still carry DB dumps under `logs/scratch` for
+  backup/versioning path and still carry DB dumps under `db/` for
   cross-device database continuity.
 
 ## 6. Desktop/server peer

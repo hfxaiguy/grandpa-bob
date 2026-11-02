@@ -38,6 +38,8 @@ export interface AutoSyncOptions {
   intervalMs?: number;
   /** True while an agent turn is running — sync waits for a quiet moment. */
   isBusy?: () => boolean;
+  /** Host hook: replay dumps through its one-writer store (the browser worker). */
+  applyDumps?: () => Promise<unknown>;
   log?: (message: string, result?: AutoSyncResult) => void;
 }
 
@@ -83,7 +85,11 @@ export function createAutoSync(opts: AutoSyncOptions): AutoSync {
           return result;
         }
       }
-      const applied = await applyDatabaseDumps(opts.platform).catch(() => null);
+      const applied = await (opts.applyDumps
+        ? opts.applyDumps()
+        : applyDatabaseDumps(opts.platform)
+      ).catch(() => null);
+      const appliedCount = (applied as { applied?: unknown[] } | null)?.applied?.length ?? 0;
 
       // 2) dump + commit + push under the lock (node: real ref; browser: mutex).
       const out = await withSyncLock(opts.platform, { remote }, async () => {
@@ -98,7 +104,7 @@ export function createAutoSync(opts: AutoSyncOptions): AutoSync {
 
       const result: AutoSyncResult = {
         pulled,
-        applied: applied?.applied.length ?? 0,
+        applied: appliedCount,
         dumps: out.written.length,
         committed: out.committed,
         pushed: !!gitPush,

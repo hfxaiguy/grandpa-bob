@@ -2,6 +2,72 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-02 — app databases travel as dumps, never as raw files
+
+The peer engine copied a root `contacts.db` byte-for-byte while the browser's
+sqlite-wasm adapter also owns that file as a whole-file image (load into memory,
+export the whole database after each commit). Two writers plus a whole-file
+copy is how a database gets torn: an interrupted OPFS writable leaves a partial
+image, a copy taken mid-transaction has no journal to roll it back, and nothing
+on the receiving side validates it. `contacts.db` is now excluded from the peer
+hashmap along with `*.db-journal` / `*.db-wal` / `*.db-shm`; the deterministic
+`db/<name>.db.sql` dump is the transport, and the receiver replays it.
+
+- `web/src/sync/hashmap.ts`: root `*.db` and every SQLite sidecar are excluded.
+  The dump files under `db/` still sync (and still go through git when a remote
+  is configured).
+- Dumps are now produced shortly after a *committed* app-DB write instead of
+  waiting for an unrelated file-tool commit or the five-minute auto-sync tick
+  (`markDatabaseDirty` → debounced `flushDirtyDumps`). The worker forwards the
+  written paths to the main thread, whose sync engine journals them and starts
+  a round.
+- `web/src/platform/sqlite-worker.ts`: a whole-file export no longer runs while
+  a SQL transaction is open. Apps issue `BEGIN`/`COMMIT` across statements (the
+  contacts upsert does), and exporting mid-transaction wrote uncommitted pages
+  to OPFS; the journal could not roll them back. The file advances at COMMIT,
+  and a close with an open transaction rolls back without exporting.
+- `web/src/db-sync.ts`: a delivered dump is replayed into an existing DB when
+  the replica is **clean** — a per-replica baseline (`logs/scratch/db-baseline.json`,
+  never synced) records the last dump this replica wrote or applied, and the
+  engine also hands over the hash of the dump its delivery just replaced (so
+  the first delivery after an upgrade is not a false conflict). Replays go
+  through the host's one-writer store (the browser worker's `AppStore`),
+  closing/reloading the cached handle; a dump that arrives mid-turn is deferred
+  until the turn ends.
+- The browser agent worker keeps one `AppStore` per worker instead of creating
+  one per run — the old stores' cached writable handles were never closed, so
+  multiple in-memory copies of `contacts.db` could each export over the other.
+  Its writable wrapper now resolves the handle by name, so the dump replay's
+  `close` cannot leave an app module holding a dead connection.
+- The desktop bridge materializes the mirror's DBs from the dumps at attach and
+  applies a delivered dump through SQLite (not a raw file replacement).
+- Docs: `README.md` and `docs/pairing-and-sync.md` name the new exclusion and
+  the `db/` location (the old note said `logs/scratch`).
+
+Tests: `npm run test:db-sync` (clean peer apply, conservative git conflict,
+local-edit conflict, canonical dump round-trip), `npm run test:app-store`
+(a closed cached handle reopens by name after a replay), `npm run test:sync`
+(root `.db`/sidecar exclusion, delivery hook, and a delivered dump replayed
+into the peer), `npm run test:sqlite`, `npm run test:browser-sql-guard`,
+`npm run typecheck`, `npm run build:web`.
+
+## 2026-11-02 — the mirror clock advances after a round this side starts
+
+The toolbar's **desktop: synced HH:MM** comes from `SyncState.lastSyncAt`,
+which was only set when a map *arrived*. A tab that pushed its map on every
+mutation therefore showed the time of the last map the desktop happened to
+send, even while every change it made landed on the mirror.
+
+`reconcile()` now asks for a completion map (`wantReply`). The peer answers
+after it has applied the diff (`reply: true`, never answered again), so the
+initiator's clock means "the peer applied", not "my map left the wire". A
+`reconcileAndWait` barrier now also resolves only after the peer's replay, and
+`ownRounds` (bounded) mutes late or echoed barrier answers. Old peers ignore
+`wantReply`, so a mixed pair keeps today's behavior rather than ping-ponging.
+
+Tests: `npm run test:sync` covers the clock advance; `npm run typecheck`.
+
+
 ## 2026-11-02 — free BobSwap AI key on first load
 
 The standalone browser workspace ships `v4`/`v4.1` Neuralwatt slots, but a new

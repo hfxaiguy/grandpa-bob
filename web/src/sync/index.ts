@@ -60,9 +60,17 @@ export function activeSync(): SyncHandle | null {
   return active;
 }
 
-export async function startSync(platform: Platform, opts: { id: string; channelName: string }): Promise<SyncHandle> {
+export async function startSync(
+  platform: Platform,
+  opts: {
+    id: string;
+    channelName: string;
+    /** Called after remote paths are applied (e.g. replay a delivered DB dump). */
+    onApplied?: (paths: string[], previous: Record<string, string>) => void | Promise<void>;
+  },
+): Promise<SyncHandle> {
   if (active) active.unpair();
-  const engine = new SyncEngine(platform, opts.id);
+  const engine = new SyncEngine(platform, opts.id, { onApplied: opts.onApplied });
 
   // Same-origin peer: always attached.
   const bc = broadcastPeer(opts.channelName, engine);

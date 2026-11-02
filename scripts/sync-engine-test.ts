@@ -17,6 +17,8 @@ import path from "node:path";
 
 import { createNodePlatform } from "../src/platform/node.js";
 import { SyncEngine, type SyncEnvelope, type SyncPeer } from "../web/src/sync/engine";
+import { buildHashmap } from "../web/src/sync/hashmap";
+import { applyDatabaseDumps, isDatabaseDumpPath, writeDatabaseDumps } from "../web/src/db-sync";
 import { Journal } from "../web/src/sync/journal";
 import { pairingPhrase, toIceServers } from "../web/src/sync/transport-webrtc";
 
@@ -63,7 +65,17 @@ const platformA = createNodePlatform(dirA);
 const platformB = createNodePlatform(dirB);
 
 const engineA = new SyncEngine(platformA, "replica-a");
-const engineB = new SyncEngine(platformB, "replica-b");
+const appliedOnB: string[][] = [];
+const engineB = new SyncEngine(platformB, "replica-b", {
+  onApplied: async (paths) => {
+    appliedOnB.push(paths);
+    if (paths.some(isDatabaseDumpPath)) {
+      // Exercise the receiving half of the dump transport: the file arrives as
+      // a workspace file, then the host replays it into the local DB.
+      await applyDatabaseDumps(platformB, { applyClean: true });
+    }
+  },
+});
 
 const [wireA, wireB] = FakePeer.pair("wire-a", "wire-b");
 engineA.attach(wireA);
@@ -196,6 +208,44 @@ try {
   await waitFor(() => fileGone(platformB, "todo.md"), "A's delete reaches B");
   const gone = await platformB.fs.stat(abs(platformB, "todo.md")).then(() => true).catch(() => false);
   assert.equal(gone, false, "A's delete reached B");
+
+  // ── SQLite files never travel as binaries; their dumps do ─────────────
+  // A root `*.db` is live local state (the browser exports the whole file
+  // after each commit), so copying it can race that write. App DBs travel as
+  // their SQL dumps; sidecars are runtime state.
+  await platformA.fs.writeFile(abs(platformA, "local.db"), "A db bytes");
+  await platformB.fs.writeFile(abs(platformB, "local.db"), "B db bytes");
+  await platformA.fs.writeFile(abs(platformA, "local.db-wal"), "wal");
+  const aDb = await platformA.sqlite.open(abs(platformA, "contacts.db"), { readOnly: false });
+  await aDb.exec("CREATE TABLE people (name TEXT); INSERT INTO people (name) VALUES ('Ada');");
+  await aDb.close();
+  await writeDatabaseDumps(platformA);
+  const dumpText = await readFile(abs(platformA, "db/contacts.db.sql"), "utf8");
+  const syncMap = await buildHashmap(platformA, platformA.workspaceRoot);
+  assert.equal("contacts.db" in syncMap, false, "a root .db is not peer-synced");
+  assert.equal("local.db" in syncMap, false, "every root .db is excluded");
+  assert.equal("local.db-wal" in syncMap, false, "a SQLite sidecar is not peer-synced");
+  assert.equal("db/contacts.db.sql" in syncMap, true, "the dump still syncs");
+  await engineA.reconcile();
+  await waitFor(
+    async () => appliedOnB.some((paths) => paths.includes("db/contacts.db.sql")),
+    "B applied the delivered dump",
+  );
+  assert.equal(await readFile(abs(platformB, "local.db"), "utf8"), "B db bytes", "B's local DB was not overwritten");
+  assert.equal(
+    await readFile(abs(platformB, "db/contacts.db.sql"), "utf8"),
+    dumpText,
+    "the dump reached B",
+  );
+  const bDb = await platformB.sqlite.open(abs(platformB, "contacts.db"), { readOnly: true });
+  try {
+    const rows = (await (await bDb.prepare("SELECT name FROM people")).all()) as Array<{
+      name?: unknown;
+    }>;
+    assert.equal(String(rows[0]?.name), "Ada", "B's DB was replayed from the dump");
+  } finally {
+    await bDb.close();
+  }
 
   // ── a locally-initiated round advances this side's completion clock ───
   // The toolbar's "desktop: synced HH:MM" comes from lastSyncAt. A map this
