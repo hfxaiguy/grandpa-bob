@@ -94,6 +94,41 @@ export class FileTools {
     return `wrote ${content.length} chars to ${relPath} (commit: ${hash})`;
   }
 
+  /**
+   * Copy one file byte-for-byte. `write_file` cannot do this: its content is a
+   * JavaScript string, so binary data (SQLite databases, images, archives)
+   * would be mangled by a UTF-8 round-trip. Destinations are refused when they
+   * already exist unless `overwrite` is true, so a mistaken path cannot clobber
+   * a good file (the old copy is still recoverable from git in most cases).
+   */
+  async copyFile(from: string, to: string, overwrite = false): Promise<string> {
+    const { fs, git, path } = this.platform;
+    const src = this.resolve(from);
+    const dst = this.resolve(to);
+    if (src === dst) throw new Error("source and destination are the same path");
+    const srcStat = await fs.stat(src).catch(() => null);
+    if (!srcStat) throw new Error(`not found: ${from}`);
+    if (!srcStat.isFile()) throw new Error(`not a file: ${from} (copy_file copies files)`);
+    const dstStat = await fs.stat(dst).catch(() => null);
+    if (dstStat?.isDirectory()) throw new Error(`destination is a directory: ${to}`);
+    if (dstStat && !overwrite) {
+      throw new Error(`destination exists: ${to} (pass overwrite: true to replace it)`);
+    }
+    await fs.mkdir(path.dirname(dst), { recursive: true });
+    if (fs.copyFile) {
+      await fs.copyFile(src, dst);
+    } else {
+      // Older/ad-hoc adapters: fall back to a binary read + write, never utf8.
+      const binary = fs as unknown as { readFileBytes?: (p: string) => Promise<Uint8Array> };
+      if (!binary.readFileBytes) throw new Error("this target cannot copy files byte-for-byte");
+      await fs.writeFile(dst, await binary.readFileBytes(src));
+    }
+    const relPath = toRel(this.workspace, dst);
+    const dumps = await flushDirtyDumps(this.platform).catch(() => []);
+    const hash = await git.autoCommit([relPath, ...dumps], `agent(copy_file): ${relPath}`);
+    return `copied ${from} -> ${relPath} (commit: ${hash})`;
+  }
+
   async editFile(rel: string, oldString: string, newString: string, replaceAll = false): Promise<string> {
     if (oldString === newString) throw new Error("old_string and new_string are identical");
     const { fs, git } = this.platform;

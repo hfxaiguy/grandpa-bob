@@ -43,11 +43,41 @@ assert.equal(await files.readFile("notes/dup.txt"), "y y y");
 await files.deleteFile("notes/dup.txt");
 await assert.rejects(() => files.readFile("notes/dup.txt"), /not found/);
 
+// copy_file: copies content, commits the destination, and refuses to clobber
+await files.writeFile("notes/copy.txt", "copy me");
+await files.copyFile("notes/copy.txt", "notes/copied.txt");
+assert.equal(await files.readFile("notes/copied.txt"), "copy me");
+assert.equal(commits.at(-1)?.message, "agent(copy_file): notes/copied.txt");
+await assert.rejects(() => files.copyFile("notes/copy.txt", "notes/copied.txt"), /destination exists/);
+await files.copyFile("notes/copy.txt", "notes/copied.txt", true);
+assert.equal(await files.readFile("notes/copied.txt"), "copy me");
+
 // the workspace sandbox still rejects escapes
 await assert.rejects(() => files.writeFile("../escape.txt", "nope"), /escapes workspace/);
 await assert.rejects(() => files.readFile("../../etc/passwd"), /escapes workspace/);
 
 // independence from the Node filesystem: nothing was written under a real path
-assert.equal(commits.length, 5, "one commit per mutation");
+assert.equal(commits.length, 8, "one commit per mutation");
 
-console.log("platform-fs: FileTools runs over an in-memory Platform (adapter seam OK)");
+// ── byte fidelity on the real Node adapter ─────────────────────────────
+// The memory platform above proves the tool seam; this proves copy_file is
+// genuinely binary-safe (invalid UTF-8 bytes survive unchanged).
+import { mkdtemp, readFile as readBytes, writeFile as writeBytes, rm } from "node:fs/promises";
+import os from "node:os";
+import nodePath from "node:path";
+import { createNodePlatform } from "../src/platform/node.js";
+
+const dir = await mkdtemp(nodePath.join(os.tmpdir(), "bob-copy-"));
+try {
+  const bytes = Uint8Array.from([0x00, 0xff, 0x01, 0xfe, 0x50, 0x4b, 0x03, 0x04, 0x80, 0x00, 0x7f]);
+  await writeBytes(nodePath.join(dir, "blob.bin"), bytes);
+  const nodePlatform = createNodePlatform(dir);
+  await nodePlatform.git.ensureRepo();
+  await new FileTools(nodePlatform).copyFile("blob.bin", "blob-copy.bin");
+  const got = new Uint8Array(await readBytes(nodePath.join(dir, "blob-copy.bin")));
+  assert.deepEqual(got, bytes, "copy_file preserves every byte");
+} finally {
+  await rm(dir, { recursive: true, force: true });
+}
+
+console.log("platform-fs: FileTools runs over an in-memory Platform (adapter seam OK) and copies bytes intact");

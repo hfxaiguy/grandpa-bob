@@ -38,6 +38,22 @@ delete the file. The receive side now applies the same rule.
   `contacts.db`, a raw ops push is ignored while ordinary ops still apply, and
   an excluded file request is answered empty, not with a tombstone).
 
+## 2026-11-02 — `copy_file`: a byte-level copy for the file tools
+
+`read_file` → `write_file` round-trips through a JavaScript string, so copying
+a SQLite database or any other binary file corrupted it. The files app now has
+`copy_file({ from, to, overwrite })`, backed by a real `fs.copyFile` (Node and
+the desktop bridge) or an OPFS arrayBuffer copy in the browser. An existing
+destination is refused unless `overwrite: true`, so a mistaken path cannot
+clobber a good file without an explicit decision.
+
+- `web/src/platform/types.ts` + adapters: `FileSystem.copyFile` (Node,
+  OPFS handle-fs, memory) and a `/fs/copy` bridge route for desktop profiles.
+- `web/src/tools/files.ts` + `browser-tools.ts`: the tool, its overwrite guard,
+  and the usual git auto-commit of the destination.
+- Tool guide and files-tree prompt/README/CHANGELOG document the recovery
+  pattern: copy the damaged file aside first, then copy the good source in.
+
 ## 2026-11-02 — app databases travel as dumps, never as raw files
 
 The peer engine copied a root `contacts.db` byte-for-byte while the browser's

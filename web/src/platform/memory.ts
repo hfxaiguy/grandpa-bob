@@ -100,6 +100,16 @@ export function createMemoryFs(): FileSystem {
       }
       for (const [key, value] of moves) nodes.set(key, value);
     },
+    async copyFile(from, to) {
+      const src = normalize(from);
+      const dst = normalize(to);
+      const node = nodes.get(src);
+      if (!node) throw new Error(`not found: ${from}`);
+      if (node.type !== "file") throw new Error(`not a file: ${from}`);
+      ensureDir(parent(dst));
+      const data = typeof node.data === "string" ? node.data : node.data?.slice();
+      nodes.set(dst, { type: "file", data });
+    },
   };
 }
 

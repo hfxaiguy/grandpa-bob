@@ -470,7 +470,7 @@ telegram** posts the transcript to the linked chat and pins it.
 
 `WORKSPACE_DIR` is a git repository (auto-initialized on first start), kept outside
 the project directory so its history is completely separate from the harness's own.
-Every `write_file` / `edit_file` / `delete_file` is immediately committed.
+Every `write_file` / `edit_file` / `copy_file` / `delete_file` is immediately committed.
 See the FAQ below for exactly how that works.
 
 ## Workspace sync (desktop ↔ phone)

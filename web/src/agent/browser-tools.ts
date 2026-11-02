@@ -43,9 +43,11 @@ export interface BrowserToolOptions {
   flushLog?: () => Promise<void> | void;
   /**
    * The worker's app-database store. The SQL tools reuse its cached writable
-   * handle so raw SQL and app code share one connection per file.
+   * handle so raw SQL and app code share one connection per file. `close` is
+   * needed by copy_file: replacing a live `.db` file while a cached writer is
+   * open would let that writer export its old image over the new bytes.
    */
-  store?: Pick<AppStore, "open">;
+  store?: Pick<AppStore, "open" | "close">;
 }
 
 export function browserTools(platform: Platform, opts: BrowserToolOptions = {}): Record<string, KatTool> {
@@ -100,6 +102,32 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         required: ["path", "content"],
       },
       execute: async (a) => await files.writeFile(String(a.path ?? ""), String(a.content ?? "")),
+    },
+    copy_file: {
+      description:
+        "Copy a file byte-for-byte (binary-safe: .db, images, archives). " +
+        "Use this instead of read_file + write_file, which corrupts binary data.",
+      parameters: {
+        type: "object",
+        properties: {
+          from: { type: "string" },
+          to: { type: "string" },
+          overwrite: { type: "boolean" },
+        },
+        required: ["from", "to"],
+      },
+      execute: async (a) => {
+        const from = String(a.from ?? "");
+        const to = String(a.to ?? "");
+        // Close a cached app-DB writer before the bytes move. Closing flushes
+        // the current image; doing it after the copy would flush the OLD image
+        // over the restored file. Only root-level names are app DBs.
+        const appDb = /^[^/\\]+\.db$/;
+        for (const name of [from, to]) {
+          if (appDb.test(name)) await opts.store?.close(name).catch(() => undefined);
+        }
+        return await files.copyFile(from, to, a.overwrite === true);
+      },
     },
     edit_file: {
       description: "Replace an exact string in a file.",

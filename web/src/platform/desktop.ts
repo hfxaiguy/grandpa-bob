@@ -94,6 +94,9 @@ function httpFs(base: string, rootName?: string): DesktopFileSystem {
     async rename(from, to) {
       await call(base, "/fs/rename", { from, to }, rootName);
     },
+    async copyFile(from, to) {
+      await call(base, "/fs/copy", { from, to }, rootName);
+    },
   };
 }
 

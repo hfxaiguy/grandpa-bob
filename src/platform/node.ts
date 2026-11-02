@@ -67,6 +67,7 @@ export const nodeFs: FileSystem = {
   },
   rm: (path) => fs.rm(path).then(() => undefined),
   rename: (from, to) => fs.rename(from, to).then(() => undefined),
+  copyFile: (from, to) => fs.copyFile(from, to).then(() => undefined),
 };
 
 export const nodeCrypto: CryptoOps = {

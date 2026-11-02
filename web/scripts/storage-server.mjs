@@ -228,6 +228,13 @@ const routes = {
     await fs.rename(resolveIn(root, from), abs);
     return { ok: true };
   },
+  async "POST /fs/copy"({ from, to }, _q, root) {
+    // Byte-for-byte copy on the host (fs.copyFile), never a text round-trip.
+    const abs = resolveIn(root, to);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.copyFile(resolveIn(root, from), abs);
+    return { ok: true };
+  },
   async "POST /git"({ op, paths = [], message, remote, url: remoteUrl, branch }, _q, root) {
     if (op === "status") {
       const status = await git(root, ["status", "--porcelain"]);

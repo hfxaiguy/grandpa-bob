@@ -222,6 +222,21 @@ export function createHandleFs(
       await src.dir.removeEntry(src.name, { recursive: true });
     },
 
+    async copyFile(from, to) {
+      if (from === to) return;
+      const src = await parentOf(from);
+      // entryKind throws NotFoundError for a missing source; a directory is
+      // refused here (copy_file is a file operation, not a tree copy).
+      if ((await entryKind(src.dir, src.name)) !== "file") {
+        throw new DOMException(`not a file: ${from}`, "TypeMismatchError");
+      }
+      const dstParts = segments(to);
+      const dstName = dstParts.pop();
+      if (!dstName) throw new DOMException(`invalid path: ${to}`, "TypeMismatchError");
+      const dstDir = await dirHandle(await getRoot(), dstParts, true);
+      await copyFile(src.dir, src.name, dstDir, dstName);
+    },
+
     rootHandle: getRoot,
   };
 }

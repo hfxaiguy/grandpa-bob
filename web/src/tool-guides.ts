@@ -36,7 +36,7 @@ export const HOST_GUIDES: HostGuide[] = [
     tools: ["git_status", "git_commit", "git_push", "git_fetch", "git_log"],
     guide:
       "GIT SYNC: the workspace is a git repository (every write_file/edit_file/" +
-      "delete_file is committed automatically). When the user asks to sync or push, " +
+      "delete_file/copy_file is committed automatically). When the user asks to sync or push, " +
       "call git_status to see changes, then git_commit with a short message, then " +
       "git_push — it pushes the branch you are on (pass branch only to override); the " +
       "workspace's sync branch is 'main'. If push reports that no " +
@@ -80,6 +80,14 @@ export const HOST_GUIDES: HostGuide[] = [
       "may carry the same path itself, and at composes after it). Strict JSON only: on a parse error " +
       "the message says why — content that looks like JSONL needs read_file, not this tool. Prefer " +
       "read_json over read_file whenever the file is JSON.",
+  },
+  {
+    tools: ["copy_file"],
+    guide:
+      "COPYING FILES: copy_file({ from, to }) copies bytes exactly — use it for binary files " +
+      "(SQLite .db, images, archives). read_file + write_file round-trips through a string and " +
+      "corrupts them. An existing destination is refused unless overwrite: true, so a recovery " +
+      "copy should first copy the damaged file aside, then copy the good source into place.",
   },
   {
     tools: ["write_file", "edit_file"],

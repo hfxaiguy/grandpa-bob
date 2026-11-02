@@ -28,6 +28,12 @@ export interface FileSystem {
   stat(path: string): Promise<{ isFile(): boolean; isDirectory(): boolean }>;
   rm(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
+  /**
+   * Copy one file byte-for-byte (never through a UTF-8 round-trip). Adapters
+   * that cannot do this may omit it; the copy tool then falls back to a binary
+   * read + write when the adapter exposes `readFileBytes`.
+   */
+  copyFile?(from: string, to: string): Promise<void>;
 }
 
 /** Crypto primitives used by the shared core. */
