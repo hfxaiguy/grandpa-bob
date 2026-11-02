@@ -197,6 +197,22 @@ try {
   const gone = await platformB.fs.stat(abs(platformB, "todo.md")).then(() => true).catch(() => false);
   assert.equal(gone, false, "A's delete reached B");
 
+  // ── a locally-initiated round advances this side's completion clock ───
+  // The toolbar's "desktop: synced HH:MM" comes from lastSyncAt. A map this
+  // side sends must be answered, or the clock stays at the last map this
+  // side received even while every change it sends lands on the peer.
+  let lastSyncAtA: string | null = null;
+  engineA.onState((state) => {
+    lastSyncAtA = state.lastSyncAt;
+  });
+  await settle();
+  const beforeClock = lastSyncAtA;
+  assert.ok(beforeClock, "A has completed a round before the clock test");
+  await platformA.fs.writeFile(abs(platformA, "clock.txt"), "tick\n");
+  await engineA.noteMutation(["clock.txt"]);
+  await waitFor(() => fileIs(platformB, "clock.txt", "tick\n"), "clock.txt reaches B");
+  await waitFor(async () => lastSyncAtA !== beforeClock, "A's completion clock advances on its own round");
+
   // ── service ICE servers ───────────────────────────────────────────────
   // The BobSwap create/join responses carry ice_servers; the peer connection
   // uses them (TURN included) instead of the hardcoded STUN fallback.

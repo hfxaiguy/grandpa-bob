@@ -51,6 +51,10 @@ export interface SyncEnvelope {
   expectedHash?: string;
   /** Explicit round id (a reconcileAndWait barrier). */
   round?: string;
+  /** A plain reconcile asks the peer for a completion map (no barrier). */
+  wantReply?: boolean;
+  /** Answers a round/wantReply; a reply is never answered again. */
+  reply?: boolean;
   /** Chunked-transport fields (kind === "chunk"). */
   transfer?: string;
   seq?: number;
@@ -121,6 +125,8 @@ export class SyncEngine {
   }>();
   /** Explicit reconcile rounds waiting for the peer's map. */
   private pendingRounds = new Map<string, PendingRound>();
+  /** Rounds this engine started; their echoed/late answers are never answers. */
+  private ownRounds = new Set<string>();
   /** Chunk reassembly buffers keyed by transfer id. */
   private chunks = new Map<string, { parts: Map<number, string>; next: number }>();
   private inbox: Array<{ peer: SyncPeer; envelope: SyncEnvelope }> = [];
@@ -225,7 +231,20 @@ export class SyncEngine {
       this.setState({ status: "verifying", detail: "comparing workspaces" });
       state.mapSent = true;
       const { hashmap, lamports, deletes } = await this.myMap();
-      target.send({ v: 1, kind: "hashmap", from: this.id, hashmap, lamports, deletes });
+      // Ask for a completion map. It is what advances `lastSyncAt` here —
+      // with a one-way map the tab's toolbar clock would stay at the last map
+      // it *received*, even while every change it sends is landing on the
+      // desktop. `wantReply` (not `round`) keeps an older peer from answering
+      // forever: old engines ignore it, so a mixed pair cannot ping-pong.
+      target.send({
+        v: 1,
+        kind: "hashmap",
+        from: this.id,
+        hashmap,
+        lamports,
+        deletes,
+        wantReply: true,
+      });
     }
   }
 
@@ -240,6 +259,7 @@ export class SyncEngine {
     if (!state) return false;
     await this.j();
     const round = crypto.randomUUID();
+    this.rememberRound(round);
     const done = new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
         this.pendingRounds.delete(round);
@@ -252,6 +272,14 @@ export class SyncEngine {
     const { hashmap, lamports, deletes } = await this.myMap();
     peer.send({ v: 1, kind: "hashmap", from: this.id, hashmap, lamports, deletes, round });
     return done;
+  }
+
+  /** Remember a round this engine started (bounded; late echoes stay mute). */
+  private rememberRound(round: string): void {
+    this.ownRounds.add(round);
+    if (this.ownRounds.size <= 256) return;
+    const oldest = this.ownRounds.values().next().value;
+    if (oldest) this.ownRounds.delete(oldest);
   }
 
   private async myMap(): Promise<{
@@ -490,24 +518,16 @@ export class SyncEngine {
       const theirLamports = envelope.lamports ?? {};
       for (const lamport of Object.values(theirLamports)) journal.absorbRemote(lamport);
       // Initial connection handshake: reply exactly once per connection. An
-      // explicit round (envelope.round) always replies, so the other side's
-      // reconcileAndWait can resolve.
+      // explicit round (reconcileAndWait) and a plain `wantReply` round both
+      // expect an answer; a reply is never answered again, and neither is our
+      // own round echoed back, so a late answer or a mixed-version peer
+      // cannot ping-pong forever.
       const round = envelope.round;
-      const pending = round ? this.pendingRounds.get(round) : undefined;
-      if (!pending && (!round ? !this.peers.get(peer)?.mapSent : true)) {
-        const { hashmap, lamports, deletes } = await this.myMap();
-        const state = this.peers.get(peer);
-        if (state) state.mapSent = true;
-        peer.send({
-          v: 1,
-          kind: "hashmap",
-          from: this.id,
-          hashmap,
-          lamports,
-          deletes,
-          ...(round ? { round } : {}),
-        });
-      }
+      const ownRound = round !== undefined && this.ownRounds.has(round);
+      const shouldReply =
+        envelope.reply !== true &&
+        !ownRound &&
+        (round !== undefined || envelope.wantReply === true || !this.peers.get(peer)?.mapSent);
       // Both sides diff from the same two maps: with pull-only propagation
       // the two diffs are idempotent (each side pulls only what it lacks or
       // lost), so there is no push-crossing to guard against.
@@ -519,6 +539,24 @@ export class SyncEngine {
         lastSyncAt: new Date().toISOString(),
       });
       await journal.persist();
+      if (shouldReply) {
+        // Reply after the diff: the map advertises the state this side just
+        // applied, and the initiator's completion clock means "converged",
+        // not merely "my map left the wire".
+        const { hashmap, lamports, deletes } = await this.myMap();
+        const state = this.peers.get(peer);
+        if (state) state.mapSent = true;
+        peer.send({
+          v: 1,
+          kind: "hashmap",
+          from: this.id,
+          hashmap,
+          lamports,
+          deletes,
+          ...(round ? { round } : {}),
+          reply: true,
+        });
+      }
       if (round) {
         const roundState = this.pendingRounds.get(round);
         if (roundState && roundState.peer === peer) {
