@@ -2,6 +2,65 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — sync shows transfer progress and direction
+
+A reconciliation round could pull a large workspace with no visible activity:
+the status line said "syncing" and nothing else. The engine now counts file
+payload in both directions and reports a pull round's file progress, and the
+Sync/Pair dialogs render it as a direction badge plus a progress bar.
+
+- `web/src/sync/engine.ts`: `SyncState.transfer` carries `direction` (`up`,
+  `down`, `both`, `idle`), decoded bytes and file counts sent/received, the
+  current pull round (`roundDone`/`roundTotal`) and the last path. Served file
+  requests count as **up**; requested responses and unsolicited pushes count as
+  **down**. The direction falls back to `idle` 1.5 s after the last byte so the
+  badge reflects current activity while the totals persist.
+- `web/src/sync-ui.ts` and `web/index.html`: **Live sync** gets a transfer line
+  and bar (↑ blue, ↓ green, ⇅ purple); the Pair dialog shows the same block.
+  A pull round is determinate (`3/12 files`); serving an unknown number of
+  requests is indeterminate. Bytes are formatted B/KB/MB/GB.
+- `web/src/sync/index.ts`: the handle's initial state carries `emptyTransfer()`.
+- `scripts/sync-engine-test.ts` asserts both bytes and files are counted on
+  each end, the download direction is reported, and the pull round reaches
+  `done === total`.
+- `docs/pairing-and-sync.md` §2, `README.md` and `web/README.md` describe the
+  transfer line.
+
+Tests: `npm run test:sync`; `npm run typecheck`; `npm --prefix web run typecheck`;
+`npm run build:web`.
+
+## 2026-11-03 — browser-to-browser pairing shows its progress
+
+The Pair dialog used to move from one terse status line to the next, so a
+slow or stuck handshake between two browsers was invisible: relay polling,
+ICE gathering and the data-channel wait all looked like "idle". The dialog now
+renders a live timeline of the handshake on each end, and the last attempt can
+be replayed with one button.
+
+- `web/index.html`: the Pair dialog gains `#pair-progress` (an ordered status
+  list) and `#pair-retry`, plus list styling with active/done/failed markers
+  and per-step timestamps.
+- `web/src/sync-ui.ts`: every path (relay create/join, manual offer/join,
+  desktop/server) starts a timeline and appends transport status. Repeated
+  poll status is collapsed instead of stacking identical rows; failures mark
+  the step red; **Retry pairing** re-runs the last attempt.
+- `web/src/sync/transport-webrtc.ts`: `ManualSignaling` accepts an `onStatus`
+  callback and reports gather/create/read/connect steps; `BobSwapSignaling`
+  now reports offer/answer sent and received, connectivity checks, channel
+  wait/open, and connection failure. `rtcPeer` reports the channel wait and
+  open. `pairBobSwap` and `startManualPairing` thread the callback through
+  `web/src/sync/index.ts`.
+- `web/scripts/pair-smoke.mjs` asserts both browsers render progress rows, the
+  retry trigger appears, the timeline reaches the verification phrase, and no
+  step is left active after connection. The harness also waits for the current
+  `opfs` status (it still looked for the retired `browser` label), navigates
+  explicitly because `/json/new?url` is advisory in current Chrome, and bounds
+  its devtools calls so a busy renderer cannot hang the poll loop.
+- `docs/pairing-and-sync.md` §3 documents the timeline and retry trigger.
+
+Tests: `npm --prefix web run typecheck`; `npm run build:web`; `npm run
+smoke:pair-live` (needs a BobSwap key and Chromium).
+
 ## 2026-11-03 — read_runs shows what a tool was called with
 
 The run-log reader's readable line for a tool row is its *result*: the engine's

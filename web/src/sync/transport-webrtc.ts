@@ -132,6 +132,7 @@ export class ManualSignaling implements SignalingProvider {
 
   constructor(
     private role: "offerer" | "joiner",
+    private onStatus?: (text: string) => void,
   ) {
     let outResolve!: (blob: string) => void;
     this.outgoing = new Promise<string>((r) => (outResolve = r));
@@ -153,27 +154,37 @@ export class ManualSignaling implements SignalingProvider {
     };
 
     const gatherLocal = async (kind: "offer" | "answer"): Promise<IceBundle> => {
+      this.onStatus?.(kind === "offer" ? "creating the offer…" : "creating the answer…");
       const local =
         kind === "offer" ? await pc.createOffer() : await pc.createAnswer();
       await pc.setLocalDescription(local);
       await gatherComplete(pc);
+      this.onStatus?.(
+        `${kind} gathered${candidates.length ? ` (${candidates.length} ICE candidate${candidates.length === 1 ? "" : "s"})` : ""}`,
+      );
       return { type: kind, sdp: pc.localDescription!.sdp, candidates };
     };
 
     if (this.role === "offerer") {
       const bundle = await gatherLocal("offer");
       this.outgoingResolve(encodeBundle(bundle));
+      this.onStatus?.("offer blob ready — hand it to the other device");
+      this.onStatus?.("waiting for the answer blob…");
       const answer = decodeBundle(await this.incoming);
       if (answer.type !== "answer") throw new Error("expected the answer blob");
+      this.onStatus?.("answer blob read — connecting");
       await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
       for (const c of answer.candidates) await pc.addIceCandidate(c).catch(() => {});
     } else {
+      this.onStatus?.("reading the offer blob…");
       const offer = decodeBundle(await this.incoming);
       if (offer.type !== "offer") throw new Error("expected the offer blob");
       await pc.setRemoteDescription({ type: "offer", sdp: offer.sdp });
       for (const c of offer.candidates) await pc.addIceCandidate(c).catch(() => {});
       const bundle = await gatherLocal("answer");
       this.outgoingResolve(encodeBundle(bundle));
+      this.onStatus?.("answer blob ready — hand it back");
+      this.onStatus?.("connecting to the peer…");
     }
   }
 
@@ -349,23 +360,33 @@ export class BobSwapSignaling implements SignalingProvider {
       }
     };
     pc.addEventListener("connectionstatechange", () => {
-      if (pc.connectionState === "connected") this.onStatus?.("peer connection up");
+      const state = pc.connectionState;
+      if (state === "connected") this.onStatus?.("peer connection up");
+      else if (state === "failed") this.onStatus?.("peer connection failed");
+      else if (state === "disconnected") this.onStatus?.("peer connection dropped");
+      else if (state === "connecting") this.onStatus?.("checking connectivity…");
     });
     if (this.ownSide() === "offerer") {
+      this.onStatus?.("creating the offer…");
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await this.signal({ type: "offer", payload: { sdp: pc.localDescription!.sdp, type: "offer" } });
+      this.onStatus?.("offer sent — waiting for the peer's answer");
       const remote = await this.awaitPeerSdp("answer");
+      this.onStatus?.("answer received — connecting");
       await pc.setRemoteDescription({ sdp: remote.sdp, type: "answer" });
       await this.flushPending(pc);
       void this.drainCandidates(pc, remote.cursor);
     } else {
+      this.onStatus?.("waiting for the peer's offer…");
       const remote = await this.awaitPeerSdp("offer");
+      this.onStatus?.("offer received — answering");
       await pc.setRemoteDescription({ sdp: remote.sdp, type: "offer" });
       await this.flushPending(pc);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await this.signal({ type: "answer", payload: { sdp: pc.localDescription!.sdp, type: "answer" } });
+      this.onStatus?.("answer sent — connecting");
       void this.drainCandidates(pc, remote.cursor);
     }
   }
@@ -428,7 +449,9 @@ export async function rtcPeer(
     channel = pc.createDataChannel("bob-sync", { ordered: true });
     await provider.connect(pc);
   }
+  opts.onState?.("waiting for the data channel…");
   await awaitOpen(channel);
+  opts.onState?.("data channel open");
   const peer: SyncPeer = {
     id: engineId,
     send(envelope: SyncEnvelope): void {

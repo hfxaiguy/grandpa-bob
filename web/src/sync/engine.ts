@@ -83,11 +83,43 @@ export interface SyncPeer {
   close(): void;
 }
 
+export type TransferDirection = "idle" | "up" | "down" | "both";
+
+/** File payload moved by this engine, plus the current pull-round progress. */
+export interface TransferState {
+  /** Current wire activity; returns to `idle` shortly after the last byte. */
+  direction: TransferDirection;
+  /** Logical file bytes (decoded, not base64) since this engine started. */
+  sent: number;
+  received: number;
+  filesSent: number;
+  filesReceived: number;
+  /** Current pull round, counted in files. `roundTotal === 0` = no round. */
+  roundDone: number;
+  roundTotal: number;
+  /** The most recent path moved (display only). */
+  path: string;
+}
+
+export function emptyTransfer(): TransferState {
+  return {
+    direction: "idle",
+    sent: 0,
+    received: 0,
+    filesSent: 0,
+    filesReceived: 0,
+    roundDone: 0,
+    roundTotal: 0,
+    path: "",
+  };
+}
+
 export interface SyncState {
   status: "idle" | "connecting" | "verifying" | "syncing" | "error";
   detail: string;
   conflicts: string[];
   lastSyncAt: string | null;
+  transfer: TransferState;
 }
 
 type StateListener = (state: SyncState) => void;
@@ -118,7 +150,13 @@ export class SyncEngine {
   private platform: Platform;
   private journalRoot: string | undefined;
   private peers = new Map<SyncPeer, PeerState>();
-  private state: SyncState = { status: "idle", detail: "", conflicts: [], lastSyncAt: null };
+  private state: SyncState = {
+    status: "idle",
+    detail: "",
+    conflicts: [],
+    lastSyncAt: null,
+    transfer: emptyTransfer(),
+  };
   private listeners = new Set<StateListener>();
   private journal: Journal | null = null;
   /** Called after remote writes/deletes are applied (workspace-relative paths).
@@ -169,6 +207,65 @@ export class SyncEngine {
   private setState(patch: Partial<SyncState>): void {
     this.state = { ...this.state, ...patch };
     for (const cb of this.listeners) cb(this.state);
+  }
+
+  // ── transfer counters ───────────────────────────────────────────────────
+  /** How long a direction stays "active" after the last byte. */
+  private static readonly TRANSFER_ACTIVE_MS = 1_500;
+  private transfer = emptyTransfer();
+  private transferIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastUpAt = 0;
+  private lastDownAt = 0;
+
+  private emitTransfer(): void {
+    this.setState({ transfer: { ...this.transfer } });
+  }
+
+  /** Account one file/response: bytes are decoded (not base64) length. */
+  private noteTransfer(direction: "up" | "down", bytes: number, path: string, file: boolean): void {
+    const now = Date.now();
+    if (direction === "up") this.lastUpAt = now;
+    else this.lastDownAt = now;
+    const window = SyncEngine.TRANSFER_ACTIVE_MS;
+    const up = now - this.lastUpAt < window;
+    const down = now - this.lastDownAt < window;
+    this.transfer = {
+      ...this.transfer,
+      direction: up && down ? "both" : up ? "up" : "down",
+      sent: this.transfer.sent + (direction === "up" ? bytes : 0),
+      received: this.transfer.received + (direction === "down" ? bytes : 0),
+      filesSent: this.transfer.filesSent + (direction === "up" && file ? 1 : 0),
+      filesReceived: this.transfer.filesReceived + (direction === "down" && file ? 1 : 0),
+      path: path || this.transfer.path,
+    };
+    this.emitTransfer();
+    this.scheduleTransferIdle();
+  }
+
+  /** Let the direction badge fall back to idle without hiding the totals. */
+  private scheduleTransferIdle(): void {
+    if (this.transferIdleTimer) clearTimeout(this.transferIdleTimer);
+    this.transferIdleTimer = setTimeout(() => {
+      this.transferIdleTimer = null;
+      this.transfer = { ...this.transfer, direction: "idle", path: "" };
+      this.emitTransfer();
+    }, SyncEngine.TRANSFER_ACTIVE_MS);
+  }
+
+  /** Start counting a pull round (files are requested one at a time). */
+  private beginPullRound(total: number): void {
+    this.transfer = { ...this.transfer, roundDone: 0, roundTotal: total };
+    this.emitTransfer();
+  }
+
+  private advancePullRound(): void {
+    if (this.transfer.roundTotal === 0) return;
+    this.transfer = {
+      ...this.transfer,
+      roundDone: Math.min(this.transfer.roundDone + 1, this.transfer.roundTotal),
+    };
+    this.emitTransfer();
+    this.scheduleTransferIdle();
   }
 
   /** Add a peer (does not replace the others). */
@@ -408,21 +505,26 @@ export class SyncEngine {
       }
     }
 
+    this.beginPullRound(pull.length);
     for (const path of pull) {
-      const expected = theirs[path]?.hash;
-      const fetched = await this.requestFile(peer, path, expected);
-      if (!fetched) continue;
-      if (fetched.base64 === "") {
-        await this.applyRemoteDelete(path, fetched.lamport);
+      try {
+        const expected = theirs[path]?.hash;
+        const fetched = await this.requestFile(peer, path, expected);
+        if (!fetched) continue;
+        if (fetched.base64 === "") {
+          await this.applyRemoteDelete(path, fetched.lamport);
+          applied.push(path);
+          continue;
+        }
+        // Hash-verified: a response that no longer matches the map snapshot is
+        // stale (the peer moved on) — discard it; the next round re-decides.
+        if (expected && hashOfBase64(this.platform, fetched.base64) !== expected) continue;
+        const before = await this.applyRemoteWrite(path, fetched.base64, fetched.lamport);
+        if (before != null) previous[path] = hashOfBase64(this.platform, before);
         applied.push(path);
-        continue;
+      } finally {
+        this.advancePullRound();
       }
-      // Hash-verified: a response that no longer matches the map snapshot is
-      // stale (the peer moved on) — discard it; the next round re-decides.
-      if (expected && hashOfBase64(this.platform, fetched.base64) !== expected) continue;
-      const before = await this.applyRemoteWrite(path, fetched.base64, fetched.lamport);
-      if (before != null) previous[path] = hashOfBase64(this.platform, before);
-      applied.push(path);
     }
     if (conflicts.length) {
       const fresh = conflicts.filter((c) => !this.state.conflicts.includes(c));
@@ -496,6 +598,10 @@ export class SyncEngine {
     if (envelope.kind === "ops" && envelope.req) {
       const resolve = this.pendingFile.get(envelope.req);
       const hit = envelope.ops?.[0];
+      if (hit) {
+        const content = hit.op === "delete" ? "" : hit.base64 ?? "";
+        this.noteTransfer("down", base64Bytes(content), hit.path ?? envelope.path ?? "", hit.op === "write");
+      }
       if (resolve) {
         resolve.resolve(
           hit
@@ -564,6 +670,7 @@ export class SyncEngine {
         lamport: (await this.j()).lamportFor(path),
       }],
     });
+    this.noteTransfer("up", base64Bytes(bytes ?? ""), path, bytes !== null);
   }
 
   private async drain(): Promise<void> {
@@ -663,6 +770,9 @@ export class SyncEngine {
         // raw write/delete of a live database file is exactly what must not
         // happen. Ignore it; the dump transport moves app DBs.
         if (excluded(op.path)) continue;
+        if (op.op === "write" && op.base64 !== undefined) {
+          this.noteTransfer("down", base64Bytes(op.base64), op.path, true);
+        }
         const mineLamport = journal.lamportFor(op.path);
         if (op.lamport !== undefined && op.lamport < mineLamport) continue; // I hold newer
         if (op.lamport !== undefined && op.lamport === mineLamport && mineLamport > 0) {
@@ -746,4 +856,11 @@ async function writeBase64(platform: Platform, rel: string, base64: string): Pro
 
 function hashOfBase64(platform: Platform, base64: string): string {
   return platform.crypto.sha256hex(base64);
+}
+
+/** Decoded byte length of a base64 payload (for transfer counters). */
+function base64Bytes(base64: string): number {
+  if (!base64) return 0;
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
 }

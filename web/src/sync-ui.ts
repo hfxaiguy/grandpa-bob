@@ -18,7 +18,7 @@ import { bindDesktopMirror } from "./profiles";
 import { loadStorageServer } from "./settings";
 import { toIceServers } from "./sync/transport-webrtc";
 import type { SyncHandle } from "./sync";
-import type { SyncState } from "./sync/engine";
+import { emptyTransfer, type SyncState, type TransferState } from "./sync/engine";
 
 type SyncGetter = () => SyncHandle | null;
 
@@ -34,6 +34,55 @@ function setText(id: string, text: string): void {
 function statusLine(state: SyncState): string {
   const conflicts = state.conflicts.length ? ` · ${state.conflicts.length} conflict(s)` : "";
   return `${state.status}${state.detail ? ` — ${state.detail}` : ""}${conflicts}`;
+}
+
+const DIRECTION_LABEL: Record<TransferState["direction"], string> = {
+  idle: "⇅ idle",
+  up: "↑ sending",
+  down: "↓ receiving",
+  both: "⇅ sending + receiving",
+};
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
+}
+
+/** Paint the shared transfer block in the Sync and Pair dialogs. */
+function renderTransfer(stats: TransferState | null): void {
+  const t = stats ?? emptyTransfer();
+  const active = t.direction !== "idle";
+  const parts: string[] = [];
+  if (t.roundTotal > 0) parts.push(`${t.roundDone}/${t.roundTotal} files`);
+  if (t.sent || t.received) {
+    parts.push(`↓ ${formatBytes(t.received)}`, `↑ ${formatBytes(t.sent)}`);
+  } else {
+    parts.push("no data transfer yet");
+  }
+  if (active && t.path) parts.push(t.path);
+
+  for (const prefix of ["live", "pair"]) {
+    const wrap = el<HTMLElement>(`${prefix}-transfer`);
+    if (!wrap) continue;
+    wrap.dataset.direction = t.direction;
+    setText(`${prefix}-transfer-dir`, DIRECTION_LABEL[t.direction]);
+    setText(`${prefix}-transfer-text`, parts.join(" · "));
+    const bar = el<HTMLProgressElement>(`${prefix}-transfer-bar`);
+    if (!bar) continue;
+    const determinate = t.roundTotal > 0;
+    bar.hidden = !determinate && !active;
+    if (determinate) {
+      bar.max = 100;
+      bar.value = Math.round((t.roundDone / t.roundTotal) * 100);
+    } else if (active) {
+      // Serving an unknown number of requests: indeterminate.
+      bar.removeAttribute("value");
+    }
+  }
 }
 
 function relayUnreachable(base: string, err: unknown): Error {
@@ -155,6 +204,98 @@ export function wireSyncUi(getSync: SyncGetter): void {
 
   const setStatus = (text: string): void => setText("pair-status", text);
   const setVerify = (phrase: string): void => setText("pair-verify", phrase);
+
+  // ── pairing progress ──────────────────────────────────────────────────
+  // A short, live timeline so a browser-to-browser handshake is observable on
+  // both ends: each transport status becomes a line and the last one stays
+  // highlighted until the next arrives. "Retry pairing" replays the attempt.
+  type ProgressState = "active" | "done" | "failed";
+  interface ProgressLine {
+    text: string;
+    state: ProgressState;
+    at: string;
+  }
+  const progressList = el<HTMLOListElement>("pair-progress");
+  const retryButton = el<HTMLButtonElement>("pair-retry");
+  const retryWrap = el<HTMLElement>("pair-retry-wrap");
+  let progressLines: ProgressLine[] = [];
+  let retryAction: (() => void) | null = null;
+  let pairingActive = false;
+
+  const clock = (): string =>
+    new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+
+  const renderProgress = (): void => {
+    if (!progressList) return;
+    progressList.replaceChildren(
+      ...progressLines.map((line) => {
+        const row = document.createElement("li");
+        row.dataset.state = line.state;
+        row.append(line.text);
+        const at = document.createElement("span");
+        at.className = "at";
+        at.textContent = line.at;
+        row.append(at);
+        return row;
+      }),
+    );
+    progressList.hidden = progressLines.length === 0;
+    progressList.scrollTop = progressList.scrollHeight;
+  };
+
+  /** Begin an attempt: clear the timeline, wire the manual retry trigger. */
+  const beginPairing = (retry: () => void): void => {
+    pairingActive = true;
+    progressLines = [];
+    retryAction = retry;
+    if (retryWrap) retryWrap.hidden = false;
+    if (retryButton) retryButton.disabled = true;
+    renderProgress();
+  };
+
+  const progress = (text: string): void => {
+    if (!pairingActive) return;
+    const previous = progressLines[progressLines.length - 1];
+    // The relay polls once a second; repeat the same status instead of
+    // stacking identical rows.
+    if (previous && previous.state === "active" && previous.text === text) {
+      previous.at = clock();
+      renderProgress();
+      return;
+    }
+    for (const line of progressLines) if (line.state === "active") line.state = "done";
+    progressLines.push({ text, state: "active", at: clock() });
+    renderProgress();
+  };
+
+  const progressDone = (): void => {
+    pairingActive = false;
+    for (const line of progressLines) if (line.state === "active") line.state = "done";
+    if (retryButton) retryButton.disabled = false;
+    renderProgress();
+  };
+
+  const progressFailed = (message: string): void => {
+    if (!pairingActive) return;
+    pairingActive = false;
+    for (const line of progressLines) if (line.state === "active") line.state = "done";
+    progressLines.push({ text: message, state: "failed", at: clock() });
+    if (retryButton) retryButton.disabled = false;
+    renderProgress();
+  };
+
+  retryButton?.addEventListener("click", () => {
+    const action = retryAction;
+    if (!action) {
+      setStatus("nothing to retry — start a pairing first");
+      return;
+    }
+    setStatus("retrying the last pairing attempt…");
+    action();
+  });
+
+  /** Transport callbacks only feed the timeline while an attempt is live. */
+  const onPairStatus = (text: string): void => progress(text);
   const activeProfile = (): string => localStorage.getItem("bob:profile") || "default";
   const serverUrl = (): string => {
     const input = el<HTMLInputElement>("pair-server-url");
@@ -228,9 +369,12 @@ export function wireSyncUi(getSync: SyncGetter): void {
     const sync = getSync();
     if (!sync) {
       setText("live-sync-status", "not running here — this tab is not the workspace host");
+      renderTransfer(null);
       return;
     }
-    setText("live-sync-status", statusLine(sync.state()));
+    const state = sync.state();
+    setText("live-sync-status", statusLine(state));
+    renderTransfer(state.transfer);
   };
 
   // A manual round covers more than a desktop mirror: paired tabs/devices too.
@@ -288,28 +432,41 @@ export function wireSyncUi(getSync: SyncGetter): void {
   };
 
   // ── manual paste (no service) ────────────────────────────────────────
-  el<HTMLButtonElement>("pair-offer")?.addEventListener("click", () => {
+  function startManualOffer(): void {
     const handle = requireSync();
     if (!handle) return;
+    beginPairing(startManualOffer);
     setVerify("—");
     setStatus("gathering candidates — your pairing blob appears below");
+    progress("gathering the offer (all ICE candidates)…");
     (el<HTMLTextAreaElement>("pair-input") as HTMLTextAreaElement).value = "";
-    const pairing = handle.startManualPairing("offerer", (blob) => {
-      const out = el<HTMLTextAreaElement>("pair-output");
-      if (out) out.value = blob;
-      setStatus("hand this blob to the other device, then paste their answer below and press “finish”");
-    });
+    const pairing = handle.startManualPairing(
+      "offerer",
+      (blob) => {
+        const out = el<HTMLTextAreaElement>("pair-output");
+        if (out) out.value = blob;
+        progress("offer blob ready — hand it to the other device");
+        setStatus("hand this blob to the other device, then paste their answer below and press “finish”");
+      },
+      onPairStatus,
+    );
     manual = pairing;
     pairing.done
       .then((phrase) => {
         setVerify(phrase);
+        progress("verification phrase ready");
+        progressDone();
         setStatus("connected — both devices must show the same phrase");
         updateLiveStatus();
       })
-      .catch((err) => setStatus(`pairing failed: ${err instanceof Error ? err.message : String(err)}`));
-  });
+      .catch((err) => {
+        const text = err instanceof Error ? err.message : String(err);
+        progressFailed(`pairing failed: ${text}`);
+        setStatus(`pairing failed: ${text}`);
+      });
+  }
 
-  el<HTMLButtonElement>("pair-join")?.addEventListener("click", () => {
+  function startManualJoin(): void {
     const handle = requireSync();
     if (!handle) return;
     const offer = (el<HTMLTextAreaElement>("pair-input") as HTMLTextAreaElement)?.value.trim();
@@ -317,23 +474,39 @@ export function wireSyncUi(getSync: SyncGetter): void {
       setStatus("paste the other device's offer blob first");
       return;
     }
+    beginPairing(startManualJoin);
     setVerify("—");
     setStatus("reading their offer…");
-    const pairing = handle.startManualPairing("joiner", (blob) => {
-      const out = el<HTMLTextAreaElement>("pair-output");
-      if (out) out.value = blob;
-      setStatus("send this answer blob back, then wait for the channel to open");
-    });
+    progress("reading their offer…");
+    const pairing = handle.startManualPairing(
+      "joiner",
+      (blob) => {
+        const out = el<HTMLTextAreaElement>("pair-output");
+        if (out) out.value = blob;
+        progress("answer blob ready — send it back");
+        setStatus("send this answer blob back, then wait for the channel to open");
+      },
+      onPairStatus,
+    );
     manual = pairing;
     pairing.accept(offer);
     pairing.done
       .then((phrase) => {
         setVerify(phrase);
+        progress("verification phrase ready");
+        progressDone();
         setStatus("connected — both devices must show the same phrase");
         updateLiveStatus();
       })
-      .catch((err) => setStatus(`pairing failed: ${err instanceof Error ? err.message : String(err)}`));
-  });
+      .catch((err) => {
+        const text = err instanceof Error ? err.message : String(err);
+        progressFailed(`pairing failed: ${text}`);
+        setStatus(`pairing failed: ${text}`);
+      });
+  }
+
+  el<HTMLButtonElement>("pair-offer")?.addEventListener("click", () => startManualOffer());
+  el<HTMLButtonElement>("pair-join")?.addEventListener("click", () => startManualJoin());
 
   el<HTMLButtonElement>("pair-answer")?.addEventListener("click", () => {
     if (!manual) {
@@ -345,6 +518,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
       setStatus("paste the other device's answer blob first");
       return;
     }
+    progress("answer pasted — checking it…");
     manual.accept(answer);
     setStatus("checking the answer…");
   });
@@ -353,53 +527,65 @@ export function wireSyncUi(getSync: SyncGetter): void {
   el<HTMLInputElement>("pair-source-relay")?.addEventListener("change", () => setPairSource("relay"));
   el<HTMLInputElement>("pair-source-desktop")?.addEventListener("change", () => setPairSource("desktop"));
 
-  const pairRelay = async (handle: SyncHandle, code: string): Promise<void> => {
-    const swap = relayService();
-    setStatus(`joining via ${swap.baseUrl}…`);
-    const joined = await joinSwapChannel(swap, code);
-    const phrase = await handle.pairBobSwap({
-      baseUrl: swap.baseUrl,
-      readKey: swap.readKey ?? swap.uploadKey,
-      id: joined.id,
-      roleToken: joined.roleToken,
-      role: joined.role,
-      iceServers: joined.iceServers,
-    });
-    setVerify(phrase);
-    setStatus("connected — both devices must show the same phrase");
-    updateLiveStatus();
+  const validCode = (): string | null => {
+    const code = pairCode();
+    if (!/^\d{4}-?\d{4}$/.test(code)) {
+      setStatus("enter the 8-digit pairing code");
+      return null;
+    }
+    return code;
   };
 
-  const pairDesktop = async (handle: SyncHandle, code: string): Promise<void> => {
-    const profile = activeProfile();
-    const url = serverUrl();
-    showActiveProfile();
-    setStatus(`joining ${url}…`);
-    const connection = await pairWithServer({
-      url,
-      code,
-      profile,
-      localId: handle.engine.id,
-      onSas: (phrase) => setVerify(phrase),
-      onStatus: (text) => setStatus(text),
-    });
-    handle.attach(connection.peer);
-    await bindDesktopMirror(profile, connection.info.mirror);
-    setStatus(`paired · fingerprint ${connection.info.fingerprint} — reloading…`);
-    setTimeout(() => location.reload(), 800);
-  };
-
-  el<HTMLButtonElement>("pair-create-code")?.addEventListener("click", () => {
+  const startRelayJoin = (): void => {
     const handle = requireSync();
     if (!handle) return;
+    const code = validCode();
+    if (!code) return;
+    beginPairing(startRelayJoin);
+    setVerify("—");
     void (async () => {
       try {
         const swap = relayService();
+        progress(`joining via ${swap.baseUrl}…`);
+        setStatus(`joining via ${swap.baseUrl}…`);
+        const joined = await joinSwapChannel(swap, code);
+        progress("code accepted — pairing");
+        const phrase = await handle.pairBobSwap({
+          baseUrl: swap.baseUrl,
+          readKey: swap.readKey ?? swap.uploadKey,
+          id: joined.id,
+          roleToken: joined.roleToken,
+          role: joined.role,
+          iceServers: joined.iceServers,
+          onStatus: onPairStatus,
+        });
+        setVerify(phrase);
+        progress("verification phrase ready");
+        progressDone();
+        setStatus("connected — both devices must show the same phrase");
+        updateLiveStatus();
+      } catch (err) {
+        const text = err instanceof Error ? err.message : String(err);
+        progressFailed(`relay pairing failed: ${text}`);
+        setStatus(`relay pairing failed: ${text}`);
+      }
+    })();
+  };
+
+  const startRelayOffer = (): void => {
+    const handle = requireSync();
+    if (!handle) return;
+    beginPairing(startRelayOffer);
+    void (async () => {
+      try {
+        const swap = relayService();
+        progress(`creating a code via ${swap.baseUrl}…`);
         setStatus(`creating a code via ${swap.baseUrl}…`);
         const channel = await createSwapChannel(swap);
         const created = el<HTMLElement>("pair-created-wrap");
         if (created) created.hidden = false;
         setText("pair-created-code", channel.code);
+        progress(`code ${channel.code} created — share it with the other browser`);
         setStatus("share the 8-digit code with the other device, then wait");
         const phrase = await handle.pairBobSwap({
           baseUrl: swap.baseUrl,
@@ -408,35 +594,68 @@ export function wireSyncUi(getSync: SyncGetter): void {
           roleToken: channel.roleToken,
           role: channel.role,
           iceServers: channel.iceServers,
+          onStatus: onPairStatus,
         });
         setVerify(phrase);
+        progress("verification phrase ready");
+        progressDone();
         setStatus("connected — both devices must show the same phrase");
         updateLiveStatus();
       } catch (err) {
-        setStatus(`pairing failed: ${err instanceof Error ? err.message : String(err)}`);
+        const text = err instanceof Error ? err.message : String(err);
+        progressFailed(`pairing failed: ${text}`);
+        setStatus(`pairing failed: ${text}`);
       }
     })();
-  });
+  };
 
-  el<HTMLButtonElement>("pair-join-code")?.addEventListener("click", () => {
+  const startDesktopJoin = (): void => {
     const handle = requireSync();
     if (!handle) return;
-    const code = pairCode();
-    if (!/^\d{4}-?\d{4}$/.test(code)) {
-      setStatus("enter the 8-digit pairing code");
-      return;
-    }
-    const source = pairSource();
+    const code = validCode();
+    if (!code) return;
+    beginPairing(startDesktopJoin);
     setVerify("—");
     void (async () => {
       try {
-        if (source === "desktop") await pairDesktop(handle, code);
-        else await pairRelay(handle, code);
+        const profile = activeProfile();
+        const url = serverUrl();
+        showActiveProfile();
+        progress(`joining ${url}…`);
+        setStatus(`joining ${url}…`);
+        const connection = await pairWithServer({
+          url,
+          code,
+          profile,
+          localId: handle.engine.id,
+          onSas: (phrase) => {
+            setVerify(phrase);
+            progress("verification phrase ready");
+          },
+          onStatus: (text) => {
+            setStatus(text);
+            progress(text);
+          },
+        });
+        handle.attach(connection.peer);
+        progress("binding the mirror folder…");
+        await bindDesktopMirror(profile, connection.info.mirror);
+        progressDone();
+        setStatus(`paired · fingerprint ${connection.info.fingerprint} — reloading…`);
+        setTimeout(() => location.reload(), 800);
       } catch (err) {
         const text = err instanceof Error ? err.message : String(err);
-        setStatus(`${source === "desktop" ? "desktop" : "relay"} pairing failed: ${text}`);
+        progressFailed(`desktop pairing failed: ${text}`);
+        setStatus(`desktop pairing failed: ${text}`);
       }
     })();
+  };
+
+  el<HTMLButtonElement>("pair-create-code")?.addEventListener("click", () => startRelayOffer());
+
+  el<HTMLButtonElement>("pair-join-code")?.addEventListener("click", () => {
+    if (pairSource() === "desktop") startDesktopJoin();
+    else startRelayJoin();
   });
 
   el<HTMLButtonElement>("pair-unpair")?.addEventListener("click", () => {

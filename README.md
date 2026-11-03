@@ -466,7 +466,9 @@ Pair…**: one code field with a source switch — **Another tab / relay**
 (BobSwap, defaulting to the built-in deployment) or **My desktop / server**.
 Manual paste remains the no-service fallback. **Sync now** in the same row runs
 an explicit round with every paired peer; the agent worker reports its commits,
-so files BOB writes sync without it. Signaling blobs carry only
+so files BOB writes sync without it. A transfer line beside it shows the
+direction and progress (↑ sending, ↓ receiving, file count and bytes) while a
+round moves files. Signaling blobs carry only
 WebRTC addressing; workspace bytes travel over the authenticated data channel
 (a paired desktop/server is a peer endpoint and its mirror folder holds a
 copy). Full guide: [docs/pairing-and-sync.md](docs/pairing-and-sync.md).

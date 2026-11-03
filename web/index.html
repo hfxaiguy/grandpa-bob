@@ -104,6 +104,47 @@
       dialog progress { width: 100%; height: 0.7rem; }
       dialog form { margin-top: 0.8rem; border-top: 1px solid var(--border); padding-top: 0.6rem; }
       .row-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.7rem; }
+      .pair-progress {
+        list-style: none; margin: 0.5rem 0 0; padding: 0.15rem 0 0.15rem 0.15rem;
+        border-left: 2px solid var(--border); max-height: 11rem; overflow: auto;
+      }
+      .pair-progress li {
+        position: relative; margin: 0 0 0.3rem; padding-left: 1.05rem;
+        font-size: 12px; color: var(--muted); line-height: 1.35;
+      }
+      .pair-progress li::before {
+        content: "○"; position: absolute; left: -0.5rem; top: 0;
+        background: var(--panel); padding: 0 0.12rem; color: var(--muted);
+      }
+      .pair-progress li[data-state="active"] { color: var(--fg); }
+      .pair-progress li[data-state="active"]::before { content: "●"; color: var(--accent); }
+      .pair-progress li[data-state="done"]::before { content: "✓"; color: #7bc47f; }
+      .pair-progress li[data-state="failed"] { color: #ff9b9b; }
+      .pair-progress li[data-state="failed"]::before { content: "✕"; color: #ff9b9b; }
+      .pair-progress .at {
+        margin-left: 0.4rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10.5px; opacity: 0.7;
+      }
+      .transfer { margin: 0.45rem 0 0.2rem; }
+      .transfer-head {
+        display: flex; align-items: baseline; justify-content: space-between;
+        gap: 0.6rem; font-size: 12px;
+      }
+      .transfer-dir { font-weight: 600; white-space: nowrap; }
+      .transfer[data-direction="idle"] .transfer-dir { color: var(--muted); }
+      .transfer[data-direction="up"] .transfer-dir { color: var(--accent); }
+      .transfer[data-direction="down"] .transfer-dir { color: #7bc47f; }
+      .transfer[data-direction="both"] .transfer-dir { color: #c9a0ff; }
+      .transfer progress { width: 100%; height: 0.45rem; margin-top: 0.25rem; }
+      .transfer progress::-webkit-progress-bar { background: var(--card); border-radius: 99px; }
+      .transfer[data-direction="up"] progress::-webkit-progress-value { background: var(--accent); }
+      .transfer[data-direction="down"] progress::-webkit-progress-value { background: #7bc47f; }
+      .transfer[data-direction="both"] progress::-webkit-progress-value { background: #c9a0ff; }
+      .transfer[data-direction="idle"] progress::-webkit-progress-value { background: var(--muted); }
+      .transfer[data-direction="up"] progress::-moz-progress-bar { background: var(--accent); }
+      .transfer[data-direction="down"] progress::-moz-progress-bar { background: #7bc47f; }
+      .transfer[data-direction="both"] progress::-moz-progress-bar { background: #c9a0ff; }
+      .transfer[data-direction="idle"] progress::-moz-progress-bar { background: var(--muted); }
       .sync-row { display: flex; align-items: baseline; gap: 0.6rem; padding: 0.15rem 0; }
       .sync-row > button { flex: 0 0 auto; min-width: 7.5rem; text-align: left; }
       .sync-row > .muted { font-size: 12px; }
@@ -331,6 +372,13 @@
         <button id="live-sync-now" type="button" title="Run a sync round with every paired peer now">Sync now</button>
         <span class="muted">Same-origin tabs sync automatically. <span id="live-sync-status">checking…</span></span>
       </div>
+      <div class="transfer" id="live-transfer" data-direction="idle">
+        <div class="transfer-head">
+          <span id="live-transfer-dir" class="transfer-dir">⇅ idle</span>
+          <span id="live-transfer-text" class="muted">no data transfer yet</span>
+        </div>
+        <progress id="live-transfer-bar" max="100" value="0" hidden></progress>
+      </div>
       <h4>BobSwap</h4>
       <div class="sync-row">
         <button id="swap-settings" type="button" title="Configure BobSwap services and keys">BobSwap…</button>
@@ -377,6 +425,17 @@
       <p>Verification phrase <strong id="pair-verify">—</strong>
         <span class="muted">(must match on both devices before trusting the link)</span></p>
       <p id="pair-status" class="muted">idle</p>
+      <ol id="pair-progress" class="pair-progress" aria-live="polite" hidden></ol>
+      <div class="row-actions" id="pair-retry-wrap" hidden>
+        <button id="pair-retry" type="button" title="Run the last pairing attempt again">Retry pairing</button>
+      </div>
+      <div class="transfer" id="pair-transfer" data-direction="idle">
+        <div class="transfer-head">
+          <span id="pair-transfer-dir" class="transfer-dir">⇅ idle</span>
+          <span id="pair-transfer-text" class="muted">no data transfer yet</span>
+        </div>
+        <progress id="pair-transfer-bar" max="100" value="0" hidden></progress>
+      </div>
 
       <h4>Manual (no service)</h4>
       <div class="row-actions">

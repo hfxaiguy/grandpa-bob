@@ -62,6 +62,12 @@ worker's commit seam, so a paired workspace normally converges without anyone
 pressing it; the button is the manual recovery path (and tells you when no
 peer is connected).
 
+While a round moves files, the same row shows a **transfer line**: direction
+(↑ sending, ↓ receiving, ⇅ both), the pull round's file count, and cumulative
+bytes in each direction. The bar is determinate for a pull round (files are
+pulled one at a time) and indeterminate while serving another peer's requests.
+The Pair dialog shows the same line, so both ends can be watched together.
+
 ## 3. Cross-device pairing
 
 Open **Sync… → Live sync → Pair…**. Both tabs must host their own workspace
@@ -70,6 +76,12 @@ field plus a source switch — **Another tab / relay** (BobSwap) or **My desktop
 server** — so the code is the only thing to exchange. The relay and desktop
 paths share the same code flow (§6 covers the desktop side); manual paste is
 the no-service fallback.
+
+While a handshake runs, the dialog shows a live **progress timeline** on each
+end: code created/redeemed, offer/answer exchange, ICE gathering and
+connectivity, data-channel open, then the verification phrase. **Retry
+pairing** replays the last attempt (useful after a transient relay failure or
+a paste mistake) without re-entering the code or blobs.
 
 ### BobSwap REST (automatic, needs a service)
 

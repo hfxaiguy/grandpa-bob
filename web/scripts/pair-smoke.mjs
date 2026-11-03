@@ -49,7 +49,7 @@ const procs = [];
 function launch(i) {
   const chrome = spawn(CHROME, [
     "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-    "--no-first-run", "--no-default-browser-check",
+    "--no-first-run", "--no-default-browser-check", "--remote-allow-origins=*",
     `--remote-debugging-port=${CDP(i)}`, `--user-data-dir=${PROFILE(i)}`, "about:blank",
   ], { stdio: "ignore" });
   procs.push(chrome);
@@ -66,16 +66,23 @@ const rmSyncProfiles = () => { for (let i = 0; i < 2; i++) try { rmSync(PROFILE(
 
 setTimeout(() => cleanup(2, "timeout: pair smoke did not finish"), 420_000).unref();
 
-const getJSON = async (port, p) => (await fetch(`http://127.0.0.1:${port}${p}`)).json();
+const getJSON = async (port, p) => (await fetch(`http://127.0.0.1:${port}${p}`, { signal: AbortSignal.timeout(2_000) })).json();
 
 async function connect(i, url) {
   const port = CDP(i);
   let version;
   for (let k = 0; k < 150 && !version; k++) { try { version = await getJSON(port, "/json/version"); } catch { await sleep(100); } }
   assert(version, `browser ${i} devtools unreachable`);
-  const target = await (await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: "PUT" })).json();
+  console.error(`   [device ${i}] devtools up`);
+  const target = await (await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: "PUT", signal: AbortSignal.timeout(10_000) })).json();
+  console.error(`   [device ${i}] target ${target.id}`);
   const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("devtools websocket did not open")), 10_000);
+    ws.onopen = () => { clearTimeout(timer); resolve(); };
+    ws.onerror = (err) => { clearTimeout(timer); reject(err); };
+  });
+  console.error(`   [device ${i}] websocket open`);
   let nextId = 0;
   const pending = new Map();
   ws.onmessage = (ev) => {
@@ -85,7 +92,14 @@ async function connect(i, url) {
   const send = (method, params = {}) =>
     new Promise((resolve) => { const id = ++nextId; pending.set(id, resolve); ws.send(JSON.stringify({ id, method, params })); });
   const evaluate = async (expression) => {
-    const r = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+    // A navigation can tear down the execution context and leave an
+    // `evaluate` unanswered; bound it so `waitFor` can retry instead of
+    // hanging past its own deadline.
+    const r = await Promise.race([
+      send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }),
+      sleep(5_000).then(() => null),
+    ]);
+    if (!r) throw new Error("evaluate timed out");
     if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description ?? "evaluate failed");
     return r.result?.result?.value;
   };
@@ -102,10 +116,17 @@ async function connect(i, url) {
   };
   await send("Runtime.enable");
   await send("Page.enable");
+  console.error(`   [device ${i}] domains enabled`);
+  // `/json/new?url` is advisory in recent Chrome builds; navigate explicitly
+  // so the tab is reliably on the app origin (callers poll `waitFor(booted)`).
+  // Do not await the response: a busy renderer can delay it past the point
+  // where polling has already succeeded.
+  void send("Page.navigate", { url });
+  console.error(`   [device ${i}] navigation requested`);
   return { send, evaluate, waitFor, close: () => fetch(`http://127.0.0.1:${port}/json/close/${target.id}`).catch(() => {}) };
 }
 
-const booted = `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && (document.getElementById("status")?.textContent || "").includes("browser")`;
+const booted = `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && (document.getElementById("status")?.textContent || "").includes("opfs")`;
 
 // The service must be in localStorage before the pair dialog can use it; a
 // first navigation to the origin, one setItem + one reload does it.
@@ -146,6 +167,15 @@ try {
   })()`, "bobswap code create");
   console.log(`ok  device A created a channel (pairing code ${code})`);
 
+  // The dialog now renders a live handshake timeline, and the manual retry
+  // trigger is offered once an attempt has started.
+  const progressRows = await a.evaluate(
+    `JSON.stringify({ rows: document.querySelectorAll("#pair-progress li").length, retry: !document.getElementById("pair-retry-wrap").hidden })`,
+  );
+  const progressState = JSON.parse(progressRows);
+  assert(progressState.rows > 0, "device A shows pairing progress rows");
+  assert(progressState.retry, "device A offers the manual retry trigger");
+
   // device B: join with the code only
   await b.evaluate(`document.getElementById("pair-source-relay").click()`);
   await b.evaluate(`document.getElementById("pair-code").value = ${JSON.stringify(code)}`);
@@ -170,6 +200,15 @@ try {
   console.log(`ok  device A phrase: ${phraseA}`);
   console.log(`ok  device B phrase: ${phraseB}`);
   assert(phraseA === phraseB, "both devices must render the SAME verification phrase");
+
+  const progressText = await a.evaluate(
+    `Array.from(document.querySelectorAll("#pair-progress li")).map((li) => li.textContent).join("\\n")`,
+  );
+  assert(progressText.includes("verification phrase ready"), "device A's timeline reaches the verification phrase");
+  assert(
+    await a.evaluate(`document.querySelectorAll('#pair-progress li[data-state="active"]').length === 0`),
+    "device A's timeline has no step left active",
+  );
 
   const liveA = await a.evaluate(`JSON.stringify({st: document.getElementById("live-sync-status").textContent})`);
   console.log(`ok  live-sync status (A): ${JSON.parse(liveA).st}`);

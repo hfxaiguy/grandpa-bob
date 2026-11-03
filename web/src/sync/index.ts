@@ -14,7 +14,7 @@
  * Excluded from sync by design: `.git/`, `logs/`, `.gpb-*`, `assets/inbox/`
  * (see hashmap.ts) — git history and run logs stay per-replica.
  */
-import { SyncEngine, type SyncPeer, type SyncState } from "./engine";
+import { SyncEngine, emptyTransfer, type SyncPeer, type SyncState } from "./engine";
 import type { Platform } from "../platform/types";
 import { broadcastPeer } from "./transport-broadcast";
 import { watchCommits } from "./commit-watch";
@@ -43,10 +43,12 @@ export interface SyncHandle {
    * Start a manual (no-service) pairing. `onOutgoing` receives the blob to
    * hand the other side; `accept` feeds the blob the other side produced;
    * `done` resolves with the verification phrase once the channel opens.
+   * `onStatus` reports handshake progress (gathering, paste, connecting).
    */
   startManualPairing(
     role: "offerer" | "joiner",
     onOutgoing: (blob: string) => void,
+    onStatus?: (text: string) => void,
   ): { accept: (blob: string) => void; done: Promise<string> };
   /** Pair over the BobSwap REST mailbox (the service must support sync channels). */
   pairBobSwap(channel: {
@@ -58,6 +60,8 @@ export interface SyncHandle {
     role: "offerer" | "answerer" | "joiner";
     /** ICE servers from the channel create/join response (STUN/TURN). */
     iceServers?: RTCIceServer[];
+    /** Reports handshake progress (signal exchange, ICE, channel open). */
+    onStatus?: (text: string) => void;
   }): Promise<string>;
   unpair(): void;
 }
@@ -99,7 +103,13 @@ export async function startSync(
   };
 
   const stateListeners = new Set<(state: SyncState) => void>();
-  let state: SyncState = { status: "idle", detail: "", conflicts: [], lastSyncAt: null };
+  let state: SyncState = {
+    status: "idle",
+    detail: "",
+    conflicts: [],
+    lastSyncAt: null,
+    transfer: emptyTransfer(),
+  };
   engine.onState((next) => {
     state = next;
     for (const cb of stateListeners) cb(next);
@@ -122,10 +132,13 @@ export async function startSync(
     syncNow() {
       return engine.reconcileAll();
     },
-    startManualPairing(role, onOutgoing) {
-      const provider = new ManualSignaling(role);
+    startManualPairing(role, onOutgoing, onStatus) {
+      const provider = new ManualSignaling(role, onStatus);
       void provider.outgoing.then(onOutgoing).catch((err) => onOutgoing(`error: ${String(err)}`));
-      const done = rtcPeer(provider, engine.id, { createChannel: role === "offerer" }).then(({ peer, phrase }) => {
+      const done = rtcPeer(provider, engine.id, {
+        createChannel: role === "offerer",
+        onState: onStatus,
+      }).then(({ peer, phrase }) => {
         attachCross(peer);
         return phrase;
       });
@@ -135,10 +148,12 @@ export async function startSync(
       const provider: SignalingProvider = new BobSwapSignaling(
         { baseUrl: channel.baseUrl, readKey: channel.readKey },
         { id: channel.id, roleToken: channel.roleToken, role: channel.role },
+        channel.onStatus,
       );
       const { peer, phrase } = await rtcPeer(provider, engine.id, {
         iceServers: channel.iceServers,
         createChannel: channel.role === "offerer",
+        onState: channel.onStatus,
       });
       attachCross(peer);
       return phrase;

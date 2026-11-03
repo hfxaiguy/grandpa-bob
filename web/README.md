@@ -629,7 +629,8 @@ Two REST/peer paths cover this; neither stores workspace bytes on BobSwap:
   (a single-use 8-digit code exchanged out-of-band; channel ids stay internal)
   or a manual paste; the mailbox carries SDP/ICE only. Both sides show the same
   6-word verification phrase before any data moves; a MITM relay changes the
-  DTLS fingerprints and the phrases stop matching.
+  DTLS fingerprints and the phrases stop matching. **Live sync** shows the
+  round's direction and a file/byte progress bar while data moves.
 - **No service at all:** **Sync…** → **Export**/**Import** moves a JSON archive
   by hand.
 

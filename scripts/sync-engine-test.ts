@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { createNodePlatform } from "../src/platform/node.js";
-import { SyncEngine, type SyncEnvelope, type SyncPeer } from "../web/src/sync/engine";
+import { SyncEngine, type SyncEnvelope, type SyncPeer, type TransferState } from "../web/src/sync/engine";
 import { buildHashmap } from "../web/src/sync/hashmap";
 import { watchCommits } from "../web/src/sync/commit-watch";
 import { createMemoryPlatform } from "../web/src/platform/memory";
@@ -370,6 +370,37 @@ try {
   await engineA.noteMutation(["clock.txt"]);
   await waitFor(() => fileIs(platformB, "clock.txt", "tick\n"), "clock.txt reaches B");
   await waitFor(async () => lastSyncAtA !== beforeClock, "A's completion clock advances on its own round");
+
+  // ── transfer progress: bytes, files and direction are reported ────────
+  let transferA: TransferState | null = null;
+  let transferB: TransferState | null = null;
+  let maxRound = { done: 0, total: 0 };
+  const directionsB = new Set<string>();
+  engineA.onState((state) => {
+    transferA = state.transfer;
+  });
+  engineB.onState((state) => {
+    transferB = state.transfer;
+    directionsB.add(state.transfer.direction);
+    maxRound = {
+      done: Math.max(maxRound.done, state.transfer.roundDone),
+      total: Math.max(maxRound.total, state.transfer.roundTotal),
+    };
+  });
+  await platformA.fs.writeFile(abs(platformA, "transfer.txt"), "payload\n");
+  await engineA.noteMutation(["transfer.txt"]);
+  await waitFor(() => fileIs(platformB, "transfer.txt", "payload\n"), "transfer.txt reaches B");
+  await settle();
+  assert.ok(transferB && transferB.received >= 8, "B counts the received file's bytes");
+  assert.ok(transferB && transferB.filesReceived >= 1, "B counts the received file");
+  assert.ok(transferA && transferA.sent >= 8, "A counts the served bytes");
+  assert.ok(transferA && transferA.filesSent >= 1, "A counts the served file");
+  assert.ok(
+    directionsB.has("down") || directionsB.has("both"),
+    "B reports the download direction",
+  );
+  assert.ok(maxRound.total >= 1 && maxRound.done >= 1, "the pull round reports file progress");
+  console.log("ok  transfer counters and direction");
 
   // ── a manual round waits for a peer that has spoken ───────────────────
   // The Sync… → Live sync → "Sync now" button uses this: peers that answered
