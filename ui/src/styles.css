@@ -489,6 +489,7 @@ body.dragging-tile { user-select: none !important; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: transparent; }
 .dot.run { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 .dot.wait { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+.dot.err { background: var(--err); box-shadow: 0 0 6px var(--err); }
 
 /* The truncated one-line description under the title: a button that opens the
    full text (and the app's guide) in a modal. */
@@ -537,6 +538,88 @@ body.dragging-tile { user-select: none !important; }
   font-size: 12px;
 }
 .bubble.err { align-self: flex-start; background: #3a1f24; border-color: #5b2b2b; color: #ffd7d7; }
+
+/* ── inline app calls: a called app as a smaller tile in the caller's chat ──
+   The caller's thread keeps the call where it happened. The card is a compact
+   version of the app's tile — same header/status language, its own bubbles,
+   and its own nested calls — with a link out to the real tile. */
+.app-call {
+  align-self: stretch;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.app-call.running { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(110, 168, 254, 0.16) inset; }
+.app-call.waiting { border-color: var(--warn); }
+.app-call.err { border-color: var(--err); }
+.app-call.nested { margin-left: 10px; width: calc(100% - 10px); background: rgba(22, 32, 58, 0.6); }
+.app-call-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+.app-call-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+  font-size: 12.5px;
+}
+.app-call-status {
+  flex: none;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.app-call-head button { padding: 0 6px; font-size: 11px; flex: none; }
+.app-call-open { color: var(--accent); opacity: 0.85; }
+.app-call-open:hover, .app-call-open:focus-visible { opacity: 1; }
+.app-call-toggle { color: var(--muted); }
+.app-call-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  max-height: 240px;
+  overflow: auto;
+}
+.app-call-msg {
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.app-call-msg.machine {
+  background: rgba(148, 201, 191, 0.06);
+  border-style: dashed;
+  border-color: #345b57;
+  color: var(--machine);
+  opacity: 0.75;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.app-call-msg.has-component { padding: 4px; white-space: normal; }
+.app-call-empty { color: var(--muted); font-size: 12px; font-style: italic; }
+@container (max-width: 330px) {
+  .app-call-head { gap: 5px; }
+  .app-call-status { display: none; }
+  .app-call-body { padding: 6px; }
+}
 /* A component bubble is a frame, not a text run: the guest draws its own
    card with the theme vars the host hands it. */
 .bubble.has-component { width: 100%; max-width: 100%; padding: 6px; white-space: normal; }

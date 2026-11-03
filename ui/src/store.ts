@@ -1126,6 +1126,37 @@ export function toggleSub(name: string): void {
   saveLayout();
 }
 
+/** Bring an app's real tile into view: unhide its top-level ancestor, open the
+ *  parented chain in each parent's rail, then scroll the tile into view. The
+ *  inline app cards use this as their "open" action. */
+export function showApp(name: string): void {
+  const app = state.apps.find((a) => a.name === name);
+  if (!app) return;
+  // Walk to the top-level ancestor, remembering the parented chain root-first.
+  const chain: string[] = [];
+  let cur: AppInfo | undefined = app;
+  const seen = new Set<string>();
+  while (cur?.parent && !seen.has(cur.name)) {
+    seen.add(cur.name);
+    chain.push(cur.name);
+    const parent: string = cur.parent;
+    cur = state.apps.find((a) => a.name === parent);
+  }
+  if (!cur) return;
+  if (state.layout.hidden.includes(cur.name)) toggleHidden(cur.name);
+  for (const n of chain.reverse()) {
+    if (!state.layout.subsOpen.includes(n)) toggleSub(n);
+  }
+  // The tile may have just been mounted; one frame later its seat exists.
+  if (typeof requestAnimationFrame !== "function") return;
+  requestAnimationFrame(() => {
+    const el = Array.from(document.querySelectorAll<HTMLElement>("[data-tile]")).find(
+      (node) => node.getAttribute("data-tile") === name,
+    );
+    el?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  });
+}
+
 // ── live stream (SSE) ───────────────────────────────────────────────────
 
 /**

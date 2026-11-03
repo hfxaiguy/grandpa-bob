@@ -2,6 +2,36 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-02 — a called app is a smaller tile in the caller's chat
+
+Calling an app split the conversation: the app's bubbles lived on its own board
+tile, while the caller's thread showed only the final answer. The trunk could
+call `contacts` and the person watching the trunk chat saw nothing until the
+turn ended. The caller's chat now carries an **inline app card** at the point
+the call happened — the board's tile language one level down.
+
+- **`ui/src/app-calls.ts`** (new): a pure fold over the same attributed event
+  stream the tiles use. A `tree_enter` directly below the caller opens a card,
+  `tree_suspend` makes it wait, `tree_exit` closes it (and keeps an engine
+  error), and persisted `emits`/`emitApps` fill its bubbles. Calls the app made
+  during the same turn recurse inside its card, so `contacts.graph` appears
+  inside the contacts card and never boards trunk.
+- **Placement:** `bubblesFor()` interleaves a card at the first bubble the
+  called app produced, so intro text → card → final reply reads in order. A
+  silent call trails the turn; a live one shows `working…`.
+- **The card:** same dot/name/status header as a tile, its own emitted text and
+  component bubbles (including the full-screen component view), nested cards,
+  and an `open ↗` that unhides the real tile (or opens the whole parented chain
+  in its rails) and scrolls it into view. Collapse keeps a long call compact.
+- **Old turns:** no replay events? The fold groups by `emitApps` and the
+  workspace parent map, so persisted conversations still show their cards.
+- **No new host work:** the engine's `tree_enter`/`tree_exit`/`tree_suspend`
+  rows and the existing emit tags already carry everything the card needs.
+
+Tests: `npm run test:app-calls` (direct calls, nested sub-calls, silent and
+failed calls, paused callers, old-turn fallback, cache identity);
+`npm run test:ui` (typecheck + build).
+
 ## 2026-11-02 — an unchanged seed is probed with HEAD, not re-downloaded
 
 A keyless update check downloaded the whole seed archive just to discover it

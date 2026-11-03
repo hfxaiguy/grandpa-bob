@@ -111,6 +111,11 @@ Tool access follows the same nesting: the trunk sees only top-level app trees,
 and an app tree automatically gets the app trees directly below it as tools.
 `contacts.graph` is a tool of `contacts`, never of the trunk.
 
+The conversation reflects that nesting too: when a tree calls an app, the
+caller's chat shows a compact inline app tile (status, emitted bubbles, and the
+app's own sub-calls) where the call happened. `open ↗` on the card unhides the
+full tile or opens the parented chain in each rail. See `ui/src/app-calls.ts`.
+
 The emit attaches the component and still carries the fallback text. The
 portable shape works anywhere a tree runs (including plain `node --test`):
 

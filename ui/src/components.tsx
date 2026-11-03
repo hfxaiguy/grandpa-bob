@@ -3,6 +3,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "so
 import type { JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { appIconUrl } from "./app-icons";
+import { appCallKey, appCallsFor, firstEmitIndex, type AppCall } from "./app-calls";
 import { describeEvent, streamLines, type EventLine } from "./describe";
 import { copyEventStream, copyText, downloadEventStream } from "./event-dump";
 import { JsonView } from "./json-view";
@@ -39,6 +40,7 @@ import {
   subApps,
   openSubApps,
   toggleSub,
+  showApp,
   toast,
   sendFile,
   transcribeFileStream,
@@ -55,9 +57,11 @@ const trunkOf = (a?: string | null) => a || "trunk";
 interface Bubble {
   turn: Turn;
   text: string;
-  kind: "user" | "bot" | "err";
+  kind: "user" | "bot" | "err" | "call";
   emitIndex?: number;
   component?: EmitComponent | null;
+  /** An app call card (the caller's chat shows the app it called). */
+  call?: AppCall;
   lastOfTurn?: boolean;
 }
 
@@ -94,7 +98,8 @@ function reuseBubble(turn: Turn, key: string, next: Bubble): Bubble {
     prev.kind === next.kind &&
     prev.emitIndex === next.emitIndex &&
     prev.lastOfTurn === next.lastOfTurn &&
-    componentKey(prev.component) === componentKey(next.component)
+    componentKey(prev.component) === componentKey(next.component) &&
+    (prev.call ? appCallKey(prev.call) : "") === (next.call ? appCallKey(next.call) : "")
   ) {
     return prev;
   }
@@ -102,18 +107,31 @@ function reuseBubble(turn: Turn, key: string, next: Bubble): Bubble {
   return next;
 }
 
-/** Chat bubbles for one app, across every turn. */
+/** Chat bubbles for one app, across every turn. A turn's direct app calls are
+ *  interleaved at the first bubble they produced, so the caller's chat reads
+ *  as one conversation (the call card carries the called app's own bubbles). */
 function bubblesFor(app: string): Bubble[] {
   const out: Bubble[] = [];
+  const apps = state.apps.length ? state.apps : undefined;
   for (const t of state.turns) {
     // Build this turn's rows first, then mark its last reply, so the reuse key
     // can carry `lastOfTurn`.
     const rows: Bubble[] = [];
     if ((t.inputApp ?? "trunk") === app && t.input) rows.push({ turn: t, text: t.input, kind: "user" });
     const emits = t.emits ?? [];
-    const apps = t.emitApps ?? [];
+    const emitApps = t.emitApps ?? [];
+    // A card sits just before the first bubble any of its apps produced. Calls
+    // with no bubbles at all (a silent app, or one still starting) trail the
+    // turn instead of jumping in front of text that preceded them.
+    const calls = appCallsFor(t, app, apps).sort(
+      (a, b) => firstEmitIndex(a) - firstEmitIndex(b) || a.startedAt - b.startedAt,
+    );
+    let nextCall = 0;
     for (let i = 0; i < emits.length; i++) {
-      if (trunkOf(apps[i]) !== app) continue;
+      while (nextCall < calls.length && firstEmitIndex(calls[nextCall]) <= i) {
+        rows.push({ turn: t, text: "", kind: "call", call: calls[nextCall++] });
+      }
+      if (trunkOf(emitApps[i]) !== app) continue;
       // Machine notes are tree narration (input, waiting, hand-offs), not
       // replies. The session drawer/toolbar toggles `showMachine` globally;
       // emitIndex stays the original position so provenance/levels still line
@@ -123,6 +141,9 @@ function bubblesFor(app: string): Bubble[] {
       // the provenance endpoint resolves back to the log's emit row.
       rows.push({ turn: t, text: emits[i], kind: "bot", emitIndex: i, component: t.components?.[i] ?? null });
     }
+    while (nextCall < calls.length) {
+      rows.push({ turn: t, text: "", kind: "call", call: calls[nextCall++] });
+    }
     if (app === "trunk" && (t.status === "done" || t.status === "stopped") && !emits.length && t.output) {
       rows.push({ turn: t, text: t.output, kind: "bot" });
     }
@@ -130,13 +151,22 @@ function bubblesFor(app: string): Bubble[] {
       rows.push({ turn: t, text: t.error, kind: "err" });
     }
     for (let i = rows.length - 1; i >= 0; i--) {
-      if (rows[i].kind === "bot") {
+      if (rows[i].kind === "bot" || rows[i].kind === "call") {
         rows[i].lastOfTurn = true;
         break;
       }
     }
     for (const b of rows) {
-      const kindKey = b.kind === "user" ? "user" : b.emitIndex != null ? `emit:${b.emitIndex}` : b.kind === "err" ? "err" : "out";
+      const kindKey =
+        b.kind === "user"
+          ? "user"
+          : b.kind === "call"
+            ? `call:${appCallKey(b.call!)}`
+            : b.emitIndex != null
+              ? `emit:${b.emitIndex}`
+              : b.kind === "err"
+                ? "err"
+                : "out";
       out.push(reuseBubble(t, `${kindKey}${b.lastOfTurn ? ":last" : ""}`, b));
     }
   }
@@ -358,6 +388,95 @@ function ComponentBubble(props: { component: EmitComponent; app: string; text: s
         </Portal>
       </Show>
     </>
+  );
+}
+
+/** The compact tile a caller's chat shows for an app it called. It mirrors the
+ *  app's own chat one level down (status, emitted bubbles, and the app's own
+ *  sub-calls), with a control that opens the real tile when the person wants
+ *  to interact with it. */
+function AppCallCard(props: { turn: Turn; call: AppCall; depth?: number }) {
+  const [open, setOpen] = createSignal(true);
+  const status = () => props.call.status;
+  const info = () => state.apps.find((a) => a.name === props.call.app);
+  const rows = createMemo(() =>
+    props.call.emits
+      .map((i) => ({
+        index: i,
+        text: props.turn.emits?.[i] ?? "",
+        level: props.turn.levels?.[i] ?? null,
+        component: props.turn.components?.[i] ?? null,
+      }))
+      .filter((b) => b.text || b.component)
+      .filter((b) => b.level !== "machine" || state.showMachine),
+  );
+  const empty = () =>
+    status() === "running" ? "working…" : status() === "waiting" ? "waiting for a reply" : "no messages";
+  return (
+    <section
+      class="app-call"
+      classList={{
+        running: status() === "running",
+        waiting: status() === "waiting",
+        err: status() === "error",
+        nested: (props.depth ?? 0) > 0,
+      }}
+      data-call-app={props.call.app}
+      aria-label={`${props.call.app} app call`}
+    >
+      <header class="app-call-head">
+        <span
+          class="dot"
+          classList={{ run: status() === "running", wait: status() === "waiting", err: status() === "error" }}
+        />
+        <span class="app-call-name" title={info()?.description || props.call.app}>
+          {props.call.app}
+        </span>
+        <span class="app-call-status">{status()}</span>
+        <span class="spacer" />
+        <button
+          type="button"
+          class="app-call-open"
+          title={`open the ${props.call.app} tile`}
+          onClick={() => showApp(props.call.app)}
+        >
+          open ↗
+        </button>
+        <button
+          type="button"
+          class="app-call-toggle"
+          title={open() ? "collapse this call" : "expand this call"}
+          aria-expanded={open()}
+          onClick={() => setOpen(!open())}
+        >
+          {open() ? "▾" : "▸"}
+        </button>
+      </header>
+      <Show when={open()}>
+        <div class="app-call-body">
+          <Show
+            when={rows().length || props.call.children.length}
+            fallback={<div class="app-call-empty">{empty()}</div>}
+          >
+            <For each={rows()}>
+              {(row) => (
+                <div
+                  class="app-call-msg"
+                  classList={{ machine: row.level === "machine", "has-component": !!row.component }}
+                >
+                  <Show when={row.component} fallback={<RefText text={row.text} />}>
+                    {(comp) => <ComponentBubble component={comp()} app={props.call.app} text={row.text} />}
+                  </Show>
+                </div>
+              )}
+            </For>
+            <For each={props.call.children}>
+              {(child) => <AppCallCard turn={props.turn} call={child} depth={(props.depth ?? 0) + 1} />}
+            </For>
+          </Show>
+        </div>
+      </Show>
+    </section>
   );
 }
 
@@ -1574,52 +1693,59 @@ export function Tile(props: { app: AppInfo }) {
               <For each={bubbles()}>
                 {(b) => (
                   <>
-                    <div
-                      class="bubble"
-                      classList={{
-                        user: b.kind === "user",
-                        bot: b.kind === "bot",
-                        err: b.kind === "err",
-                        "has-component": !!b.component,
-                        machine:
-                          b.kind === "bot" &&
-                          b.emitIndex != null &&
-                          b.turn.levels?.[b.emitIndex] === "machine",
-                        "has-info":
-                          b.kind === "bot" &&
-                          b.emitIndex != null &&
-                          b.emitIndex >= 0 &&
-                          !!b.turn.runId &&
-                          b.turn.levels?.[b.emitIndex] !== "machine",
-                      }}
-                    >
-                      <Show when={b.component} fallback={<RefText text={b.text} />}>
-                        {(comp) => (
-                          <ComponentBubble
-                            component={comp()}
-                            app={trunkOf(b.turn.emitApps?.[b.emitIndex ?? 0])}
-                            text={b.text}
-                          />
-                        )}
-                      </Show>
-                      <Show
-                        when={
-                          b.kind === "bot" &&
-                          b.emitIndex != null &&
-                          b.emitIndex >= 0 &&
-                          !!b.turn.runId &&
-                          b.turn.levels?.[b.emitIndex] !== "machine"
-                        }
-                      >
-                        <button
-                          class="bubble-info"
-                          title="what was this written from?"
-                          onClick={() => setProv({ turnId: b.turn.turnId, bubble: b.emitIndex!, text: b.text })}
+                    <Show
+                      when={b.kind === "call" ? b.call : null}
+                      fallback={
+                        <div
+                          class="bubble"
+                          classList={{
+                            user: b.kind === "user",
+                            bot: b.kind === "bot",
+                            err: b.kind === "err",
+                            "has-component": !!b.component,
+                            machine:
+                              b.kind === "bot" &&
+                              b.emitIndex != null &&
+                              b.turn.levels?.[b.emitIndex] === "machine",
+                            "has-info":
+                              b.kind === "bot" &&
+                              b.emitIndex != null &&
+                              b.emitIndex >= 0 &&
+                              !!b.turn.runId &&
+                              b.turn.levels?.[b.emitIndex] !== "machine",
+                          }}
                         >
-                          ⓘ
-                        </button>
-                      </Show>
-                    </div>
+                          <Show when={b.component} fallback={<RefText text={b.text} />}>
+                            {(comp) => (
+                              <ComponentBubble
+                                component={comp()}
+                                app={trunkOf(b.turn.emitApps?.[b.emitIndex ?? 0])}
+                                text={b.text}
+                              />
+                            )}
+                          </Show>
+                          <Show
+                            when={
+                              b.kind === "bot" &&
+                              b.emitIndex != null &&
+                              b.emitIndex >= 0 &&
+                              !!b.turn.runId &&
+                              b.turn.levels?.[b.emitIndex] !== "machine"
+                            }
+                          >
+                            <button
+                              class="bubble-info"
+                              title="what was this written from?"
+                              onClick={() => setProv({ turnId: b.turn.turnId, bubble: b.emitIndex!, text: b.text })}
+                            >
+                              ⓘ
+                            </button>
+                          </Show>
+                        </div>
+                      }
+                    >
+                      {(call) => <AppCallCard turn={b.turn} call={call()} />}
+                    </Show>
                     <Show when={b.lastOfTurn ? tokenLine(b.turn.tokens) : null}>
                       {(line) => (
                         <div class="turn-tokens" title="tokens this turn used (input counts the full prompt on every model call)">
