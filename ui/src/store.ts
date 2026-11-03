@@ -1262,10 +1262,12 @@ export function clearFront(name?: string): void {
 }
 
 /** Whether a tile's memory panel is open: an explicit choice wins, then the
- *  viewport default — open on desktop, collapsed on a phone. */
+ *  layout default — a wide tile or a phone keeps memory collapsed; a normal
+ *  desktop tile opens it. */
 export function memoryOpen(name: string): boolean {
   if (state.layout.memOpen.includes(name)) return true;
   if (state.layout.memClosed.includes(name)) return false;
+  if (state.layout.wide.includes(name)) return false;
   return !smallScreen();
 }
 

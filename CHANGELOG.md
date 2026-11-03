@@ -2,6 +2,44 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — wide tiles keep their memory panel collapsed
+
+A wide tile already spans two columns for its chat, so its memory panel now
+follows the same quiet default as a phone: collapsed until the user opens it.
+
+- `ui/src/store.ts`: `memoryOpen()` defaults to closed when the tile is in
+  `layout.wide`, still letting an explicit open/closed choice win.
+- `ui/src/components.tsx`: the panel comment reflects the layout default.
+- `scripts/ui-order-test.ts`: asserts a wide desktop tile starts collapsed and
+  that an explicit toggle still opens it.
+
+Tests: `npm run test:ui-order`; `npm --prefix ui run typecheck`.
+
+## 2026-11-03 — chat shows memory updates where they happened
+
+Memory writes used to be visible only in the event log, so a reply could depend
+on a slot the conversation never showed changing. Each `memoryUpdate` now adds
+a faint line to the chat it happened in (including inside an app call card),
+placed between the bubbles it ran between.
+
+- `ui/src/memory-notes.ts`: reads a turn's `record` events with
+  `op: "memoryUpdate"`, keys each note by its run-log row (stable bubble
+  identity), attributes it to the app that wrote it, and anchors it to the emit
+  index it preceded. A capped event tail is re-based onto the turn's full emits
+  list, so a long turn still places updates correctly.
+- `ui/src/components.tsx`: renders the lines as collapsed `<details>` rows —
+  faint slot name plus a compact value hint — and loads the run-log row on
+  expand so arrays and long strings show untruncated. Memory lines participate
+  in bubble reuse, so an opened value does not close when the next event
+  streams in.
+- `ui/src/styles.css`: quiet summary styling, a readable expanded value panel,
+  and drag opt-out so selecting or expanding a line does not move the tile.
+- `scripts/ui-describe-test.ts`: covers update-only filtering, app
+  attribution, bubble anchors, and the tail re-basing.
+
+Tests: `npm run test:ui-describe`; `npm run test:ui-order`;
+`npm run test:turn-components`; `npm run typecheck`; `npm --prefix ui run build`.
+
 ## 2026-11-03 — sync shows transfer progress and direction
 
 A reconciliation round could pull a large workspace with no visible activity:

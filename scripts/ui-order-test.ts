@@ -300,6 +300,17 @@ assert.deepEqual(state.layout.memClosed, ["alpha"]);
 setSmallScreen(true);
 assert.equal(memoryOpen("beta"), false, "untouched tiles still follow the phone default");
 
+// A wide tile defaults collapsed even on desktop (its chat already spans two
+// columns); an explicit toggle can still open it.
+setState("layout", "wide", ["alpha"]);
+setState("layout", "memClosed", []);
+setState("layout", "memOpen", []);
+setSmallScreen(false);
+assert.equal(memoryOpen("alpha"), false, "a wide tile's memory starts collapsed on desktop");
+toggleMem("alpha");
+assert.equal(memoryOpen("alpha"), true, "an explicit toggle still opens it on a wide tile");
+setState("layout", "wide", []);
+
 // ── the phone front layer ───────────────────────────────────────────────
 // Tapping a header lifts one tile over the board; tapping again (or parking
 // it) lowers it. Only one tile is in front and a desktop does not lift at all.
@@ -365,4 +376,4 @@ runTurn(["trunk"], 42_000);
 runTurn(["trunk"], 43_000);
 assert.ok(state.layout.hidden.includes("alpha"), "lowering the front tile lets auto-close reclaim it");
 
-console.log("ui-order: pinned-first order, activity ranking, rail order, live bumps, auto-raise seats, auto-close after two unused turns, profile exceptions, trunk-only new-session board, phone memory defaults and front-tile lift ok");
+console.log("ui-order: pinned-first order, activity ranking, rail order, live bumps, auto-raise seats, auto-close after two unused turns, profile exceptions, trunk-only new-session board, phone/wide memory defaults and front-tile lift ok");

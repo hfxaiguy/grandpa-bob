@@ -12,6 +12,7 @@
  */
 import assert from "node:assert/strict";
 import { describeEvent, streamLines } from "../ui/src/describe.ts";
+import { memoryNotesForTurn } from "../ui/src/memory-notes.ts";
 import type { SanitizedEvent, Turn } from "../ui/src/types.ts";
 
 const ev = (
@@ -90,5 +91,43 @@ const t2: Turn = { ...turn, turnId: "t2", events: [] };
 const numbered = streamLines([turn, t2]);
 assert.equal(numbered[0].text, "turn 1");
 assert.equal(numbered.find((l) => l.kind === "turn" && l.text === "turn 2")?.text, "turn 2");
+
+// Memory updates become chat lines anchored between the right bubbles; plain
+// memory declarations are replayed every turn and stay out of the chat.
+const memTurn: Turn = {
+  turnId: "mem",
+  input: "",
+  startedAt: 1,
+  endedAt: null,
+  status: "running",
+  error: null,
+  output: null,
+  emits: ["one", "two"],
+  emitApps: ["trunk", "trunk"],
+  events: [
+    ev("emit", { value: { text: "one" } }, 10),
+    ev("record", { op: "memory", child: "seed", value: "ignored" }, 11),
+    ev("record", { op: "memoryUpdate", child: "mood", value: "happy" }, 12),
+    ev("emit", { value: { text: "two" } }, 13),
+    ev("record", { op: "memoryUpdate", child: "mood", value: "calm" }, 14, "contacts"),
+  ],
+};
+assert.deepEqual(
+  memoryNotesForTurn(memTurn, "trunk").map((n) => [n.anchor, n.note.child, n.note.value]),
+  [[1, "mood", "happy"]],
+  "a trunk update lands before the bubble that followed it",
+);
+assert.deepEqual(
+  memoryNotesForTurn(memTurn, "contacts").map((n) => [n.anchor, n.note.child, n.note.value]),
+  [[2, "mood", "calm"]],
+  "updates stay on the app that wrote them",
+);
+// A capped event tail is re-based onto the turn's full emits list.
+const tailTurn: Turn = { ...memTurn, emits: ["a", "b", "c", "d"], events: [memTurn.events[3], memTurn.events[4]] };
+assert.deepEqual(
+  memoryNotesForTurn(tailTurn, "contacts").map((n) => n.anchor),
+  [4],
+  "the first retained emit still counts from the turn's full list",
+);
 
 console.log("ui describe: event lines are stable across arrivals ✔");

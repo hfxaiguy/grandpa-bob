@@ -514,6 +514,13 @@ body.dragging-tile { user-select: none !important; }
 .tile-desc:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 
 .chat { flex: 1; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 60px; }
+/* The chat is a scroll container, so its rows must keep their natural height
+   and let it scroll instead of being shrunk to fit. A flex item whose overflow
+   is not visible (an `.app-call` card clips its own body) has an automatic
+   minimum size of zero, so it alone absorbed the whole deficit: every inline
+   app card collapsed to a bare colored hairline (blue running, amber waiting)
+   while the text bubbles around it still looked right. */
+.chat > * { flex-shrink: 0; }
 /* A reader who scrolled away from the newest message gets this pill pinned to
    the chat's bottom edge; the next message appends without moving the viewport. */
 .jump-latest {
@@ -611,6 +618,9 @@ body.dragging-tile { user-select: none !important; }
   max-height: 240px;
   overflow: auto;
 }
+/* Same scroll-container rule one level down: a nested call card clips its own
+   body, so without this it can be shrunk to nothing inside its parent's body. */
+.app-call-body > * { flex-shrink: 0; }
 .app-call-msg {
   padding: 5px 8px;
   border-radius: 8px;
@@ -686,6 +696,86 @@ body.dragging-tile { user-select: none !important; }
   user-select: text;
 }
 .turn-note.warn { color: var(--warn); opacity: 1; }
+/* A memory write in the chat: a quiet, faint line between messages. Opening it
+   reveals the exact value the slot held right after that write. */
+.memory-line {
+  align-self: flex-start;
+  max-width: 92%;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.memory-line > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  padding: 1px 2px;
+  border-radius: 4px;
+  color: var(--muted);
+  opacity: 0.68;
+  cursor: pointer;
+  list-style: none;
+  user-select: text;
+}
+.memory-line > summary::-webkit-details-marker { display: none; }
+.memory-line > summary::before {
+  content: "▸";
+  flex: none;
+  width: 9px;
+  font-size: 9px;
+  opacity: 0.8;
+}
+.memory-line[open] > summary::before { content: "▾"; }
+.memory-line > summary:hover,
+.memory-line > summary:focus-visible { opacity: 1; background: rgba(27, 39, 66, 0.55); }
+.memory-line > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 0; }
+.memory-line-badge { flex: none; color: var(--accent); opacity: 0.85; }
+.memory-line-slot {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.memory-line-peek {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+.memory-line-body {
+  margin: 4px 0 3px 15px;
+  padding: 6px 8px;
+  border-left: 1px solid var(--border);
+  background: rgba(22, 32, 58, 0.4);
+  border-radius: 0 6px 6px 0;
+  color: var(--fg);
+  font-size: 12px;
+  opacity: 1;
+  white-space: normal;
+}
+.memory-line-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.memory-line-path { overflow-wrap: anywhere; }
+.memory-line-loading,
+.memory-line-note { color: var(--muted); font-size: 11px; font-style: italic; }
+.memory-line-note { margin-top: 4px; color: var(--warn); opacity: 0.85; }
+.memory-line-raw {
+  margin: 0;
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 /* Live tool activity under the running turn's last message: the call in
    flight first, the last finished one muted beneath it. */
 .turn-live {

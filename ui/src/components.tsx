@@ -7,6 +7,7 @@ import { appCallKey, appCallsFor, firstEmitIndex, type AppCall } from "./app-cal
 import { describeEvent, streamLines, type EventLine } from "./describe";
 import { copyEventStream, copyText, downloadEventStream } from "./event-dump";
 import { JsonView } from "./json-view";
+import { memoryNotesForTurn, type MemoryNote } from "./memory-notes";
 import { getJSON } from "./api";
 import { componentDoc, type ComponentTheme } from "./emit-component";
 import {
@@ -61,11 +62,13 @@ const trunkOf = (a?: string | null) => a || "trunk";
 interface Bubble {
   turn: Turn;
   text: string;
-  kind: "user" | "bot" | "err" | "call";
+  kind: "user" | "bot" | "err" | "call" | "memory";
   emitIndex?: number;
   component?: EmitComponent | null;
   /** An app call card (the caller's chat shows the app it called). */
   call?: AppCall;
+  /** A quiet memory-update line between messages. */
+  memory?: MemoryNote;
   lastOfTurn?: boolean;
 }
 
@@ -103,6 +106,7 @@ function reuseBubble(turn: Turn, key: string, next: Bubble): Bubble {
     prev.emitIndex === next.emitIndex &&
     prev.lastOfTurn === next.lastOfTurn &&
     componentKey(prev.component) === componentKey(next.component) &&
+    prev.memory === next.memory &&
     (prev.call ? appCallKey(prev.call) : "") === (next.call ? appCallKey(next.call) : "")
   ) {
     return prev;
@@ -130,8 +134,19 @@ function bubblesFor(app: string): Bubble[] {
     const calls = appCallsFor(t, app, apps).sort(
       (a, b) => firstEmitIndex(a) - firstEmitIndex(b) || a.startedAt - b.startedAt,
     );
+    const memories = memoryNotesForTurn(t, app);
+    let nextMemory = 0;
+    // Memory updates sit where they happened: before the next bubble, and
+    // after the last one when they ran after the turn's final emit.
+    const pushMemory = (before: number) => {
+      while (nextMemory < memories.length && memories[nextMemory].anchor <= before) {
+        const { note } = memories[nextMemory++];
+        rows.push({ turn: t, text: "", kind: "memory", memory: note });
+      }
+    };
     let nextCall = 0;
     for (let i = 0; i < emits.length; i++) {
+      pushMemory(i);
       while (nextCall < calls.length && firstEmitIndex(calls[nextCall]) <= i) {
         rows.push({ turn: t, text: "", kind: "call", call: calls[nextCall++] });
       }
@@ -145,6 +160,7 @@ function bubblesFor(app: string): Bubble[] {
       // the provenance endpoint resolves back to the log's emit row.
       rows.push({ turn: t, text: emits[i], kind: "bot", emitIndex: i, component: t.components?.[i] ?? null });
     }
+    pushMemory(emits.length);
     while (nextCall < calls.length) {
       rows.push({ turn: t, text: "", kind: "call", call: calls[nextCall++] });
     }
@@ -164,13 +180,15 @@ function bubblesFor(app: string): Bubble[] {
       const kindKey =
         b.kind === "user"
           ? "user"
-          : b.kind === "call"
-            ? `call:${appCallKey(b.call!)}`
-            : b.emitIndex != null
-              ? `emit:${b.emitIndex}`
-              : b.kind === "err"
-                ? "err"
-                : "out";
+          : b.kind === "memory"
+            ? `memory:${b.memory!.key}`
+            : b.kind === "call"
+              ? `call:${appCallKey(b.call!)}`
+              : b.emitIndex != null
+                ? `emit:${b.emitIndex}`
+                : b.kind === "err"
+                  ? "err"
+                  : "out";
       out.push(reuseBubble(t, `${kindKey}${b.lastOfTurn ? ":last" : ""}`, b));
     }
   }
@@ -403,8 +421,8 @@ function AppCallCard(props: { turn: Turn; call: AppCall; depth?: number }) {
   const [open, setOpen] = createSignal(true);
   const status = () => props.call.status;
   const info = () => state.apps.find((a) => a.name === props.call.app);
-  const rows = createMemo(() =>
-    props.call.emits
+  const rows = createMemo(() => {
+    const base = props.call.emits
       .map((i) => ({
         index: i,
         text: props.turn.emits?.[i] ?? "",
@@ -412,8 +430,30 @@ function AppCallCard(props: { turn: Turn; call: AppCall; depth?: number }) {
         component: props.turn.components?.[i] ?? null,
       }))
       .filter((b) => b.text || b.component)
-      .filter((b) => b.level !== "machine" || state.showMachine),
-  );
+      .filter((b) => b.level !== "machine" || state.showMachine);
+    // The call card is the app's own chat one level down, so its memory
+    // updates belong here too — in the same order as its bubbles.
+    const memories = memoryNotesForTurn(props.turn, props.call.app);
+    const out: {
+      index: number;
+      text: string;
+      level: string | null;
+      component: EmitComponent | null;
+      memory?: MemoryNote;
+    }[] = [];
+    let nextMemory = 0;
+    const pushMemory = (before: number) => {
+      while (nextMemory < memories.length && memories[nextMemory].anchor <= before) {
+        out.push({ index: -1, text: "", level: null, component: null, memory: memories[nextMemory++].note });
+      }
+    };
+    for (const row of base) {
+      pushMemory(row.index);
+      out.push(row);
+    }
+    pushMemory(Infinity);
+    return out;
+  });
   const empty = () =>
     status() === "running" ? "working…" : status() === "waiting" ? "waiting for a reply" : "no messages";
   return (
@@ -464,14 +504,21 @@ function AppCallCard(props: { turn: Turn; call: AppCall; depth?: number }) {
           >
             <For each={rows()}>
               {(row) => (
-                <div
-                  class="app-call-msg"
-                  classList={{ machine: row.level === "machine", "has-component": !!row.component }}
+                <Show
+                  when={row.memory}
+                  fallback={
+                    <div
+                      class="app-call-msg"
+                      classList={{ machine: row.level === "machine", "has-component": !!row.component }}
+                    >
+                      <Show when={row.component} fallback={<RefText text={row.text} />}>
+                        {(comp) => <ComponentBubble component={comp()} app={props.call.app} text={row.text} />}
+                      </Show>
+                    </div>
+                  }
                 >
-                  <Show when={row.component} fallback={<RefText text={row.text} />}>
-                    {(comp) => <ComponentBubble component={comp()} app={props.call.app} text={row.text} />}
-                  </Show>
-                </div>
+                  {(note) => <MemoryLine note={note()} />}
+                </Show>
               )}
             </For>
             <For each={props.call.children}>
@@ -525,6 +572,95 @@ function turnNote(t: Turn): string | null {
   return null;
 }
 
+/**
+ * A faint one-line note in the conversation for a memory update. Collapsed it
+ * shows the slot and a compact hint of the new value; opening it loads the
+ * run-log row so the user sees exactly what the slot held after that write
+ * (the streamed event is sanitized, so arrays and long strings are capped).
+ */
+function MemoryLine(props: { note: MemoryNote }) {
+  const [full, setFull] = createSignal<{ value: string; truncated: boolean } | null>(null);
+  const [loading, setLoading] = createSignal(false);
+  const [error, setError] = createSignal("");
+  let requested = false;
+
+  const load = () => {
+    if (requested) return;
+    requested = true;
+    const seq = props.note.seq;
+    if (seq == null) return;
+    setLoading(true);
+    fetchRef(seq)
+      .then((r) => setFull({ value: r.value, truncated: r.truncated }))
+      .catch((e) => setError(e instanceof Error ? e.message : "could not load the full value"))
+      .finally(() => setLoading(false));
+  };
+
+  const update = () => props.note.value;
+
+  return (
+    <details
+      class="memory-line"
+      onToggle={(ev) => {
+        if ((ev.currentTarget as HTMLDetailsElement).open) load();
+      }}
+    >
+      <summary title={`${props.note.path} — the value this memory was updated to here`}>
+        <span class="memory-line-badge">mem↻</span>
+        <span class="memory-line-slot">{props.note.child}</span>
+        <span class="memory-line-peek">{memoryPeek(update())}</span>
+      </summary>
+      <div class="memory-line-body">
+        <div class="memory-line-meta">
+          <span class="memory-line-path">{props.note.path}</span>
+          <Show when={props.note.scopeId != null}>
+            <span>scope #{props.note.scopeId}</span>
+          </Show>
+          <span>updated here</span>
+        </div>
+        <Show when={!loading()} fallback={<div class="memory-line-loading">loading the full value…</div>}>
+          <Show when={full()} fallback={<JsonView value={props.note.value} renderRef={refLink} />}>
+            {(data) => (
+              <>
+                <Show
+                  when={typeof props.note.value === "string"}
+                  fallback={<JsonView text={data().value} renderRef={refLink} />}
+                >
+                  <pre class="memory-line-raw">{data().value}</pre>
+                </Show>
+                <Show when={data().truncated}>
+                  <div class="memory-line-note">value truncated for display</div>
+                </Show>
+              </>
+            )}
+          </Show>
+          <Show when={error()}>
+            <div class="memory-line-note">{error()}</div>
+          </Show>
+        </Show>
+      </div>
+    </details>
+  );
+}
+
+/** A compact one-line hint at a memory value for the collapsed row. */
+function memoryPeek(value: unknown): string {
+  if (typeof value === "string") {
+    const one = value.replace(/\s+/g, " ").trim();
+    return one.length > 90 ? `${one.slice(0, 89)}…` : one;
+  }
+  if (Array.isArray(value)) return `[${value.length} item${value.length === 1 ? "" : "s"}]`;
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    if (typeof rec._summary === "string") return rec._summary;
+    const n = Object.keys(rec).length;
+    return n ? `{${n} key${n === 1 ? "" : "s"}}` : "{}";
+  }
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  return String(value);
+}
+
 function MemoryPanel(props: { app: string }) {
   const [inspect, setInspect] = createSignal<{ path: string; value: unknown } | null>(null);
   const entries = createMemo(() => {
@@ -548,7 +684,8 @@ function MemoryPanel(props: { app: string }) {
   };
   // Collapsed per tile, persisted in the layout store (tiles remount on every
   // session switch, so a local signal would reset it constantly). The default
-  // follows the viewport: open on desktop, collapsed on a phone.
+  // follows the layout: open on a normal desktop tile, collapsed on a phone or
+  // a wide tile.
   const memOpen = createMemo(() => memoryOpen(props.app));
   return (
     <div class="mem">
@@ -1696,7 +1833,7 @@ export function Tile(props: { app: AppInfo }) {
         // (buttons, the composer, links, chat bubbles, token lines, the
         // memory/event panels); everything else on the tile arms a drag.
         const t = e.target as HTMLElement;
-        if (t.closest("button, input, textarea, select, a, label, .bubble, .turn-tokens, .tile-panels, .mem-modal")) return;
+        if (t.closest("button, input, textarea, select, a, label, .bubble, .memory-line, .turn-tokens, .tile-panels, .mem-modal")) return;
         // A press inside a nested tile is that tile's business, never this
         // tile's drag arm.
         const inner = (t.closest(".tile") as HTMLElement | null) ?? null;
@@ -1867,57 +2004,64 @@ export function Tile(props: { app: AppInfo }) {
                 {(b) => (
                   <>
                     <Show
-                      when={b.kind === "call" ? b.call : null}
+                      when={b.kind === "memory" ? b.memory : null}
                       fallback={
-                        <div
-                          class="bubble"
-                          classList={{
-                            user: b.kind === "user",
-                            bot: b.kind === "bot",
-                            err: b.kind === "err",
-                            "has-component": !!b.component,
-                            machine:
-                              b.kind === "bot" &&
-                              b.emitIndex != null &&
-                              b.turn.levels?.[b.emitIndex] === "machine",
-                            "has-info":
-                              b.kind === "bot" &&
-                              b.emitIndex != null &&
-                              b.emitIndex >= 0 &&
-                              !!b.turn.runId &&
-                              b.turn.levels?.[b.emitIndex] !== "machine",
-                          }}
-                        >
-                          <Show when={b.component} fallback={<RefText text={b.text} />}>
-                            {(comp) => (
-                              <ComponentBubble
-                                component={comp()}
-                                app={trunkOf(b.turn.emitApps?.[b.emitIndex ?? 0])}
-                                text={b.text}
-                              />
-                            )}
-                          </Show>
-                          <Show
-                            when={
-                              b.kind === "bot" &&
-                              b.emitIndex != null &&
-                              b.emitIndex >= 0 &&
-                              !!b.turn.runId &&
-                              b.turn.levels?.[b.emitIndex] !== "machine"
-                            }
-                          >
-                            <button
-                              class="bubble-info"
-                              title="what was this written from?"
-                              onClick={() => setProv({ turnId: b.turn.turnId, bubble: b.emitIndex!, text: b.text })}
+                        <Show
+                          when={b.kind === "call" ? b.call : null}
+                          fallback={
+                            <div
+                              class="bubble"
+                              classList={{
+                                user: b.kind === "user",
+                                bot: b.kind === "bot",
+                                err: b.kind === "err",
+                                "has-component": !!b.component,
+                                machine:
+                                  b.kind === "bot" &&
+                                  b.emitIndex != null &&
+                                  b.turn.levels?.[b.emitIndex] === "machine",
+                                "has-info":
+                                  b.kind === "bot" &&
+                                  b.emitIndex != null &&
+                                  b.emitIndex >= 0 &&
+                                  !!b.turn.runId &&
+                                  b.turn.levels?.[b.emitIndex] !== "machine",
+                              }}
                             >
-                              ⓘ
-                            </button>
-                          </Show>
-                        </div>
+                              <Show when={b.component} fallback={<RefText text={b.text} />}>
+                                {(comp) => (
+                                  <ComponentBubble
+                                    component={comp()}
+                                    app={trunkOf(b.turn.emitApps?.[b.emitIndex ?? 0])}
+                                    text={b.text}
+                                  />
+                                )}
+                              </Show>
+                              <Show
+                                when={
+                                  b.kind === "bot" &&
+                                  b.emitIndex != null &&
+                                  b.emitIndex >= 0 &&
+                                  !!b.turn.runId &&
+                                  b.turn.levels?.[b.emitIndex] !== "machine"
+                                }
+                              >
+                                <button
+                                  class="bubble-info"
+                                  title="what was this written from?"
+                                  onClick={() => setProv({ turnId: b.turn.turnId, bubble: b.emitIndex!, text: b.text })}
+                                >
+                                  ⓘ
+                                </button>
+                              </Show>
+                            </div>
+                          }
+                        >
+                          {(call) => <AppCallCard turn={b.turn} call={call()} />}
+                        </Show>
                       }
                     >
-                      {(call) => <AppCallCard turn={b.turn} call={call()} />}
+                      {(note) => <MemoryLine note={note()} />}
                     </Show>
                     <Show when={b.lastOfTurn ? tokenLine(b.turn.tokens) : null}>
                       {(line) => (
