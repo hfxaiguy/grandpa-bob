@@ -2,6 +2,27 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-02 — an unchanged seed is probed with HEAD, not re-downloaded
+
+A keyless update check downloaded the whole seed archive just to discover it
+had not changed, and every tab focus could trigger another multi-megabyte GET.
+`probeLatestSeed` now reads the version, ETag and freshness from a bodyless
+`HEAD /latest` first (one retry for a truncated transport), falls back to the
+archive GET only for services that do not advertise enough, and the visibility
+watcher shares a one-minute floor between focus-driven checks. The version
+label carries the archive's build time, so a HEAD without `Last-Modified` still
+produces a freshness record.
+
+- `web/src/swap.ts`: HEAD probe, transient-network retry, and the 401 message
+  for a private newest version.
+- `web/src/profiles.ts` + `scripts/profiles-test.ts`: parse the ISO build time
+  out of `seedVersionTag`.
+- `web/src/main.ts`: focus checks rate-limit to once a minute; the interval
+  still forces a check and logs "headers" rather than "304".
+- `web/scripts/seed-update-smoke.mjs`: a keyless unchanged check must be a
+  HEAD and must not GET the archive; the profile-create pick dispatches
+  `change` so the new button state is exercised.
+
 ## 2026-11-02 — a blocked profile Create says why in the dialog
 
 Creating a profile looked like a dead button: validation and create failures

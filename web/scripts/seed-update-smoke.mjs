@@ -71,8 +71,6 @@ const archive3 = {
 let phase = 1;
 /** Whether an anonymous GET /latest is allowed (the service's public toggle). */
 let publicLatest = false;
-/** Anonymous 304s served, proving the unchanged check avoids a download. */
-let notModified = 0;
 function current() {
   const value = phase === 1 || phase === 3 ? archive : phase === 2 ? archive2 : archive3;
   const body = JSON.stringify(value);
@@ -85,16 +83,20 @@ function current() {
   };
 }
 const requests = [];
+const requestLines = [];
 const server = createServer((req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${SERVICE_PORT}`);
   requests.push(url.pathname + url.search);
+  requestLines.push(`${req.method} ${url.pathname}${url.search}`);
   res.setHeader("access-control-allow-origin", "*");
   res.setHeader("access-control-expose-headers", "etag, x-seed-version");
   if (req.method === "OPTIONS") {
     // `If-None-Match` is not CORS-safelisted: a cross-origin 304 check needs
-    // this preflight (the real service advertises the same header).
+    // this preflight (the real service advertises the same header). HEAD is
+    // advertised too, although the probe avoids a preflight by sending only
+    // safelisted headers.
     res.setHeader("access-control-allow-headers", "authorization, content-type, if-none-match");
-    res.setHeader("access-control-allow-methods", "GET, OPTIONS");
+    res.setHeader("access-control-allow-methods", "GET, HEAD, OPTIONS");
     res.statusCode = 204;
     res.end();
     return;
@@ -150,7 +152,6 @@ const server = createServer((req, res) => {
     if (!keyed) res.setHeader("cache-control", "public, max-age=60, must-revalidate");
     const inm = String(req.headers["if-none-match"] ?? "").replace(/^W\//, "").replace(/^"|"$/g, "");
     if (inm && inm === now.sha256) {
-      notModified++;
       res.statusCode = 304;
       res.setHeader("etag", `"${now.sha256}"`);
       res.end();
@@ -351,6 +352,7 @@ await evaluate(`(() => {
   window.__smokeBeforeReload = true;
   const select = document.getElementById("profile-new-seed");
   select.value = [...select.options].find((o) => o.value.endsWith("|personal|trunk")).value;
+  select.dispatchEvent(new Event("change"));
   document.querySelector("#profile-create button[type=submit]").click();
   return "submitting";
 })()`);
@@ -451,7 +453,8 @@ await waitFor(
   `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && !window.__smokeBeforeReload`,
   "reload after applying the public seed",
 );
-await sleep(2500); // let the watcher hit the unchanged (304) path
+const afterPublicApply = requestLines.length;
+await sleep(2500); // let the watcher re-check the unchanged public seed
 
 const publicApplied = JSON.parse(await evaluate(`(async () => {
   const root = await navigator.storage.getDirectory();
@@ -464,16 +467,28 @@ const publicApplied = JSON.parse(await evaluate(`(async () => {
 assert(publicApplied.pulled.includes("public: true"), "the public seed's file was applied without a key");
 assert(publicApplied.lastVersion?.sha256 === current().sha256, "the keyless pull records the content hash");
 assert(publicApplied.lastVersion?.version === current().version, "the keyless pull records the version label");
-const keylessRequests = requests.slice(keylessMark);
+const keylessRequests = requestLines.slice(keylessMark);
 assert(
-  keylessRequests.some((r) => r === "/api/v1/personal/trunk/latest"),
+  keylessRequests.some((r) => r === "GET /api/v1/personal/trunk/latest"),
   "the public archive was fetched without a key",
+);
+assert(
+  keylessRequests.some((r) => r === "HEAD /api/v1/personal/trunk/latest"),
+  "the keyless probe asked for headers, not the archive",
 );
 assert(
   !keylessRequests.some((r) => r.includes("latest/meta")),
   "the keyless path never relies on the key-gated metadata endpoint",
 );
-assert(notModified > 0, "an unchanged public seed is re-checked with a 304, not a download");
+const watcherRequests = requestLines.slice(afterPublicApply);
+assert(
+  watcherRequests.some((r) => r === "HEAD /api/v1/personal/trunk/latest"),
+  "an unchanged public seed is re-checked with HEAD",
+);
+assert(
+  !watcherRequests.some((r) => r === "GET /api/v1/personal/trunk/latest"),
+  "an unchanged public seed is not downloaded again",
+);
 
 // Phase 5: a private newest version locks the seed again for keyless clients.
 phase = 5;

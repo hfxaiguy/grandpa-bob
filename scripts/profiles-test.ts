@@ -13,6 +13,7 @@ import {
   parseProfileRegistry,
   patchRegistry,
   profileSegmentsFor,
+  seedVersionCreatedAt,
   seedVersionTag,
   type ProfileRegistry,
 } from "../web/src/profiles.js";
@@ -114,6 +115,13 @@ const sha = "3f9a1b2c4d5e6f708192a3b4c5d6e7f8";
 assert.equal(seedVersionTag(sha, "2026-10-23T00:57:33.870Z"), "3f9a1b2c4d5e-20261023T005733Z");
 assert.equal(seedVersionTag(sha.toUpperCase(), "2026-10-23T00:57:33.870Z"), "3f9a1b2c4d5e-20261023T005733Z");
 assert.throws(() => seedVersionTag("xyz", "2026-10-23T00:57:33.870Z"), /invalid sha256/);
+assert.equal(
+  seedVersionCreatedAt("3f9a1b2c4d5e-20261023T005733Z"),
+  "2026-10-23T00:57:33Z",
+  "a version tag carries the archive's build time",
+);
+assert.equal(seedVersionCreatedAt("no timestamp"), null);
+assert.equal(seedVersionCreatedAt("3f9a1b2c4d5e-20261340T005733Z"), null);
 
 // ── immutable patches ────────────────────────────────────────────────────
 const registry: ProfileRegistry = {

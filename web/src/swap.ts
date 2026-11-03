@@ -13,7 +13,7 @@
  */
 import type { WorkspaceArchive } from "./workspace-transfer";
 import { parseSeedMeta, type SeedMeta } from "./seed-version";
-import { isValidSeedName, seedVersionTag } from "./profiles";
+import { isValidSeedName, seedVersionCreatedAt, seedVersionTag } from "./profiles";
 
 // ── service configuration (localStorage) ─────────────────────────────────
 
@@ -163,6 +163,31 @@ function readKeyOf(service: SwapService): string | undefined {
 export function sha256FromEtag(value: string | null): string | undefined {
   const cleaned = String(value ?? "").trim().replace(/^W\//i, "").replace(/^"|"$/g, "");
   return /^[0-9a-f]{64}$/i.test(cleaned) ? cleaned.toLowerCase() : undefined;
+}
+
+/**
+ * Firefox reports a truncated response body as `Content-Length header of
+ * network response exceeds response Body`; Chromium says `Failed to fetch`,
+ * and Node's fetch says `terminated other side closed`. These are transient
+ * transport failures (a suspended keep-alive connection, a flaky proxy), not
+ * bad requests, so a retry is safe for the GET/HEAD calls here.
+ */
+const TRANSIENT_NETWORK_ERROR =
+  /Content-Length header of network response exceeds response Body|NetworkError when attempting to fetch resource|Failed to fetch|Load failed|fetch failed|terminated other side closed/i;
+
+async function retryTransient<T>(fn: () => Promise<T>, attempts = 2): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      const message = err instanceof Error ? err.message : String(err);
+      if (attempt >= attempts || !TRANSIENT_NETWORK_ERROR.test(message)) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+    }
+  }
+  throw lastError;
 }
 
 async function apiError(res: Response): Promise<Error> {
@@ -342,6 +367,17 @@ export async function fetchLatestSeed(
   seedName: string,
   opts: FetchLatestSeedOptions = {},
 ): Promise<FetchedSeed | null> {
+  // A 2.5 MB archive is the most likely victim of a resumed/suspended
+  // connection. Retry the whole read once when the transport truncates it.
+  return retryTransient(() => fetchLatestSeedOnce(service, account, seedName, opts));
+}
+
+async function fetchLatestSeedOnce(
+  service: SwapService,
+  account: string,
+  seedName: string,
+  opts: FetchLatestSeedOptions = {},
+): Promise<FetchedSeed | null> {
   const key = readKeyOf(service);
   const base = `${apiBase(service)}/${encodeURIComponent(account)}/${encodeURIComponent(seedName)}/latest`;
   const headers: Record<string, string> = { accept: "application/json" };
@@ -401,8 +437,66 @@ export async function fetchLatestSeed(
   };
 }
 
+interface LatestSeedHead {
+  meta: RemoteSeedMeta;
+  version?: string;
+  sha256?: string;
+}
+
+/**
+ * Read the newest version's freshness record with a bodyless HEAD request.
+ * BobSwap exposes the archive's ETag, version label and content length on
+ * `/latest`, so a keyless probe does not need to download the whole archive.
+ * Returns null when the service does not advertise enough to decide (an older
+ * deployment, or a 405); the caller then falls back to the archive GET.
+ */
+async function fetchLatestSeedHead(
+  service: SwapService,
+  account: string,
+  seedName: string,
+): Promise<LatestSeedHead | null> {
+  const key = readKeyOf(service);
+  const base = `${apiBase(service)}/${encodeURIComponent(account)}/${encodeURIComponent(seedName)}/latest`;
+  const url = key ? `${base}?key=${encodeURIComponent(key)}` : base;
+  const res = await retryTransient(() =>
+    fetch(url, { method: "HEAD", cache: "no-cache", headers: { accept: "application/json" } }),
+  );
+  if (res.status === 304) return null;
+  if (res.status === 405 || res.status === 501) return null;
+  if (!res.ok) {
+    if (res.status === 401 && !key) {
+      throw new Error(
+        "the newest seed version isn't public — ask the publisher to make it public, or add a read key in Sync… → BobSwap…",
+      );
+    }
+    throw await apiError(res);
+  }
+  const version = res.headers.get("x-seed-version") ?? undefined;
+  const sha256 = sha256FromEtag(res.headers.get("etag"));
+  const fromVersion = version ? seedVersionCreatedAt(version) : null;
+  const lastModified = res.headers.get("last-modified");
+  const createdAt =
+    fromVersion ??
+    (lastModified && !Number.isNaN(Date.parse(lastModified))
+      ? new Date(lastModified).toISOString()
+      : null);
+  if (!createdAt) return null;
+  const length = Number(res.headers.get("content-length"));
+  return {
+    meta: {
+      version: 1,
+      createdAt,
+      sha256,
+      size: Number.isFinite(length) && length > 0 ? length : undefined,
+      seed_id_and_version: version,
+    },
+    version,
+    sha256,
+  };
+}
+
 export interface LatestSeedProbe {
-  /** Freshness record; synthesized from the archive on the keyless path. */
+  /** Freshness record; synthesized from `/latest` headers on the keyless path. */
   meta: RemoteSeedMeta;
   version?: string;
   sha256?: string;
@@ -412,9 +506,9 @@ export interface LatestSeedProbe {
 
 /**
  * Cheap newest-version check. With a read key it asks `/latest/meta`; without
- * one it falls back to the keyless `/latest` (public versions only), sending
- * `If-None-Match` so an unchanged archive costs a 304 instead of a download.
- * Returns null when that ETag still matches the newest version.
+ * one it asks for `/latest` headers only, so an unchanged public archive costs
+ * one bodyless request instead of a multi-megabyte download. Returns null when
+ * the advertised hash still matches the caller's copy.
  */
 export async function probeLatestSeed(
   service: SwapService,
@@ -422,12 +516,23 @@ export async function probeLatestSeed(
   seedName: string,
   knownSha?: string,
 ): Promise<LatestSeedProbe | null> {
-  if (readKeyOf(service)) {
+  const keyed = readKeyOf(service);
+  if (keyed) {
     const meta = await fetchLatestSeedMeta(service, account, seedName);
     if (meta) {
       return { meta, version: meta.seed_id_and_version, sha256: meta.sha256, keyless: false };
     }
   }
+  // Keyless (or a keyed service with no `/latest/meta`): ask for headers only.
+  // The archive can be several megabytes; a tab-resume probe must not fetch it.
+  const head = await fetchLatestSeedHead(service, account, seedName);
+  if (head) {
+    const local = knownSha?.trim().toLowerCase();
+    if (local && head.sha256 && head.sha256 === local) return null;
+    return { ...head, keyless: !keyed };
+  }
+  // Older/custom services: fall back to the archive download (which sends
+  // If-None-Match so an unchanged copy still costs a 304).
   const fetched = await fetchLatestSeed(service, account, seedName, { ifNoneMatch: knownSha });
   if (!fetched) return null;
   if (!fetched.meta) throw new Error("seed archive is missing a valid createdAt");
@@ -435,7 +540,7 @@ export async function probeLatestSeed(
     meta: fetched.meta,
     version: fetched.version,
     sha256: fetched.sha256,
-    keyless: !readKeyOf(service),
+    keyless: !keyed,
   };
 }
 

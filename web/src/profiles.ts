@@ -210,6 +210,18 @@ export function seedVersionTag(sha256: string, createdAt: string): string {
   return `${sha.slice(0, 12)}-${compactTimestamp(createdAt)}`;
 }
 
+/**
+ * The ISO timestamp encoded in a seed version tag, or null when the label is
+ * not in the `…-YYYYMMDDTHHMMSSZ` shape. Lets a bodyless HEAD probe learn when
+ * the newest version was built without downloading its archive.
+ */
+export function seedVersionCreatedAt(version: string): string | null {
+  const match = /-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(String(version));
+  if (!match) return null;
+  const iso = `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}Z`;
+  return Number.isNaN(Date.parse(iso)) ? null : iso;
+}
+
 /** Replace a profile record immutably (pure; used by the registry mutators). */
 export function patchRegistry(
   registry: ProfileRegistry,

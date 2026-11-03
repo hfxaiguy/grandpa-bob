@@ -1024,7 +1024,7 @@ async function checkBoundSeedUpdate(binding: SeedBinding): Promise<void> {
   }
   if (!probe) {
     console.log(
-      `[seed-check] ${account}/${binding.seedName}: unchanged (304, ${knownSha?.slice(0, 12)}…)`,
+      `[seed-check] ${account}/${binding.seedName}: unchanged (headers, ${knownSha?.slice(0, 12)}…)`,
     );
     return;
   }
@@ -1056,6 +1056,12 @@ async function checkBoundSeedUpdate(binding: SeedBinding): Promise<void> {
 const SEED_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
+ * A focus can arrive in bursts (tab switch, alt-tab, window manager). Even
+ * with a bodyless probe, do not hit the shelf on every single one.
+ */
+const SEED_VISIBILITY_CHECK_MIN_MS = 60 * 1000;
+
+/**
  * Keep checking while the tab stays open. The CLI and another device publish
  * to the shelf, not to this tab, so on-boot checks alone leave a long-lived
  * tab permanently stale. `?seedpoll=<ms>` shortens the interval for tests.
@@ -1067,14 +1073,18 @@ function startSeedWatcher(): void {
     Number.isFinite(requested) && requested > 0 ? requested : SEED_CHECK_INTERVAL_MS,
   );
   let checking = false;
-  const check = (): void => {
+  let lastCheckAt = 0;
+  const check = (force = false): void => {
     if (checking || document.visibilityState === "hidden") return;
+    const now = Date.now();
+    if (!force && now - lastCheckAt < SEED_VISIBILITY_CHECK_MIN_MS) return;
+    lastCheckAt = now;
     checking = true;
     void checkSeedUpdate().finally(() => {
       checking = false;
     });
   };
-  window.setInterval(check, intervalMs);
+  window.setInterval(() => check(true), intervalMs);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") check();
   });
