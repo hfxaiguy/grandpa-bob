@@ -1120,7 +1120,16 @@ function wireSyncDialog(): void {
     "click",
     (event) => {
       const target = event.target;
-      if (target instanceof HTMLButtonElement && target.id !== "sync-close") dialog.close();
+      // Launcher buttons open their own dialog; close this one so they do not
+      // stack. "Sync now" is not a launcher: its result is the status line in
+      // this dialog, so keep the dialog open while the round runs.
+      if (
+        target instanceof HTMLButtonElement &&
+        target.id !== "sync-close" &&
+        target.id !== "live-sync-now"
+      ) {
+        dialog.close();
+      }
     },
     true,
   );
