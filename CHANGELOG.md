@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — an inline app-call card can no longer collapse to a hairline
+
+Calling an app from a chat showed the call as a bare blue or amber rule instead
+of the card: the whole `AppCallCard` (header, run-log body, nested calls) was in
+the DOM but squeezed to a few pixels. The chat is a flex column **and** a scroll
+container; its rows inherited `flex-shrink: 1`, so once the tile's bounded
+height left a deficit the flex algorithm shrank the items instead of scrolling.
+Chrome gives a flex item whose `overflow` is not `visible` an automatic minimum
+size of **zero**, so `.app-call` (which clips its own body) absorbed the entire
+deficit and collapsed to its 1px border — its content clipped inside it — while
+the plain text bubbles kept their minimum size and stayed readable. Nested call
+cards inside a body clipped by the same rule could disappear outright, with no
+scrollbar to reveal them.
+
+- `ui/src/styles.css`: `.chat > * { flex-shrink: 0; }` so a chat row always
+  keeps its natural height and the transcript scrolls, plus the same rule for
+  `.app-call-body > *` because a card body is its own scroll container.
+- Verified against the real styles in a bounded-height chat: running, waiting
+  and nested done cards all render with their headers and bodies at both small
+  and large overflow, instead of collapsing to running/waiting/done hairlines.
+
+Tests: `npm run test:ui` (typecheck + build).
+
 ## 2026-11-03 — wide tiles keep their memory panel collapsed
 
 A wide tile already spans two columns for its chat, so its memory panel now
