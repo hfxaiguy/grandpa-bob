@@ -675,7 +675,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         try { agent.stop(active.runId); } catch { /* worker gone */ }
         activeRuns.delete(key);
       }
-      await persistTurn(key, record, active?.runId ?? 0);
+      // Settle the UI before touching the log: persistTurn goes through the
+      // worker, and a dead worker would hang the marker write exactly like the
+      // run it just failed to complete. The live record keeps the turn visible
+      // on this page until the write lands.
       broadcast({
         type: "turn_end", turnId, status: "error", error: record.error, output: "",
         buttons: [], emits: [], awaiting: null, tokens: record.tokens ?? null, ts: record.endedAt,
@@ -686,6 +689,9 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         idleWaiters.delete(key);
         for (const wake of waiters) wake();
       }
+      persistTurn(key, record, active?.runId ?? 0).catch((err) => {
+        console.warn("run watchdog: could not persist the stuck turn", err);
+      });
     };
     watchdog.start({
       key,
