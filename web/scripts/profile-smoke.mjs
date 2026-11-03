@@ -177,20 +177,24 @@ assert(m.legacy.includes("legacy: true"), "legacy workspace file must survive mi
 assert(m.options.includes("default"), "profile picker lists default");
 
 // 3. Create and switch to a new profile through the UI. Creating a fresh
-//    workspace requires an explicit seed pick: the first submit must be
-//    refused, then the bundled snapshot is picked.
+//    workspace requires an explicit seed pick, so Create stays disabled (with
+//    a visible hint) until the bundled snapshot is picked.
 await evaluate(`(async () => {
   document.getElementById("profile-manage").click();
   document.getElementById("profile-new-name").value = "travel";
   document.getElementById("profile-new-source").value = "blank";
   document.getElementById("profile-new-switch").checked = true;
-  document.querySelector("#profile-create button[type=submit]").click();
-  return "submitted without a seed";
+  return "opened the profile manager";
 })()`);
-await waitFor(
-  `(document.getElementById("status")?.textContent || "").includes("pick a seed")`,
-  "the seed pick is mandatory",
-);
+const blocked = JSON.parse(await evaluate(`(() => {
+  const button = document.querySelector("#profile-create button[type=submit]");
+  return JSON.stringify({
+    disabled: button.disabled,
+    hint: document.getElementById("profile-create-hint").textContent,
+  });
+})()`));
+assert(blocked.disabled, "Create must stay disabled until a seed is picked");
+assert(blocked.hint.includes("pick a seed"), "the form must say why Create is blocked");
 const refused = await evaluate(`(async () => {
   const root = await navigator.storage.getDirectory();
   const registry = JSON.parse(await (await (await root.getFileHandle("profiles.json")).getFile()).text());
@@ -198,7 +202,9 @@ const refused = await evaluate(`(async () => {
 })()`);
 assert(!refused, "a new profile must not be created without a chosen seed");
 await evaluate(`(async () => {
-  document.getElementById("profile-new-seed").value = "shipped";
+  const select = document.getElementById("profile-new-seed");
+  select.value = "shipped";
+  select.dispatchEvent(new Event("change"));
   document.querySelector("#profile-create button[type=submit]").click();
   return "submitted with the bundled snapshot";
 })()`);

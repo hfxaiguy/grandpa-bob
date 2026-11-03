@@ -2,6 +2,22 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-02 — a blocked profile Create says why in the dialog
+
+Creating a profile looked like a dead button: validation and create failures
+were flashed into the toolbar status line, which sits behind the open
+`showModal()` Profiles dialog. The form now repeats every message in its own
+hint line, and Create stays disabled with “pick a seed…” until a seed is
+picked (the bundled snapshot counts). A pick made while the seed list is still
+loading is preserved instead of being reset by the refresh.
+
+- `web/src/profile-ui.ts`: one `syncCreateState()` drives the button and hint
+  for source/seed changes and after the seed list refreshes; validation and
+  create errors go to the in-dialog hint as well as the toolbar status.
+- `web/index.html`: disabled-button and inline-error styling.
+- `web/scripts/profile-smoke.mjs`: asserts Create is disabled with the hint
+  before the seed pick, then creates the profile.
+
 ## 2026-11-02 — a rejected tool does not kill an app; big files can be read in ranges
 
 A 5.8 MB mbox exposed three host failures at once. `read_file` silently

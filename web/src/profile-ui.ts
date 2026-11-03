@@ -329,13 +329,9 @@ async function renderProfileList(): Promise<void> {
       });
   }
 
-  const createHint = el<HTMLSpanElement>("profile-create-hint");
-  if (createHint) {
-    const select = el<HTMLSelectElement>("profile-new-source");
-    if (select) {
-      select.options[1].textContent = `copy of ${ui.activeProfile()}`;
-    }
-    createHint.textContent = "";
+  const sourceSelect = el<HTMLSelectElement>("profile-new-source");
+  if (sourceSelect?.options[1]) {
+    sourceSelect.options[1].textContent = `copy of ${ui.activeProfile()}`;
   }
 }
 
@@ -460,23 +456,45 @@ function actionButton(
 function wireProfileManager(): void {
   const dialog = el<HTMLDialogElement>("profile-dialog");
   const open = el<HTMLButtonElement>("profile-manage");
+  const form = el<HTMLFormElement>("profile-create");
+  const sourceSelect = el<HTMLSelectElement>("profile-new-source");
+  const seedSelect = el<HTMLSelectElement>("profile-new-seed");
+  const seedLabel = el<HTMLElement>("profile-new-seed-label");
+  const hint = el<HTMLElement>("profile-create-hint");
+  const submit = form?.querySelector<HTMLButtonElement>('button[type="submit"]') ?? null;
+  const SEED_REQUIRED = "pick a seed to seed this workspace from";
+
+  // The toolbar status line sits behind the modal backdrop, so every message
+  // from this form is repeated in the hint beside the Create button.
+  const setCreateHint = (text: string, error = false): void => {
+    if (!hint) return;
+    hint.textContent = text;
+    hint.classList.toggle("hint-error", error);
+  };
+
+  const syncCreateState = (): void => {
+    const source = sourceSelect?.value ?? "blank";
+    if (seedLabel) seedLabel.hidden = source !== "blank";
+    // Creating from a blank workspace requires an explicit seed pick (the
+    // shipped snapshot counts); show that rule instead of a dead button click.
+    const blocked = source === "blank" && !selectedSeedChoice();
+    if (submit) submit.disabled = blocked;
+    if (blocked) setCreateHint(SEED_REQUIRED);
+    else if (hint?.textContent === SEED_REQUIRED) setCreateHint("");
+  };
+  sourceSelect?.addEventListener("change", syncCreateState);
+  seedSelect?.addEventListener("change", syncCreateState);
+  syncCreateState();
+
   open?.addEventListener("click", () => {
     if (!dialog) return;
     void renderProfileList();
-    void refreshSeedChoices();
+    setCreateHint("");
+    syncCreateState();
+    void refreshSeedChoices().then(syncCreateState);
     dialog.showModal();
   });
   el<HTMLButtonElement>("profile-close")?.addEventListener("click", () => dialog?.close());
-
-  const form = el<HTMLFormElement>("profile-create");
-  const sourceSelect = el<HTMLSelectElement>("profile-new-source");
-  const seedLabel = el<HTMLElement>("profile-new-seed-label");
-  const syncSourceFields = (): void => {
-    const source = sourceSelect?.value ?? "blank";
-    if (seedLabel) seedLabel.hidden = source !== "blank";
-  };
-  sourceSelect?.addEventListener("change", syncSourceFields);
-  syncSourceFields();
 
   form?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -485,25 +503,27 @@ function wireProfileManager(): void {
     const source = el<HTMLSelectElement>("profile-new-source")?.value ?? "blank";
     const switchNow = el<HTMLInputElement>("profile-new-switch")?.checked ?? true;
     if (!isValidProfileName(name)) {
-      ui.flash("profile names use lowercase letters, digits, dot, dash or underscore", 8000);
+      const message = "profile names use lowercase letters, digits, dot, dash or underscore";
+      setCreateHint(message, true);
+      ui.flash(message, 8000);
       return;
     }
     const seedChoice = source === "blank" ? selectedSeedChoice() : null;
     if (source === "blank" && !seedChoice) {
-      ui.flash("pick a seed to seed this workspace from", 8000);
+      setCreateHint(SEED_REQUIRED, true);
+      ui.flash(SEED_REQUIRED, 8000);
       return;
     }
     void (async () => {
-      const hint = el<HTMLElement>("profile-create-hint");
-      const submit = form?.querySelector<HTMLButtonElement>('button[type="submit"]') ?? null;
       try {
+        setCreateHint("");
         if (source === "duplicate") {
           await createProfile(name, { kind: "duplicate", from: await profileHandle(ui.activeProfile()) });
         } else if (seedChoice?.kind === "remote") {
           // Fetch before creating anything: a failed pull must not leave a
           // half-seeded profile behind.
           if (submit) submit.disabled = true;
-          if (hint) hint.textContent = `fetching seed ${seedChoice.account}/${seedChoice.seedName}…`;
+          setCreateHint(`fetching seed ${seedChoice.account}/${seedChoice.seedName}…`);
           const service = serviceForSeedSource(seedChoice.baseUrl);
           if (!service) throw new Error(`seed service ${seedChoice.baseUrl} is not configured`);
           // The choice names the account it was listed under (an open shelf
@@ -522,7 +542,7 @@ function wireProfileManager(): void {
               checkedAt: new Date().toISOString(),
             },
           };
-          if (hint) hint.textContent = `seeding ${fetched.archive.files.length} files…`;
+          setCreateHint(`seeding ${fetched.archive.files.length} files…`);
           try {
             await createProfile(name, {
               kind: "seed",
@@ -531,13 +551,13 @@ function wireProfileManager(): void {
               binding,
               onProgress: (done, total) => {
                 setSeedProgress("profile-seed-bar", done, total);
-                if (hint) hint.textContent = `seeding ${done}/${total} files…`;
+                setCreateHint(`seeding ${done}/${total} files…`);
               },
             });
           } finally {
             clearSeedProgress("profile-seed-bar");
           }
-          if (hint) hint.textContent = "";
+          setCreateHint("");
           ui.flash(`workspace seeded from ${account}/${seedChoice.seedName}`, 6000);
         } else {
           // The bundled snapshot: first boot overlays `/seed/workspace.json`.
@@ -551,12 +571,16 @@ function wireProfileManager(): void {
         (el<HTMLInputElement>("profile-new-name") as HTMLInputElement).value = "";
         await renderProfileList();
         renderProfileSelect();
-        ui.flash(`profile "${name}" created`, 5000);
+        const created = `profile "${name}" created`;
+        setCreateHint(created);
+        ui.flash(created, 5000);
       } catch (err) {
-        ui.flash(`create failed: ${errorText(err)}`, 8000);
+        const message = `create failed: ${errorText(err)}`;
+        setCreateHint(message, true);
+        ui.flash(message, 8000);
       } finally {
         if (submit) submit.disabled = false;
-        if (hint) hint.textContent = "";
+        syncCreateState();
       }
     })();
   });
@@ -603,11 +627,17 @@ function selectedSeedChoice(): NewWorkspaceSeedChoice | null {
 async function refreshSeedChoices(): Promise<void> {
   const select = el<HTMLSelectElement>("profile-new-seed");
   if (!select) return;
-  const previous = select.value;
+  let picked = select.value;
+  const rememberPick = (): void => {
+    picked = select.value;
+  };
   const placeholder = newOption("pick a seed…", "", true);
   const shipped = newOption("bundled snapshot (shipped seed)", SHIPPED_SEED_VALUE);
   const loading = newOption("loading seeds…", "", true);
   select.replaceChildren(placeholder, shipped, loading);
+  // The browser selects the first enabled option on its own; only a change
+  // event means the user picked something while the listing was in flight.
+  select.addEventListener("change", rememberPick);
 
   const shelf = await ensureOpenSeedShelf();
   const services = listSwapServices();
@@ -660,13 +690,15 @@ async function refreshSeedChoices(): Promise<void> {
     if (group.childElementCount > 0) groups.push(group);
   }
 
+  // Keep the user's pick (including one made while the list was loading)
+  // across a refresh; a vanished seed falls back to the placeholder so Create
+  // stays blocked instead of silently using another seed.
+  select.removeEventListener("change", rememberPick);
   select.replaceChildren(placeholder, shipped, ...groups);
   if (services.length === 0 && !shelf) {
     select.append(newOption("add a BobSwap service in Sync… → BobSwap… for more seeds", "", true));
   }
-  // Keep the user's pick across a refresh; a vanished seed falls back to the
-  // placeholder so Create stays blocked instead of silently using another seed.
-  select.value = [...select.options].some((option) => option.value === previous) ? previous : "";
+  select.value = [...select.options].some((option) => option.value === picked) ? picked : "";
 }
 
 // ── seed source dialog ───────────────────────────────────────────────────

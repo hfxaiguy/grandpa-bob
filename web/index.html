@@ -93,6 +93,8 @@
         border-radius: 6px; padding: 0.35rem 0.6rem;
       }
       dialog button:hover { border-color: var(--accent); }
+      dialog button:disabled { opacity: 0.55; cursor: default; }
+      dialog button:disabled:hover { border-color: var(--border); }
       dialog button.danger { color: var(--err); border-color: #7f3b46; }
       dialog button.danger:hover { border-color: var(--err); }
       dialog .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 0.8rem; }
@@ -124,6 +126,7 @@
       }
       #browser-status { min-height: 1.2em; }
       .muted { color: var(--muted); }
+      .hint-error { color: #ff9b9b; }
       .badge { font-size: 11px; border: 1px solid var(--border); border-radius: 99px; padding: 0.05rem 0.45rem; color: var(--muted); }
       .profile-row { display: flex; justify-content: space-between; gap: 0.8rem; align-items: center; padding: 0.45rem 0; border-bottom: 1px solid var(--border); }
       .profile-row:last-child { border-bottom: 0; }
