@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — read_runs shows what a tool was called with
+
+The run-log reader's readable line for a tool row is its *result*: the engine's
+`eventText` (`grandma-kat/src/runlog.mjs`) returns `content.result` and never
+renders `content.args`. An insight pass over the caller-list log therefore
+concluded "none of the five rows records the input string" — the ref handle,
+walk name and note were stored on those very `tool_call` rows, just invisible
+to a `read_runs` caller (the UI already renders `tool(args)`).
+
+- `web/src/agent/runlog-args.ts` now reads the raw `content` of the returned
+  tool rows (`tool_start`/`tool_call`/`tool_result`/`tool_error`) and attaches
+  `tool` and `args` to each row/event it returns. `text` is unchanged, so the
+  result is still the readable line; the input is added beside it.
+- `browser-tools.ts` runs one extra `SELECT seq, content` — only when the
+  result contains tool rows — through the same shared log handle, best-effort.
+  A failed lookup never fails the read.
+- The `read_runs` description now names the two fields.
+- `test:read-runs-args` covers condensed rows, expanded traces, the 500-char
+  bound, and that a non-tool row gains nothing. `test:read-runs-handle` still
+  sees one SELECT plus the max-seq probe for an emit-only read.
+
+Tests: `npm run test:read-runs-args`; `npm run test:read-runs-handle`; web typecheck.
+
 ## 2026-11-03 — seed updates skip files that are already identical
 
 A seed apply rewrote every archive entry, even when the workspace already held

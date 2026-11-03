@@ -11,7 +11,13 @@ import { READ_JSON_DEFINITION, readJsonValue } from "../tools/json";
 import { writeDatabaseDumps } from "../db-sync";
 import { createSqliteWasm } from "../platform/sqlite-wasm";
 import { withLogDb } from "./log-store";
-import { annotateReadRunsResult, normalizeReadRunsArgs } from "./runlog-args";
+import {
+  attachToolInputs,
+  annotateReadRunsResult,
+  normalizeReadRunsArgs,
+  resultSeqs,
+  TOOL_KINDS,
+} from "./runlog-args";
 import { runLogToolFromQuery } from "grandma-kat";
 import type { Platform } from "../platform/types";
 import type { AppStore } from "../app-store";
@@ -202,7 +208,9 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
       },
     },
     read_runs: {
-      description: runLog.description,
+      description:
+        `${runLog.description} A tool row's \`text\` is its result; the call itself is on ` +
+        "the same row as `tool` and `args` — use those to see what a tool was invoked with.",
       parameters: runLog.parameters,
       execute: async (a) => {
         await opts.flushLog?.();
@@ -211,13 +219,8 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         // before the query, then tell the caller what happened.
         const { args, warnings } = normalizeReadRunsArgs(a);
         const result = await runLog.execute(args);
-        if (
-          !result ||
-          typeof result !== "object" ||
-          !Array.isArray((result as { rows?: unknown }).rows)
-        ) {
-          return result;
-        }
+        if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+
         // Condensed results get the log's current edge. Without it, callers
         // probe ids and read an empty id above the edge as "the log ends here".
         // The annotation is best-effort: a failed probe must not fail the read.
@@ -232,7 +235,30 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
         } catch {
           maxSeq = null;
         }
-        return annotateReadRunsResult(result, args, maxSeq, warnings);
+
+        // A tool row's readable line is its result; the engine's `eventText`
+        // never renders `args`, so the input is invisible to a caller even
+        // though it is stored. Read back the raw content of the rows we are
+        // returning and attach `tool`/`args`. Also best-effort.
+        let contents: { seq: number; content: unknown }[] = [];
+        const seqs = resultSeqs(result, TOOL_KINDS);
+        if (seqs.length) {
+          try {
+            contents = await withLogDb(platform, async (db) => {
+              const stmt = await db.prepare(
+                `SELECT seq, content FROM calls WHERE seq IN (${seqs.map(() => "?").join(",")})`,
+              );
+              return (await stmt.all(...seqs)) as { seq: number; content: unknown }[];
+            });
+          } catch {
+            contents = [];
+          }
+        }
+
+        return attachToolInputs(
+          annotateReadRunsResult(result, args, maxSeq, warnings),
+          contents,
+        );
       },
     },
     csv_query: {

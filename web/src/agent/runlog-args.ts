@@ -9,6 +9,12 @@
  * Normalize the filter here, and annotate condensed results with the log's
  * current max seq, so a caller cannot mistake an unqueried id for the end of
  * the log. Both are additive: a well-formed call and its rows are unchanged.
+ *
+ * Also restore the input side of a tool row. The engine logs a tool event as
+ * `{ child, tool, args, result }`, but its readable line (runlog.mjs
+ * `eventText`) renders `result`, so `args` — what the tool was called with —
+ * never reaches a read_runs caller. The UI already shows it (`tool(args)`);
+ * attach it (and the tool name) to the same row here.
  */
 
 export type ReadRunsArgs = Record<string, unknown>;
@@ -138,6 +144,117 @@ export function annotateReadRunsResult(
   if (notes.length) {
     const existing = typeof out.note === "string" && out.note.trim() ? `${out.note.trim()} ` : "";
     out.note = `${existing}${notes.join(" ")}`;
+  }
+  return out;
+}
+
+// ── tool inputs: restore the args the readable line drops ───────────────
+
+/** A row's raw engine content, as the log stores it (JSON text or parsed). */
+export interface RowContent {
+  seq: number;
+  content: unknown;
+}
+
+/** Same bound as the engine's readable line (runlog.mjs `SNIPPET`). */
+const MAX_ARGS = 500;
+
+const truncate = (s: string, n = MAX_ARGS): string => {
+  const t = s.replace(/\s+/g, " ").trim();
+  return t.length > n ? `${t.slice(0, n)}…` : t;
+};
+
+function parseContent(raw: unknown): Record<string, unknown> | null {
+  let value = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** Kinds whose content carries a tool input (`args`). */
+export const TOOL_KINDS: ReadonlySet<string> = new Set([
+  "tool_start",
+  "tool_call",
+  "tool_result",
+  "tool_error",
+]);
+
+/** Every shaped row/event seq in a read_runs result (condensed, readers, expanded). */
+export function resultSeqs(result: unknown, kinds?: ReadonlySet<string>): number[] {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return [];
+  const r = result as Record<string, unknown>;
+  const seqs = new Set<number>();
+  const add = (row: unknown): void => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return;
+    if (kinds && !kinds.has(String((row as { kind?: unknown }).kind))) return;
+    const seq = Number((row as { seq?: unknown }).seq);
+    if (Number.isInteger(seq)) seqs.add(seq);
+  };
+  if (Array.isArray(r.rows)) r.rows.forEach(add);
+  if (Array.isArray(r.events)) r.events.forEach(add);
+  add(r.emit);
+  return [...seqs];
+}
+
+/**
+ * The input a row recorded: the engine's `args` (a model's raw argument string
+ * or the parsed object) and the `tool` name it belongs to. Null when the row
+ * carries neither (an emit, a record, a human turn).
+ */
+export function toolInputFromContent(
+  content: unknown,
+): { tool?: string; args?: string } | null {
+  const c = parseContent(content);
+  if (!c) return null;
+  const tool = typeof c.tool === "string" && c.tool ? c.tool : undefined;
+  let args: string | undefined;
+  if (c.args !== undefined && c.args !== null) {
+    const raw = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
+    args = truncate(raw ?? String(c.args));
+  }
+  if (tool === undefined && args === undefined) return null;
+  return { ...(tool !== undefined ? { tool } : {}), ...(args !== undefined ? { args } : {}) };
+}
+
+/**
+ * Add `tool`/`args` to the rows and events of a read_runs result from their
+ * raw contents. Additive: `text` still reads as the result (or whatever
+ * `eventText` chose), so nothing that reads the current shape changes.
+ */
+export function attachToolInputs(
+  result: unknown,
+  contents: readonly RowContent[],
+): unknown {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+  if (!contents.length) return result;
+
+  const bySeq = new Map<number, { tool?: string; args?: string }>();
+  for (const row of contents) {
+    const seq = Number(row?.seq);
+    if (!Number.isInteger(seq)) continue;
+    const input = toolInputFromContent(row.content);
+    if (input) bySeq.set(seq, input);
+  }
+  if (!bySeq.size) return result;
+
+  const out = { ...(result as Record<string, unknown>) };
+  const enrich = (row: unknown): unknown => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return row;
+    const seq = Number((row as { seq?: unknown }).seq);
+    const input = bySeq.get(seq);
+    return input ? { ...(row as Record<string, unknown>), ...input } : row;
+  };
+  if (Array.isArray(out.rows)) out.rows = out.rows.map(enrich);
+  if (Array.isArray(out.events)) out.events = out.events.map(enrich);
+  if (out.emit && typeof out.emit === "object" && !Array.isArray(out.emit)) {
+    out.emit = enrich(out.emit);
   }
   return out;
 }
