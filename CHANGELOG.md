@@ -2,6 +2,28 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — send-to-telegram returns to the browser app and links the chats
+
+The session drawer's ✈ telegram button disappeared in browser mode when the
+two-way bridge landed (`2010833`), and the bridge checkbox stayed disabled in
+the standalone app because `adminOnline` tracks the old admin API, not the
+local Telegram channel. Both controls now target the channel.
+
+- `ui/src/components.tsx`: show ✈ in browser mode too and enable the bridge
+  checkbox there. The one-shot button is disabled only when neither the browser
+  backend nor an admin server can reach a channel.
+- `ui/src/store.ts`: `sendToTelegram()` claims the profile's parked chats first,
+  so a chat messaged before the bridge was switched on can be linked; after the
+  15 s binding expiry it falls back to the remembered chat. A successful push
+  pins the bridge to the active session, and clicking it on an empty session
+  still links the two ends (no transcript to post yet).
+- `ui/src/store.ts`: the relay response is checked for `dropped`/`skipped`, so
+  a stale handover or a missing bot token is an error toast instead of a false
+  "sent".
+
+Tests: `npm --prefix ui run typecheck`; `npm --prefix ui run build`;
+`npm run typecheck`.
+
 ## 2026-11-03 — a wedged run ends instead of spinning forever
 
 A turn whose worker died, or whose run promise never settled, left the chat in
@@ -54,19 +76,21 @@ Tests: `npm run test:stop-tools`; `npm --prefix web run typecheck`.
 
 On a phone, tapping a tile's header now brings that tile to the front: it
 leaves the grid and fills the board as a fixed layer below the toolbar, above
-every other app tile and the trunk. Tapping the same header again puts it back;
-parking the tile, opening a different app from an inline card, switching chats
-or widening past the phone breakpoint also lowers it. The layer's top follows
-the board (the toolbar can wrap and the phone keyboard resizes the viewport),
-the board stops scrolling behind it, and the desktop board keeps its normal
-non-overlapping tiles.
+every other app tile and the trunk. Tapping the same header again (or the
+header's `▾`) puts it back; parking the tile, opening a different app from an
+inline card, switching chats or widening past the phone breakpoint also lowers
+it. A lifted tile is exempt from the two-unused-turns auto-close while it is
+being read. The layer's top follows the board (the toolbar can wrap and the
+phone keyboard resizes the viewport), the board stops scrolling behind it, and
+the desktop board keeps its normal non-overlapping tiles.
 
-- `ui/src/store.ts`: `front` state, `toggleFront`/`clearFront`, and the
-  lifecycle hooks that lower a parked or superseded tile.
-- `ui/src/components.tsx`: the header gesture and the measured fixed offset.
+- `ui/src/store.ts`: `front` state, `toggleFront`/`clearFront`, the lifecycle
+  hooks that lower a parked or superseded tile, and the auto-close keep.
+- `ui/src/components.tsx`: the header gesture, its visible `▾` restore control,
+  and the measured fixed offset.
 - `ui/src/app.tsx`, `ui/src/styles.css`: the board lock and the phone overlay.
 - `scripts/ui-order-test.ts`: one-front-tile handoff, toggle, clear-by-name,
-  park, and desktop-ignore cases.
+  park, desktop-ignore, and auto-close-keep cases.
 - Docs: `README.md` and `web/README.md` describe the phone gesture.
 
 Tests: `npm run test:ui-order`; `npm run test:ui`; `npm run typecheck`.

@@ -36,6 +36,7 @@ import {
   toggleMem,
   memoryOpen,
   toggleFront,
+  clearFront,
   smallScreen,
   moveTile,
   hiddenApps,
@@ -1775,6 +1776,18 @@ export function Tile(props: { app: AppInfo }) {
             <span class="tile-name">{name()}</span>
             <span class="tile-status">{statusText()}</span>
             <span class="spacer" />
+            {/* The lifted tile covers the board, so its header carries the way
+                back: tapping the header works too, but this is the visible
+                affordance (the ✕ still parks the tile). */}
+            <Show when={front()}>
+              <button
+                class="tile-unfront"
+                title="put this tile back on the board"
+                onClick={() => clearFront(name())}
+              >
+                ▾
+              </button>
+            </Show>
             <Show when={!isTrunk()}>
               <button
                 class="tile-pin"
@@ -2289,7 +2302,6 @@ export function SessionPanel(props: { onClose: () => void }) {
             <input
               type="checkbox"
               checked={state.bridgeOn}
-              disabled={!state.adminOnline}
               onChange={(e) => setBridge(e.currentTarget.checked)}
             />
             bridge this chat to Telegram while the tab is open
@@ -2344,23 +2356,22 @@ export function SessionPanel(props: { onClose: () => void }) {
             <button class="secondary" onClick={() => void clearConversation()}>
               clear conversation
             </button>
-            {/* The in-browser target bridges continuously instead of pushing a
-                one-shot transcript; the bridge checkbox above replaces this. */}
-            <Show when={!state.browserMode}>
-              <button
-                class="secondary"
-                disabled={!state.adminOnline}
-                title={
-                  state.adminOnline
-                    ? "push this transcript to your linked Telegram chat"
-                    : "needs the admin server (BOB_WEB=1)"
-                }
-                onClick={() => void sendToTelegram()}
-              >
-                ✈ telegram
-                <ServerIcon />
-              </button>
-            </Show>
+            {/* One shot: push the transcript and pin this session to the chat,
+                so both ends stay linked from here on. Works in the browser
+                target too; the channel is a local process there, not an admin. */}
+            <button
+              class="secondary"
+              disabled={!state.browserMode && !state.adminOnline}
+              title={
+                state.browserMode || state.adminOnline
+                  ? "send this transcript to your linked Telegram chat and keep the two linked"
+                  : "needs the admin server (BOB_WEB=1)"
+              }
+              onClick={() => void sendToTelegram()}
+            >
+              ✈ telegram
+              <ServerIcon />
+            </button>
           </div>
         </Show>
 

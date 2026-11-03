@@ -1130,6 +1130,7 @@ body.dragging-tile { user-select: none !important; }
     cursor: zoom-out;
     border-bottom-color: var(--accent);
   }
+  .tile-unfront { color: var(--accent); }
   /* The layer reaches the phone's bottom edge; keep the send row above the
      home indicator. */
   .tile.front .composer { padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }

@@ -340,4 +340,29 @@ toggleFront("alpha");
 assert.equal(state.front, null, "a desktop header tap has no front layer");
 setSmallScreen(true);
 
+// A lifted tile is being read, so the auto-close window cannot reclaim its
+// seat; lowering it lets the normal two-unused-turns rule park it again.
+setState("apps", ["trunk", "alpha", "beta"].map((name) => ({ name, description: "" })));
+setState("layout", {
+  order: [],
+  hidden: ["beta"],
+  expanded: [],
+  wide: [],
+  pinned: ["trunk"],
+  autoRaised: ["alpha"],
+  subsOpen: [],
+  memClosed: [],
+  memOpen: [],
+});
+setState({ turns: [], awaiting: null, activity: {}, raiseDenied: null });
+setState("front", null);
+toggleFront("alpha");
+runTurn(["trunk"], 40_000);
+runTurn(["trunk"], 41_000);
+assert.ok(!state.layout.hidden.includes("alpha"), "a front tile survives the auto-close window");
+clearFront();
+runTurn(["trunk"], 42_000);
+runTurn(["trunk"], 43_000);
+assert.ok(state.layout.hidden.includes("alpha"), "lowering the front tile lets auto-close reclaim it");
+
 console.log("ui-order: pinned-first order, activity ranking, rail order, live bumps, auto-raise seats, auto-close after two unused turns, profile exceptions, trunk-only new-session board, phone memory defaults and front-tile lift ok");

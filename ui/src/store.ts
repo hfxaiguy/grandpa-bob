@@ -76,11 +76,12 @@ export interface UiState {
   sessionResumed: boolean;
   connected: boolean;
   /** An admin server is behind this page (probed at boot via
-   *  /api/capabilities). Server-only controls — Telegram push/follow, audio
-   *  transcription — stay visible but disabled when false. */
+   *  /api/capabilities). Server-only controls — follow-the-phone, admin
+   *  models — stay visible but disabled when false. */
   adminOnline: boolean;
   /** This page runs the in-browser backend (OPFS storage), not the admin's
-   *  chat API. The Telegram bridge replaces the one-way transcript push. */
+   *  chat API. The Telegram bridge and the one-shot push both target the
+   *  local channel process instead. */
   browserMode: boolean;
   /** The two-way bridge is switched on for this tab (localStorage). */
   bridgeOn: boolean;
@@ -727,19 +728,103 @@ export async function clearConversation(): Promise<void> {
   }
 }
 
-/** Push the active session's transcript to the linked Telegram chat. */
+interface TelegramTarget {
+  conv: string;
+  /** Live binding epoch; null when only the remembered chat is known. */
+  epoch: number | null;
+}
+
+/** Live bindings for this profile, or null when the channel is unreachable. */
+async function telegramBindings(
+  channel: string,
+  profile: string,
+): Promise<Array<{ conv: string; epoch: number }> | null> {
+  try {
+    const res = await fetch(`${channel}/api/bindings?profile=${encodeURIComponent(profile)}`);
+    if (!res.ok) return null;
+    const data = (await res.json().catch(() => ({}))) as {
+      bindings?: Array<{ conv?: unknown; epoch?: unknown }>;
+    };
+    return (data.bindings ?? []).filter(
+      (b): b is { conv: string; epoch: number } =>
+        typeof b?.conv === "string" && typeof b?.epoch === "number",
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** The chat this profile last used, kept after the live binding expires. */
+function savedTelegramChat(profile: string): { conv: string; epoch: number } | null {
+  try {
+    const saved = JSON.parse(
+      localStorage.getItem(`${BRIDGE_CONV_KEY}:${profile}`) || "null",
+    ) as unknown;
+    if (!saved || typeof saved !== "object") return null;
+    const conv = (saved as { conv?: unknown }).conv;
+    const epoch = (saved as { epoch?: unknown }).epoch;
+    if (typeof conv === "string" && /^-?\d+(?::\d+)?$/.test(conv)) {
+      return { conv, epoch: typeof epoch === "number" ? epoch : 0 };
+    }
+  } catch {
+    /* private mode / corrupt */
+  }
+  return null;
+}
+
+/**
+ * Resolve the chat a one-shot send should target. Bindings form when a tab
+ * claims parked messages, so a chat the user already messaged but never
+ * bridged is claimed here first. The remembered chat is the fallback after
+ * the 15 s binding expiry.
+ */
+async function telegramTarget(channel: string, profile: string): Promise<TelegramTarget | null> {
+  let bindings = await telegramBindings(channel, profile);
+  if (bindings && !bindings.length) {
+    try {
+      await fetch(`${channel}/api/inbox?profile=${encodeURIComponent(profile)}`);
+    } catch {
+      /* channel down: fall through to the saved chat */
+    }
+    bindings = await telegramBindings(channel, profile);
+  }
+  const live = bindings?.[0];
+  if (live) return { conv: live.conv, epoch: live.epoch };
+  const saved = savedTelegramChat(profile);
+  if (saved) return { conv: saved.conv, epoch: null };
+  if (bindings === null) throw new Error(`telegram channel unreachable at ${channel}`);
+  return null;
+}
+
+/** Pin the bridge to this session once the transcript reached the phone. */
+function linkTelegramChat(target: TelegramTarget, session: string, profile: string): void {
+  try {
+    localStorage.setItem(BRIDGE_KEY, "1");
+    localStorage.setItem(`${BRIDGE_KEY}-session`, session);
+    localStorage.setItem(
+      `${BRIDGE_CONV_KEY}:${profile}`,
+      JSON.stringify({ conv: target.conv, epoch: target.epoch ?? 0 }),
+    );
+  } catch {
+    /* private mode */
+  }
+  setState("bridgeOn", true);
+}
+
+/** Push the active session's transcript to Telegram and link the two. */
 export async function sendToTelegram(): Promise<void> {
+  const session = state.active;
+  if (!session) {
+    toast("no active chat to send", true);
+    return;
+  }
   try {
     // The linked chat is the freshest chat bound to this profile on the
     // telegram channel (bindings form when a tab claims parked messages).
     const channel = telegramChannelUrl();
     const profile = profileId();
-    const bRes = await fetch(`${channel}/api/bindings?profile=${encodeURIComponent(profile)}`);
-    const bData = (await bRes.json().catch(() => ({}))) as {
-      bindings?: Array<{ conv: string; epoch: number }>;
-    };
-    const target = (bData.bindings ?? [])[0];
-    if (!bRes.ok || !target) {
+    const target = await telegramTarget(channel, profile);
+    if (!target) {
       toast("no telegram chat linked yet — message the bot on Telegram first", true);
       return;
     }
@@ -750,40 +835,45 @@ export async function sendToTelegram(): Promise<void> {
     };
     const turns = tData.turns ?? [];
     if (!turns.length) {
-      toast("this session has no turns to send yet", true);
+      // Nothing to post, but the click still links the two conversations:
+      // the next web turn mirrors to the phone and phone messages run here.
+      linkTelegramChat(target, session, profile);
+      toast("linked to telegram — this session has no turns to send yet");
       return;
     }
     // Plain-text transcript: one block per turn, errors kept as ⚠️ lines.
-    const session = tData.session ?? "session";
+    const sessionName = tData.session ?? "session";
     const lines: string[] = [
-      `📋 transcript · ${session} (${turns.length} turn${turns.length === 1 ? "" : "s"})`,
+      `📋 transcript · ${sessionName} (${turns.length} turn${turns.length === 1 ? "" : "s"})`,
     ];
     for (const t of turns) {
       lines.push("", "—— you ——", t.input || "(empty)");
       lines.push("—— bob ——", t.status === "error" ? `⚠️ ${t.error ?? "error"}` : t.output || "(no reply)");
     }
+    const body: Record<string, unknown> = {
+      key: target.conv,
+      text: lines.join("\n"),
+      profile,
+    };
+    // A saved (expired) binding has no epoch to send; the channel accepts an
+    // epoch-less relay and drops it only when another profile owns the chat.
+    if (target.epoch !== null) body.epoch = target.epoch;
     const rRes = await fetch(`${channel}/api/relay`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ key: target.conv, text: lines.join("\n"), epoch: target.epoch, profile }),
+      body: JSON.stringify(body),
     });
     if (!rRes.ok) throw new Error(`relay failed: HTTP ${rRes.status}`);
-    // The phone now follows this session (the channel's binding owns the
-    // routing; the pin keeps the browser answers flowing there).
-    try {
-      localStorage.setItem(BRIDGE_KEY, "1");
-      if (state.active) localStorage.setItem(`${BRIDGE_KEY}-session`, state.active);
-      // Same key the in-browser backend reads: after the binding expires (tab
-      // closed >15 s) a reopened tab still knows which chat to mirror to.
-      localStorage.setItem(
-        `${BRIDGE_CONV_KEY}:${profile}`,
-        JSON.stringify({ conv: target.conv, epoch: target.epoch }),
-      );
-    } catch {
-      /* private mode */
-    }
-    setState("bridgeOn", true);
-    toast("sent to telegram — that chat now follows this session");
+    const rData = (await rRes.json().catch(() => ({}))) as {
+      dropped?: unknown;
+      skipped?: unknown;
+    };
+    if (typeof rData.dropped === "string") throw new Error(`relay dropped: ${rData.dropped}`);
+    if (typeof rData.skipped === "string") throw new Error(`relay skipped: ${rData.skipped}`);
+    // The phone now follows this session: pin the bridge to it so later web
+    // turns mirror there and incoming phone messages run in this chat.
+    linkTelegramChat(target, session, profile);
+    toast("sent to telegram — this chat is now linked to that conversation");
   } catch (e) {
     toast(e instanceof Error ? e.message : "send to telegram failed", true);
   }
@@ -990,6 +1080,9 @@ function pruneStaleTiles(): boolean {
     const waiting = boardTileOf(state.awaiting);
     if (waiting) keep.add(waiting);
   }
+  // A lifted tile is being read right now; do not park it out from under the
+  // person at the end of a turn that happened not to use it.
+  if (state.front) keep.add(state.front);
   const auto = new Set(state.layout.autoRaised ?? []);
   const stale = state.apps
     .filter(
