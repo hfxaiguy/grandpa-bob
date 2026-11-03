@@ -90,9 +90,28 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
       execute: async (a) => await files.listFiles(String(a.path ?? "."), a.recursive !== false),
     },
     read_file: {
-      description: "Read a file's full contents.",
-      parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
-      execute: async (a) => await files.readFile(String(a.path ?? "")),
+      description:
+        "Read a file's contents. Large files come back in chunks: pass offset (a 0-based " +
+        "character offset) and limit (at most 100000 characters) to continue. When text " +
+        "remains after the chunk, the result ends with a note naming the next offset; keep " +
+        "calling with that offset until it says 'end of file'.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          offset: { type: "integer", description: "0-based character offset (default 0)" },
+          limit: {
+            type: "integer",
+            description: "Maximum characters to return, up to 100000 (default 100000)",
+          },
+        },
+        required: ["path"],
+      },
+      execute: async (a) =>
+        await files.readFile(String(a.path ?? ""), {
+          offset: a.offset === undefined ? undefined : Number(a.offset),
+          limit: a.limit === undefined ? undefined : Number(a.limit),
+        }),
     },
     write_file: {
       description: "Create or overwrite a file.",

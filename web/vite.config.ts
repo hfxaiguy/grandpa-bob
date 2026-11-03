@@ -40,6 +40,8 @@ export default defineConfig({
       "node:util": shim("node-util.ts"),
       "node:sqlite": shim("node-sqlite.ts"),
       "node:child_process": shim("node-child-process.ts"),
+      "node:net": shim("node-net.ts"),
+      "node:tls": shim("node-tls.ts"),
       "node:url": shim("node-url.ts"),
     },
   },

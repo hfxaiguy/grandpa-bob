@@ -56,17 +56,40 @@ export class FileTools {
     return out.length ? out.join("\n") + suffix : "(empty directory)";
   }
 
-  async readFile(rel: string): Promise<string> {
+  /**
+   * Read a file, optionally one character range of it. `offset` is a
+   * 0-based character offset; `limit` is capped at MAX_READ_CHARS so one
+   * call can never flood the transcript. When more text remains, the result
+   * ends with a note naming the next offset — callers that need the whole
+   * file walk it chunk by chunk instead of guessing that 100k was the end.
+   */
+  async readFile(
+    rel: string,
+    opts: { offset?: number; limit?: number } = {},
+  ): Promise<string> {
     const { fs } = this.platform;
     const abs = this.resolve(rel);
     const st = await fs.stat(abs).catch(() => null);
     if (!st) throw new Error(`not found: ${rel}`);
     if (st.isDirectory()) return this.listFiles(rel, false);
     const content = await fs.readFile(abs, "utf8");
-    if (content.length > MAX_READ_CHARS) {
-      return content.slice(0, MAX_READ_CHARS) + `\n… (truncated, file is ${content.length} chars)`;
+    const total = content.length;
+    const rawOffset = Number(opts.offset ?? 0);
+    const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0;
+    if (offset > 0 && offset >= total) {
+      throw new Error(`offset ${offset} is past the end of ${rel} (${total} chars)`);
     }
-    return content || "(empty file)";
+    const rawLimit = Number(opts.limit ?? MAX_READ_CHARS);
+    const limit = Number.isFinite(rawLimit)
+      ? Math.min(MAX_READ_CHARS, Math.max(1, Math.floor(rawLimit)))
+      : MAX_READ_CHARS;
+    const end = Math.min(total, offset + limit);
+    if (offset === 0 && end === total) return content || "(empty file)";
+    const slice = content.slice(offset, end);
+    const range = end < total
+      ? `\n… (read chars ${offset}..${end} of ${total}; next offset ${end})`
+      : `\n… (read chars ${offset}..${end} of ${total}; end of file)`;
+    return slice + range;
   }
 
   /**

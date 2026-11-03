@@ -79,6 +79,22 @@ try {
     "node:sqlite resolves to a host-owned stub that throws with the fix",
   );
 
+  // A tree that bundles an SMTP client imports node:net/node:tls. Those must
+  // resolve (so profile/auth reads still work) and throw only when a socket is
+  // actually opened, with a fix that names the real limitation.
+  await writeFile(
+    path.join(workspace, "smtp-app.js"),
+    [
+      'import net from "node:net";',
+      'import tls from "node:tls";',
+      'export function dial() { return net.createConnection({ host: "smtp.example", port: 587 }); }',
+      'export function secure() { return tls.connect({ host: "smtp.example", port: 465 }); }',
+    ].join("\n"),
+  );
+  const smtpApp = await loader.load("smtp-app.js");
+  assert.throws(() => smtpApp.dial(), /node:net is not available in the browser/);
+  assert.throws(() => smtpApp.secure(), /node:tls is not available in the browser/);
+
   // The injected grandma-kat namespace must expose Emit flags to workspace
   // modules too (the same package the worker bundles).
   await writeFile(

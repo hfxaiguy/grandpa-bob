@@ -35,6 +35,12 @@
       "node:child_process": [
         "./src/shims/node-child-process.ts"
       ],
+      "node:net": [
+        "./src/shims/node-net.ts"
+      ],
+      "node:tls": [
+        "./src/shims/node-tls.ts"
+      ],
       "node:url": [
         "./src/shims/node-url.ts"
       ]

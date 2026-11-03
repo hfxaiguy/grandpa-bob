@@ -2,6 +2,38 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-02 — a rejected tool does not kill an app; big files can be read in ranges
+
+A 5.8 MB mbox exposed three host failures at once. `read_file` silently
+stopped at 100,000 characters with no way to ask for the rest; a `csv_query`
+call on the mbox threw out of the files app and returned only the raw error,
+discarding the 100k it had already read; and the email app could not register
+at all because `node:net`/`node:tls` were absent from the browser module
+loader. The model spent the turn fighting those instead of the data.
+
+- `web/src/tools/files.ts`: `readFile` accepts `{ offset, limit }` (character
+  range, `limit` capped at 100k). A truncated result now ends with
+  `next offset N`; `read_file`'s schema exposes both fields. Large files are
+  readable chunk by chunk instead of looking like 100k files.
+- `web/src/agent/agent-worker.ts`: a thrown host/app tool error becomes the
+  engine's `{ error }` result. The explicit-loop path (`Call` under
+  `disableAuto`) used to rethrow it and abort the whole tree; a rejected tool
+  now folds into the thread so the model can recover. Pause/goto control flow
+  and stop signals still propagate. A 401/403 from a model endpoint now says
+  the key was rejected and where to update it.
+- `web/src/shims/node-net.ts`, `node-tls.ts` (+ module loader, Vite aliases,
+  tsconfig): importing an SMTP client no longer prevents an app from loading.
+  Opening a TCP/TLS socket throws with the real limitation (desktop/server
+  target), so profile and auth reads still work.
+- Seed workspace apps: `files`/`contacts` fall back to the select round's text
+  when the summarize pass returns `""` instead of returning an empty tool
+  result; `contacts` states that `attributes` has no `id` and that people may
+  have no name; `files` warns that `csv_query` is CSV/TSV-only and `read_file`
+  chunks; `knit` enforces lower_snake_case tree names at lint/plan time and
+  names uppercase/hyphen mistakes explicitly.
+- Tests: `test:platform` covers chunked reads; `test:module-loader` covers the
+  net/tls stubs; the `knit` suite covers the early name errors.
+
 ## 2026-11-02 — open BobSwap seeds need no BobSwap configuration
 
 A fresh browser could already pull `web/public/seed-bootstrap.json`'s public

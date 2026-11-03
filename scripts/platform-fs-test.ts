@@ -59,6 +59,30 @@ await assert.rejects(() => files.readFile("../../etc/passwd"), /escapes workspac
 // independence from the Node filesystem: nothing was written under a real path
 assert.equal(commits.length, 8, "one commit per mutation");
 
+// read_file ranges: a big file is readable in chunks, with an explicit next
+// offset instead of a silent 100k cut (the old behaviour made a 5.8 MB mbox
+// look like a 100k file).
+const big = "0123456789".repeat(10_001); // 100_010 chars
+await files.writeFile("notes/big.txt", big);
+const firstChunk = await files.readFile("notes/big.txt");
+assert.ok(firstChunk.startsWith("0123456789"));
+assert.match(firstChunk, /read chars 0\.\.100000 of 100010; next offset 100000/);
+const lastChunk = await files.readFile("notes/big.txt", { offset: 100_000 });
+assert.equal(
+  lastChunk,
+  big.slice(100_000) + "\n… (read chars 100000..100010 of 100010; end of file)",
+);
+const window = await files.readFile("notes/big.txt", { offset: 10, limit: 5 });
+assert.equal(
+  window,
+  big.slice(10, 15) + "\n… (read chars 10..15 of 100010; next offset 15)",
+);
+await assert.rejects(() => files.readFile("notes/big.txt", { offset: 100_010 }), /past the end/);
+// An empty file still reads normally; only a positive offset is past its end.
+await files.writeFile("notes/empty.txt", "");
+assert.equal(await files.readFile("notes/empty.txt"), "(empty file)");
+await assert.rejects(() => files.readFile("notes/empty.txt", { offset: 1 }), /past the end/);
+
 // ── byte fidelity on the real Node adapter ─────────────────────────────
 // The memory platform above proves the tool seam; this proves copy_file is
 // genuinely binary-safe (invalid UTF-8 bytes survive unchanged).

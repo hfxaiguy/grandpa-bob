@@ -23,6 +23,8 @@ import urlShim from "../shims/node-url";
 import osShim from "../shims/node-os";
 import utilShim from "../shims/node-util";
 import childProcessShim from "../shims/node-child-process";
+import netShim from "../shims/node-net";
+import tlsShim from "../shims/node-tls";
 import sqliteShim from "../shims/node-sqlite";
 import type { Platform } from "../platform/types";
 import { BOB_UI_MODULE, withUiEmit } from "./ui-emit";
@@ -45,6 +47,8 @@ const BUILTINS: Record<string, unknown> = {
   "node:os": osShim,
   "node:util": utilShim,
   "node:child_process": childProcessShim,
+  "node:net": netShim,
+  "node:tls": tlsShim,
   "node:sqlite": sqliteShim,
 };
 

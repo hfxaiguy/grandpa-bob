@@ -230,6 +230,15 @@ async function withModelContext<T>(
     return await fn();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // A rejected key is not a network problem and retrying cannot help. Say
+    // where the key lives instead of surfacing only the provider's JSON.
+    if (/LLM request failed \((?:401|403)\)|invalid_api_key|authentication_error|Missing or invalid Authorization/i.test(message)) {
+      throw new Error(
+        `${message} — the model endpoint rejected its API key. ` +
+          `Update this slot's key in Settings → Models (or the matching environment variable, ` +
+          `e.g. NEURALWATT_API_KEY) and retry.`,
+      );
+    }
     if (!isNetworkError(message)) throw err;
     throw new Error(
       `${message} — the agent could not reach its model endpoint(s): ${describeModels(models)}. ` +
@@ -291,7 +300,23 @@ function withStubs(tools: Record<string, unknown>): Record<string, unknown> {
   });
 }
 
-/** Reject a tool call as soon as the turn is stopped, even if its work continues. */
+/** Pause/goto are control flow for the engine, not tool failures. */
+function isControlFlowSignal(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const signal = err as Record<string, unknown>;
+  return typeof signal.checkpointId === "string" || (typeof signal.target === "string" && "value" in signal);
+}
+
+/**
+ * Reject a tool call as soon as the turn is stopped, even if its work continues.
+ *
+ * Also turn a thrown tool error into the engine's error-result shape. The
+ * engine's explicit-loop path (`Call` under `disableAuto`) rethrows a host
+ * tool's exception, which kills the whole tree and returns the raw error to
+ * the caller — one rejected `csv_query` on an mbox was enough to discard a
+ * whole read. Returning `{ error }` instead lets the app fold it into the
+ * thread and recover, exactly as the auto-loop path already does.
+ */
 function withStopTools(tools: Record<string, unknown>, signal: AbortSignal): Record<string, unknown> {
   const wrapped = new Map<string, unknown>();
   return new Proxy(tools, {
@@ -311,9 +336,14 @@ function withStopTools(tools: Record<string, unknown>, signal: AbortSignal): Rec
       const execute = tool.execute.bind(tool);
       const out = {
         ...tool,
-        execute: (...args: unknown[]) => {
+        execute: async (...args: unknown[]) => {
           throwIfStopped(signal);
-          return raceWithStop(Promise.resolve(execute(...args)), signal);
+          try {
+            return await raceWithStop(Promise.resolve(execute(...args)), signal);
+          } catch (err) {
+            if (isAgentStopped(err) || isControlFlowSignal(err)) throw err;
+            return { error: err instanceof Error ? err.message : String(err) };
+          }
         },
       };
       wrapped.set(prop, out);
