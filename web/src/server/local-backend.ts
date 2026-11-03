@@ -20,6 +20,7 @@ import { emitValue, type EmitComponent } from "../util/emit-text";
 import type { TurnTokens } from "../web-log-types";
 import { createModuleLoader } from "../agent/module-loader";
 import { patternLabel } from "../agent/pattern-path";
+import { createRunWatchdog, DEFAULT_STALE_MS } from "../agent/run-watchdog";
 import { loadEnv, saveEnv, saveModelsJson } from "../settings";
 import { parseModels, type ModelRegistry } from "../model-config";
 import {
@@ -151,6 +152,14 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   const liveTurns = new Map<string, TurnRecord[]>();
   /** The run currently executing in the worker, by session key. */
   const activeRuns = new Map<string, { turnId: string; runId: number }>();
+  /**
+   * A run that stops emitting events for this long is wedged (dead worker,
+   * an engine deadlock), not merely thinking: every LLM call has its own
+   * whole-call deadline in grandma-kat. Configurable for tests/deployments.
+   */
+  const configuredStaleMs = Number(opts.env.BOB_RUN_STALE_MS);
+  const runStaleMs =
+    Number.isFinite(configuredStaleMs) && configuredStaleMs > 0 ? configuredStaleMs : DEFAULT_STALE_MS;
   /** Resolvers waiting for the active run on a session to finish. */
   const idleWaiters = new Map<string, Array<() => void>>();
   const subscribers = new Set<(msg: EventMessage) => void>();
@@ -549,6 +558,9 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     }
   };
 
+  /** Reports turns that stopped emitting events; each run settles itself. */
+  const watchdog = createRunWatchdog({ staleMs: runStaleMs });
+
   async function runTurn(
     turnId: string,
     text: string,
@@ -608,6 +620,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       },
       {
         onEvent: (event) => {
+          watchdog.touch(key, turnId);
           const ev = event as { kind?: string; content?: Record<string, unknown>; scope_id?: number | null; branch_path?: string };
           addTurnTokens(record, ev);
           const app = tagEventApp(apps, ev);
@@ -623,6 +636,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
           broadcast({ type: "event", turnId, event: tagged });
         },
         onEmit: (value) => {
+          watchdog.touch(key, turnId);
           const { text: t, buttons, level, component } = emitValue(value);
           const app = apps.current;
           // A component-only bubble is still a bubble: keep every parallel
@@ -641,8 +655,54 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     );
     activeRuns.set(key, { turnId, runId: running.runId });
     broadcast({ type: "turn_start", turnId, session: key, input: text, inputApp: record.inputApp ?? "trunk", ts: record.startedAt, awaiting: null });
+    /**
+     * A run silent for `runStaleMs` is wedged, not thinking. Settle it here —
+     * stop the worker, persist an error marker and flip the UI — because the
+     * `await running` below may never resolve. The checkpoint survives, so the
+     * retry button resumes the tree.
+     */
+    const settleStuck = async (): Promise<void> => {
+      if (record.status !== "running") return;
+      record.status = "error";
+      const silence =
+        runStaleMs >= 60_000 ? `${Math.round(runStaleMs / 60_000)}m` : `${Math.max(1, Math.round(runStaleMs / 1000))}s`;
+      record.error =
+        `the run went silent for ${silence} — marked stuck. ` +
+        "Its session checkpoint is kept, so sending a new message resumes it.";
+      record.endedAt = Date.now();
+      const active = activeRuns.get(key);
+      if (active?.turnId === turnId) {
+        try { agent.stop(active.runId); } catch { /* worker gone */ }
+        activeRuns.delete(key);
+      }
+      await persistTurn(key, record, active?.runId ?? 0);
+      broadcast({
+        type: "turn_end", turnId, status: "error", error: record.error, output: "",
+        buttons: [], emits: [], awaiting: null, tokens: record.tokens ?? null, ts: record.endedAt,
+      });
+      if (relay) relayToPhone(relay, `Something went wrong: ${record.error}`);
+      const waiters = idleWaiters.get(key);
+      if (waiters?.length) {
+        idleWaiters.delete(key);
+        for (const wake of waiters) wake();
+      }
+    };
+    watchdog.start({
+      key,
+      turnId,
+      onStale: () => {
+        // settleStuck persists and broadcasts; a failure there must not become
+        // an unhandled rejection behind the still-running turn.
+        void settleStuck().catch((err) => {
+          console.warn("run watchdog: could not settle stuck turn", err);
+        });
+      },
+    });
     try {
       const { result, emits, mode } = await running;
+      // A watchdog may have settled the turn while the worker was silent; the
+      // marker and broadcast already stand, so never write a second one.
+      if (record.status !== "running") return record;
       record.status = "done";
       record.runMode = mode;
       record.contextLost = mode === "fresh" && awaitingBefore != null;
@@ -669,7 +729,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       // (another tab took the chat over mid-turn) is dropped channel-side.
       if (relay) relayToPhone(relay, record.output || "(no reply)");
     } catch (err) {
-      if (err instanceof AgentStoppedError || isAgentStopped(err)) {
+      if (record.status !== "running") {
+        // The watchdog already settled this turn; let the worker unwind
+        // without writing a second marker or a competing status.
+      } else if (err instanceof AgentStoppedError || isAgentStopped(err)) {
         record.status = "stopped";
         record.error = null;
         // The previous checkpoint is still the resume point; keep the input
@@ -692,6 +755,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         if (relay) relayToPhone(relay, `Something went wrong: ${record.error ?? "error"}`);
       }
     } finally {
+      watchdog.finish(key, turnId);
       if (activeRuns.get(key)?.turnId === turnId) activeRuns.delete(key);
       const waiters = idleWaiters.get(key);
       if (waiters?.length) {

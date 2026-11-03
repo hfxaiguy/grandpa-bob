@@ -2,6 +2,26 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — a wedged run ends instead of spinning forever
+
+A turn whose worker died, or whose run promise never settled, left the chat in
+"running" indefinitely: grandma-kat bounds each model call, but nothing above
+it noticed a silent run. The browser host now watches activity per turn.
+
+- `web/src/agent/run-watchdog.ts`: tracks each in-flight turn's last event or
+  emit and reports it once after `staleMs` of silence (default 15 minutes,
+  above Ollama's 10-minute call budget). `BOB_RUN_STALE_MS` overrides it.
+- `web/src/server/local-backend.ts`: starts the watchdog with each turn. A
+  stale run is stopped, persisted as an error marker, broadcast as `turn_end`,
+  mirrored to the phone, and wakes `whenIdle` waiters. The session checkpoint
+  is kept, so the next message resumes the tree. A normal settle cancels the
+  watch, and a turn the watchdog already settled never writes a second marker.
+- `scripts/run-watchdog-test.ts` + `test:run-watchdog`: deterministic clock and
+  timers cover the threshold, activity touches, foreign turn ids, finish,
+  periodic sweeps, stop, and a throwing stale handler.
+
+Tests: `npm run test:run-watchdog`; root and web typecheck.
+
 ## 2026-11-03 — a board reset lowers the front tile
 
 The phone front layer is a seat in the board, so it must not outlive the board
