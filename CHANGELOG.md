@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — the trunk's cheap tool check is gone
+
+The per-round `tool_check` gate could refuse a sound call for the wrong reason:
+in a live lead-enrichment session it read a browser connectivity check as
+unrelated to finding companies and kept it from running. The trunk now
+dispatches every proposed tool round directly. Two deterministic guards remain
+— a repeat of a call that already succeeded this turn, and an app an asker
+declared `avoid` — and their refusals are labelled `[tool_guard]`.
+
+- `patterns/trunk.prod.mjs`: removed `TOOL_CHECK_SYSTEM`, the check/recheck
+  prompts, the refusal streak (`tool_rejections` / `reject_log`), and the
+  third-refusal human escalation (`gate_call`, Approve/Stop). SYSTEM no longer
+  describes a gate.
+- `lib/tool-policy.mjs`: a folded refusal reads `call rejected by the tool
+  guard`, not `tool_check`.
+- `patterns/trunk.test.mjs`: 16 pass; gate fixtures removed and the caller-list
+  handoff asserts no cheap check runs before a round.
+- Mirrored the trunk, test, and tool-policy changes to the centre and linkedin
+  workspaces; re-packed `web/public/seed/workspace.json`.
+
+Tests: `node --test patterns/trunk.test.mjs tests/tool-result-refs.test.mjs`
+(33 pass).
+
 ## 2026-11-03 — an inline app-call card can no longer collapse to a hairline
 
 Calling an app from a chat showed the call as a bare blue or amber rule instead
