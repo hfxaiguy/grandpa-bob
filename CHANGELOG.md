@@ -2,6 +2,15 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-02 — a dynamic max is described in a serialized tree
+
+Pattern serialization only understood a numeric `max(count)`. A dynamic count
+(a function of memory) was silently omitted from the spec, so the rendered tree
+could not show its loop bound. The serializer now renders `max (dynamic)` and
+the tree-serialize test pins it.
+
+- `web/src/tree-serialize.ts` + `scripts/tree-serialize-test.ts`.
+
 ## 2026-11-02 — a called app is a smaller tile in the caller's chat
 
 Calling an app split the conversation: the app's bubbles lived on its own board

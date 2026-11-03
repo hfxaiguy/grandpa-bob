@@ -63,8 +63,10 @@ function promptValue(prompt: unknown): { text?: string; messages?: { role: strin
   return { fn: fnSnippet(prompt) };
 }
 
-function maxText(max: { count?: number } | null | undefined): string | null {
-  if (!max || typeof max.count !== "number") return null;
+function maxText(max: { count?: number | ((m: unknown) => number) } | null | undefined): string | null {
+  if (!max) return null;
+  if (typeof max.count === "function") return "max (dynamic)";
+  if (typeof max.count !== "number") return null;
   return `max ${max.count}`;
 }
 

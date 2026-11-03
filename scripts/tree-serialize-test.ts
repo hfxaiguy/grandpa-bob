@@ -128,6 +128,14 @@ assert.equal(mem.kind, "memory");
 assert.equal(mem.path, "person-scan/seen");
 assert.ok(mem.fn);
 
+// dynamic max count (a function of memory) is shown without inventing a number
+const dynamic = serializeTree(Tree(
+  name("dynamic"),
+  Model("cheap"),
+  Until((m: any) => m.done, max((m: any) => m.max_passes)),
+));
+assert.equal(dynamic.children[0].loop, "loop to top max (dynamic)");
+
 // fnSnippet basics
 assert.equal(fnSnippet(null), null);
 assert.equal(fnSnippet("nope"), null);
