@@ -1052,15 +1052,18 @@ async function filesBrowse(dir) {
       const size = f.isDir ? "dir" : formatSize(f.size);
       const mtime = f.mtime ? new Date(f.mtime).toLocaleString() : "";
       const click = f.isDir ? \`onclick="filesBrowse('\${escPath(r.dir, f.name)}')"\` : "";
-      const dl = !f.isDir ? \`<a href="/api/files/download?path=\${escPath(r.dir, f.name)}" style="color:var(--accent); text-decoration:none; font-size:11px">↓</a>\` : "";
-      const rm = !f.isDir ? \`<button class="danger" style="padding:2px 6px; font-size:11px" onclick="delFile('\${escPath(r.dir, f.name)}','\${f.name}')">×</button>\` : "";
-      return \`<div style="display:flex; align-items:center; padding:3px 0; border-bottom:1px solid #1e293b">
+      // Download sits on the far left, delete on the far right: two tap targets
+      // that used to share one cramped cell must not be neighbours.
+      const dl = !f.isDir ? \`<a href="/api/files/download?path=\${escPath(r.dir, f.name)}" title="Download" aria-label="Download" style="color:var(--accent); text-decoration:none; font-size:11px">↓</a>\` : "";
+      const rm = !f.isDir ? \`<button class="danger" title="Delete" aria-label="Delete" style="padding:2px 6px; font-size:11px" onclick="delFile('\${escPath(r.dir, f.name)}','\${f.name}')">×</button>\` : "";
+      return \`<div style="display:flex; align-items:center; gap:4px; padding:3px 0; border-bottom:1px solid #1e293b">
+        <span style="width:24px; flex:none; text-align:center">\${dl}</span>
         <span \${click} style="cursor:\${f.isDir?'pointer':'default'}; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
           \${f.isDir ? '📁 ' : '📄 '}\${f.name}
         </span>
         <span style="width:60px; text-align:right; color:var(--muted); font-size:11px">\${size}</span>
         <span style="width:140px; text-align:right; color:var(--muted); font-size:11px">\${mtime}</span>
-        <span style="width:30px; text-align:center">\${dl}\${rm}</span>
+        <span style="width:32px; flex:none; text-align:center">\${rm}</span>
       </div>\`;
     }).join("");
   } catch (e) { $("file-list").textContent = "error: " + e.message; }
