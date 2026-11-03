@@ -1,6 +1,7 @@
 /**
- * Tests for the narration lint. The rule: every `>>` pause is preceded, in the
- * same branch, by a `<<!` machine emit saying what it waits for.
+ * Tests for the narration lint. The rule: every `HUMAN:` pause (or legacy
+ * `>>`) is preceded, in the same branch, by an `EMIT!:` machine emit (or
+ * legacy `<<!`) saying what it waits for.
  *
  * Run: npm run test:spec-lint
  */
@@ -10,7 +11,14 @@ import os from "node:os";
 import path from "node:path";
 import { lintSpec, lintWorkspace } from "./spec-lint.js";
 
-// A pause narrated by an immediately-preceding <<! passes.
+// A pause narrated by an immediately-preceding machine emit passes.
+assert.deepEqual(lintSpec([
+  "| BRANCH: turn",
+  "| | EMIT!: { tree: trunk, doing: idle, at: loop_input }",
+  "| | HUMAN: loop_input",
+].join("\n")), []);
+
+// The legacy form still passes.
 assert.deepEqual(lintSpec([
   "|| ## turn",
   "|| || <<! { tree: trunk, doing: idle, at: loop_input }",
@@ -37,8 +45,9 @@ assert.deepEqual(
   [],
 );
 
-// A << note is not a <<! machine note.
+// A plain emit is not a machine note.
 assert.equal(lintSpec(["|| << emit the draft", "|| >> reply"].join("\n")).length, 1);
+assert.equal(lintSpec(["| EMIT: emit the draft", "| HUMAN: reply"].join("\n")).length, 1);
 
 // Several pauses: only the unnarrated one is flagged.
 {
