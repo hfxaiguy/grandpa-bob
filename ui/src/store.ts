@@ -352,6 +352,8 @@ export async function refreshApps(): Promise<void> {
   try {
     const d = await getJSON<{ apps: AppInfo[] }>("/api/apps");
     setState("apps", d.apps);
+    // The front layer is a seat in the catalog: a removed app cannot hold it.
+    if (state.front && !d.apps.some((a) => a.name === state.front)) clearFront();
   } catch (e) {
     console.warn("apps:", e);
   }
@@ -1082,6 +1084,7 @@ export function parkAllExcept(keep: readonly string[] = NEW_SESSION_KEEP): void 
   // with no auto-close bookkeeping.
   setState("layout", "autoRaised", []);
   clearRaiseDenied();
+  clearFront();
   saveLayout();
 }
 
@@ -1113,6 +1116,7 @@ export function applyProfileVisibleExceptions(): void {
   );
   setState("layout", "autoRaised", []);
   clearRaiseDenied();
+  clearFront();
   saveLayout();
 }
 
@@ -1135,6 +1139,7 @@ export function resetBoardForNewSession(): void {
   );
   setState("layout", "autoRaised", []);
   clearRaiseDenied();
+  clearFront();
   saveLayout();
 }
 

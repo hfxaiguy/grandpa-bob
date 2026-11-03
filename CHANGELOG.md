@@ -2,6 +2,19 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — a board reset lowers the front tile
+
+The phone front layer is a seat in the board, so it must not outlive the board
+that put it there. `clearFront()` now runs when the board is rebuilt
+(`parkAllExcept`, profile **Hidden… except:** changes, and a new session), and
+an app that disappears from the catalog gives up the front seat immediately.
+
+- `ui/src/store.ts`: clear the front layer on every board reset and on catalog
+  refresh when the app is gone.
+- `scripts/ui-order-test.ts`: a new-session reset lowers the front tile.
+
+Tests: `npm run test:ui-order`.
+
 ## 2026-11-03 — stop-tools contracts run without a worker
 
 `withStopTools` moved out of `agent-worker.ts` into its own module so its
@@ -240,8 +253,10 @@ loader. The model spent the turn fighting those instead of the data.
   have no name; `files` warns that `csv_query` is CSV/TSV-only and `read_file`
   chunks; `knit` enforces lower_snake_case tree names at lint/plan time and
   names uppercase/hyphen mistakes explicitly.
-- Tests: `test:platform` covers chunked reads; `test:module-loader` covers the
-  net/tls stubs; the `knit` suite covers the early name errors.
+- Tests: `test:platform` covers chunked reads (empty files and surrogate
+  pairs); `test:stop-tools` drives a real `disableAuto`/`Call` run that
+  recovers from a thrown tool; `test:module-loader` covers the net/tls stubs;
+  the `knit` suite covers the early name errors.
 
 ## 2026-11-02 — open BobSwap seeds need no BobSwap configuration
 
