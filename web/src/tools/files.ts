@@ -6,6 +6,14 @@ const SKIP_DIRS = new Set([".git", "node_modules", "dist", "tmp"]);
 const MAX_READ_CHARS = 100_000;
 const MAX_LIST_ENTRIES = 400;
 
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
 /**
  * Sandboxed workspace file tools. Runs over the injected `Platform`, so the
  * same class serves the Node target (`createNodePlatform`) and the browser
@@ -75,15 +83,32 @@ export class FileTools {
     const content = await fs.readFile(abs, "utf8");
     const total = content.length;
     const rawOffset = Number(opts.offset ?? 0);
-    const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0;
-    if (offset > 0 && offset >= total) {
-      throw new Error(`offset ${offset} is past the end of ${rel} (${total} chars)`);
+    const requested = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0;
+    if (requested > 0 && requested >= total) {
+      throw new Error(`offset ${requested} is past the end of ${rel} (${total} chars)`);
     }
+    // A caller may land on the low half of a surrogate pair. Step back so the
+    // chunk starts at the high half; offsets we hand out already do this.
+    const offset =
+      requested > 0 && isLowSurrogate(content.charCodeAt(requested)) && isHighSurrogate(content.charCodeAt(requested - 1))
+        ? requested - 1
+        : requested;
     const rawLimit = Number(opts.limit ?? MAX_READ_CHARS);
     const limit = Number.isFinite(rawLimit)
       ? Math.min(MAX_READ_CHARS, Math.max(1, Math.floor(rawLimit)))
       : MAX_READ_CHARS;
-    const end = Math.min(total, offset + limit);
+    let end = Math.min(total, offset + limit);
+    // Never cut a pair in half at the end. Drop one code unit when there is
+    // room (the next chunk starts on the high half); a one-unit limit that
+    // lands on a high half has to include the low half to make progress.
+    if (
+      end < total &&
+      end > offset &&
+      isHighSurrogate(content.charCodeAt(end - 1)) &&
+      isLowSurrogate(content.charCodeAt(end))
+    ) {
+      end = end - offset > 1 ? end - 1 : end + 1;
+    }
     if (offset === 0 && end === total) return content || "(empty file)";
     const slice = content.slice(offset, end);
     const range = end < total

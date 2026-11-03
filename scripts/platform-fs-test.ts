@@ -83,6 +83,34 @@ await files.writeFile("notes/empty.txt", "");
 assert.equal(await files.readFile("notes/empty.txt"), "(empty file)");
 await assert.rejects(() => files.readFile("notes/empty.txt", { offset: 1 }), /past the end/);
 
+// Chunk boundaries never split a surrogate pair (emoji/other non-BMP text).
+const emoji = "😀"; // two UTF-16 code units
+const withEmoji = `aaaa${emoji}bb`;
+await files.writeFile("notes/emoji.txt", withEmoji);
+assert.equal(
+  await files.readFile("notes/emoji.txt", { offset: 4, limit: 1 }),
+  `${emoji}\n… (read chars 4..6 of 8; next offset 6)`,
+  "a one-unit limit on a high surrogate returns the whole pair",
+);
+assert.equal(
+  await files.readFile("notes/emoji.txt", { offset: 5, limit: 2 }),
+  `${emoji}\n… (read chars 4..6 of 8; next offset 6)`,
+  "an offset on the low surrogate steps back to the high half",
+);
+// Walk the file a unit at a time and reassemble: no half-pairs, no lost text.
+let walked = "";
+let walkOffset = 0;
+for (let guard = 0; guard < 50; guard++) {
+  const chunk = await files.readFile("notes/emoji.txt", { offset: walkOffset, limit: 1 });
+  const note = /\n… \(read chars (\d+)\.\.(\d+) of 8; (?:next offset (\d+)|end of file)\)$/.exec(chunk);
+  assert.ok(note, `chunk has a range note: ${JSON.stringify(chunk)}`);
+  walked += chunk.slice(0, note.index);
+  if (!note[3]) break;
+  assert.ok(Number(note[3]) > Number(note[1]), "each chunk advances");
+  walkOffset = Number(note[3]);
+}
+assert.equal(walked, withEmoji, "walking in one-unit chunks reconstructs the file");
+
 // ── byte fidelity on the real Node adapter ─────────────────────────────
 // The memory platform above proves the tool seam; this proves copy_file is
 // genuinely binary-safe (invalid UTF-8 bytes survive unchanged).
