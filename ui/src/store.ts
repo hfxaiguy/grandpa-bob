@@ -93,6 +93,10 @@ export interface UiState {
    *  seats are taken; its rail square pulses until opened (or the pulse
    *  times out). */
   raiseDenied: string | null;
+  /** The phone's lifted tile: tapping a tile header brings that one tile to the
+   *  front as a board-wide overlay above the grid and the trunk. Not persisted;
+   *  tapping the header again (or parking the tile) puts it back. */
+  front: string | null;
   layout: Layout;
   /** The event stream is shown. Persisted; on a small screen it starts hidden
    *  and folds into a bottom sheet when opened. */
@@ -308,6 +312,7 @@ export const [state, setState] = createStore<UiState>({
   toastErr: false,
   lastError: null,
   raiseDenied: null,
+  front: null,
   layout: loadLayout(),
   streamOpen: loadStreamOpen(),
   activity: {},
@@ -458,7 +463,11 @@ export async function refreshSession(
   // The panel shows the conversation it was fetched for — never a previous
   // one while the new fetch is in flight. Clear it the moment the screen
   // changes; the guarded fetch below fills it, or the empty state stands.
-  if (d.active !== previous) setState({ memory: {}, memorySession: null });
+  if (d.active !== previous) {
+    setState({ memory: {}, memorySession: null });
+    // A lifted tile belongs to the chat that opened it, not to the next one.
+    clearFront();
+  }
   // The address bar follows the screen (and loses the param when the active
   // session is deleted and nothing is selected).
   updateSessionUrl(d.active);
@@ -995,6 +1004,7 @@ function pruneStaleTiles(): boolean {
   const parked = new Set(stale);
   setState("layout", "hidden", (hidden) => [...hidden, ...stale.filter((name) => !hidden.includes(name))]);
   setState("layout", "autoRaised", (list) => (list ?? []).filter((name) => !parked.has(name)));
+  for (const name of stale) clearFront(name);
   clearRaiseDenied();
   saveLayout();
   return true;
@@ -1053,6 +1063,8 @@ export function toggleHidden(name: string): void {
   saveLayout();
   // A manual open answers the app's pulse; parking a tile leaves the others be.
   if (wasHidden) clearRaiseDenied(name);
+  // A parked tile cannot stay lifted over a board it no longer belongs to.
+  else clearFront(name);
 }
 
 /** Park every board tile except trunk and `keep`, restoring any of those that
@@ -1133,6 +1145,22 @@ export function toggleExpanded(name: string): void {
 export function toggleWide(name: string): void {
   setState("layout", "wide", (h) => (h.includes(name) ? h.filter((x) => x !== name) : [...h, name]));
   saveLayout();
+}
+
+/** Lift one tile into the phone's front layer, or put it back when it is
+ *  already there. Only one tile can be in front: tapping another header hands
+ *  the overlay to that tile. The desktop board has no overlay; the gesture is a
+ *  phone affordance, so a wider viewport ignores it. */
+export function toggleFront(name: string): void {
+  if (!smallScreen()) return;
+  setState("front", (cur) => (cur === name ? null : name));
+}
+
+/** Lower the front tile — all of them, or only `name` when given. */
+export function clearFront(name?: string): void {
+  if (state.front == null) return;
+  if (name != null && state.front !== name) return;
+  setState("front", null);
 }
 
 /** Whether a tile's memory panel is open: an explicit choice wins, then the
@@ -1254,10 +1282,13 @@ export function openSubApps(parent: string): AppInfo[] {
  *  parent's rail. The open order is the render order, so docking a chat keeps
  *  its spot while the others shuffle around it. */
 export function toggleSub(name: string): void {
+  const parking = state.layout.subsOpen.includes(name);
   setState("layout", "subsOpen", (list) =>
     list.includes(name) ? list.filter((x) => x !== name) : [...list, name],
   );
   saveLayout();
+  // A parked sub-app cannot stay lifted over the board.
+  if (parking) clearFront(name);
 }
 
 /** Bring an app's real tile into view: unhide its top-level ancestor, open the
@@ -1266,6 +1297,9 @@ export function toggleSub(name: string): void {
 export function showApp(name: string): void {
   const app = state.apps.find((a) => a.name === name);
   if (!app) return;
+  // Opening a real tile is a request to see it, not the tile currently lifted
+  // over the board: lower that first or it would cover the destination.
+  clearFront();
   // Walk to the top-level ancestor, remembering the parented chain root-first.
   const chain: string[] = [];
   let cur: AppInfo | undefined = app;
@@ -1586,6 +1620,8 @@ export async function init(): Promise<void> {
       mq?.addEventListener?.("change", (e) => {
         setSmallScreen(e.matches);
         if (e.matches && state.streamOpen) setStreamOpen(false, false);
+        // The lift is a phone gesture; a wider board shows every tile again.
+        if (!e.matches) clearFront();
       });
     } catch {
       /* no matchMedia */

@@ -1097,6 +1097,42 @@ body.dragging-tile { user-select: none !important; }
      its bottom seat but takes more of the phone's height. */
   .tiles > .tile.trunk-dock { height: 56vh; min-height: 260px; }
   .tiles > .tile.trunk-dock.expanded { height: 100%; }
+
+  /* A tapped tile header lifts that tile over the rest of the board: it leaves
+     the grid and fills the board as a fixed layer below the toolbar. The top
+     offset is measured by the Tile component (the toolbar can wrap), and the
+     layer sits above the trunk dock's z-index 5 but below the toolbar's 20.
+     While the layer is up the board stops scrolling behind it. */
+  .tiles.front-open { overflow: hidden; }
+  .tiles > .tile.front,
+  .tiles > .tile.front.expanded,
+  .tiles > .grid > .tile.front,
+  .tiles > .grid > .tile.front.expanded {
+    position: fixed;
+    top: var(--front-top, 0px);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    margin: 0;
+    aspect-ratio: auto;
+    z-index: 15;
+    border: 0;
+    border-radius: 0;
+    background: var(--panel);
+    box-shadow: 0 -18px 44px rgba(0, 0, 0, 0.62);
+  }
+  .tile.front .tile-head {
+    top: 0;
+    cursor: zoom-out;
+    border-bottom-color: var(--accent);
+  }
+  /* The layer reaches the phone's bottom edge; keep the send row above the
+     home indicator. */
+  .tile.front .composer { padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
   .tile-rail { width: 30px; }
   .tile-subs-area { --sub-tile-w: 200px; }
   /* The dock keeps its bottom seat on a phone with a shorter floor, so the

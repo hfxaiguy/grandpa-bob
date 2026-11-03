@@ -35,6 +35,8 @@ import {
   togglePinned,
   toggleMem,
   memoryOpen,
+  toggleFront,
+  smallScreen,
   moveTile,
   hiddenApps,
   setStreamOpen,
@@ -1503,6 +1505,9 @@ export function Tile(props: { app: AppInfo }) {
   const pinned = () => state.layout.pinned.includes(name());
   const paused = () => state.awaiting === name();
   const over = () => dragging() !== null && dragging() !== name() && dropTarget() === name();
+  // The phone's front layer: one board tile can be lifted over the grid and
+  // trunk, and tapping its header puts it back.
+  const front = () => state.front === name();
   // The trunk is the board's home tile: docked across the bottom row, so it has
   // no pin or drag seat of its own and already spans every column. It keeps the
   // expand toggle (a taller dock) and the park gesture.
@@ -1523,7 +1528,11 @@ export function Tile(props: { app: AppInfo }) {
   // movement threshold), `drag` once the tile is actually being dragged.
   let arm: { id: number; x: number; y: number } | null = null;
   let drag = false;
+  // A pointer that actually dragged must not also toggle the front layer when
+  // the browser still delivers the click on release.
+  let didDrag = false;
   let ghost: HTMLDivElement | null = null;
+  let tileEl: HTMLElement | undefined;
   // The app currently executing (shared with the hidden-tile rail).
   const running = createMemo(() => currentRunningApp() === name());
   const bubbles = createMemo(() => bubblesFor(name()));
@@ -1569,6 +1578,44 @@ export function Tile(props: { app: AppInfo }) {
     if (el && untrack(atBottom)) el.scrollTop = el.scrollHeight;
   });
 
+  // The front layer is fixed below the toolbar, not below the viewport: its
+  // top is the board's own top edge, measured when the lift starts and again
+  // when the toolbar wraps/resizes or the phone keyboard opens. A fixed child
+  // is not clipped by `.tiles`' overflow, so this still works while the board
+  // scroll is locked for the overlay.
+  const placeFront = () => {
+    const board = tileEl?.closest(".tiles");
+    if (!tileEl || !board) return;
+    tileEl.style.setProperty("--front-top", `${Math.max(0, board.getBoundingClientRect().top)}px`);
+  };
+  createEffect(() => {
+    if (!front() || !smallScreen()) {
+      tileEl?.style.removeProperty("--front-top");
+      return;
+    }
+    placeFront();
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(placeFront);
+    window.addEventListener("resize", placeFront);
+    window.visualViewport?.addEventListener("resize", placeFront);
+    onCleanup(() => {
+      window.removeEventListener("resize", placeFront);
+      window.visualViewport?.removeEventListener("resize", placeFront);
+    });
+  });
+
+  // The header is the phone's gesture target: tapping anywhere outside its
+  // buttons lifts this tile over the board (or puts it back). Sub-app headers
+  // are already inside their parent's frame, so they keep their normal size.
+  const onHeaderClick = (e: MouseEvent) => {
+    if (!smallScreen() || props.app.parent) return;
+    if (didDrag) {
+      didDrag = false;
+      return;
+    }
+    if ((e.target as HTMLElement).closest("button, input, textarea, select, a, label")) return;
+    toggleFront(name());
+  };
+
   // One composer in the whole UI: the tile whose tree the session is parked on
   // (the current Human). A fresh session has no pause yet, so the composer
   // starts on the trunk (matching the server's `inputApp ?? "trunk"`); while a
@@ -1598,6 +1645,7 @@ export function Tile(props: { app: AppInfo }) {
   };
   const beginDrag = (x: number, y: number) => {
     drag = true;
+    didDrag = true;
     setDragging(name());
     setDropTarget(null);
     document.body.classList.add("dragging-tile");
@@ -1620,6 +1668,7 @@ export function Tile(props: { app: AppInfo }) {
 
   return (
     <section
+      ref={(el) => (tileEl = el)}
       class="tile"
       classList={{
         expanded: expanded(),
@@ -1627,12 +1676,14 @@ export function Tile(props: { app: AppInfo }) {
         paused: paused(),
         errored: errored(),
         pinned: pinned(),
+        front: front(),
         "drop-target": over(),
         // The trunk docks across the grid's bottom row, outside the drag order.
         "trunk-dock": isTrunk(),
       }}
       data-tile={name()}
       onPointerDown={(e) => {
+        didDrag = false;
         if (e.button !== 0) return;
         // The trunk dock has no seat in the grid's manual order.
         if (isTrunk()) return;
@@ -1709,7 +1760,17 @@ export function Tile(props: { app: AppInfo }) {
           <SubRail parent={name()} />
         </Show>
         <div class="tile-main">
-          <header class="tile-head">
+          <header
+            class="tile-head"
+            title={
+              smallScreen() && !props.app.parent
+                ? front()
+                  ? "tap to put this tile back on the board"
+                  : "tap to bring this tile to the front"
+                : undefined
+            }
+            onClick={onHeaderClick}
+          >
             <span class="dot" classList={{ run: running(), wait: paused(), err: errored() }} />
             <span class="tile-name">{name()}</span>
             <span class="tile-status">{statusText()}</span>

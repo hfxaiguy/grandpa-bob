@@ -242,7 +242,7 @@ export function App() {
         >
           <div class="body">
             <HiddenRail />
-            <main class="tiles">
+            <main class="tiles" classList={{ "front-open": !!state.front }}>
               <Tiles apps={apps()} trunk={trunk()} />
             </main>
             <GlobalStream />

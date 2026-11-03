@@ -32,6 +32,8 @@ const {
   memoryOpen,
   toggleMem,
   setSmallScreen,
+  toggleFront,
+  clearFront,
 } = await import("../ui/src/store.ts");
 
 const apps = ["trunk", "alpha", "beta", "gamma"].map((name) => ({ name, description: "" }));
@@ -298,4 +300,41 @@ assert.deepEqual(state.layout.memClosed, ["alpha"]);
 setSmallScreen(true);
 assert.equal(memoryOpen("beta"), false, "untouched tiles still follow the phone default");
 
-console.log("ui-order: pinned-first order, activity ranking, rail order, live bumps, auto-raise seats, auto-close after two unused turns, profile exceptions, trunk-only new-session board and phone memory defaults ok");
+// ── the phone front layer ───────────────────────────────────────────────
+// Tapping a header lifts one tile over the board; tapping again (or parking
+// it) lowers it. Only one tile is in front and a desktop does not lift at all.
+setState("apps", ["trunk", "alpha", "beta"].map((name) => ({ name, description: "" })));
+setState("layout", {
+  order: [],
+  hidden: [],
+  expanded: [],
+  wide: [],
+  pinned: ["trunk"],
+  autoRaised: [],
+  subsOpen: [],
+  memClosed: [],
+  memOpen: [],
+});
+setState("front", null);
+setSmallScreen(true);
+toggleFront("alpha");
+assert.equal(state.front, "alpha", "a phone header tap brings its tile to the front");
+toggleFront("beta");
+assert.equal(state.front, "beta", "another header hands the front layer over");
+toggleFront("beta");
+assert.equal(state.front, null, "tapping the front tile's header puts it back");
+toggleFront("alpha");
+clearFront("beta");
+assert.equal(state.front, "alpha", "lowering another tile leaves the front one up");
+clearFront("alpha");
+assert.equal(state.front, null, "lowering without a name clears the layer");
+toggleFront("alpha");
+toggleHidden("alpha");
+assert.equal(state.front, null, "parking the front tile lowers it");
+toggleHidden("alpha");
+setSmallScreen(false);
+toggleFront("alpha");
+assert.equal(state.front, null, "a desktop header tap has no front layer");
+setSmallScreen(true);
+
+console.log("ui-order: pinned-first order, activity ranking, rail order, live bumps, auto-raise seats, auto-close after two unused turns, profile exceptions, trunk-only new-session board, phone memory defaults and front-tile lift ok");
