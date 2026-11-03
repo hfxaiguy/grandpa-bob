@@ -135,9 +135,43 @@ export async function exportWorkspace(root?: FileSystemDirectoryHandle): Promise
   return archiveToBlob(await buildWorkspaceArchive(root));
 }
 
+/** Compare two byte arrays without decoding either of them as text. */
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** Files larger than this are rewritten rather than read back for comparison. */
+const MAX_COMPARE_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Whether an existing file already has exactly these bytes.
+ *
+ * Reading is deliberately preferred over rewriting: closing a Gecko OPFS
+ * writable is durable, and on this machine's Btrfs profile it cost ~200 ms for
+ * a 12 KB file (the same write on tmpfs or Chromium was ~3 ms). Seed updates
+ * mostly overlay files that did not change; skipping those writes turns a
+ * minute-long apply into a read pass. Missing files simply fail the probe.
+ */
+async function fileAlreadyHas(
+  handle: FileSystemFileHandle,
+  bytes: Uint8Array,
+): Promise<boolean> {
+  if (bytes.byteLength > MAX_COMPARE_BYTES) return false;
+  try {
+    const file = await handle.getFile();
+    if (file.size !== bytes.byteLength) return false;
+    return sameBytes(new Uint8Array(await file.arrayBuffer()), bytes);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Write an archive back under `root` (merge: paths in the archive are
- * overwritten, anything else is kept). Returns the number of files written.
+ * overwritten, anything else is kept). Returns the number of files processed
+ * (written, or already identical on disk).
  */
 export async function importWorkspace(
   archive: WorkspaceArchive,
@@ -150,7 +184,7 @@ export async function importWorkspace(
   const files = archive.files.filter(
     (entry) => entry.path !== ".gpb-runlog" && !entry.path.startsWith(".gpb-runlog/"),
   );
-  let written = 0;
+  let processed = 0;
   for (const entry of files) {
     const parts = entry.path.split("/").filter((part) => part && part !== ".");
     if (parts.some((part) => part === "..")) throw new Error(`invalid archive path: ${entry.path}`);
@@ -165,13 +199,18 @@ export async function importWorkspace(
       throw new Error(`archive entry ${entry.path}: ${err instanceof Error ? err.message : String(err)}`);
     }
     const handle = await dir.getFileHandle(name, { create: true });
+    if (await fileAlreadyHas(handle, bytes)) {
+      processed++;
+      onProgress?.(processed, files.length);
+      continue;
+    }
     const writable = await handle.createWritable();
     await writable.write(bytes as unknown as Parameters<typeof writable.write>[0]);
     await writable.close();
-    written++;
-    onProgress?.(written, files.length);
+    processed++;
+    onProgress?.(processed, files.length);
   }
-  return written;
+  return processed;
 }
 
 /** Recursively count files and total bytes under `root` (for profile info). */

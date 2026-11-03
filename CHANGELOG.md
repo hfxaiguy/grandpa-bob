@@ -2,6 +2,31 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — seed updates skip files that are already identical
+
+A seed apply rewrote every archive entry, even when the workspace already held
+those exact bytes. That is cheap in Chromium but expensive in Firefox/Firedragon:
+closing a Gecko OPFS writable is durable, and on this machine's Btrfs profile it
+measured ~200 ms per 12 KB file (221 files ≈ 45–60 s) versus ~3 ms per file on
+tmpfs and Chromium. The per-file progress counter was therefore reporting disk
+commit latency, not download or JS time.
+
+- `importWorkspace()` now reads an existing file first and skips the writable
+  when its bytes match the archive entry (up to 32 MiB; larger files are still
+  rewritten to bound comparison memory). Missing or changed files take the
+  normal write path, and `onProgress` still advances once per file processed.
+- The return value remains the number of entries processed, so Import/seed
+  callers keep their current status text and progress totals.
+- `test:workspace-transfer` adds an in-memory OPFS fake: the first import
+  writes both files, a repeat import writes none, and a one-file change writes
+  only that file.
+
+On the same 221-file seed, a repeat update drops from ~45–60 s to the read pass
+(~0.8 s measured in Firedragon); the first seed into an empty profile still pays
+the browser's per-file commit cost.
+
+Tests: `npm run test:workspace-transfer`; root typecheck; web typecheck.
+
 ## 2026-11-03 — knit speaks keywords; UPDATE: names the slot
 
 Knit's line-notation grammar is now keyword-first. The old symbols remain

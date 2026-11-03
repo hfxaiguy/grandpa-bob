@@ -11,6 +11,7 @@ import {
   buildPlatformArchive,
   fromBase64,
   importPlatformArchive,
+  importWorkspace,
   toBase64,
   validateWorkspaceArchive,
   type WorkspaceArchive,
@@ -160,5 +161,85 @@ await assert.rejects(
     }),
   /invalid archive path/,
 );
+
+// ── OPFS import skips unchanged files ────────────────────────────────────
+// Gecko commits every `createWritable().close()` to disk; a seed update that
+// rewrites identical files is the difference between ~1 s and a minute there.
+const opfs = new Map<string, Uint8Array>();
+const writes: string[] = [];
+function fakeOpfsDir(prefix = ""): FileSystemDirectoryHandle {
+  const join = (name: string): string => (prefix ? `${prefix}/${name}` : name);
+  return {
+    async getDirectoryHandle(name: string): Promise<FileSystemDirectoryHandle> {
+      return fakeOpfsDir(join(name));
+    },
+    async getFileHandle(name: string, options?: { create?: boolean }) {
+      const path = join(name);
+      if (!opfs.has(path)) {
+        if (!options?.create) throw new Error(`not found: ${path}`);
+        opfs.set(path, new Uint8Array());
+      }
+      return {
+        async getFile() {
+          const bytes = opfs.get(path)!;
+          return {
+            size: bytes.length,
+            async arrayBuffer() {
+              return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+            },
+          };
+        },
+        async createWritable() {
+          writes.push(path);
+          const chunks: Uint8Array[] = [];
+          return {
+            async write(chunk: Uint8Array) {
+              chunks.push(chunk);
+            },
+            async close() {
+              const bytes = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.length, 0));
+              let at = 0;
+              for (const chunk of chunks) {
+                bytes.set(chunk, at);
+                at += chunk.length;
+              }
+              opfs.set(path, bytes);
+            },
+          };
+        },
+      };
+    },
+  } as unknown as FileSystemDirectoryHandle;
+}
+
+const opfsArchive: WorkspaceArchive = {
+  version: 1,
+  createdAt: "2026-11-03T12:00:00.000Z",
+  files: [
+    { path: "workspace/patterns/trunk.prod.mjs", base64: toBase64(new TextEncoder().encode("export default {};")) },
+    { path: "workspace/app/demo/data.bin", base64: toBase64(new Uint8Array([0, 1, 2, 255])) },
+  ],
+};
+const progress: number[] = [];
+assert.equal(await importWorkspace(opfsArchive, fakeOpfsDir(), (done) => progress.push(done)), 2);
+assert.equal(writes.length, 2, "first import writes both files");
+assert.deepEqual(progress, [1, 2]);
+progress.length = 0;
+writes.length = 0;
+assert.equal(await importWorkspace(opfsArchive, fakeOpfsDir(), (done) => progress.push(done)), 2);
+assert.equal(writes.length, 0, "an identical archive rewrites nothing");
+assert.deepEqual(progress, [1, 2]);
+writes.length = 0;
+const changed: WorkspaceArchive = {
+  ...opfsArchive,
+  files: [
+    opfsArchive.files[0],
+    { path: "workspace/app/demo/data.bin", base64: toBase64(new Uint8Array([0, 1, 2, 3])) },
+  ],
+};
+assert.equal(await importWorkspace(changed, fakeOpfsDir()), 2);
+assert.deepEqual(writes, ["workspace/app/demo/data.bin"], "only the changed file is written");
+assert.deepEqual([...opfs.get("workspace/app/demo/data.bin")!], [0, 1, 2, 3]);
+assert.equal(new TextDecoder().decode(opfs.get("workspace/patterns/trunk.prod.mjs")), "export default {};");
 
 console.log("workspace-transfer test: all assertions passed");
