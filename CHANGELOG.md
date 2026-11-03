@@ -2,6 +2,40 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — knit speaks keywords; UPDATE: names the slot
+
+Knit's line-notation grammar is now keyword-first. The old symbols remain
+readable for existing tree headers, but new specs use `TREE:`, `NEEDS:`,
+`NEEDS?:`, `MEMORY:`, `UPDATE:`, `PROMPT:`, `CALL:`, `REGISTER:`, `CHECK:`,
+`EACH:`, `BRANCH:`, `HUMAN:`, `EMIT:`/`EMIT!:`, `ATTACH:` and `LOOP:`/`END:`.
+Nesting is one bar token per level (`|`, `│`, `┆`, `┊`); legacy `||` is one
+token, so old headers keep their depth.
+
+The 5.8 MB mbox session exposed the cracks: `++! messages, extract` declared
+both words as names, required them, then rejected them as duplicates — no plan
+could pass. A new tree name could pass the planner and fail the writer, and a
+failed write was ignored. The approval gate only accepted the literal
+`approve`, so "keep building" re-drafted the spec and hit the retry cap.
+
+- Seed `app/knit/src/notation.mjs`: keyword parser with a legacy branch;
+  `UPDATE:` (and legacy `++!`) names only its slot; `calls(...)` is checked
+  against spec inputs/slots early.
+- Seed `app/knit/src/verify.mjs`: per-entry kind/name mismatch is reported
+  before a length mismatch, and a declared slot may be updated without
+  tripping the duplicate-name rule.
+- Seed `app/knit/tree.prod.mjs`: `knit_write_spec` failures rewind instead of
+  being ignored; approvals are trimmed/case-insensitive and accept "continue"/
+  "keep building"; the prompt says `calls(...)` is a runtime-tool list.
+- Seed `app/knit` tests: 32 pass, including the exact legacy `++!` shape from
+  the mbox session passing `verify_plan`.
+- `scripts/spec-lint.ts`: the narration matcher understands `HUMAN:`/`EMIT!:`
+  and bar-token depth; legacy `>>`/`<<!` still pass.
+- Seed workspace repackaged (`web/public/seed/workspace.json`; the `dist` copy
+  is byte-identical).
+
+Tests: `app/knit` 32 pass; `npm run test:spec-lint`; `test:platform`;
+`test:module-loader`; root typecheck; web build.
+
 ## 2026-11-03 — send-to-telegram returns to the browser app and links the chats
 
 The session drawer's ✈ telegram button disappeared in browser mode when the
