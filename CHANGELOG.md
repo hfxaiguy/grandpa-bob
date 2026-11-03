@@ -2,6 +2,21 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — stop-tools contracts run without a worker
+
+`withStopTools` moved out of `agent-worker.ts` into its own module so its
+contracts can be exercised without OPFS, sqlite-wasm or `self`. The test drives
+pass-through, a thrown tool becoming `{ error }`, stop propagation, pause/goto
+control flow, and a real engine `Call` under `disableAuto()` recovering where
+the raw tool map aborts.
+
+- `web/src/agent/stop-tools.ts`: the wrapper and `isControlFlowSignal`.
+- `web/src/agent/agent-worker.ts`: import the shared wrapper.
+- `scripts/stop-tools-test.ts` + `test:stop-tools`: wrapper contracts and the
+  explicit-loop engine run.
+
+Tests: `npm run test:stop-tools`; `npm --prefix web run typecheck`.
+
 ## 2026-11-03 — a phone tile header lifts its tile over the board
 
 On a phone, tapping a tile's header now brings that tile to the front: it
@@ -207,7 +222,8 @@ loader. The model spent the turn fighting those instead of the data.
 - `web/src/tools/files.ts`: `readFile` accepts `{ offset, limit }` (character
   range, `limit` capped at 100k). A truncated result now ends with
   `next offset N`; `read_file`'s schema exposes both fields. Large files are
-  readable chunk by chunk instead of looking like 100k files.
+  readable chunk by chunk instead of looking like 100k files, and chunks never
+  split a surrogate pair (an offset inside one steps back to its start).
 - `web/src/agent/agent-worker.ts`: a thrown host/app tool error becomes the
   engine's `{ error }` result. The explicit-loop path (`Call` under
   `disableAuto`) used to rethrow it and abort the whole tree; a rejected tool

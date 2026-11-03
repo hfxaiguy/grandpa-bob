@@ -73,6 +73,7 @@
     "whisper:up": "sh -c 'set -a; . ./.env 2>/dev/null; set +a; exec vendor/whisper.cpp/build/bin/whisper-server --host 127.0.0.1 --port 8178 -m vendor/whisper.cpp/models/${WHISPER_MODEL:-ggml-base.bin}'",
     "ollama:up": "sh -c 'curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && echo \"ollama already running at :11434\" || exec ollama serve'",
     "test:module-loader": "tsx scripts/module-loader-test.ts",
+    "test:stop-tools": "tsx scripts/stop-tools-test.ts",
     "test:cdp": "tsx scripts/cdp-test.ts",
     "test:browser-tools": "tsx scripts/browser-tools-test.ts",
     "test:ui-describe": "tsx scripts/ui-describe-test.ts",
@@ -88,7 +89,7 @@
   "dependencies": {
     "dotenv": "^17.4.2",
     "grammy": "^1.45.1",
-    "grandma-kat": "git+https://github.com/hfxaiguy/grandma-kat.git",
+    "grandma-kat": "git+https://github.com/hfxaiguy/grandma-kat.git#b16a372016209b11d0984376740e7fe10d9363da",
     "werift": "^0.25.2"
   },
   "devDependencies": {
