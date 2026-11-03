@@ -202,6 +202,52 @@ assert(result.binding?.account === "personal" && result.binding?.seedName === "t
 assert(result.binding?.lastVersion?.version === version, "the pulled version is recorded");
 assert(requests.some((r) => r.startsWith("/api/v1/personal/trunk/latest")), "the public latest archive was requested");
 
+// Phase 1b: the same open shelf appears in the Profiles picker with no saved
+// BobSwap service, and creating a profile from it pulls the public archive.
+await evaluate(`document.getElementById("profile-manage").click()`);
+const openChoice = `${SERVICE}|personal|trunk`;
+await waitFor(
+  `[...document.querySelectorAll("#profile-new-seed option")].some((option) => option.value === ${JSON.stringify(openChoice)})`,
+  "the open seed in the new-workspace picker",
+);
+const savedServices = await evaluate(`(() => {
+  const store = JSON.parse(localStorage.getItem("bob:swap") || "{}");
+  return Object.keys(store.services || {}).length;
+})()`);
+assert(savedServices === 0, "the open seed is offered without configuring BobSwap");
+await evaluate(`(() => {
+  document.getElementById("profile-new-name").value = "from-open-seed";
+  document.getElementById("profile-new-source").value = "blank";
+  document.getElementById("profile-new-source").dispatchEvent(new Event("change"));
+  const select = document.getElementById("profile-new-seed");
+  select.value = [...select.options].find((option) => option.value === ${JSON.stringify(openChoice)}).value;
+  select.dispatchEvent(new Event("change"));
+  window.__smokeBeforeReload = true;
+  document.querySelector("#profile-create button[type=submit]").click();
+  return "submitted";
+})()`);
+await waitFor(
+  `document.readyState === "complete" && !!window.__bobWorkspaceTransfer && ` +
+    `!window.__smokeBeforeReload && localStorage.getItem("bob:profile") === "from-open-seed"`,
+  "boot of the profile created from an open seed",
+  90_000,
+);
+const openCreated = JSON.parse(await evaluate(`(async () => {
+  const root = await navigator.storage.getDirectory();
+  const registry = JSON.parse(await (await (await root.getFileHandle("profiles.json")).getFile()).text());
+  const record = registry.profiles.find((p) => p.name === "from-open-seed");
+  const profile = await (await root.getDirectoryHandle("profiles")).getDirectoryHandle("from-open-seed");
+  const ws = await profile.getDirectoryHandle("workspace");
+  const pulled = await (await (await (await ws.getDirectoryHandle("patterns")).getFileHandle("pulled-on-first-load.mjs")).getFile()).text();
+  return JSON.stringify({ pulled, binding: record?.seed });
+})()`));
+assert(openCreated.pulled.includes("bootstrap: true"), "the open seed's archive was pulled at creation");
+assert(openCreated.binding?.baseUrl === SERVICE, "the new profile records the open shelf");
+assert(
+  openCreated.binding?.account === "personal" && openCreated.binding?.seedName === "trunk",
+  "the new profile binds the open seed without a configured service",
+);
+
 // Phase 2: a private shelf must fall back to the bundled snapshot. Clear the
 // origin's OPFS and make `/latest` answer 401, then boot a fresh tab again.
 publicLatest = false;

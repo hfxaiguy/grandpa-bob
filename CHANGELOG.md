@@ -2,6 +2,34 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-02 — open BobSwap seeds need no BobSwap configuration
+
+A fresh browser could already pull `web/public/seed-bootstrap.json`'s public
+shelf, but the rest of the UI still asked for a service: the new-workspace
+picker said "add a BobSwap service", **Seed…** refused to save without a
+configured account, and the boot update check skipped a profile bound to the
+bootstrap shelf. Open (public-latest) seeds are now usable end to end with no
+BobSwap service configured.
+
+- `web/src/seed-bootstrap.ts`: the same loader now serves boot, the picker and
+  the Seed dialog. It optionally accepts `"openSeeds": ["…"]` (alias
+  `"seeds"`) to offer additional public names on the shelf's account; invalid
+  and duplicate names are dropped and the primary `seedName` always comes
+  first.
+- `web/src/profile-ui.ts`: **Profiles** always lists the open seeds (even when
+  no service is saved) and creating a profile from one pulls `/latest`
+  keylessly. **Seed…** uses the shelf's account when no saved service exists,
+  so a binding can be saved without entering a URL/account/key, and **Check
+  now** follows the public newest version.
+- `web/src/main.ts`: boot warms the shelf once and the bound-seed checker/applier
+  fall back to a keyless service record, so a bootstrap-bound profile no longer
+  logs "no saved service — add it in Sync… → BobSwap…". Publishing still
+  requires an upload key.
+- Docs: `web/README.md` documents the `openSeeds` shape and the config-free
+  flows. Tests: `test:seed-bootstrap` (parse/metrics) and `smoke:bootstrap`
+  (the picker offers the open seed with no saved service, creates a profile
+  from it, and records the binding).
+
 ## 2026-11-02 — uploads cross the settings iframe's realm
 
 The settings page runs in a sandboxed iframe and passes its `FormData` and

@@ -27,6 +27,7 @@ import {
   DEFAULT_SWAP_SERVICE_URL,
   defaultSwapService,
   fetchLatestSeed,
+  keylessSwapService,
   listSeeds,
   listSwapServices,
   loadSwapStore,
@@ -37,6 +38,12 @@ import {
   type RemoteSeedMeta,
   type SwapService,
 } from "./swap";
+import {
+  bootstrapSeedNames,
+  cachedBootstrapSeed,
+  loadBootstrapSeed,
+  type BootstrapSeed,
+} from "./seed-bootstrap";
 import {
   buildWorkspaceArchive,
   summarizeWorkspace,
@@ -92,6 +99,51 @@ let pendingSeedCheck: { meta: RemoteSeedMeta; version?: string } | null = null;
 /** Cached top-level app names; the workspace's app folders rarely change. */
 let appNames: string[] | null = null;
 let hiddenProfile = "";
+
+/** The deployment's public/open seed shelf (loaded once per tab). */
+let openSeedShelf: BootstrapSeed | null = null;
+let openSeedShelfLoad: Promise<BootstrapSeed | null> | null = null;
+
+function ensureOpenSeedShelf(): Promise<BootstrapSeed | null> {
+  openSeedShelf ??= cachedBootstrapSeed();
+  openSeedShelfLoad ??= loadBootstrapSeed()
+    .then((seed) => {
+      openSeedShelf = seed;
+      return seed;
+    })
+    .catch(() => null);
+  return openSeedShelfLoad;
+}
+
+function currentOpenSeedShelf(): BootstrapSeed | null {
+  if (!openSeedShelf) openSeedShelf = cachedBootstrapSeed();
+  // A dialog can open before boot's prefetch finishes; loading in the
+  // background means the next picker/dialog refresh sees the shelf.
+  if (!openSeedShelf) void ensureOpenSeedShelf();
+  return openSeedShelf;
+}
+
+function sameBaseUrl(a: string | undefined, b: string | undefined): boolean {
+  const norm = (value: string | undefined): string =>
+    String(value ?? "").trim().replace(/\/+$/, "").toLowerCase();
+  const left = norm(a);
+  return !!left && left === norm(b);
+}
+
+/**
+ * The service a seed dialog should use. A saved entry wins; otherwise the
+ * deployment's open shelf supplies the account for its keyless seeds. Any
+ * other URL still needs an explicit BobSwap configuration.
+ */
+function serviceForSeedSource(baseUrl: string | undefined): SwapService | null {
+  const saved = resolveSwapService(baseUrl);
+  const shelf = currentOpenSeedShelf();
+  const shelfAccount = shelf && sameBaseUrl(baseUrl, shelf.baseUrl) ? shelf.account : "";
+  if (saved) {
+    return saved.account || !shelfAccount ? saved : { ...saved, account: shelfAccount };
+  }
+  return shelf && shelfAccount ? keylessSwapService(shelf.baseUrl, shelfAccount) : null;
+}
 
 function getHooks(): ProfileUiHooks {
   if (!hooks) throw new Error("profile UI is not wired");
@@ -452,9 +504,11 @@ function wireProfileManager(): void {
           // half-seeded profile behind.
           if (submit) submit.disabled = true;
           if (hint) hint.textContent = `fetching seed ${seedChoice.account}/${seedChoice.seedName}…`;
-          const service = resolveSwapService(seedChoice.baseUrl);
+          const service = serviceForSeedSource(seedChoice.baseUrl);
           if (!service) throw new Error(`seed service ${seedChoice.baseUrl} is not configured`);
-          const account = service.account || seedChoice.account;
+          // The choice names the account it was listed under (an open shelf
+          // account is not necessarily a saved service's account).
+          const account = seedChoice.account;
           const fetched = await fetchLatestSeed(service, account, seedChoice.seedName);
           if (!fetched) throw new Error(`seed ${seedChoice.account}/${seedChoice.seedName} is unchanged`);
           const binding: SeedBinding = {
@@ -540,10 +594,11 @@ function selectedSeedChoice(): NewWorkspaceSeedChoice | null {
 }
 
 /**
- * Fill the new-workspace seed picker: the bundled snapshot plus every seed
- * listed by a configured BobSwap service. Nothing is preselected — creating a
- * profile requires an explicit pick. A service that cannot list (no account or
- * read key, offline, rejected key) shows why instead of failing the dialog.
+ * Fill the new-workspace seed picker: the bundled snapshot, the deployment's
+ * open BobSwap seeds (no service configuration), and every seed listed by a
+ * configured BobSwap service. Nothing is preselected — creating a profile
+ * requires an explicit pick. A service that cannot list (no account or read
+ * key, offline, rejected key) shows why instead of failing the dialog.
  */
 async function refreshSeedChoices(): Promise<void> {
   const select = el<HTMLSelectElement>("profile-new-seed");
@@ -554,8 +609,11 @@ async function refreshSeedChoices(): Promise<void> {
   const loading = newOption("loading seeds…", "", true);
   select.replaceChildren(placeholder, shipped, loading);
 
+  const shelf = await ensureOpenSeedShelf();
   const services = listSwapServices();
   const groups: HTMLOptGroupElement[] = [];
+  const offered = new Set<string>();
+
   if (services.length > 0) {
     const results = await Promise.allSettled(
       services.map(async (service) => {
@@ -573,11 +631,11 @@ async function refreshSeedChoices(): Promise<void> {
         const { account, seeds } = result.value;
         if (seeds.length === 0) group.append(newOption("(no seeds published)", "", true));
         for (const seed of seeds) {
+          const value = seedChoiceValue(service.baseUrl, account, seed.name);
+          if (offered.has(value)) continue;
+          offered.add(value);
           group.append(
-            newOption(
-              seed.latest ? `${seed.name} · ${seed.latest}` : seed.name,
-              seedChoiceValue(service.baseUrl, account, seed.name),
-            ),
+            newOption(seed.latest ? `${seed.name} · ${seed.latest}` : seed.name, value),
           );
         }
       } else {
@@ -587,8 +645,23 @@ async function refreshSeedChoices(): Promise<void> {
     });
   }
 
+  // Offer the open shelf after configured services: a saved service's listed
+  // seed wins when both name the same thing, while open seeds still appear
+  // when nothing is configured.
+  if (shelf) {
+    const group = document.createElement("optgroup");
+    group.label = `open seeds · ${shelf.account} · ${shelf.baseUrl}`;
+    for (const seedName of bootstrapSeedNames(shelf)) {
+      const value = seedChoiceValue(shelf.baseUrl, shelf.account, seedName);
+      if (offered.has(value)) continue;
+      offered.add(value);
+      group.append(newOption(seedName, value));
+    }
+    if (group.childElementCount > 0) groups.push(group);
+  }
+
   select.replaceChildren(placeholder, shipped, ...groups);
-  if (services.length === 0) {
+  if (services.length === 0 && !shelf) {
     select.append(newOption("add a BobSwap service in Sync… → BobSwap… for more seeds", "", true));
   }
   // Keep the user's pick across a refresh; a vanished seed falls back to the
@@ -624,7 +697,7 @@ function openSeedDialog(profile: ProfileRecord): void {
     picker.append(option);
     picker.value = preferred;
   }
-  const stored = resolveSwapService(picker?.value);
+  const stored = serviceForSeedSource(picker?.value);
   fillServiceFields(stored);
   setSeedBindingHint(stored, profile.seed);
 
@@ -644,7 +717,10 @@ function openServiceDialog(): void {
   seedDialogMode = "service";
   pendingSeedCheck = null;
   setSeedDialogChrome("BobSwap service", "");
-  fillServiceFields(activeSwapService());
+  const shelf = currentOpenSeedShelf();
+  fillServiceFields(
+    activeSwapService() ?? (shelf ? keylessSwapService(shelf.baseUrl, shelf.account) : null),
+  );
   setSeedStatus(
     "Services, accounts and keys are saved per browser. Profiles bind a seed name on the selected service.",
   );
@@ -667,7 +743,7 @@ function setSeedBindingHint(service: SwapService | null, binding?: SeedBinding):
       ? `Set the account for ${service.baseUrl} in Sync… → BobSwap…, then bind this profile to a seed.`
       : !service.readKey
         ? `Bind this profile to a seed on ${service.baseUrl} (account ${account}). ` +
-          "Public versions need no key; add a read key in Sync… → BobSwap… to list the shelf and read private versions."
+          "Open/public versions need no key; add a read key in Sync… → BobSwap… to list the whole shelf and read private versions."
         : `Bind this profile to a seed on ${service.baseUrl} (account ${account}). ` +
           "Updates appear in the toolbar; the run log and chat history are kept.";
 }
@@ -735,10 +811,10 @@ function seedBindingFromFields(profileName: string): SeedBinding | null {
   // The service owns the account and keys; a binding only names the seed.
   const selected = el<HTMLSelectElement>("seed-service")?.value ?? "";
   const service = selected
-    ? resolveSwapService(selected)
+    ? serviceForSeedSource(selected)
     : existing
-      ? resolveSwapService(existing.baseUrl)
-      : activeSwapService();
+      ? serviceForSeedSource(existing.baseUrl)
+      : serviceForSeedSource(activeSwapService()?.baseUrl);
   if (!service) {
     setSeedStatus("add a configured BobSwap service first (Sync… → BobSwap…)");
     return null;
@@ -788,7 +864,7 @@ async function checkSeedNow(): Promise<void> {
     setSeedStatus(`binding not saved: ${errorText(err)} — checking the fields as typed…`);
   }
   const notSaved = persisted ? "" : " · binding not saved";
-  const service = resolveSwapService(binding.baseUrl);
+  const service = serviceForSeedSource(binding.baseUrl);
   if (!service) {
     setSeedStatus(`service configuration is missing — add it in Sync… → BobSwap…${notSaved}`);
     return;
@@ -863,7 +939,7 @@ async function publishProfile(profile: ProfileRecord): Promise<void> {
     ui.flash("set a seed source for this profile first", 8000);
     return;
   }
-  const service = resolveSwapService(binding.baseUrl);
+  const service = serviceForSeedSource(binding.baseUrl);
   if (!service) {
     ui.flash("this seed's BobSwap service is not configured — add it in Sync… → BobSwap…", 8000);
     return;
@@ -921,7 +997,7 @@ function wireSeedDialog(): void {
   });
   el<HTMLButtonElement>("seed-check")?.addEventListener("click", () => void checkSeedNow());
   el<HTMLSelectElement>("seed-service")?.addEventListener("change", () => {
-    const service = resolveSwapService(el<HTMLSelectElement>("seed-service")?.value);
+    const service = serviceForSeedSource(el<HTMLSelectElement>("seed-service")?.value);
     if (service) fillServiceFields(service);
     setSeedBindingHint(service, currentProfileRecord(seedDialogProfile)?.seed);
   });
@@ -949,22 +1025,28 @@ function wireSeedDialog(): void {
 function fillServiceSelect(select: HTMLSelectElement | null, preferred?: string): void {
   if (!select) return;
   const services = listSwapServices();
-  const options = services.map((service) => {
+  const shelf = currentOpenSeedShelf();
+  const options: HTMLOptionElement[] = [];
+  const known = new Set<string>();
+  const add = (baseUrl: string, label: string): void => {
+    const key = baseUrl.replace(/\/+$/, "").toLowerCase();
+    if (known.has(key)) return;
+    known.add(key);
     const option = document.createElement("option");
-    option.value = service.baseUrl;
-    option.textContent = service.baseUrl;
-    return option;
-  });
-  if (!services.some((service) => service.baseUrl === DEFAULT_SWAP_SERVICE_URL)) {
-    const option = document.createElement("option");
-    option.value = DEFAULT_SWAP_SERVICE_URL;
-    option.textContent = `${DEFAULT_SWAP_SERVICE_URL} (default)`;
+    option.value = baseUrl;
+    option.textContent = label;
     options.push(option);
-  }
+  };
+  for (const service of services) add(service.baseUrl, service.baseUrl);
+  if (shelf) add(shelf.baseUrl, `${shelf.baseUrl} · ${shelf.account} (open seeds)`);
+  add(DEFAULT_SWAP_SERVICE_URL, `${DEFAULT_SWAP_SERVICE_URL} (default)`);
   select.replaceChildren(...options);
+
   const active = preferred || loadSwapStore().active;
-  if (active && options.some((option) => option.value === active)) {
-    select.value = active;
+  if (active && options.some((option) => sameBaseUrl(option.value, active))) {
+    select.value = options.find((option) => sameBaseUrl(option.value, active))!.value;
+  } else if (shelf && options.some((option) => sameBaseUrl(option.value, shelf.baseUrl))) {
+    select.value = options.find((option) => sameBaseUrl(option.value, shelf.baseUrl))!.value;
   } else if (services[0]) {
     select.value = services[0].baseUrl;
   } else {
@@ -1139,6 +1221,9 @@ function wireBrowserDialog(): void {
 export function wireProfileUi(profileHooks: ProfileUiHooks): void {
   hooks = profileHooks;
   renderProfileSelect();
+  // Open seeds are usable with no BobSwap service; warm the shelf so the
+  // Profiles picker and Seed dialog can offer it immediately.
+  void ensureOpenSeedShelf();
 
   el<HTMLSelectElement>("profile-select")?.addEventListener("change", (event) => {
     const select = event.target as HTMLSelectElement;

@@ -47,17 +47,14 @@ import {
 } from "./profiles";
 import {
   fetchLatestSeed,
+  keylessSwapService,
   probeLatestSeed,
   resolveSwapService,
   type LatestSeedProbe,
   type RemoteSeedMeta,
 } from "./swap";
 import { wireProfileUi, setSeedProgress, clearSeedProgress } from "./profile-ui";
-import {
-  bootstrapSeedFromParams,
-  parseBootstrapSeed,
-  type BootstrapSeed,
-} from "./seed-bootstrap";
+import { loadBootstrapSeed, type BootstrapSeed } from "./seed-bootstrap";
 import { cloneWorkspace } from "./platform/git-opfs";
 import { applyDatabaseDumps, isDatabaseDumpPath, onDatabaseDumpsWritten } from "./db-sync";
 import { createAutoSync, DEFAULT_INTERVAL_MS } from "./auto-sync";
@@ -76,6 +73,9 @@ import { needsFreeKey } from "./ai-claim";
 import type { LocalBackend } from "./server/local-backend";
 
 const params = new URLSearchParams(location.search);
+// Warm the open-seed shelf early: boot (fresh profiles) and the Profiles
+// dialog share the same cached file, so a public seed needs no BobSwap service.
+void loadBootstrapSeed();
 let configuredRemote = params.get("remote") ?? loadRemote();
 
 /** The OPFS profile this tab hosts. */
@@ -459,23 +459,6 @@ async function applySeedArchive(
   await writeSeedStamp(stamp);
   await writeSeedSha(sha256 ?? null);
   return stamp;
-}
-
-/**
- * A deployment can name a BobSwap shelf in `public/seed-bootstrap.json`. A
- * fresh profile tries that shelf's newest public archive before the bundled
- * snapshot; the query parameters exist for the smoke and one-off testing.
- */
-async function loadBootstrapSeed(): Promise<BootstrapSeed | null> {
-  const fromParams = bootstrapSeedFromParams(params);
-  if (fromParams) return fromParams;
-  try {
-    const res = await fetch("/seed-bootstrap.json", { cache: "no-cache" });
-    if (!res.ok) return null;
-    return parseBootstrapSeed(await res.json());
-  } catch {
-    return null;
-  }
 }
 
 /** Remember the shelf a fresh profile was pulled from, so it keeps following it. */
@@ -1022,13 +1005,11 @@ async function checkSeedUpdate(): Promise<void> {
 
 /** Check a profile's bound BobSwap seed for a newer build. */
 async function checkBoundSeedUpdate(binding: SeedBinding): Promise<void> {
-  const service = resolveSwapService(binding.baseUrl);
-  if (!service) {
-    console.warn(
-      `[seed-check] ${binding.account}/${binding.seedName}: no saved service for ${binding.baseUrl} — add it in Sync… → BobSwap…`,
-    );
-    return;
-  }
+  // A binding created from the deployment's open shelf has no saved service.
+  // Falling back to a keyless record keeps public versions reachable; a
+  // private shelf still answers 401 and the log says why.
+  const service =
+    resolveSwapService(binding.baseUrl) ?? keylessSwapService(binding.baseUrl, binding.account);
   const account = service.account || binding.account;
   const knownSha = binding.lastVersion?.sha256 ?? seedSha ?? undefined;
   let probe: LatestSeedProbe | null = null;
@@ -1209,8 +1190,8 @@ async function applySeedUpdate(meta: SeedMeta): Promise<void> {
 
 /** Pull the newest version of a bound seed into the active profile. */
 async function applyBoundSeedUpdate(binding: SeedBinding, version?: string): Promise<void> {
-  const service = resolveSwapService(binding.baseUrl);
-  if (!service) throw new Error("the seed service is not configured on this browser");
+  const service =
+    resolveSwapService(binding.baseUrl) ?? keylessSwapService(binding.baseUrl, binding.account);
   const account = service.account || binding.account;
   const proceed = await confirmAction(
     "Seed update",

@@ -538,12 +538,13 @@ reloads the tab).
 
 A profile can be bound to a seed on a BobSwap service, so updates can arrive
 later (**Profiles** → **Seed…**). New browser profiles pick their seed up
-front: **Profiles** offers the bundled snapshot plus every
-seed returned by `GET /api/v1/<account>/seeds` on each configured service, and
-pulls the chosen archive before the profile is created (nothing is created if
-the pull fails). The pick has no default — Create stays blocked until a seed is
-chosen. Listing that shelf (`/seeds`) needs a read key; a bound profile can
-still follow a public newest version without one (see below).
+front: **Profiles** offers the bundled snapshot, the deployment's **open
+seeds**, and every seed returned by `GET /api/v1/<account>/seeds` on each
+configured service, and pulls the chosen archive before the profile is created
+(nothing is created if the pull fails). The pick has no default — Create stays
+blocked until a seed is chosen. Listing a private shelf (`/seeds`) needs a read
+key; open/public seeds and a bound profile's newest public version work
+without one (see below).
 
 **Fresh browsers** (no `.seeded` marker and no trunk tree) read
 `web/public/seed-bootstrap.json` and try that shelf's newest public archive
@@ -556,6 +557,15 @@ before the bundled snapshot:
 That resolves to
 `https://bobswap.hfxaiguy.com/api/v1/personal/trunk/latest` (the client always
 appends `/api/v1/<account>/<seedName>/latest`).
+
+The same shelf is the deployment's **open seeds** source. The new-workspace
+picker offers its seed names even when no BobSwap service is configured, and
+**Seed…** binds a profile to one without entering a URL, account or key (the
+shelf supplies the account, and the binding records it for keyless `/latest`
+checks). Add `"openSeeds": ["notes", "demo"]` to the file to offer extra public
+names on that account; `"seeds"` is accepted as an alias. Invalid names are
+dropped, and `seedName` is always included. Publishing still needs a configured
+upload key.
 
 The keyless pull verifies the archive against the response `ETag`, applies it,
 and stores the seed binding + version so later boots keep watching the shelf.

@@ -45,6 +45,15 @@ export function defaultSwapService(): SwapService {
   };
 }
 
+/**
+ * A keyless view of any deployment. Public/open seeds are readable without a
+ * saved service, so a binding must not require one just to build the URL.
+ */
+export function keylessSwapService(baseUrl: string, account?: string): SwapService {
+  const normalized = normalizeBaseUrl(baseUrl) || DEFAULT_SWAP_SERVICE_URL;
+  return account ? { baseUrl: normalized, account } : { baseUrl: normalized };
+}
+
 function normalizeBaseUrl(raw: string): string {
   const value = String(raw ?? "").trim().replace(/\/+$/, "");
   if (!value) return "";

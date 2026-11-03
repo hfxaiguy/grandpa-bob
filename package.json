@@ -34,6 +34,7 @@
     "test:tree-context": "tsx scripts/tree-context-test.ts",
     "test:tree": "tsx scripts/tree-serialize-test.ts",
     "test:seed-freshness": "tsx scripts/seed-freshness-test.ts",
+    "test:seed-bootstrap": "tsx scripts/seed-bootstrap-test.ts",
     "test:runlog-tiers": "tsx scripts/runlog-tiers-test.ts",
     "test:runlog-boot": "tsx scripts/runlog-boot-test.ts",
     "test:read-runs-handle": "tsx scripts/read-runs-handle-test.ts",
