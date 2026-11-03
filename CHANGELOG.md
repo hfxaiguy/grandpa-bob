@@ -2,6 +2,27 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — a phone tile header lifts its tile over the board
+
+On a phone, tapping a tile's header now brings that tile to the front: it
+leaves the grid and fills the board as a fixed layer below the toolbar, above
+every other app tile and the trunk. Tapping the same header again puts it back;
+parking the tile, opening a different app from an inline card, switching chats
+or widening past the phone breakpoint also lowers it. The layer's top follows
+the board (the toolbar can wrap and the phone keyboard resizes the viewport),
+the board stops scrolling behind it, and the desktop board keeps its normal
+non-overlapping tiles.
+
+- `ui/src/store.ts`: `front` state, `toggleFront`/`clearFront`, and the
+  lifecycle hooks that lower a parked or superseded tile.
+- `ui/src/components.tsx`: the header gesture and the measured fixed offset.
+- `ui/src/app.tsx`, `ui/src/styles.css`: the board lock and the phone overlay.
+- `scripts/ui-order-test.ts`: one-front-tile handoff, toggle, clear-by-name,
+  park, and desktop-ignore cases.
+- Docs: `README.md` and `web/README.md` describe the phone gesture.
+
+Tests: `npm run test:ui-order`; `npm run test:ui`; `npm run typecheck`.
+
 ## 2026-11-03 — a long or resumed run stays on its app's tile
 
 The board derived "running" by replaying the running turn's event tail through

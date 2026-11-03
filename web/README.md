@@ -532,7 +532,9 @@ reloads the tab).
   default** clears the list. Exceptions are re-applied on each load, each
   profile keeps its own board layout, and active apps can raise up to two tiles
   beside trunk. Auto-raised tiles close again after two turns that do not use
-  their app; manual opens, pinned tiles and profile exceptions stay put.
+  their app; manual opens, pinned tiles and profile exceptions stay put. On a
+  phone, tapping a tile's header lifts it over the rest of the board (trunk
+  included); tap it again to put it back.
 - **Export**/**Import** and the BobSwap flows act on the **active** profile.
   Archive paths stay `workspace/...`, so the same file can be imported into any
   profile, any device, or packed by `make-seed`.

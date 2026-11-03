@@ -435,6 +435,8 @@ log; one composer is shown on the tile whose tree is paused at `.human()`.
 When a tree calls another app, the caller's chat also carries a compact
 **inline app tile** at that point in the thread — the called app's status,
 bubbles and its own sub-calls — with an `open ↗` link to the full tile.
+On a phone, tapping a tile's header lifts that tile into the board-wide front
+layer, over the other apps and the trunk; tap it again to put it back.
 
 **Storage & profiles.** The workspace always lives in the tab's OPFS sandbox
 (Export/Import move a whole workspace as JSON); there is no storage backend to
