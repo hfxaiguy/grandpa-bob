@@ -12,14 +12,14 @@
  * Run: `npm run test:live-tool-row`.
  */
 import assert from "node:assert/strict";
-import { liveActivity, toolLabel } from "../ui/src/live-tool.ts";
+import { liveActivity, runningAppOf, toolLabel } from "../ui/src/live-tool.ts";
 import type { SanitizedEvent, Turn } from "../ui/src/types.ts";
 
 const ev = (
   kind: string,
   content: Record<string, unknown> | null,
   seq: number,
-  app = "trunk",
+  app?: string,
 ): SanitizedEvent => ({
   kind,
   branch_path: "",
@@ -28,7 +28,7 @@ const ev = (
   content,
   ts: seq,
   seq,
-  app,
+  ...(app ? { app } : {}),
 });
 
 const turn = (events: SanitizedEvent[], status: Turn["status"] = "running"): Turn => ({
@@ -121,11 +121,45 @@ const apps = ["contacts"];
   assert.equal(backOnTrunk.lastDone, null, "the contacts call is not trunk's last-done");
 }
 
+// ── a capped tail still knows its app from the host's tags ─────────────
+{
+  // The app's tree_enter fell outside the retained 500-event window. Replaying
+  // this tail would start at trunk; the per-event tag must win.
+  const t = turn([ev("tool_start", { tool: "browser_body", args: "" }, 501, "enrich-profile")]);
+  assert.equal(runningAppOf(t, ["enrich-profile"]), "enrich-profile");
+  assert.equal(liveActivity(t, "trunk", ["enrich-profile"]).current, null, "the run is not the trunk's");
+  assert.equal(
+    liveActivity(t, "enrich-profile", ["enrich-profile"]).current?.tool,
+    "browser_body",
+    "the in-flight tool stays on the app's own tile",
+  );
+
+  // A nested app's rows keep their own tag even when no boundary remains.
+  t.events.push(ev("tool_call", { tool: "contacts_query", args: "{}", result: "[]" }, 502, "contacts"));
+  t.events.push(ev("tool_start", { tool: "reply", args: "" }, 503, "enrich-profile"));
+  assert.equal(liveActivity(t, "trunk", ["enrich-profile", "contacts"]).current, null);
+  assert.equal(liveActivity(t, "contacts", ["enrich-profile", "contacts"]).lastDone?.tool, "contacts_query");
+  assert.equal(liveActivity(t, "enrich-profile", ["enrich-profile", "contacts"]).current?.tool, "reply");
+}
+
+// ── an untagged resumed tail falls back to the paused app ──────────────
+{
+  const t = { ...turn([ev("llm_call", { child: "main", content: "…" }, 1)]), inputApp: "contacts" };
+  assert.equal(runningAppOf(t, apps), "contacts", "a resumed turn starts inside the paused app");
+  assert.equal(liveActivity(t, "trunk", apps).current, null);
+  assert.equal(liveActivity(t, "contacts", apps).current, null, "no tool in flight, but the tile owns the turn");
+
+  const empty = turn([]);
+  assert.equal(runningAppOf(empty, apps), "trunk", "a fresh turn starts on the trunk");
+}
+
 // ── finished turns render no live row ──────────────────────────────────
 {
   const t = turn([ev("tool_start", { tool: "shell", args: "x" }, 1)], "done");
   assert.deepEqual(liveActivity(t, "trunk", apps), { current: null, lastDone: null });
   assert.deepEqual(liveActivity(null, "trunk", apps), { current: null, lastDone: null });
+  assert.equal(runningAppOf(t, apps), null);
+  assert.equal(runningAppOf(null, apps), null);
 }
 
 // ── row text is compact and single-line ────────────────────────────────

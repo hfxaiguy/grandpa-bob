@@ -83,7 +83,7 @@ notes and hand-offs visible without mixing them into the normal reply stream.
 | isomorphic-git over a real folder (`web/src/platform/git-handle.ts`) | done — `test:fsaccess` |
 | SQLite over the real `.db` files (`initSqlite(handle, {writeBack})`) | done — read-only by default, `SQL writes` toggle |
 | Served at `:8080` by the admin server (chat = front page) | done — falls back to `ui/dist` when `web/dist` is missing |
-| Voice input (mic button) | **removed** — transcription is Telegram-only; the web UI ships no STT, no in-browser model (`/api/transcribe*` answers 501 in browser mode) |
+| Voice input (mic button) | **restored** — MediaRecorder posts the clip to the bridge's `/stt` (`BOB_STT=1`); no in-tab model and no admin server |
 
 ## Emit components — app UI in the chat (2026-11-01)
 
@@ -531,7 +531,8 @@ reloads the tab).
   rest, or leave every box unchecked for trunk alone. **Use trunk-only
   default** clears the list. Exceptions are re-applied on each load, each
   profile keeps its own board layout, and active apps can raise up to two tiles
-  beside trunk.
+  beside trunk. Auto-raised tiles close again after two turns that do not use
+  their app; manual opens, pinned tiles and profile exceptions stay put.
 - **Export**/**Import** and the BobSwap flows act on the **active** profile.
   Archive paths stay `workspace/...`, so the same file can be imported into any
   profile, any device, or packed by `make-seed`.

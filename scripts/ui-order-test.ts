@@ -29,12 +29,15 @@ const {
   parkAllExcept,
   applyProfileVisibleExceptions,
   resetBoardForNewSession,
+  memoryOpen,
+  toggleMem,
+  setSmallScreen,
 } = await import("../ui/src/store.ts");
 
 const apps = ["trunk", "alpha", "beta", "gamma"].map((name) => ({ name, description: "" }));
 setState("apps", apps);
 // What loadLayout() gives a board with no saved layout: trunk pinned.
-setState("layout", { order: [], hidden: [], expanded: [], wide: [], pinned: ["trunk"], subsOpen: [], memClosed: [] });
+setState("layout", { order: [], hidden: [], expanded: [], wide: [], pinned: ["trunk"], autoRaised: [], subsOpen: [], memClosed: [], memOpen: [] });
 
 const order = () => orderedApps().map((a) => a.name);
 const rail = () => hiddenApps().map((a) => a.name);
@@ -206,4 +209,93 @@ assert.deepEqual([...order()].sort(), ["email", "kinit", "trunk"].sort(), "the l
 resetBoardForNewSession();
 assert.deepEqual(order(), ["trunk"], "an empty exception list leaves only trunk");
 
-console.log("ui-order: pinned-first order, activity ranking, rail order, live bumps, auto-raise seats, profile exceptions and the trunk-only new-session board ok");
+// ── auto-raised tiles close after two unused turns ──────────────────────
+// A tile the bot raised is a convenience, not a permanent seat: once neither
+// of the last two turns used it, its app parks back into the rail. Manual
+// opens, pinned tiles and the profile's exceptions are not auto-closed.
+setState("apps", ["trunk", "alpha", "beta", "gamma", "delta"].map((name) => ({ name, description: "" })));
+setState("layout", {
+  order: [],
+  hidden: ["alpha", "beta", "gamma", "delta"],
+  expanded: [],
+  wide: [],
+  pinned: ["trunk"],
+  autoRaised: [],
+  subsOpen: [],
+  memClosed: [],
+  memOpen: [],
+});
+setState({ turns: [], awaiting: null, activity: {}, raiseDenied: null });
+
+let autoTurn = 0;
+const runTurn = (used: string[], ts: number): void => {
+  const turnId = `auto-${++autoTurn}`;
+  handleSSE({ type: "turn_start", session: "web:t", turnId, input: "hi", inputApp: "trunk", ts });
+  used.forEach((app, i) =>
+    handleSSE({ type: "event", turnId, event: { kind: "tree_enter", app, ts: ts + i + 1 } }),
+  );
+  handleSSE({
+    type: "turn_end",
+    turnId,
+    status: "done",
+    output: "ok",
+    emits: [],
+    emitApps: [],
+    awaiting: null,
+    ts: ts + 99,
+  });
+};
+
+runTurn(["alpha"], 30_000);
+assert.ok(order().includes("alpha"), "activity raises alpha");
+assert.ok(state.layout.autoRaised.includes("alpha"), "the raise is recorded as automatic");
+runTurn(["beta"], 31_000);
+assert.ok(order().includes("beta"), "a second app raises beside it");
+runTurn(["gamma"], 32_000);
+assert.ok(!order().includes("alpha"), "alpha was not used in the last two turns and parks");
+assert.ok(order().includes("beta"), "beta was used in the other turn of the window and stays");
+assert.ok(order().includes("gamma"), "gamma takes the seat alpha just freed");
+assert.ok(!state.layout.autoRaised.includes("alpha"), "a parked tile leaves the auto-close list");
+assert.deepEqual([...state.layout.autoRaised].sort(), ["beta", "gamma"], "only live auto-raises remain");
+
+// A pin is an explicit keep: beta survives turns that never use it. Once
+// gamma has been ignored for the same two turns, it parks and delta raises.
+togglePinned("beta");
+runTurn(["delta"], 33_000);
+assert.ok(order().includes("beta"), "a pinned tile survives an unused turn");
+assert.ok(!order().includes("delta"), "the third active app waits for a seat");
+runTurn(["delta"], 34_000);
+assert.ok(order().includes("beta"), "the pin still holds beta");
+assert.ok(!order().includes("gamma"), "gamma is unused for two turns and parks");
+assert.ok(order().includes("delta"), "delta raises into the seat gamma freed");
+
+// A manual open is a user decision, not an auto-raise: two idle turns do not
+// close it. The unpinned auto-raised beta still parks.
+toggleHidden("alpha");
+assert.ok(order().includes("alpha"), "a manual open is not capped");
+assert.ok(!state.layout.autoRaised.includes("alpha"), "a manual open is not an auto-close candidate");
+togglePinned("beta");
+runTurn(["delta"], 35_000);
+runTurn(["delta"], 36_000);
+assert.ok(order().includes("alpha"), "a manually opened tile survives unused turns");
+assert.ok(!order().includes("beta"), "an unpinned auto-raised tile still closes");
+
+// ── memory panels follow the viewport ───────────────────────────────────
+// A phone opens every tile's memory collapsed; a desktop opens it. An explicit
+// toggle wins over either default and survives a resize.
+setState("layout", "memClosed", []);
+setState("layout", "memOpen", []);
+setSmallScreen(true);
+assert.equal(memoryOpen("alpha"), false, "memory starts collapsed on a phone");
+toggleMem("alpha");
+assert.equal(memoryOpen("alpha"), true, "a phone toggle opens this tile's memory");
+assert.deepEqual(state.layout.memOpen, ["alpha"], "the explicit open is remembered");
+setSmallScreen(false);
+assert.equal(memoryOpen("alpha"), true, "an explicit open survives the desktop breakpoint");
+toggleMem("alpha");
+assert.equal(memoryOpen("alpha"), false, "closing remembers the explicit state");
+assert.deepEqual(state.layout.memClosed, ["alpha"]);
+setSmallScreen(true);
+assert.equal(memoryOpen("beta"), false, "untouched tiles still follow the phone default");
+
+console.log("ui-order: pinned-first order, activity ranking, rail order, live bumps, auto-raise seats, auto-close after two unused turns, profile exceptions, trunk-only new-session board and phone memory defaults ok");

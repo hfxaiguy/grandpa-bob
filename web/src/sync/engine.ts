@@ -103,6 +103,9 @@ interface PeerState {
   peer: SyncPeer;
   /** Whether my map has crossed the wire on this connection. */
   mapSent: boolean;
+  /** Whether this connection has ever delivered an envelope. A silent
+   *  BroadcastChannel (no other tab) must not make a manual round wait. */
+  heard: boolean;
 }
 
 interface PendingRound {
@@ -178,7 +181,7 @@ export class SyncEngine {
       existing.peer.close();
       this.peers.delete(peer);
     }
-    this.peers.set(peer, { peer, mapSent: false });
+    this.peers.set(peer, { peer, mapSent: false, heard: false });
     this.setState({ status: "connecting", detail: "peer attached" });
     peer.onMessage((envelope) => this.receive(peer, envelope));
     peer.onClosed(() => {
@@ -212,9 +215,13 @@ export class SyncEngine {
   async noteMutation(paths: string[]): Promise<void> {
     const journal = this.journal ?? (await this.j());
     for (const path of paths) {
+      // A directory (or the workspace root as ".") is never a syncable file;
+      // a path this replica excludes must not enter the journal either.
+      if (excluded(path)) continue;
       const abs = this.platform.path.join(this.platform.workspaceRoot, path);
-      const exists = await this.platform.fs.stat(abs).then(() => true).catch(() => false);
-      if (!exists) {
+      const stat = await this.platform.fs.stat(abs).catch(() => null);
+      if (stat?.isDirectory()) continue;
+      if (!stat) {
         if (journal.lastOpFor(path)?.op === "delete") continue; // already a tombstone
         journal.recordOp({ path, op: "delete" });
         continue;
@@ -283,6 +290,31 @@ export class SyncEngine {
     const { hashmap, lamports, deletes } = await this.myMap();
     peer.send({ v: 1, kind: "hashmap", from: this.id, hashmap, lamports, deletes, round });
     return done;
+  }
+
+  /**
+   * Run one explicit round with every connected peer. Peers that have spoken
+   * on this connection are awaited (so the caller gets a real completion
+   * signal); a silent peer — the always-attached BroadcastChannel with no
+   * other tab — is asked for a map but not waited on. Returns how many peers
+   * were targeted and how many completed a round.
+   */
+  async reconcileAll(timeoutMs = 8_000): Promise<{ peers: number; completed: number }> {
+    const targets: SyncPeer[] = [];
+    for (const state of this.peers.values()) {
+      if (state.peer.connected()) targets.push(state.peer);
+    }
+    if (!targets.length) return { peers: 0, completed: 0 };
+    const results = await Promise.all(
+      targets.map((peer) => {
+        if (!this.peers.get(peer)?.heard) {
+          void this.reconcile(peer);
+          return Promise.resolve(false);
+        }
+        return this.reconcileAndWait(peer, timeoutMs);
+      }),
+    );
+    return { peers: targets.length, completed: results.filter(Boolean).length };
   }
 
   /** Remember a round this engine started (bounded; late echoes stay mute). */
@@ -454,6 +486,8 @@ export class SyncEngine {
    *  must never queue behind each other's drains — that deadlocks); every
    *  other envelope queues so state changes apply in wire order. */
   private receive(peer: SyncPeer, envelope: SyncEnvelope): void {
+    const peerState = this.peers.get(peer);
+    if (peerState) peerState.heard = true;
     if (envelope.kind === "chunk") {
       const whole = this.reassemble(envelope);
       if (!whole) return;
@@ -687,9 +721,10 @@ export class SyncEngine {
 async function readBase64(platform: Platform, rel: string): Promise<string | null> {
   const abs = platform.path.join(platform.workspaceRoot, rel);
   // Missing ≠ empty: a null return means "not here" (requests answer with a
-  // tombstone; applyRemoteWrite skips the conflict-copy branch).
-  const exists = await platform.fs.stat(abs).then(() => true).catch(() => false);
-  if (!exists) return null;
+  // tombstone; applyRemoteWrite skips the conflict-copy branch). A directory
+  // is not a file either — never turn it into an empty-byte pull/delete.
+  const stat = await platform.fs.stat(abs).catch(() => null);
+  if (!stat || stat.isDirectory()) return null;
   const bytes =
     (await (platform.fs as { readFileBytes?: (p: string) => Promise<Uint8Array> }).readFileBytes?.(abs).catch(
       () => undefined,

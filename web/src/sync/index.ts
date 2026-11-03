@@ -17,6 +17,7 @@
 import { SyncEngine, type SyncPeer, type SyncState } from "./engine";
 import type { Platform } from "../platform/types";
 import { broadcastPeer } from "./transport-broadcast";
+import { watchCommits } from "./commit-watch";
 import {
   ManualSignaling,
   BobSwapSignaling,
@@ -31,6 +32,13 @@ export interface SyncHandle {
   /** Attach another peer (desktop/server) to the same engine. */
   attach(peer: SyncPeer): void;
   detach(peerId?: string): void;
+  /**
+   * Run a reconciliation round with every connected peer now. Resolves once
+   * the peers that have spoken on their connection answer (or time out).
+   */
+  syncNow(): Promise<{ peers: number; completed: number }>;
+  /** Close every peer and stop this tab's engine (lease demotion). */
+  stop(): void;
   /**
    * Start a manual (no-service) pairing. `onOutgoing` receives the blob to
    * hand the other side; `accept` feeds the blob the other side produced;
@@ -69,7 +77,7 @@ export async function startSync(
     onApplied?: (paths: string[], previous: Record<string, string>) => void | Promise<void>;
   },
 ): Promise<SyncHandle> {
-  if (active) active.unpair();
+  if (active) active.stop();
   const engine = new SyncEngine(platform, opts.id, { onApplied: opts.onApplied });
 
   // Same-origin peer: always attached.
@@ -77,17 +85,9 @@ export async function startSync(
   engine.attach(bc);
 
   // Mutation seam: journal + push on every file-tool commit.
-  const git = platform.git;
-  const original = git.autoCommit?.bind(git);
-  if (original) {
-    git.autoCommit = async (paths: string[], message: string) => {
-      const result = await original(paths, message);
-      if (result !== "failed" && result !== "no-changes") {
-        void engine.noteMutation([...paths]);
-      }
-      return result;
-    };
-  }
+  const unwatch = watchCommits(platform, (paths) => {
+    void engine.noteMutation(paths);
+  });
 
   // The cross-device peer is the only one `unpair` may close: same-origin
   // BroadcastChannel and a paired desktop/server must keep running.
@@ -105,7 +105,7 @@ export async function startSync(
     for (const cb of stateListeners) cb(next);
   });
 
-  active = {
+  const handle: SyncHandle = {
     engine,
     state: () => state,
     onState(cb) {
@@ -118,6 +118,9 @@ export async function startSync(
     },
     detach(peerId) {
       engine.detach(peerId);
+    },
+    syncNow() {
+      return engine.reconcileAll();
     },
     startManualPairing(role, onOutgoing) {
       const provider = new ManualSignaling(role);
@@ -144,6 +147,15 @@ export async function startSync(
       crossPeer?.close();
       crossPeer = null;
     },
+    stop() {
+      unwatch();
+      crossPeer?.close();
+      crossPeer = null;
+      engine.detach();
+      stateListeners.clear();
+      if (active === handle) active = null;
+    },
   };
-  return active;
+  active = handle;
+  return handle;
 }

@@ -213,7 +213,17 @@ export function wireSyncUi(getSync: SyncGetter): void {
     if (input && !input.value) input.value = loadStorageServer();
   };
 
-  // Live status line in the Sync… dialog.
+  // Live status line in the Sync… dialog. Subscribe lazily: a secondary tab
+  // starts its engine only when the lease is promoted, after this wiring.
+  let watchedSync: SyncHandle | null = null;
+  let unwatchState: (() => void) | null = null;
+  const watchSync = (): void => {
+    const sync = getSync();
+    if (sync === watchedSync) return;
+    unwatchState?.();
+    watchedSync = sync;
+    unwatchState = sync?.onState(() => updateLiveStatus()) ?? null;
+  };
   const updateLiveStatus = (): void => {
     const sync = getSync();
     if (!sync) {
@@ -222,7 +232,40 @@ export function wireSyncUi(getSync: SyncGetter): void {
     }
     setText("live-sync-status", statusLine(sync.state()));
   };
+
+  // A manual round covers more than a desktop mirror: paired tabs/devices too.
+  const syncNowButton = el<HTMLButtonElement>("live-sync-now");
+  syncNowButton?.addEventListener("click", () => {
+    const handle = getSync();
+    if (!handle) {
+      setText("live-sync-status", "not running here — this tab is not the workspace host");
+      return;
+    }
+    syncNowButton.disabled = true;
+    setText("live-sync-status", "syncing…");
+    void handle
+      .syncNow()
+      .then(({ peers, completed }) => {
+        if (!peers) {
+          setText("live-sync-status", "no peers connected — pair with another device first");
+          return;
+        }
+        if (!completed) {
+          setText("live-sync-status", `asked ${peers} peer(s) for a map — no answer yet`);
+          return;
+        }
+        updateLiveStatus();
+      })
+      .catch((err) => {
+        setText("live-sync-status", `sync failed: ${err instanceof Error ? err.message : String(err)}`);
+      })
+      .finally(() => {
+        syncNowButton.disabled = false;
+      });
+  });
+
   open.addEventListener("click", () => {
+    watchSync();
     updateLiveStatus();
     showActiveProfile();
     updatePairMode();
@@ -230,8 +273,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
     dialog.showModal();
   });
   close?.addEventListener("click", () => dialog.close());
-  const sync = getSync();
-  sync?.onState(() => updateLiveStatus());
+  watchSync();
   updateLiveStatus();
   showActiveProfile();
   updatePairMode();

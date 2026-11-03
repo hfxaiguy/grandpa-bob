@@ -26,14 +26,21 @@ export interface Layout {
   /** Tiles fixed in place (and the only ones whose manual order counts).
    *  Everything else floats to the top with recent activity. */
   pinned: string[];
+  /** Board tiles the bot raised on its own (not a manual open or a profile
+   *  exception). Only these are auto-closed once no turn has used them for
+   *  `AUTO_CLOSE_TURNS` turns; touching the rail clears the entry. */
+  autoRaised: string[];
   /** Sub-apps opened inside their parent, in the order they were opened —
    *  the render order of the side-by-side strip, so a running chat never
    *  jumps. Parks (closing) removes the entry. */
   subsOpen: string[];
-  /** Tiles whose memory panel is collapsed. Memory is open by default, so
-   *  this is the exception list (like hidden) — it survives reloads because
-   *  tiles remount on every session switch. */
+  /** Tiles whose memory panel is collapsed. Memory is open by default on a
+   *  desktop, so this is the exception list (like hidden) — it survives reloads
+   *  because tiles remount on every session switch. */
   memClosed: string[];
+  /** Tiles whose memory panel was explicitly opened where the default is
+   *  collapsed (phone width). An explicit choice beats both lists. */
+  memOpen: string[];
 }
 
 export interface UiState {
@@ -123,6 +130,10 @@ const NEW_SESSION_KEEP: readonly string[] = [];
  *  rail (its square pulses) instead of evicting a tile the user may be
  *  reading. Manual opens from the rail are never capped. */
 const AUTO_RAISE_SEATS = 2;
+/** Turns an auto-raised tile may go unused before it parks again. The count
+ *  includes the turn that just ended, so an app used in turn N closes at the
+ *  end of turn N+2. Pinned tiles, manual opens and profile exceptions stay. */
+const AUTO_CLOSE_TURNS = 2;
 /** How long a denied raise keeps pulsing its rail square. */
 const RAISE_DENIED_MS = 12_000;
 const MACHINE_KEY = "gpb.showMachine";
@@ -180,6 +191,18 @@ function profileId(): string {
  *  the stream folds away by default and opens as a bottom sheet. */
 export const SMALL_QUERY = "(max-width: 640px)";
 
+/** Whether the viewport is currently phone-sized. Kept reactive so the toolbar
+ *  (which folds stream/machine/session into settings there) and the tiles
+ *  (whose memory defaults collapsed there) follow a resize without a reload. */
+function detectSmall(): boolean {
+  try {
+    return typeof window !== "undefined" && !!window.matchMedia?.(SMALL_QUERY).matches;
+  } catch {
+    return false;
+  }
+}
+export const [smallScreen, setSmallScreen] = createSignal(detectSmall());
+
 function loadBridge(): boolean {
   try {
     return localStorage.getItem(BRIDGE_KEY) === "1";
@@ -204,11 +227,16 @@ function loadLayout(): Layout {
         // A layout saved before pins existed (or a fresh one) starts with the
         // trunk fixed: the default is "trunk stays put, everything else flows".
         pinned: Array.isArray(raw.pinned) ? raw.pinned : ["trunk"],
+        // A layout saved before auto-close existed knows nothing was auto-raised
+        // by this tab, so it starts with an empty list (manual opens stay put).
+        autoRaised: Array.isArray(raw.autoRaised) ? raw.autoRaised : [],
         // Sub-app tiles start parked (the square rail inside their parent), so
         // an empty list is the right migration for layouts saved before this.
         subsOpen: Array.isArray(raw.subsOpen) ? raw.subsOpen : [],
-        // Memory panels start open; the closed list is the exception.
+        // Memory panels start open on desktop; the closed list is the exception.
         memClosed: Array.isArray(raw.memClosed) ? raw.memClosed : [],
+        // Explicit opens, needed where the phone-width default is collapsed.
+        memOpen: Array.isArray(raw.memOpen) ? raw.memOpen : [],
       };
     }
   } catch {
@@ -220,8 +248,10 @@ function loadLayout(): Layout {
     expanded: [],
     wide: [],
     pinned: ["trunk"],
+    autoRaised: [],
     subsOpen: [],
     memClosed: [],
+    memOpen: [],
   };
 }
 
@@ -539,11 +569,31 @@ export async function sendFile(file: File, caption: string): Promise<void> {
   }
 }
 
+/** The container extension ffmpeg should expect for an uploaded/recorded clip. */
+function audioExt(filename: string): string {
+  const match = /\.([a-z0-9]{1,8})$/i.exec(filename);
+  return match ? `.${match[1].toLowerCase()}` : ".webm";
+}
+
 /**
- * Transcribe an audio file through the storage bridge's STT pass-through
- * (`POST /stt` — raw bytes in, transcript out; ffmpeg + whisper-server run on
- * the desktop). The channel never sees the audio otherwise: the tab sends it,
- * the desktop transcribes it, nothing is stored. The old streaming partials
+ * POST raw audio bytes to the storage bridge's STT pass-through (`/stt` —
+ * ffmpeg + whisper-server run on the desktop). The channel never sees the
+ * audio otherwise: the tab sends it, the desktop transcribes it, nothing is
+ * stored.
+ */
+async function transcribeBlob(blob: Blob, filename: string): Promise<string> {
+  const url = new URL("/stt", bridgeUrl());
+  url.searchParams.set("ext", audioExt(filename));
+  const res = await fetch(url, { method: "POST", body: blob });
+  const d = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+  if (!res.ok) throw new Error(d.error || `transcription failed: HTTP ${res.status}`);
+  const text = d.text?.trim();
+  if (!text) throw new Error("transcription came back empty");
+  return text;
+}
+
+/**
+ * Transcribe an audio file through the bridge. The old streaming partials
  * are gone with the admin; `onPartial` simply never fires.
  */
 export async function transcribeFileStream(
@@ -551,13 +601,12 @@ export async function transcribeFileStream(
   handlers: TranscribeHandlers = {},
 ): Promise<string> {
   handlers.onInfo?.(0);
-  const url = new URL("/stt", bridgeUrl());
-  url.searchParams.set("ext", file.name ? `.${file.name.split(".").pop() ?? "webm"}` : ".webm");
-  const res = await fetch(url, { method: "POST", body: file });
-  const d = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
-  if (!res.ok) throw new Error(d.error || `transcription failed: HTTP ${res.status}`);
-  if (!d.text) throw new Error("transcription came back empty");
-  return d.text;
+  return transcribeBlob(file, file.name || "audio.webm");
+}
+
+/** Transcribe a recorded voice clip through the bridge's STT pass-through. */
+export async function transcribeAudio(blob: Blob, filename: string): Promise<string> {
+  return transcribeBlob(blob, filename);
 }
 
 export async function selectSession(key: string): Promise<void> {
@@ -882,8 +931,73 @@ function maybeRaiseTile(app: string | null | undefined): void {
     return;
   }
   setState("layout", "hidden", (h) => h.filter((x) => x !== tile));
+  if (!(state.layout.autoRaised ?? []).includes(tile)) {
+    setState("layout", "autoRaised", (list) => [...(list ?? []), tile]);
+  }
   saveLayout();
   clearRaiseDenied(tile);
+}
+
+/** The board tiles a turn used: its input app, every event's attributed app
+ *  (including nested sub-apps, mapped to the top-level tile) and every app that
+ *  emitted a bubble. Trunk and unknown apps never name a board seat. */
+function turnTileApps(turn: Turn): string[] {
+  const tiles = new Set<string>();
+  const add = (app: string | null | undefined): void => {
+    const tile = boardTileOf(app);
+    if (tile) tiles.add(tile);
+  };
+  add(turn.inputApp);
+  add(turn.awaiting);
+  for (const ev of turn.events ?? []) add(ev.app);
+  for (const app of turn.emitApps ?? []) add(app);
+  return [...tiles];
+}
+
+/**
+ * Park auto-raised tiles that no turn has used for `AUTO_CLOSE_TURNS` turns.
+ * The just-finished turn is part of that window, so an auto-raised tile closes
+ * at the end of the second turn that ignored it. Manual opens, pinned tiles,
+ * profile exceptions and the app currently waiting for the human are kept —
+ * the rail square stays one click away (and a used app raises again).
+ *
+ * Returns true when at least one tile parked, so the caller can give a seat to
+ * the app the finished turn was actually using.
+ */
+function pruneStaleTiles(): boolean {
+  if (state.turns.length < AUTO_CLOSE_TURNS) return false;
+  const recent = new Set<string>();
+  for (const turn of state.turns.slice(-AUTO_CLOSE_TURNS)) {
+    for (const tile of turnTileApps(turn)) recent.add(tile);
+  }
+  const keep = new Set<string>(["trunk", ...(profileVisibleApps() ?? [])]);
+  for (const turn of state.turns) {
+    if (turn.status !== "running") continue;
+    for (const tile of turnTileApps(turn)) keep.add(tile);
+  }
+  if (state.awaiting) {
+    const waiting = boardTileOf(state.awaiting);
+    if (waiting) keep.add(waiting);
+  }
+  const auto = new Set(state.layout.autoRaised ?? []);
+  const stale = state.apps
+    .filter(
+      (app) =>
+        !app.parent &&
+        auto.has(app.name) &&
+        !state.layout.hidden.includes(app.name) &&
+        !state.layout.pinned.includes(app.name) &&
+        !keep.has(app.name) &&
+        !recent.has(app.name),
+    )
+    .map((app) => app.name);
+  if (!stale.length) return false;
+  const parked = new Set(stale);
+  setState("layout", "hidden", (hidden) => [...hidden, ...stale.filter((name) => !hidden.includes(name))]);
+  setState("layout", "autoRaised", (list) => (list ?? []).filter((name) => !parked.has(name)));
+  clearRaiseDenied();
+  saveLayout();
+  return true;
 }
 
 /** The most recent app a live event was attributed to. Turns fire an event per
@@ -933,6 +1047,9 @@ export function dismissError(): void {
 export function toggleHidden(name: string): void {
   const wasHidden = state.layout.hidden.includes(name);
   setState("layout", "hidden", (h) => (h.includes(name) ? h.filter((x) => x !== name) : [...h, name]));
+  // A manual open (or park) takes the tile out of the bot's auto-close list:
+  // the user has now expressed an intent about this seat.
+  setState("layout", "autoRaised", (list) => (list ?? []).filter((x) => x !== name));
   saveLayout();
   // A manual open answers the app's pulse; parking a tile leaves the others be.
   if (wasHidden) clearRaiseDenied(name);
@@ -949,6 +1066,9 @@ export function parkAllExcept(keep: readonly string[] = NEW_SESSION_KEEP): void 
     "hidden",
     state.apps.filter((a) => !a.parent && !shown.has(a.name)).map((a) => a.name),
   );
+  // Nothing on the board was raised by this tab any more: a fresh board starts
+  // with no auto-close bookkeeping.
+  setState("layout", "autoRaised", []);
   clearRaiseDenied();
   saveLayout();
 }
@@ -979,6 +1099,7 @@ export function applyProfileVisibleExceptions(): void {
       .filter((app) => !app.parent && app.name !== "trunk" && !visible.has(app.name))
       .map((app) => app.name),
   );
+  setState("layout", "autoRaised", []);
   clearRaiseDenied();
   saveLayout();
 }
@@ -1000,6 +1121,7 @@ export function resetBoardForNewSession(): void {
       .filter((app) => !app.parent && app.name !== "trunk" && !visible.has(app.name))
       .map((app) => app.name),
   );
+  setState("layout", "autoRaised", []);
   clearRaiseDenied();
   saveLayout();
 }
@@ -1013,12 +1135,24 @@ export function toggleWide(name: string): void {
   saveLayout();
 }
 
+/** Whether a tile's memory panel is open: an explicit choice wins, then the
+ *  viewport default — open on desktop, collapsed on a phone. */
+export function memoryOpen(name: string): boolean {
+  if (state.layout.memOpen.includes(name)) return true;
+  if (state.layout.memClosed.includes(name)) return false;
+  return !smallScreen();
+}
+
 /** Collapse or open a tile's memory panel (persisted, like the rest of the
  *  layout — tiles remount on every session switch). */
 export function toggleMem(name: string): void {
-  setState("layout", "memClosed", (list) =>
-    list.includes(name) ? list.filter((x) => x !== name) : [...list, name],
-  );
+  if (memoryOpen(name)) {
+    setState("layout", "memClosed", (list) => (list.includes(name) ? list : [...list, name]));
+    setState("layout", "memOpen", (list) => list.filter((x) => x !== name));
+  } else {
+    setState("layout", "memClosed", (list) => list.filter((x) => x !== name));
+    setState("layout", "memOpen", (list) => (list.includes(name) ? list : [...list, name]));
+  }
   saveLayout();
 }
 
@@ -1292,6 +1426,13 @@ export function handleSSE(msg: any): void {
           s.awaiting = msg.awaiting ?? null;
         }),
       );
+      // The turn that just ended completes the two-turn window: park the
+      // auto-raised tiles it and the previous turn ignored, then let the app
+      // this turn actually used take any seat that just opened up.
+      const ended = state.turns.find((t) => t.turnId === msg.turnId);
+      if (ended && pruneStaleTiles()) {
+        for (const app of turnTileApps(ended)) maybeRaiseTile(app);
+      }
       if (msg.status === "error") {
         toast(`turn failed: ${msg.error || "the turn failed"}`, true);
       } else if (msg.status === "stopped") {
@@ -1443,6 +1584,7 @@ export async function init(): Promise<void> {
     try {
       const mq = window.matchMedia?.(SMALL_QUERY);
       mq?.addEventListener?.("change", (e) => {
+        setSmallScreen(e.matches);
         if (e.matches && state.streamOpen) setStreamOpen(false, false);
       });
     } catch {

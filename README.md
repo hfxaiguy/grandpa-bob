@@ -445,7 +445,9 @@ Profiles have their own chats, patterns, run log, git history and board layout.
 A profile can also choose which tiles stay visible (**Profiles** →
 **Hidden… except:**); every other app starts in the hidden rail. A new chat
 opens on trunk alone; as apps run, their tiles raise themselves (up to two beside trunk), and
-a third active app pulses in the rail until opened. A **single-host lease** makes
+a third active app pulses in the rail until opened. An auto-raised tile parks
+again after two turns that do not use its app; manual opens, pinned tiles and
+profile exceptions stay. A **single-host lease** makes
 sure only one tab runs the agent per workspace: a second tab is read-only (with
 a *take over* button). A failed turn keeps a retry
 composer; the Stop button aborts the run.
@@ -460,7 +462,9 @@ dialog. Cross-device pairing (WebRTC, with a 6-word verification phrase derived
 from both DTLS certificates) is in the Sync… dialog under **Live sync →
 Pair…**: one code field with a source switch — **Another tab / relay**
 (BobSwap, defaulting to the built-in deployment) or **My desktop / server**.
-Manual paste remains the no-service fallback. Signaling blobs carry only
+Manual paste remains the no-service fallback. **Sync now** in the same row runs
+an explicit round with every paired peer; the agent worker reports its commits,
+so files BOB writes sync without it. Signaling blobs carry only
 WebRTC addressing; workspace bytes travel over the authenticated data channel
 (a paired desktop/server is a peer endpoint and its mirror folder holds a
 copy). Full guide: [docs/pairing-and-sync.md](docs/pairing-and-sync.md).

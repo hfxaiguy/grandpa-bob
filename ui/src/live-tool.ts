@@ -8,7 +8,7 @@
  *
  * Kept free of Solid and DOM so the fold can be exercised from a script test.
  */
-import { newTurnApps, tagEventApp } from "../../web/src/app-attribution";
+import { newTurnApps, seedPausedApp, tagEventApp } from "../../web/src/app-attribution";
 import type { SanitizedEvent, Turn } from "./types";
 
 export interface LiveToolCall {
@@ -62,10 +62,41 @@ function callOf(e: SanitizedEvent, c: Record<string, unknown>): LiveToolCall {
   };
 }
 
+/** True when the host tagged every event with the app it belongs to. Both the
+ *  live backend and the replayed run log do; older/turn fixtures may not. */
+function allEventsTagged(events: SanitizedEvent[]): boolean {
+  return events.length > 0 && events.every((e) => typeof e.app === "string" && e.app.length > 0);
+}
+
+/**
+ * The app a running turn is executing right now — the last event's host tag
+ * when the stream is tagged, else a replay of the boundary stack.
+ *
+ * The tag matters for long turns: `turn.events` is tail-capped (500), so a
+ * turn that has run for a while no longer contains the `tree_enter` that
+ * opened its app. Replaying that tail alone starts at "trunk" and puts the
+ * whole run on the trunk tile. The tag is carried by every row, so it survives
+ * the cap; the walk stays as the fallback for untagged (older) streams and is
+ * seeded with the paused app so a resumed turn starts inside it.
+ */
+export function runningAppOf(
+  turn: Turn | null | undefined,
+  appNames?: Iterable<string>,
+): string | null {
+  if (!turn || turn.status !== "running") return null;
+  const events = turn.events ?? [];
+  if (allEventsTagged(events)) return events[events.length - 1].app ?? null;
+  const st = newTurnApps(appNames ? [...appNames] : undefined);
+  seedPausedApp(st, turn.inputApp);
+  for (const e of events) tagEventApp(st, e);
+  return st.current;
+}
+
 /**
  * Fold a running turn's events into the activity of one app tile. App
- * attribution walks the same boundary stack the server uses, so a nested app
- * run lands on its own tile and never leaks onto the caller's.
+ * attribution uses the host's per-event tag when present (a capped tail still
+ * knows its app); otherwise it walks the same boundary stack the server uses,
+ * so a nested app run lands on its own tile and never leaks onto the caller's.
  */
 export function liveActivity(
   turn: Turn | null | undefined,
@@ -74,9 +105,12 @@ export function liveActivity(
 ): LiveActivity {
   const out: LiveActivity = { current: null, lastDone: null };
   if (!turn || turn.status !== "running") return out;
-  const st = newTurnApps(appNames ? [...appNames] : undefined);
-  for (const e of turn.events) {
-    const evApp = tagEventApp(st, e);
+  const events = turn.events ?? [];
+  const tagged = allEventsTagged(events);
+  const st = tagged ? null : newTurnApps(appNames ? [...appNames] : undefined);
+  if (st) seedPausedApp(st, turn.inputApp);
+  for (const e of events) {
+    const evApp = st ? tagEventApp(st, e) : e.app!;
     if (evApp !== app) continue;
     const c = (e.content ?? {}) as Record<string, unknown>;
     switch (e.kind) {

@@ -173,7 +173,15 @@ export function sha256FromEtag(value: string | null): string | undefined {
  * bad requests, so a retry is safe for the GET/HEAD calls here.
  */
 const TRANSIENT_NETWORK_ERROR =
-  /Content-Length header of network response exceeds response Body|NetworkError when attempting to fetch resource|Failed to fetch|Load failed|fetch failed|terminated other side closed/i;
+  /Content-Length header of network response exceeds response Body|Response body length does not match content-length header|UND_ERR_RES_CONTENT_LENGTH_MISMATCH|NetworkError when attempting to fetch resource|Failed to fetch|Load failed|fetch failed|terminated(?: other side closed)?|other side closed|network connection was lost/i;
+
+/** The message plus an undici cause (Node hides the useful part there). */
+function transientText(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause = (err as { cause?: unknown }).cause;
+  if (!(cause instanceof Error)) return err.message;
+  return `${err.message} ${cause.message} ${(cause as { code?: string }).code ?? ""}`;
+}
 
 async function retryTransient<T>(fn: () => Promise<T>, attempts = 2): Promise<T> {
   let lastError: unknown;
@@ -182,8 +190,7 @@ async function retryTransient<T>(fn: () => Promise<T>, attempts = 2): Promise<T>
       return await fn();
     } catch (err) {
       lastError = err;
-      const message = err instanceof Error ? err.message : String(err);
-      if (attempt >= attempts || !TRANSIENT_NETWORK_ERROR.test(message)) throw err;
+      if (attempt >= attempts || !TRANSIENT_NETWORK_ERROR.test(transientText(err))) throw err;
       await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
     }
   }

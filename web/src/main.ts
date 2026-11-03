@@ -1285,6 +1285,82 @@ async function beforeTurn(): Promise<string | null> {
   return "this workspace is open in another tab — take over there (or use “take over” above) to run turns here";
 }
 
+/**
+ * Start this tab's replica sync engine. Idempotent: the boot path calls it as
+ * primary, and a secondary tab calls it when the lease is promoted (closing
+ * the host tab or pressing take over). Without the promotion half, a tab that
+ * just took the workspace over could run turns but could not pair or sync.
+ */
+async function startWorkspaceSync(): Promise<void> {
+  if (syncHandle || lease?.status() !== "primary") return;
+  const syncIdKey = `bob:sync-id:opfs:${activeProfile}`;
+  let syncId = "";
+  try {
+    syncId = localStorage.getItem(syncIdKey) ?? "";
+    if (!syncId) {
+      syncId = crypto.randomUUID();
+      localStorage.setItem(syncIdKey, syncId);
+    }
+  } catch {
+    syncId = crypto.randomUUID();
+  }
+  const handle = await startSync(platform, {
+    id: syncId,
+    channelName: `bob-sync:opfs:${activeProfile}`,
+    onApplied: (paths, previous) => {
+      if (!paths.some(isDatabaseDumpPath)) return;
+      // `previous` is keyed by workspace path; the applier is keyed by DB
+      // name. These hashes are the strongest clean-replica baseline: they
+      // are the dump that was on disk before this delivery replaced it.
+      const baseline: Record<string, string> = {};
+      for (const [path, hash] of Object.entries(previous)) {
+        if (isDatabaseDumpPath(path)) baseline[path.slice("db/".length, -".sql".length)] = hash;
+      }
+      // The worker owns the one writable DB handle; before it exists the
+      // main thread may replay (boot-time, no app connection is open yet).
+      return (archiveAgent
+        ? archiveAgent.applyDatabaseDumps({ applyClean: true, previous: baseline })
+        : applyDatabaseDumps(platform, { applyClean: true, previous: baseline })
+      ).then(() => undefined);
+    },
+  });
+  // The lease can move while startSync is attaching its first peers.
+  if (lease?.status() !== "primary") {
+    handle.stop();
+    return;
+  }
+  syncHandle = handle;
+  (window as unknown as { __bobSync?: unknown }).__bobSync = syncHandle;
+  // Main-thread dump writers (auto-sync, the admin commit/push path) journal
+  // here; worker-written dumps arrive over AgentClient.onDatabaseDumps.
+  onDatabaseDumpsWritten((paths) => {
+    void syncHandle?.engine.noteMutation(paths);
+  });
+  syncHandle.onState((state) => {
+    const bound = mirrorFolder();
+    if (!bound) return;
+    renderMirrorStatus({
+      phase: state.status === "error" ? "error" : state.status === "syncing" ? "syncing" : "idle",
+      detail: state.detail || "connected",
+      folder: bound,
+      lastSyncAt: state.lastSyncAt,
+    });
+  });
+}
+
+/** Reconnect the mirror and render its chip after a promotion. */
+async function resumeMirrorAfterPromotion(): Promise<void> {
+  const folder = mirrorFolder();
+  if (folder) {
+    const connected = await connectServerPeer();
+    if (!connected && !loadServerLink(activeProfile)) {
+      renderMirrorStatus({ phase: "offline", detail: "pairing needed", folder, lastSyncAt: null });
+    }
+    return;
+  }
+  renderMirrorStatus({ phase: "unlinked", detail: "no desktop server paired", folder: "", lastSyncAt: null });
+}
+
 // ── boot ─────────────────────────────────────────────────────────────────
 
 /**
@@ -1351,55 +1427,7 @@ async function main(): Promise<void> {
   // It exists before workspace preparation so a mirror-bound profile pulls its
   // folder before pattern detection and indexing.
   bootStage = "startSync";
-  if (lease.status() === "primary") {
-    const syncIdKey = `bob:sync-id:opfs:${activeProfile}`;
-    let syncId = "";
-    try {
-      syncId = localStorage.getItem(syncIdKey) ?? "";
-      if (!syncId) {
-        syncId = crypto.randomUUID();
-        localStorage.setItem(syncIdKey, syncId);
-      }
-    } catch {
-      syncId = crypto.randomUUID();
-    }
-    syncHandle = await startSync(platform, {
-      id: syncId,
-      channelName: `bob-sync:opfs:${activeProfile}`,
-      onApplied: (paths, previous) => {
-        if (!paths.some(isDatabaseDumpPath)) return;
-        // `previous` is keyed by workspace path; the applier is keyed by DB
-        // name. These hashes are the strongest clean-replica baseline: they
-        // are the dump that was on disk before this delivery replaced it.
-        const baseline: Record<string, string> = {};
-        for (const [path, hash] of Object.entries(previous)) {
-          if (isDatabaseDumpPath(path)) baseline[path.slice("db/".length, -".sql".length)] = hash;
-        }
-        // The worker owns the one writable DB handle; before it exists the
-        // main thread may replay (boot-time, no app connection is open yet).
-        return (archiveAgent
-          ? archiveAgent.applyDatabaseDumps({ applyClean: true, previous: baseline })
-          : applyDatabaseDumps(platform, { applyClean: true, previous: baseline })
-        ).then(() => undefined);
-      },
-    });
-    (window as unknown as { __bobSync?: unknown }).__bobSync = syncHandle;
-    // Main-thread dump writers (auto-sync, the admin commit/push path) journal
-    // here; worker-written dumps arrive over AgentClient.onDatabaseDumps.
-    onDatabaseDumpsWritten((paths) => {
-      void syncHandle?.engine.noteMutation(paths);
-    });
-    syncHandle.onState((state) => {
-      const bound = mirrorFolder();
-      if (!bound) return;
-      renderMirrorStatus({
-        phase: state.status === "error" ? "error" : state.status === "syncing" ? "syncing" : "idle",
-        detail: state.detail || "connected",
-        folder: bound,
-        lastSyncAt: state.lastSyncAt,
-      });
-    });
-  }
+  if (lease.status() === "primary") await startWorkspaceSync();
 
   const folder = mirrorFolder();
   if (folder && lease.status() === "primary") {
@@ -1420,6 +1448,32 @@ async function main(): Promise<void> {
     renderMirrorStatus({ phase: "unlinked", detail: "no desktop server paired", folder: "", lastSyncAt: null });
   }
   wireSyncUi(() => activeSync());
+
+  // A secondary tab can be promoted (the host closed, or the operator pressed
+  // take over). It then needs the same engine the boot path started; a demoted
+  // tab must stop its engine so two tabs never write the same workspace.
+  lease?.subscribe((status) => {
+    if (status === "primary") {
+      if (syncHandle) return;
+      void startWorkspaceSync()
+        .then(() => resumeMirrorAfterPromotion())
+        .then(() => flashStatus("workspace taken over — live sync started", 6000))
+        .catch((err) => flashStatus(`takeover sync failed: ${errorText(err)}`, 10_000));
+      return;
+    }
+    if (status !== "secondary" || !syncHandle) return;
+    syncHandle.stop();
+    syncHandle = null;
+    const folder = mirrorFolder();
+    if (folder) {
+      renderMirrorStatus({
+        phase: "offline",
+        detail: "another tab hosts this workspace",
+        folder,
+        lastSyncAt: null,
+      });
+    }
+  });
 
   bootProgress("preparing the workspace…", 25);
   bootStage = "prepareBrowserWorkspace";
@@ -1465,6 +1519,11 @@ async function main(): Promise<void> {
   // their paths to the main-thread sync engine so it journals them and starts
   // a round. Without this a quiet app's dump waits for an unrelated reconcile.
   agent.onDatabaseDumps((paths) => {
+    void syncHandle?.engine.noteMutation(paths);
+  });
+  // Ordinary file-tool commits happen on the worker's own Platform too. Report
+  // them through the same seam so a file BOB writes reaches paired peers.
+  agent.onFilesCommitted((paths) => {
     void syncHandle?.engine.noteMutation(paths);
   });
   // The boot-time reconnect ran before the worker existed; attach its tail now.
@@ -1537,7 +1596,7 @@ async function main(): Promise<void> {
     buildActiveArchive,
     syncMirror: async () => {
       if (!syncHandle) throw new Error("this tab does not host the workspace");
-      await syncHandle.engine.reconcile();
+      await syncHandle.syncNow();
     },
     mirrorStatus: () => {
       const bound = mirrorFolder();

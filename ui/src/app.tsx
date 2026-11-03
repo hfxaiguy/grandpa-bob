@@ -1,10 +1,22 @@
 /** App shell: toolbar + tiled grid + global stream + session drawer. */
-import { For, Show, createMemo, createSignal, onMount } from "solid-js";
+import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import logo from "./assets/logo.webp";
 import logoMark from "./assets/logo-mark.webp";
 import { buildInfo } from "./build-info";
 import { EventModal, GlobalStream, HiddenRail, RailCard, RefModal, SessionPanel, Tiles, WorkspaceUpload } from "./components";
-import { init, orderedApps, state, stop, toggleHidden, toggleSub, toggleMachine, toggleStream, dismissError, retryLast } from "./store";
+import {
+  init,
+  orderedApps,
+  state,
+  stop,
+  toggleHidden,
+  toggleSub,
+  toggleMachine,
+  toggleStream,
+  dismissError,
+  retryLast,
+  smallScreen,
+} from "./store";
 
 function TilesMenu() {
   const [open, setOpen] = createSignal(false);
@@ -29,6 +41,69 @@ function TilesMenu() {
               </label>
             )}
           </For>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+/**
+ * The phone toolbar folds stream/machine/session (and the settings page link)
+ * into one list, so those controls keep their behavior without making the
+ * wrapped toolbar several rows taller. Desktop keeps the direct buttons.
+ */
+function SettingsMenu(props: { events: number; onSession: () => void }) {
+  const [open, setOpen] = createSignal(false);
+  let wrap: HTMLDivElement | undefined;
+  onMount(() => {
+    const onDown = (e: PointerEvent) => {
+      if (open() && wrap && !wrap.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    });
+  });
+  const pick = (fn: () => void) => {
+    setOpen(false);
+    fn();
+  };
+  return (
+    <div class="menu-wrap" ref={(el) => (wrap = el)}>
+      <button
+        classList={{ active: open() }}
+        aria-haspopup="menu"
+        aria-expanded={open()}
+        title="stream, machine notes, session and settings"
+        onClick={() => setOpen(!open())}
+      >
+        settings ▾
+      </button>
+      <Show when={open()}>
+        <div class="menu" role="menu" aria-label="settings">
+          <label class="menu-row" role="menuitemcheckbox" aria-checked={state.streamOpen}>
+            <input
+              type="checkbox"
+              checked={state.streamOpen}
+              onChange={() => pick(toggleStream)}
+            />
+            stream <span class="count">{props.events}</span>
+          </label>
+          <label class="menu-row" role="menuitemcheckbox" aria-checked={state.showMachine}>
+            <input type="checkbox" checked={state.showMachine} onChange={() => pick(toggleMachine)} />
+            machine
+          </label>
+          <button type="button" class="menu-row menu-action" role="menuitem" onClick={() => pick(props.onSession)}>
+            session
+          </button>
+          <a class="menu-row menu-action" role="menuitem" href="/settings" onClick={() => setOpen(false)}>
+            settings page
+          </a>
         </div>
       </Show>
     </div>
@@ -76,27 +151,38 @@ export function App() {
           </button>
         </Show>
         <span class="spacer" />
-        <button
-          classList={{ active: state.streamOpen }}
-          aria-pressed={state.streamOpen}
-          title={state.streamOpen ? "hide the event stream" : "show the event stream"}
-          onClick={toggleStream}
-        >
-          stream <span class="count">{streamEvents()}</span>
-        </button>
-        <button
-          classList={{ active: state.showMachine }}
-          title="show machine-tagged emits in the app chats"
-          onClick={toggleMachine}
-        >
-          machine
-        </button>
+        <Show when={!smallScreen()}>
+          <button
+            classList={{ active: state.streamOpen }}
+            aria-pressed={state.streamOpen}
+            title={state.streamOpen ? "hide the event stream" : "show the event stream"}
+            onClick={toggleStream}
+          >
+            stream <span class="count">{streamEvents()}</span>
+          </button>
+          <button
+            classList={{ active: state.showMachine }}
+            title="show machine-tagged emits in the app chats"
+            onClick={toggleMachine}
+          >
+            machine
+          </button>
+        </Show>
         <WorkspaceUpload />
         <TilesMenu />
-        <button onClick={() => setShowSession(true)}>session</button>
-        <a class="link-btn" href="/settings">
-          settings
-        </a>
+        <Show
+          when={smallScreen()}
+          fallback={
+            <>
+              <button onClick={() => setShowSession(true)}>session</button>
+              <a class="link-btn" href="/settings">
+                settings
+              </a>
+            </>
+          }
+        >
+          <SettingsMenu events={streamEvents()} onSession={() => setShowSession(true)} />
+        </Show>
         <span class="build-stamp" title={buildInfo.title}>
           {buildInfo.label}
         </span>

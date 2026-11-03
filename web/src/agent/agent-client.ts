@@ -71,6 +71,7 @@ export class AgentClient {
   private dbPending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private eventSubs = new Set<(event: unknown) => void>();
   private dumpSubs = new Set<(paths: string[]) => void>();
+  private commitSubs = new Set<(paths: string[]) => void>();
 
   constructor(opfsPrefix: readonly string[] = []) {
     this.worker = new Worker(new URL("./agent-worker.ts", import.meta.url), {
@@ -153,6 +154,17 @@ export class AgentClient {
         }
         return;
       }
+      if (msg.type === "files-committed") {
+        const paths = Array.isArray(msg.paths) ? msg.paths.map(String) : [];
+        for (const sub of this.commitSubs) {
+          try {
+            sub(paths);
+          } catch {
+            /* an observer must not break the turn */
+          }
+        }
+        return;
+      }
       if (msg.type === "db-apply-result") {
         const pending = this.dbPending.get(msg.id);
         if (!pending) return;
@@ -223,6 +235,16 @@ export class AgentClient {
   onDatabaseDumps(handler: (paths: string[]) => void): () => void {
     this.dumpSubs.add(handler);
     return () => this.dumpSubs.delete(handler);
+  }
+
+  /**
+   * Observe committed workspace paths. The worker's file tools run over their
+   * own Platform, so its `autoCommit` seam reports here; the main thread's
+   * sync engine journals these paths and starts a round.
+   */
+  onFilesCommitted(handler: (paths: string[]) => void): () => void {
+    this.commitSubs.add(handler);
+    return () => this.commitSubs.delete(handler);
   }
 
   /**

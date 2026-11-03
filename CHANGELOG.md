@@ -2,6 +2,102 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — a long or resumed run stays on its app's tile
+
+The board derived "running" by replaying the running turn's event tail through
+the app-boundary stack, but that tail is capped at 500 rows. A long turn loses
+the `tree_enter` that opened its app, so the replay started at the trunk and
+the trunk tile claimed the run — showing the app's live tool (for example
+`browser_body`) while the app's own tile read **idle**. The same happened on a
+resumed turn before its first event arrived. The stream already carries the
+host's per-event `app` tag, which survives the cap, so the tile status and live
+tool row use that tag when the whole window is tagged; untagged (older) streams
+still walk the boundary stack, now seeded with the paused app.
+
+- `ui/src/live-tool.ts`: `runningAppOf`, tag-first `liveActivity`, resume seed
+  for the fallback walk.
+- `ui/src/components.tsx`: `currentRunningApp` delegates to `runningAppOf`.
+- `scripts/live-tool-row-test.ts`: capped-tail attribution, nested tags and
+  untagged resumed fallback.
+
+Tests: `npm run test:live-tool-row`; `npm run test:ui-order`;
+`npm --prefix ui run typecheck`.
+
+## 2026-11-03 — auto-raised tiles close after two unused turns
+
+An app tile the bot raised for activity used to stay on the board forever. At
+the end of every turn the board now checks the last two turns: an auto-raised
+tile neither of them used parks back into the rail, freeing its seat for the
+app the finished turn actually used. The raise is recorded in
+`Layout.autoRaised`, so a reload knows which seats are the bot's to reclaim.
+Manual opens, pinned tiles, the app waiting for the human and profile
+**Hidden… except:** apps are never auto-closed; their rail squares remain one
+click away. Layouts saved before this change start with an empty auto-close
+list, so existing open tiles are left alone until they are raised again.
+
+- `ui/src/store.ts`: `AUTO_CLOSE_TURNS`, per-turn app attribution
+  (`turnTileApps`), `pruneStaleTiles`, the `autoRaised` layout field and its
+  turn-end/migration hooks.
+- `scripts/ui-order-test.ts`: two-turn close, seat handoff to the finished
+  turn's app, pin and manual-open exemptions.
+- Docs: `README.md` and `web/README.md` describe the new lifecycle.
+
+Tests: `npm run test:ui-order`; `npm --prefix ui run typecheck`.
+
+## 2026-11-02 — the phone toolbar and memory panels fold away
+
+On a phone the toolbar no longer wraps into a wall of controls: **stream**,
+**machine**, **session** and the settings-page link now live in one **settings**
+list. The same breakpoint starts every tile's memory panel collapsed; an
+explicit open or close is remembered per tile and survives a resize. Desktop
+keeps the direct stream/machine/session buttons and open memory panels.
+
+- `ui/src/app.tsx`: the phone-width settings list.
+- `ui/src/store.ts`, `ui/src/components.tsx`: reactive phone-width flag and
+  explicit memory open/closed state.
+- `ui/src/styles.css`: menu action rows and touch-sized phone rows.
+- `scripts/ui-order-test.ts`: phone/desktop memory defaults.
+
+## 2026-11-02 — the composer's mic is back, powered by the bridge's STT
+
+The tiled UI lost its voice button when in-tab whisper was removed, and the
+docs kept promising a 🎙. The bridge's opt-in `/stt` pass-through
+(`BOB_STT=1`) is the replacement: the composer records with MediaRecorder,
+posts the clip to the same bridge endpoint audio attachments already use, and
+sends the transcript as the next turn. The mic is released when the composer
+unmounts mid-recording, and clips shorter than a second are rejected before
+upload. The stale admin-only gate in the audio-attachment path is gone too.
+
+- `ui/src/components.tsx`: mic button + recording/transcription state; audio
+  files no longer require `state.adminOnline`.
+- `ui/src/store.ts`: `transcribeAudio` and a shared `transcribeBlob` helper;
+  `transcribeFileStream` now delegates to it.
+- Tests: `npm --prefix ui run typecheck`; `npm run build:web`.
+
+## 2026-11-02 — sync sees the agent worker's commits, and can run on demand
+
+The sync engine watched `platform.git.autoCommit` on the main thread, but the
+agent's file tools run in a worker over its own `Platform`. A file BOB wrote
+was committed locally and never journaled, so a paired tab or device sat
+unchanged until some unrelated round (a DB dump or a reconnect). The worker now
+reports every successful commit (`files-committed`), and the main thread hands
+those paths to `engine.noteMutation` — the same seam the main-thread commit
+wrapper uses.
+
+The **Sync… → Live sync** row also gains **Sync now**: it runs one explicit
+reconciliation round with every connected peer, awaits peers that have spoken
+on their connection, and reports "no peers connected" instead of silently
+doing nothing. A secondary tab that takes the workspace over now starts the
+same engine (and reconnects its mirror) instead of staying unsyncable, and a
+tab that yields stops its engine so two tabs never write one workspace. The
+engine is stricter about what a commit can journal too: directories (including
+a bare `.`) and excluded paths are never recorded as zero-byte files.
+
+- `web/src/sync/commit-watch.ts` (new), `web/src/agent/agent-worker.ts`,
+  `web/src/agent/agent-client.ts`, `web/src/main.ts`, `web/src/sync/index.ts`,
+  `web/src/sync/engine.ts`, `web/src/sync-ui.ts`, `web/index.html`.
+- Tests: `npm run test:sync` (manual round, commit watcher, directory/`.` guard).
+
 ## 2026-11-02 — a dynamic max is described in a serialized tree
 
 Pattern serialization only understood a numeric `max(count)`. A dynamic count

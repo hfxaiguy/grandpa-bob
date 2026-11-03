@@ -54,6 +54,7 @@ import { resolvePatternPath } from "./pattern-path";
 import { isDroppableContinuationError } from "./resume-guard";
 import { loadBrowserModels } from "./models";
 import { parseModels, type ModelRegistry } from "../model-config";
+import { watchCommits } from "../sync/commit-watch";
 
 /**
  * Active profile segments, passed by AgentClient as the worker name. A worker
@@ -149,6 +150,10 @@ async function getPlatform(): Promise<Platform> {
   let platform = platforms.get("opfs");
   if (!platform) {
     platform = wrapShellWithOps(createBrowserPlatform("/workspace"));
+    // File tools commit on the worker's own Platform, not the main thread's.
+    // Report every successful commit so the main-thread sync engine journals
+    // the paths and starts a round; the worker cannot reach the engine.
+    watchCommits(platform, (paths) => post({ type: "files-committed", paths }));
     platforms.set("opfs", platform);
   }
   return platform;

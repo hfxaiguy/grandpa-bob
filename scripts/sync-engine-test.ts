@@ -18,6 +18,8 @@ import path from "node:path";
 import { createNodePlatform } from "../src/platform/node.js";
 import { SyncEngine, type SyncEnvelope, type SyncPeer } from "../web/src/sync/engine";
 import { buildHashmap } from "../web/src/sync/hashmap";
+import { watchCommits } from "../web/src/sync/commit-watch";
+import { createMemoryPlatform } from "../web/src/platform/memory";
 import { applyDatabaseDumps, isDatabaseDumpPath, writeDatabaseDumps } from "../web/src/db-sync";
 import { Journal } from "../web/src/sync/journal";
 import { pairingPhrase, toIceServers } from "../web/src/sync/transport-webrtc";
@@ -368,6 +370,43 @@ try {
   await engineA.noteMutation(["clock.txt"]);
   await waitFor(() => fileIs(platformB, "clock.txt", "tick\n"), "clock.txt reaches B");
   await waitFor(async () => lastSyncAtA !== beforeClock, "A's completion clock advances on its own round");
+
+  // ── a manual round waits for a peer that has spoken ───────────────────
+  // The Sync… → Live sync → "Sync now" button uses this: peers that answered
+  // before are awaited, so the button can report a real completion.
+  const manualRound = await engineA.reconcileAll(4_000);
+  assert.equal(manualRound.peers, 1, "one peer is attached");
+  assert.equal(manualRound.completed, 1, "the peer answered the manual round");
+
+  // ── directories and "." are never journaled as files ──────────────────
+  // A `git_commit` with no paths reaches the commit seam as ["."]; treating
+  // that as a file would publish the workspace root as an empty-byte path.
+  await platformA.fs.mkdir(abs(platformA, "dir-only"), { recursive: true });
+  await engineA.noteMutation([".", "dir-only"]);
+  await new Promise((r) => setTimeout(r, 700)); // journal persistence debounce
+  const journalRaw = await readFile(
+    platformA.path.join(platformA.workspaceRoot, ".gpb-sync/journal.jsonl"),
+    "utf8",
+  ).catch(() => "");
+  assert.ok(!journalRaw.includes(`"path":"."`), "the workspace root is not journaled");
+  assert.ok(!journalRaw.includes(`"path":"dir-only"`), "a directory is not journaled");
+
+  // ── the worker's commit seam reports only real commits ────────────────
+  // The agent worker wraps its own Platform with this; the main thread's
+  // engine then journals the paths. "no-changes"/"failed" stay quiet.
+  const commits: string[][] = [];
+  const workerLike = createMemoryPlatform({
+    autoCommit: async (paths) => (paths.includes("quiet.md") ? "no-changes" : "abc1234"),
+  });
+  const unwatch = watchCommits(workerLike, (paths) => commits.push(paths));
+  await workerLike.git.autoCommit(["changed.md", "db/notes.db.sql"], "agent(write_file): changed.md");
+  await workerLike.git.autoCommit(["quiet.md"], "agent(edit_file): quiet.md");
+  unwatch();
+  assert.deepEqual(
+    commits,
+    [["changed.md", "db/notes.db.sql"]],
+    "a successful commit reports its paths; a no-change commit does not",
+  );
 
   // ── service ICE servers ───────────────────────────────────────────────
   // The BobSwap create/join responses carry ice_servers; the peer connection

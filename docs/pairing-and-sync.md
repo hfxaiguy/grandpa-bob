@@ -41,7 +41,9 @@ yours, by design.
 
 The single-host rule is per OPFS profile: one tab owns `opfs:<profile>` at a
 time (a **lease**). Other tabs are read-only and offer **take over**. Only the
-lease holder runs the mirror, so the shared folder has one writer.
+lease holder runs the mirror, so the shared folder has one writer. Taking the
+lease over starts that tab's sync engine (and reconnects its mirror); the
+previous holder stops syncing when it yields.
 
 ## 2. Same-origin tabs
 
@@ -53,6 +55,12 @@ named `bob-sync:opfs:<profileName>`:
 - **different profiles** (even on the same machine) — these are different
   workspaces and different channels. Pair them through the dialog if you want
   that.
+
+**Sync now** in **Sync… → Live sync** runs an explicit reconciliation round
+with every connected peer. Changes BOB writes are reported from the agent
+worker's commit seam, so a paired workspace normally converges without anyone
+pressing it; the button is the manual recovery path (and tells you when no
+peer is connected).
 
 ## 3. Cross-device pairing
 
@@ -126,6 +134,11 @@ the smaller replica id). The loser's bytes are preserved as
 `<path>.conflict-<timestamp>` and not synced. Deletions travel as tombstones.
 A side that was closed journals its changes and catches up on the next
 connection — nothing needs to be re-paired if the pair is still open.
+
+The engine journals every file-tool commit, including commits the agent worker
+makes on its own `Platform`, and schedules a round after a quiet moment. If a
+change still does not arrive (or you want to force a check), press **Sync now**
+in **Sync… → Live sync**.
 
 **Close cross-device pairing** tears down only the WebRTC pair; same-origin
 tabs keep syncing.

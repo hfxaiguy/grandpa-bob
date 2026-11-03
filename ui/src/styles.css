@@ -516,6 +516,25 @@ body.dragging-tile { user-select: none !important; }
 .tile-desc:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 
 .chat { flex: 1; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 60px; }
+/* A reader who scrolled away from the newest message gets this pill pinned to
+   the chat's bottom edge; the next message appends without moving the viewport. */
+.jump-latest {
+  position: sticky;
+  bottom: 8px;
+  align-self: center;
+  z-index: 1;
+  flex: none;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+  font-size: 12px;
+  font-weight: 650;
+  user-select: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+.jump-latest:hover { border-color: var(--accent); filter: brightness(1.08); }
 .bubble {
   max-width: 92%;
   padding: 7px 10px;
@@ -888,6 +907,17 @@ body.dragging-tile { user-select: none !important; }
 .menu { position: absolute; right: 0; top: 110%; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 6px; z-index: 30; min-width: 180px; max-height: 60vh; overflow: auto; }
 .menu-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; cursor: pointer; }
 .menu-row:hover { background: var(--panel); border-radius: 5px; }
+/* Rows that are actions (session, settings page) look like the checkbox rows
+   instead of inheriting the global button/anchor chrome. */
+.menu .menu-action {
+  width: 100%;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+}
 
 .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 14px; z-index: 50; }
 .toast.err { border-color: var(--err); color: #ffd7d7; }
@@ -1055,6 +1085,9 @@ body.dragging-tile { user-select: none !important; }
   .toolbar { flex-wrap: wrap; row-gap: 4px; gap: 6px; padding: 6px 8px; }
   .session-label { max-width: none; flex: 1 1 40%; min-width: 0; }
   .toolbar button, .toolbar .link-btn { padding: 6px 10px; }
+  /* The folded settings list is the phone's primary control strip: give each
+     row a comfortable touch target. */
+  .menu .menu-row { padding: 8px 10px; }
   .tile-head button { padding: 4px 9px; }
   /* Give the tiles the width; the rail only needs the squares and a little air. */
   .hidden-rail { width: 38px; padding: 8px 0; }

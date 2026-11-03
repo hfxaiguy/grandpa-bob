@@ -1,5 +1,5 @@
 /** Tile, memory, per-tile event log, global stream, session panel. */
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
 import type { JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { appIconUrl } from "./app-icons";
@@ -34,6 +34,7 @@ import {
   toggleHidden,
   togglePinned,
   toggleMem,
+  memoryOpen,
   moveTile,
   hiddenApps,
   setStreamOpen,
@@ -43,12 +44,12 @@ import {
   showApp,
   toast,
   sendFile,
+  transcribeAudio,
   transcribeFileStream,
 } from "./store";
 import type { AppInfo, EmitComponent, ProvPiece, ProvWriter, Provenance, RefTarget, Turn, TurnTokens } from "./types";
-import { newTurnApps, tagEventApp } from "../../web/src/app-attribution";
 import { Markdown } from "./markdown";
-import { liveActivity, toolLabel } from "./live-tool";
+import { liveActivity, runningAppOf, toolLabel } from "./live-tool";
 
 const trunkOf = (a?: string | null) => a || "trunk";
 
@@ -543,8 +544,9 @@ function MemoryPanel(props: { app: string }) {
     return t.length > 200 ? t.slice(0, 200) + "…" : t;
   };
   // Collapsed per tile, persisted in the layout store (tiles remount on every
-  // session switch, so a local signal would reset it constantly).
-  const memOpen = createMemo(() => !state.layout.memClosed.includes(props.app));
+  // session switch, so a local signal would reset it constantly). The default
+  // follows the viewport: open on desktop, collapsed on a phone.
+  const memOpen = createMemo(() => memoryOpen(props.app));
   return (
     <div class="mem">
       <button class="panel-title as-button" onClick={() => toggleMem(props.app)}>
@@ -1026,6 +1028,83 @@ function Composer(props: { app: string }) {
     if ((last.inputApp ?? "trunk") !== props.app) return [];
     return last.fallback ?? [];
   });
+  // ── voice input (MediaRecorder → bridge /stt → send) ──
+  const canMic =
+    typeof navigator.mediaDevices?.getUserMedia === "function" &&
+    typeof window.MediaRecorder !== "undefined";
+  const [recording, setRecording] = createSignal(false);
+  const [recSecs, setRecSecs] = createSignal(0);
+  let rec: MediaRecorder | null = null;
+  let recStream: MediaStream | null = null;
+  let recChunks: Blob[] = [];
+  let recTimer: ReturnType<typeof setInterval> | undefined;
+
+  const finishRecording = async () => {
+    clearInterval(recTimer);
+    setRecording(false);
+    recStream?.getTracks().forEach((t) => t.stop());
+    recStream = null;
+    const mimeType = rec?.mimeType || "audio/webm";
+    const blob = new Blob(recChunks, { type: mimeType });
+    const secs = recSecs();
+    rec = null;
+    recChunks = [];
+    if (!blob.size) return;
+    if (secs < 1) {
+      toast("recording too short", true);
+      return;
+    }
+    toast("transcribing…");
+    try {
+      const heard = await transcribeAudio(
+        blob,
+        `voice${mimeType.includes("mp4") ? ".mp4" : ".webm"}`,
+      );
+      toast(`heard: "${heard}"`);
+      await send(heard);
+    } catch (e) {
+      toast(`transcription failed: ${e instanceof Error ? e.message : e}`, true);
+    }
+  };
+
+  const toggleMic = async () => {
+    if (recording()) {
+      rec?.stop();
+      return;
+    }
+    try {
+      recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      toast(`microphone unavailable: ${e instanceof Error ? e.message : e}`, true);
+      return;
+    }
+    const mime =
+      ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((t) =>
+        MediaRecorder.isTypeSupported(t),
+      ) || "";
+    rec = new MediaRecorder(recStream, mime ? { mimeType: mime } : undefined);
+    recChunks = [];
+    rec.ondataavailable = (e) => {
+      if (e.data?.size) recChunks.push(e.data);
+    };
+    rec.onstop = () => void finishRecording();
+    rec.start();
+    setRecSecs(0);
+    setRecording(true);
+    recTimer = setInterval(() => setRecSecs((s) => s + 1), 1000);
+  };
+
+  // If the composer unmounts (the tile hides) mid-recording, release the mic
+  // without trying to transcribe a partial clip.
+  onCleanup(() => {
+    clearInterval(recTimer);
+    if (rec) {
+      rec.onstop = null;
+      if (rec.state === "recording") rec.stop();
+    }
+    recStream?.getTracks().forEach((t) => t.stop());
+  });
+
   // ── file upload: audio streams a transcript; anything else attaches ──
   const AUDIO_RE = /\.(ogg|oga|opus|webm|mp3|m4a|mp4|wav|flac)$/i;
   const [card, setCard] = createSignal<{
@@ -1046,17 +1125,8 @@ function Composer(props: { app: string }) {
       }
       return;
     }
-    // Audio streams a transcript from the admin's STT backend; it is not part
-    // of the in-browser backend. Keep the composer honest when no server is up.
-    if (!state.adminOnline) {
-      setCard({
-        name: file.name,
-        status: "needs the admin server",
-        text: "Audio transcription needs the admin server — start BOB with BOB_WEB=1. Any other file still attaches.",
-        state: "err",
-      });
-      return;
-    }
+    // Audio goes to the storage bridge's /stt pass-through (no admin and no
+    // in-tab model); any error is shown in the card below.
     let duration = 0;
     setCard({ name: file.name, status: "uploading…", text: "", state: "run" });
     try {
@@ -1140,6 +1210,15 @@ function Composer(props: { app: string }) {
         </div>
       </Show>
       <div class="composer-row">
+        <button
+          class="icon-btn"
+          classList={{ recording: recording() }}
+          disabled={!canMic}
+          title={canMic ? "record a voice message" : "voice input needs a secure context (localhost or https)"}
+          onClick={() => void toggleMic()}
+        >
+          {recording() ? `${recSecs()}s` : "🎙"}
+        </button>
         <button class="icon-btn" title="attach a file" onClick={() => fileInput?.click()}>
           📎
         </button>
@@ -1398,18 +1477,13 @@ function ProvenanceModal(props: { turnId: string; bubble: number; text: string; 
 const [dragging, setDragging] = createSignal<string | null>(null);
 const [dropTarget, setDropTarget] = createSignal<string | null>(null);
 
-/** The app currently executing: walk the running turn's events through the same
- *  boundary stack the server uses (src/app-attribution.ts). Every app tree opens
- *  its own tile, even nested inside another app (enrich-profile calling
- *  contacts); a non-app tree tool is a capability and stays with the app around
- *  it. Until /api/apps lands, fall back to the legacy outermost rule instead of
- *  tagging a nested run "trunk". */
+/** The app currently executing. The host tags every live event with its app
+ *  (and the replay tags loaded turns), so the last tag is authoritative even
+ *  when the retained event tail no longer holds the app's `tree_enter`;
+ *  `runningAppOf` walks the boundary stack only for an untagged stream. */
 function currentRunningApp(): string | null {
   const t = state.turns.find((x) => x.status === "running");
-  if (!t) return null;
-  const st = newTurnApps(state.apps.length ? state.apps.map((a) => a.name) : undefined);
-  for (const e of t.events) tagEventApp(st, e);
-  return st.current;
+  return runningAppOf(t, state.apps.length ? state.apps.map((a) => a.name) : undefined);
 }
 
 /** The app a failed last turn was headed to: its tile shows the error and the
@@ -1464,6 +1538,20 @@ export function Tile(props: { app: AppInfo }) {
     return liveActivity(turn, name(), appNames);
   });
   const chatRef = { el: undefined as HTMLDivElement | undefined };
+  // Whether the chat is following its newest message. Scrolling up unpins it:
+  // later content then appends without moving the viewport, and the jump pill
+  // over the chat's bottom edge offers the way back. A fresh tile starts at
+  // the bottom, like a chat that has just been opened.
+  const [atBottom, setAtBottom] = createSignal(true);
+  const bottomSlack = 24;
+  const isAtBottom = (el: HTMLDivElement) =>
+    el.scrollHeight - el.scrollTop - el.clientHeight <= bottomSlack;
+  const jumpToLatest = () => {
+    const el = chatRef.el;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    setAtBottom(true);
+  };
   // The bubble whose provenance panel is open (null = closed).
   const [prov, setProv] = createSignal<{ turnId: string; bubble: number; text: string } | null>(null);
   // The tile's description line opens the full text (and the app's guide) in a
@@ -1474,7 +1562,11 @@ export function Tile(props: { app: AppInfo }) {
     bubbles();
     live();
     const el = chatRef.el;
-    if (el) el.scrollTop = el.scrollHeight;
+    // Follow new messages only while the reader is already at the bottom; a
+    // reader who scrolled up keeps their place as the turn streams in. The
+    // scroll state is read untracked: reaching the bottom (or the jump pill)
+    // has already moved the viewport, so the effect need not rerun for it.
+    if (el && untrack(atBottom)) el.scrollTop = el.scrollHeight;
   });
 
   // One composer in the whole UI: the tile whose tree the session is parked on
@@ -1688,7 +1780,14 @@ export function Tile(props: { app: AppInfo }) {
               {props.app.description}
             </button>
           </Show>
-          <div class="chat" ref={(el) => (chatRef.el = el)}>
+          <div
+            class="chat"
+            ref={(el) => (chatRef.el = el)}
+            onScroll={() => {
+              const el = chatRef.el;
+              if (el) setAtBottom(isAtBottom(el));
+            }}
+          >
             <Show when={bubbles().length} fallback={<div class="empty">no messages yet</div>}>
               <For each={bubbles()}>
                 {(b) => (
@@ -1793,6 +1892,16 @@ export function Tile(props: { app: AppInfo }) {
                   </Show>
                 </div>
               )}
+            </Show>
+            <Show when={!atBottom()}>
+              <button
+                type="button"
+                class="jump-latest"
+                title="scroll to the latest message"
+                onClick={jumpToLatest}
+              >
+                ↓ latest
+              </button>
             </Show>
           </div>
           <Show when={showInput()}>
