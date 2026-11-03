@@ -1,5 +1,5 @@
 /** Tile, memory, per-tile event log, global stream, session panel. */
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import type { JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { appIconUrl } from "./app-icons";
@@ -2423,7 +2423,12 @@ export function SessionPanel(props: { onClose: () => void }) {
  * same button uploads into the OPFS sandbox, the storage bridge, or the Node
  * workspace.
  */
-export function WorkspaceUpload() {
+export function WorkspaceUpload(props: {
+  /** Hide the toolbar button; the caller opens the picker via `onReady`. */
+  hideTrigger?: boolean;
+  /** Receives the picker opener so a menu row can trigger it. */
+  onReady?: (open: () => void) => void;
+}) {
   let fileInput: HTMLInputElement | undefined;
   const LAST_DIR = "bob:upload-dir";
   const [files, setFiles] = createSignal<File[] | null>(null);
@@ -2467,6 +2472,9 @@ export function WorkspaceUpload() {
     if (fileInput) fileInput.value = "";
     fileInput?.click();
   };
+
+  // The phone settings menu hosts this component but owns the visible row.
+  onMount(() => props.onReady?.(openPicker));
 
   const onPicked = (list: FileList | null): void => {
     if (!list || !list.length) return;
@@ -2520,9 +2528,11 @@ export function WorkspaceUpload() {
 
   return (
     <>
-      <button title="upload files into the workspace" onClick={openPicker}>
-        ⬆ upload
-      </button>
+      <Show when={!props.hideTrigger}>
+        <button title="upload files into the workspace" onClick={openPicker}>
+          ⬆ upload
+        </button>
+      </Show>
       <input
         ref={(el) => (fileInput = el)}
         id="workspace-upload-input"

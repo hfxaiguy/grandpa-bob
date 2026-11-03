@@ -18,6 +18,26 @@ import {
   smallScreen,
 } from "./store";
 
+/** The tile checkboxes, shared by the desktop popover and the phone settings menu. */
+function TileToggles() {
+  return (
+    <For each={state.apps}>
+      {(a) => (
+        <label class="menu-row" classList={{ submenu: !!a.parent }}>
+          <input
+            type="checkbox"
+            // A top-level tile's box is its board seat; a sub-app's box
+            // opens it inside its parent (parked = unchecked).
+            checked={a.parent ? state.layout.subsOpen.includes(a.name) : !state.layout.hidden.includes(a.name)}
+            onChange={() => (a.parent ? toggleSub(a.name) : toggleHidden(a.name))}
+          />
+          {a.parent ? `↳ ${a.name}` : a.name}
+        </label>
+      )}
+    </For>
+  );
+}
+
 function TilesMenu() {
   const [open, setOpen] = createSignal(false);
   return (
@@ -27,20 +47,7 @@ function TilesMenu() {
       </button>
       <Show when={open()}>
         <div class="menu" onMouseLeave={() => setOpen(false)}>
-          <For each={state.apps}>
-            {(a) => (
-              <label class="menu-row" classList={{ submenu: !!a.parent }}>
-                <input
-                  type="checkbox"
-                  // A top-level tile's box is its board seat; a sub-app's box
-                  // opens it inside its parent (parked = unchecked).
-                  checked={a.parent ? state.layout.subsOpen.includes(a.name) : !state.layout.hidden.includes(a.name)}
-                  onChange={() => (a.parent ? toggleSub(a.name) : toggleHidden(a.name))}
-                />
-                {a.parent ? `↳ ${a.name}` : a.name}
-              </label>
-            )}
-          </For>
+          <TileToggles />
         </div>
       </Show>
     </div>
@@ -48,13 +55,21 @@ function TilesMenu() {
 }
 
 /**
- * The phone toolbar folds stream/machine/session (and the settings page link)
- * into one list, so those controls keep their behavior without making the
- * wrapped toolbar several rows taller. Desktop keeps the direct buttons.
+ * The phone toolbar folds upload, tiles, stream/machine/session (and the
+ * settings page link) into one list, so those controls keep their behavior
+ * without making the wrapped toolbar several rows taller. Desktop keeps the
+ * direct buttons.
  */
 function SettingsMenu(props: { events: number; onSession: () => void }) {
   const [open, setOpen] = createSignal(false);
   let wrap: HTMLDivElement | undefined;
+  // WorkspaceUpload keeps the hidden picker + destination drawer mounted even
+  // while the menu is closed, so the file dialog's onChange still lands.
+  let openUpload: (() => void) | undefined;
+  const pick = (fn: () => void) => {
+    setOpen(false);
+    fn();
+  };
   onMount(() => {
     const onDown = (e: PointerEvent) => {
       if (open() && wrap && !wrap.contains(e.target as Node)) setOpen(false);
@@ -69,23 +84,30 @@ function SettingsMenu(props: { events: number; onSession: () => void }) {
       document.removeEventListener("keydown", onKey);
     });
   });
-  const pick = (fn: () => void) => {
-    setOpen(false);
-    fn();
-  };
   return (
     <div class="menu-wrap" ref={(el) => (wrap = el)}>
       <button
         classList={{ active: open() }}
         aria-haspopup="menu"
         aria-expanded={open()}
-        title="stream, machine notes, session and settings"
+        title="upload, tiles, stream, machine notes, session and settings"
         onClick={() => setOpen(!open())}
       >
         settings ▾
       </button>
       <Show when={open()}>
         <div class="menu" role="menu" aria-label="settings">
+          <button
+            type="button"
+            class="menu-row menu-action"
+            role="menuitem"
+            onClick={() => pick(() => openUpload?.())}
+          >
+            ⬆ upload
+          </button>
+          <div class="menu-section">tiles</div>
+          <TileToggles />
+          <div class="menu-section">view</div>
           <label class="menu-row" role="menuitemcheckbox" aria-checked={state.streamOpen}>
             <input
               type="checkbox"
@@ -106,6 +128,7 @@ function SettingsMenu(props: { events: number; onSession: () => void }) {
           </a>
         </div>
       </Show>
+      <WorkspaceUpload hideTrigger onReady={(opener) => (openUpload = opener)} />
     </div>
   );
 }
@@ -137,7 +160,6 @@ export function App() {
       <header class="toolbar">
         <span class="brand">
           <img class="brand-mark" src={logoMark} alt="" aria-hidden="true" />
-          <span class="brand-name">grandpa-bob</span>
         </span>
         <span class="conn" classList={{ on: state.connected }} title={state.connected ? "live" : "disconnected"} />
         <span class="session-label" title={state.active ?? ""}>
@@ -168,8 +190,10 @@ export function App() {
             machine
           </button>
         </Show>
-        <WorkspaceUpload />
-        <TilesMenu />
+        <Show when={!smallScreen()}>
+          <WorkspaceUpload />
+          <TilesMenu />
+        </Show>
         <Show
           when={smallScreen()}
           fallback={
