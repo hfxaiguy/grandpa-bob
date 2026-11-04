@@ -2,6 +2,21 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-04 — relay pairing no longer drops the browser's first frame
+
+A relay data channel can open and start carrying the browser's `hello` before
+the desktop has attached its session handler. The chunking wrapper dropped
+those early frames, so the desktop showed a SAS and then waited forever for the
+browser profile: no console approval prompt, while the browser showed “waiting
+for approval on the desktop console”.
+
+- **`web/src/sync/chunking.ts`**: buffer non-chunk envelopes until the caller
+  attaches `onMessage`, then flush them in order. This also covers reassembled
+  chunked frames.
+
+Tests: `npm run typecheck`; `npm --prefix web run typecheck`;
+`npm run build:bridge`; `npm --prefix web run build`; early-control-frame check.
+
 ## 2026-11-04 — a nested top-level app no longer gets a second inline card
 
 When one top-level app called another (`enrich-profile` → `contacts`), the

@@ -20,11 +20,21 @@ interface Reassembly {
 
 export function chunkedPeer(inner: SyncPeer): SyncPeer {
   let handler: ((envelope: SyncEnvelope) => void) | null = null;
+  const pending: SyncEnvelope[] = [];
   const transfers = new Map<string, Reassembly>();
+
+  // A peer can start sending as soon as its data channel opens, before the
+  // caller has had a chance to attach the engine/session handler. The first
+  // control frame (desktop `hello`) is especially likely to lose that race
+  // over a relay, so queue it here instead of dropping it.
+  const deliver = (envelope: SyncEnvelope): void => {
+    if (handler) handler(envelope);
+    else if (pending.length < 200) pending.push(envelope);
+  };
 
   inner.onMessage((envelope) => {
     if (envelope.kind !== "chunk") {
-      handler?.(envelope);
+      deliver(envelope);
       return;
     }
     const transfer = envelope.transfer;
@@ -44,7 +54,7 @@ export function chunkedPeer(inner: SyncPeer): SyncPeer {
     if (!envelope.last) return;
     transfers.delete(transfer);
     try {
-      handler?.(JSON.parse(entry.parts.join("")) as SyncEnvelope);
+      deliver(JSON.parse(entry.parts.join("")) as SyncEnvelope);
     } catch {
       /* torn transfer: the next reconcile re-sends */
     }
@@ -75,6 +85,7 @@ export function chunkedPeer(inner: SyncPeer): SyncPeer {
     connected: () => inner.connected(),
     onMessage(cb) {
       handler = cb;
+      for (const envelope of pending.splice(0)) cb(envelope);
     },
     onClosed: (cb) => inner.onClosed(cb),
     close: () => inner.close(),
