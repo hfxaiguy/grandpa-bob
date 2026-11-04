@@ -57,9 +57,10 @@ every change it makes is **git-committed automatically**.
   Telegram: the "bridge" toggle drains the channel's mailbox against a web
   session — `send to telegram` pushes a session transcript to the linked chat.
 - **Voice → text**: Telegram voice notes are transcribed **channel-side** (the
-  Vulkan whisper-server); the web UI routes its recordings through the bridge's
-  opt-in `/stt` (no in-tab model download) — the Transformers.js path is not
-  built.
+  Vulkan whisper-server); the web UI routes its recordings through a paired
+  desktop/server over the sync channel (the phone cannot reach the bridge's
+  loopback `/stt`), or directly to `/stt` on the desktop itself (no in-tab model
+  download) — the Transformers.js path is not built.
 - **Brain**: any OpenAI-compatible endpoint (default: Hugging Face router running
   Gemma 4), switchable via the browser settings; keys live per-browser
   (localStorage), never in the workspace.
@@ -347,9 +348,10 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    for every kind, `--stats`/`--follow` for the rest). Start the process with
    `BOB_STT=1` to expose the `/stt` pass-through for
    in-tab voice transcription.
-5. **Voice (optional)**: the browser records are transcribed by the bridge
-   (`BOB_STT=1`); Telegram voice notes are transcribed by the channel. Both
-   use whisper-server:
+5. **Voice (optional)**: browser recordings are transcribed by a paired
+   desktop/server over the sync channel, or by the local bridge on the desktop
+   itself (`BOB_STT=1`); Telegram voice notes are transcribed by the channel.
+   All paths use whisper-server:
    ```sh
    npm run whisper:up   # 127.0.0.1:8178
    ```
@@ -460,9 +462,10 @@ sure only one tab runs the agent per workspace: a second tab is read-only (with
 a *take over* button). A failed turn keeps a retry
 composer; the Stop button aborts the run.
 
-**Voice.** The composer's 🎙/📎 routes audio to the bridge's `/stt`
-(`BOB_STT=1`, ffmpeg + whisper-server on the desktop); there is no in-tab
-model download. Browser mic access needs a secure context (`localhost`/HTTPS).
+**Voice.** The composer's 🎙/📎 sends audio to a paired desktop/server, or to
+the local bridge's `/stt` on the desktop itself (`BOB_STT=1`, ffmpeg +
+whisper-server); there is no in-tab model download. Browser mic access needs a
+secure context (`localhost`/HTTPS).
 
 **Sync.** Tabs of the same origin that share a workspace (same profile) sync
 live through BroadcastChannel — no setup. Different profiles pair through the

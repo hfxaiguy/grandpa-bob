@@ -310,6 +310,11 @@ async function connectServerPeer(): Promise<boolean> {
     connection.peer.onClosed(() => {
       if (serverConnection !== connection) return;
       serverConnection = null;
+      // Drop the shared handle too: the composer would otherwise send voice
+      // clips to a dead channel and wait for its timeout.
+      const globals = window as unknown as { __bobServer?: unknown; __bobOpsProbe?: unknown };
+      if (globals.__bobServer === connection) delete globals.__bobServer;
+      if (globals.__bobOpsProbe) delete globals.__bobOpsProbe;
       renderMirrorStatus({ phase: "offline", detail: "disconnected", folder, lastSyncAt: null });
       archiveAgent?.setOpsConfig({ enabled: false, allow: [] });
     });

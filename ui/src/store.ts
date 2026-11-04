@@ -587,21 +587,75 @@ function audioExt(filename: string): string {
   return match ? `.${match[1].toLowerCase()}` : ".webm";
 }
 
-/**
- * POST raw audio bytes to the storage bridge's STT pass-through (`/stt` —
- * ffmpeg + whisper-server run on the desktop). The channel never sees the
- * audio otherwise: the tab sends it, the desktop transcribes it, nothing is
- * stored.
- */
-async function transcribeBlob(blob: Blob, filename: string): Promise<string> {
-  const url = new URL("/stt", bridgeUrl());
-  url.searchParams.set("ext", audioExt(filename));
-  const res = await fetch(url, { method: "POST", body: blob });
-  const d = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
-  if (!res.ok) throw new Error(d.error || `transcription failed: HTTP ${res.status}`);
-  const text = d.text?.trim();
+interface DesktopTranscriber {
+  transcribe(audio: Uint8Array, ext: string): Promise<string>;
+}
+
+/** The paired desktop/server connection, when this tab has one. */
+function desktopTranscriber(): DesktopTranscriber | null {
+  const server = (globalThis as { __bobServer?: unknown }).__bobServer;
+  if (!server || typeof server !== "object") return null;
+  return typeof (server as { transcribe?: unknown }).transcribe === "function"
+    ? (server as DesktopTranscriber)
+    : null;
+}
+
+function heardText(raw: string | undefined): string {
+  const text = raw?.trim();
   if (!text) throw new Error("transcription came back empty");
   return text;
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** A fetch-level failure on a page that is not running on the bridge machine. */
+function atRemotePage(err: unknown): boolean {
+  if (!(err instanceof TypeError) || typeof location === "undefined") return false;
+  try {
+    return !["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Transcribe a clip on whichever side can hear it. A paired desktop is the
+ * cross-device path (a phone cannot reach the bridge's loopback `/stt`); on
+ * the desktop itself, the direct pass-through is the fallback. The channel
+ * never stores the audio: ffmpeg + whisper-server run beside the bridge.
+ */
+async function transcribeBlob(blob: Blob, filename: string): Promise<string> {
+  const ext = audioExt(filename);
+  const desktop = desktopTranscriber();
+  let desktopError: unknown = null;
+  if (desktop) {
+    try {
+      return heardText(await desktop.transcribe(new Uint8Array(await blob.arrayBuffer()), ext));
+    } catch (err) {
+      desktopError = err;
+    }
+  }
+  try {
+    const url = new URL("/stt", bridgeUrl());
+    url.searchParams.set("ext", ext);
+    const res = await fetch(url, { method: "POST", body: blob });
+    const d = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+    if (!res.ok) throw new Error(d.error || `transcription failed: HTTP ${res.status}`);
+    return heardText(d.text);
+  } catch (err) {
+    if (desktopError) {
+      throw new Error(`desktop: ${errorText(desktopError)}; bridge: ${errorText(err)}`);
+    }
+    if (atRemotePage(err)) {
+      throw new Error(
+        "this device cannot reach a transcription bridge — pair a desktop in Sync… → Pair… " +
+          "(start it with BOB_STT=1)",
+      );
+    }
+    throw err;
+  }
 }
 
 /**

@@ -40,6 +40,11 @@ export interface ServerConnection {
   /** Run an allowlisted executable on the desktop/server. */
   run(binary: string, args: string[], timeoutMs?: number): Promise<ServerOpResult>;
   /**
+   * Transcribe a recorded clip on the desktop/server. The phone cannot reach
+   * the loopback `/stt` bridge, so this rides the authenticated peer channel.
+   */
+  transcribe(audio: Uint8Array, ext: string): Promise<string>;
+  /**
    * Send one control frame (the peer log stream multiplexes over this; see
    * web/src/peer-log.ts). Frames are chunked by the transport.
    */
@@ -290,9 +295,20 @@ interface HandshakeOptions {
   onStatus: (text: string) => void;
 }
 
+/** Base64 without `String.fromCharCode(...bytes)` blowing the call stack. */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const step = 0x8000;
+  for (let i = 0; i < bytes.length; i += step) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + step));
+  }
+  return btoa(binary);
+}
+
 function finishHandshake(opts: HandshakeOptions, info: ServerLinkInfo): ServerConnection {
   const { opened } = opts;
   const pendingOps = new Map<string, (result: ServerOpResult) => void>();
+  const pendingStt = new Map<string, (result: { text?: string; error?: string }) => void>();
   const controlSubs = new Set<(control: Record<string, unknown>) => void>();
   opts.opened.setControl((control) => {
     if (control.op === "ops-result") {
@@ -305,6 +321,18 @@ function finishHandshake(opts: HandshakeOptions, info: ServerLinkInfo): ServerCo
           error: typeof control.error === "string" ? control.error : undefined,
           changed: Array.isArray(control.changed) ? control.changed.map(String) : undefined,
           changedCount: typeof control.changedCount === "number" ? control.changedCount : undefined,
+        });
+        return;
+      }
+    }
+    if (control.op === "stt-result") {
+      const id = String(control.id ?? "");
+      const resolve = pendingStt.get(id);
+      if (resolve) {
+        pendingStt.delete(id);
+        resolve({
+          text: typeof control.text === "string" ? control.text : undefined,
+          error: typeof control.error === "string" ? control.error : undefined,
         });
         return;
       }
@@ -339,6 +367,21 @@ function finishHandshake(opts: HandshakeOptions, info: ServerLinkInfo): ServerCo
         }, (timeoutMs ?? 600_000) + 15_000);
       });
       opened.send({ op: "ops-run", id, binary, args, timeoutMs });
+      return result;
+    },
+    transcribe(audio, ext) {
+      const id = crypto.randomUUID();
+      const result = new Promise<string>((resolve, reject) => {
+        pendingStt.set(id, (answer) => {
+          if (answer.error) reject(new Error(answer.error));
+          else resolve(String(answer.text ?? "").trim());
+        });
+        setTimeout(() => {
+          if (!pendingStt.delete(id)) return;
+          reject(new Error("the desktop did not answer the transcription"));
+        }, 5 * 60_000);
+      });
+      opened.send({ op: "stt-run", id, audio: bytesToBase64(audio), ext });
       return result;
     },
     close: () => opened.close(),

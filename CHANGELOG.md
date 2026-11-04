@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — voice input on a phone goes through the paired desktop
+
+A phone could not transcribe a recording: the composer posted it to the
+bridge's `/stt`, which binds loopback, so the request failed with the bare
+`Failed to fetch` toast. The authenticated peer channel now carries the clip to
+a paired desktop/server, whose ffmpeg + whisper-server do the work; the direct
+`/stt` call stays as the fallback for a tab running on that same machine.
+
+- **`src/bridge/peer.ts`**: handles `stt-run` controls (base64 audio + ext),
+  honors the same `BOB_STT=1` gate, and answers with `stt-result`; the desktop
+  STT backend/language come from the channel config.
+- **`web/src/server-link.ts`**: `ServerConnection.transcribe()` sends a clip
+  over the chunked control channel and surfaces the desktop's error.
+- **`ui/src/store.ts`**: `transcribeBlob` prefers the paired desktop and falls
+  back to the local `/stt` pass-through, reporting both failures when neither
+  can hear the clip. An unpaired remote page now gets an actionable pairing
+  hint instead of the bare browser `Failed to fetch`.
+- **`web/src/main.ts`**: a dropped peer clears the shared connection handle, so
+  voice input does not queue behind a dead channel.
+- **Docs**: the voice sections now name the cross-device path.
+
+Tests: `npm run typecheck`; `npm --prefix ui run typecheck`; `npm run build:web`.
+
 ## 2026-11-03 — a re-entered app's inline card moves to its newest call
 
 When a caller re-entered a sub-app later in the same turn, the app's inline card

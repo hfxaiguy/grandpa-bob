@@ -14,6 +14,8 @@ import { watch, type FSWatcher } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { RTCPeerConnection, type RTCDataChannel } from "werift";
+import { config } from "../config.js";
+import { transcribeAudioBytes } from "../stt.js";
 import { SyncEngine, type SyncEnvelope, type SyncPeer, type SyncState } from "../../web/src/sync/engine.js";
 import { buildHashmap, type Hashmap } from "../../web/src/sync/hashmap.js";
 import { chunkedPeer } from "../../web/src/sync/chunking.js";
@@ -62,6 +64,8 @@ export interface PairingSessionView {
 const PROFILE_RE = /^[a-z0-9._-]{1,64}$/;
 const OP_TIMEOUT_MS = 10 * 60_000;
 const MAX_CHANGED_REPORT = 200;
+/** A recorded clip, base64 expanded on the wire; generous but still bounded. */
+const MAX_STT_BYTES = 32 * 1024 * 1024;
 
 function hmac(key: string, value: string): string {
   return createHmac("sha256", key).update(value).digest("hex");
@@ -573,6 +577,9 @@ export class PeerSession {
     if (op === "ops-run") {
       void this.runOp(control, link);
     }
+    if (op === "stt-run") {
+      void this.runStt(control, link);
+    }
   }
 
   private async attachEngine(): Promise<void> {
@@ -633,6 +640,47 @@ export class PeerSession {
     this.known = current;
     if (changed.length) {
       await this.engine.noteMutation([...new Set(changed)]).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Transcribe a browser recording on the desktop. A phone paired over WebRTC
+   * cannot reach the loopback `/stt` bridge, so voice input travels here like
+   * any other channel op. The same opt-in gate (`BOB_STT=1`) applies.
+   */
+  private async runStt(control: Record<string, unknown>, link: SyncPeer): Promise<void> {
+    const id = String(control.id ?? randomUUID());
+    const reply = (body: Record<string, unknown>): void =>
+      link.send(controlEnvelope(channelPeerId(this.profile), { op: "stt-result", id, ...body }));
+    if (process.env.BOB_STT !== "1") {
+      reply({ error: "transcription is off — start the channel with BOB_STT=1" });
+      return;
+    }
+    const encoded = typeof control.audio === "string" ? control.audio : "";
+    const bytes = Buffer.from(encoded, "base64");
+    if (!bytes.length) {
+      reply({ error: "no audio was sent" });
+      return;
+    }
+    if (bytes.length > MAX_STT_BYTES) {
+      reply({ error: `audio is too large (${Math.round(bytes.length / 1024 / 1024)} MB)` });
+      return;
+    }
+    const rawExt = String(control.ext ?? ".webm").toLowerCase();
+    const ext = /^\.[a-z0-9]{1,8}$/.test(rawExt) ? rawExt : ".webm";
+    try {
+      await fs.mkdir(config.tmpDir, { recursive: true });
+      const text = await transcribeAudioBytes(bytes, {
+        ext,
+        backend: config.sttBackend,
+        whisperUrl: config.whisperUrl,
+        sherpaUrl: config.sherpaUrl,
+        tmpDir: config.tmpDir,
+        language: config.sttLanguage || undefined,
+      });
+      reply({ text });
+    } catch (err) {
+      reply({ error: err instanceof Error ? err.message : String(err) });
     }
   }
 
