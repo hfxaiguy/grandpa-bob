@@ -18,7 +18,8 @@ import {
   seedPausedApp,
   tagEventApp,
 } from "../../web/src/app-attribution";
-import type { AppInfo, Turn } from "./types";
+import { emitValue } from "../../web/src/util/emit-text";
+import type { AppInfo, SanitizedEvent, Turn } from "./types";
 
 /** The status line of an inline app card. */
 export type AppCallStatus = "running" | "waiting" | "done" | "error";
@@ -36,6 +37,11 @@ export interface AppCall {
   failed: boolean;
   /** First event position, used to order cards against the caller's bubbles. */
   startedAt: number;
+  /** Emit index where the caller most recently re-entered this app during the
+   *  same turn. Set when the app was called again (or the visible bubbles show
+   *  an earlier call): the card then moves to that point instead of staying
+   *  where its first call was placed. */
+  reenteredAt?: number;
 }
 
 /** A turn slice the fold needs; the live and replayed shapes both provide it. */
@@ -49,6 +55,13 @@ export function firstEmitIndex(call: AppCall): number {
   let first = call.emits.length ? Math.min(...call.emits) : Infinity;
   for (const child of call.children) first = Math.min(first, firstEmitIndex(child));
   return first;
+}
+
+/** Where a card sits among the caller's bubbles. A card normally leads its
+ *  first bubble; a re-entered app instead moves to the newest call point, so
+ *  the conversation reads in the order the caller actually went back to it. */
+export function callAnchor(call: AppCall): number {
+  return call.reenteredAt ?? firstEmitIndex(call);
 }
 
 /** A stable identity for bubble reuse: same app, status and contents = same
@@ -100,6 +113,11 @@ function statusForOpenCall(turn: CallsTurn, app: string, suspended: boolean): Ap
 /** The mutable walk state kept beside a card while events are folded. */
 interface OpenCall extends AppCall {
   activeSuspend: boolean;
+  /** How many times this caller entered the app in this turn. */
+  entries: number;
+  /** The newest entry's emit position, even when it is the only one in a
+   *  tail-capped event window (the earlier invocation may be out of view). */
+  lastEntryAt: number | null;
 }
 
 /**
@@ -143,6 +161,8 @@ function collectCalls(
         status: "running",
         failed: false,
         activeSuspend: false,
+        entries: 0,
+        lastEntryAt: null,
         startedAt,
       };
       calls.set(child, call);
@@ -154,10 +174,27 @@ function collectCalls(
   if (events.length) {
     const st = newTurnApps(h.names ?? undefined);
     seedPausedApp(st, turn.inputApp);
+    // A replayed long turn keeps only the tail of its event rows, while the
+    // marker's emit list is the whole turn. The tail's bubble rows are the last
+    // ones, so index them from the end; a live (uncapped) turn offsets by 0.
+    // Empty emits are logged but produce no bubble (onEmit skips them), so
+    // only the rows `emits` could contain count towards the alignment.
+    const emitTotal = Math.min(turn.emitApps?.length ?? 0, turn.emits?.length ?? 0);
+    const isBubble = (ev: SanitizedEvent): boolean => {
+      if (ev.kind !== "emit") return false;
+      const { text, component } = emitValue(ev.content?.value);
+      return !!text || !!component;
+    };
+    const emitRows = events.reduce((n, ev) => n + (isBubble(ev) ? 1 : 0), 0);
+    const emitOffset = Math.max(0, emitTotal - emitRows);
+    let emitted = 0;
     for (const ev of events) {
       const before = st.current;
       const tagged = tagEventApp(st, ev);
       const name = appNameOf(ev);
+      // Bubbles before this row are already in the transcript, so a
+      // tree_enter's position is the index of the next bubble to arrive.
+      if (isBubble(ev)) emitted += 1;
       if (ev.kind === "tree_enter" && name && tagged === name) {
         // Only a boundary directly below this chat opens a card here. A
         // capability (contacts_query, email's answer, …) keeps the caller as
@@ -167,6 +204,11 @@ function collectCalls(
         if (before !== app || name === app) continue;
         if (h.names && !h.names.has(name)) continue;
         const call = ensure(name, seqOf(ev));
+        call.entries += 1;
+        call.lastEntryAt = Math.min(emitOffset + emitted, emitTotal);
+        // The card follows the newest entry: a second call moves it down the
+        // caller's transcript instead of leaving it at the first call's seat.
+        if (call.entries > 1) call.reenteredAt = call.lastEntryAt;
         call.status = "running";
         call.failed = false;
         call.activeSuspend = false;
@@ -222,8 +264,22 @@ function collectCalls(
       : collectCalls(turn, call.app, h, depth + 1, nextAncestors);
   }
 
+  // A tail-capped event window can start after the first invocation, leaving
+  // only its bubbles and the later entry in view. Bubbles that precede the
+  // newest entry prove there was an earlier call, so the card still moves.
+  for (const call of calls.values()) {
+    if (
+      call.reenteredAt == null &&
+      call.lastEntryAt != null &&
+      firstEmitIndex(call) < call.lastEntryAt
+    ) {
+      call.reenteredAt = call.lastEntryAt;
+    }
+  }
+
   return order.map((name) => {
-    const { activeSuspend: _ignored, ...card } = calls.get(name)!;
+    const { activeSuspend: _ignored, entries: _entries, lastEntryAt: _last, ...card } =
+      calls.get(name)!;
     return card;
   });
 }

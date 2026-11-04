@@ -3,7 +3,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, 
 import type { JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { appIconUrl } from "./app-icons";
-import { appCallKey, appCallsFor, firstEmitIndex, type AppCall } from "./app-calls";
+import { appCallKey, appCallsFor, callAnchor, type AppCall } from "./app-calls";
 import { describeEvent, streamLines, type EventLine } from "./describe";
 import { copyEventStream, copyText, downloadEventStream } from "./event-dump";
 import { JsonView } from "./json-view";
@@ -128,11 +128,13 @@ function bubblesFor(app: string): Bubble[] {
     if ((t.inputApp ?? "trunk") === app && t.input) rows.push({ turn: t, text: t.input, kind: "user" });
     const emits = t.emits ?? [];
     const emitApps = t.emitApps ?? [];
-    // A card sits just before the first bubble any of its apps produced. Calls
-    // with no bubbles at all (a silent app, or one still starting) trail the
-    // turn instead of jumping in front of text that preceded them.
+    // A card sits just before the first bubble any of its apps produced. A call
+    // re-entered later in the turn moves to that newest entry point, so the
+    // transcript follows the caller's actual path back into the app. Calls with
+    // no bubbles at all (a silent app, or one still starting) trail the turn
+    // instead of jumping in front of text that preceded them.
     const calls = appCallsFor(t, app, apps).sort(
-      (a, b) => firstEmitIndex(a) - firstEmitIndex(b) || a.startedAt - b.startedAt,
+      (a, b) => callAnchor(a) - callAnchor(b) || a.startedAt - b.startedAt,
     );
     const memories = memoryNotesForTurn(t, app);
     let nextMemory = 0;
@@ -147,7 +149,7 @@ function bubblesFor(app: string): Bubble[] {
     let nextCall = 0;
     for (let i = 0; i < emits.length; i++) {
       pushMemory(i);
-      while (nextCall < calls.length && firstEmitIndex(calls[nextCall]) <= i) {
+      while (nextCall < calls.length && callAnchor(calls[nextCall]) <= i) {
         rows.push({ turn: t, text: "", kind: "call", call: calls[nextCall++] });
       }
       if (trunkOf(emitApps[i]) !== app) continue;

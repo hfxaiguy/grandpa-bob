@@ -2,6 +2,27 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — a re-entered app's inline card moves to its newest call
+
+When a caller re-entered a sub-app later in the same turn, the app's inline card
+stayed at the seat of its first call, so the new bubbles appeared inside a card
+placed above text that had happened before them. The card now follows the newest
+`tree_enter`: it moves to the point the caller went back into the app, and
+trails the turn when that re-entry stayed silent. A single call still leads its
+first bubble exactly as before.
+
+- **`ui/src/app-calls.ts`**: tracks each call's entry count and the newest
+  entry's emit position; `callAnchor()` returns that position (the first bubble
+  for a one-entry call). A replayed long turn maps a tailed event row onto the
+  full durable emit list, and empty emit rows (which produce no bubble) are
+  skipped so the index stays aligned.
+- **`ui/src/components.tsx`**: `bubblesFor()` sorts and interleaves cards by
+  `callAnchor()` instead of the first emit.
+- **`scripts/app-calls-test.ts`**: covers a later second call moving the card,
+  a silent re-entry trailing, and a capped event tail.
+
+Tests: `npm run test:app-calls`; `npm --prefix ui run typecheck`.
+
 ## 2026-11-03 — an inline call's `open` puts the app over its parent
 
 `open ↗` on an app-call card opened the called app's tile, but a sub-app landed

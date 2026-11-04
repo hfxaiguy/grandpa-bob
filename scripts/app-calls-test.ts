@@ -13,7 +13,7 @@
  * Run: `npm run test:app-calls`.
  */
 import assert from "node:assert/strict";
-import { appCallKey, appCallsFor, firstEmitIndex } from "../ui/src/app-calls.ts";
+import { appCallKey, appCallsFor, callAnchor, firstEmitIndex } from "../ui/src/app-calls.ts";
 import type { SanitizedEvent, Turn } from "../ui/src/types.ts";
 
 const apps = [
@@ -72,7 +72,128 @@ const turn = (events: SanitizedEvent[], over: Partial<Turn> = {}): Turn => ({
   assert.equal(calls[0].status, "done");
   assert.equal(calls[0].children.length, 0);
   assert.equal(firstEmitIndex(calls[0]), 0);
+  assert.equal(callAnchor(calls[0]), 0, "a single call stays at its first bubble");
   assert.deepEqual(appCallsFor(t, "contacts", apps), [], "the caller keeps no card for itself");
+}
+
+// ── re-entering an app moves its card to the newest call point ───────────
+{
+  const t = turn(
+    [
+      ev("emit", { child: "reply", value: { text: "intro" } }, "trunk", 1),
+      ev("tree_enter", { tool: "contacts" }, "contacts", 2),
+      ev("emit", { child: "reply", value: { text: "first" } }, "contacts", 3),
+      ev("tree_exit", { tool: "contacts" }, "contacts", 4),
+      ev("emit", { child: "reply", value: { text: "middle" } }, "trunk", 5),
+      ev("tree_enter", { tool: "contacts" }, "contacts", 6),
+      ev("emit", { child: "reply", value: { text: "second" } }, "contacts", 7),
+      ev("tree_exit", { tool: "contacts" }, "contacts", 8),
+    ],
+    {
+      emits: ["intro", "first", "middle", "second"],
+      emitApps: ["trunk", "contacts", "trunk", "contacts"],
+    },
+  );
+  const calls = appCallsFor(t, "trunk", apps);
+  assert.deepEqual(calls.map((c) => c.app), ["contacts"], "one card for both calls");
+  assert.deepEqual(calls[0].emits, [1, 3], "the card carries both invocations' bubbles");
+  assert.equal(firstEmitIndex(calls[0]), 1);
+  assert.equal(callAnchor(calls[0]), 3, "the card moves to the second entry, after 'middle'");
+}
+
+// ── an empty emit produces no bubble and does not shift the entry point ──
+{
+  const t = turn(
+    [
+      ev("emit", { child: "reply", value: { text: "intro" } }, "trunk", 1),
+      ev("emit", { child: "reply", value: { text: "" } }, "trunk", 2),
+      ev("tree_enter", { tool: "contacts" }, "contacts", 3),
+      ev("emit", { child: "reply", value: { text: "first" } }, "contacts", 4),
+      ev("tree_exit", { tool: "contacts" }, "contacts", 5),
+      ev("emit", { child: "reply", value: { text: "middle" } }, "trunk", 6),
+      ev("tree_enter", { tool: "contacts" }, "contacts", 7),
+      ev("emit", { child: "reply", value: { text: "second" } }, "contacts", 8),
+      ev("tree_exit", { tool: "contacts" }, "contacts", 9),
+    ],
+    {
+      emits: ["intro", "first", "middle", "second"],
+      emitApps: ["trunk", "contacts", "trunk", "contacts"],
+    },
+  );
+  const calls = appCallsFor(t, "trunk", apps);
+  assert.deepEqual(calls[0].emits, [1, 3]);
+  assert.equal(callAnchor(calls[0]), 3, "an empty emit is not a bubble in the transcript");
+}
+
+// ── a silent re-entry still moves the card to where it was re-entered ────
+{
+  const t = turn(
+    [
+      ev("emit", { child: "reply", value: { text: "intro" } }, "trunk", 1),
+      ev("tree_enter", { tool: "contacts" }, "contacts", 2),
+      ev("emit", { child: "reply", value: { text: "first" } }, "contacts", 3),
+      ev("tree_exit", { tool: "contacts" }, "contacts", 4),
+      ev("emit", { child: "reply", value: { text: "middle" } }, "trunk", 5),
+      ev("tree_enter", { tool: "contacts" }, "contacts", 6),
+      ev("tree_exit", { tool: "contacts" }, "contacts", 7),
+    ],
+    {
+      emits: ["intro", "first", "middle"],
+      emitApps: ["trunk", "contacts", "trunk"],
+    },
+  );
+  const calls = appCallsFor(t, "trunk", apps);
+  assert.equal(callAnchor(calls[0]), 3, "a re-entry with no bubbles trails its caller's last row");
+}
+
+// ── a capped event tail still maps an entry onto the durable emit list ───
+{
+  const t = turn(
+    [
+      ev("tree_enter", { tool: "contacts" }, "contacts", 11),
+      ev("emit", { child: "reply", value: { text: "first" } }, "contacts", 12),
+      ev("tree_exit", { tool: "contacts" }, "contacts", 13),
+      ev("emit", { child: "reply", value: { text: "middle" } }, "trunk", 14),
+      ev("tree_enter", { tool: "contacts" }, "contacts", 15),
+      ev("emit", { child: "reply", value: { text: "second" } }, "contacts", 16),
+      ev("tree_exit", { tool: "contacts" }, "contacts", 17),
+    ],
+    {
+      emits: ["before", "also before", "first", "middle", "second"],
+      emitApps: ["trunk", "trunk", "contacts", "trunk", "contacts"],
+    },
+  );
+  const calls = appCallsFor(t, "trunk", apps);
+  assert.deepEqual(calls[0].emits, [2, 4]);
+  assert.equal(
+    callAnchor(calls[0]),
+    4,
+    "the tail's emits are indexed from the end of the full emit list",
+  );
+}
+
+// ── a tail that starts after the first entry still recognises the re-entry ─
+{
+  const t = turn(
+    [
+      ev("emit", { child: "reply", value: { text: "first" } }, "contacts", 11),
+      ev("emit", { child: "reply", value: { text: "middle" } }, "trunk", 12),
+      ev("tree_enter", { tool: "contacts" }, "contacts", 13),
+      ev("emit", { child: "reply", value: { text: "second" } }, "contacts", 14),
+      ev("tree_exit", { tool: "contacts" }, "contacts", 15),
+    ],
+    {
+      emits: ["before", "also before", "first", "middle", "second"],
+      emitApps: ["trunk", "trunk", "contacts", "trunk", "contacts"],
+    },
+  );
+  const calls = appCallsFor(t, "trunk", apps);
+  assert.deepEqual(calls[0].emits, [2, 4]);
+  assert.equal(
+    callAnchor(calls[0]),
+    4,
+    "a bubble before the visible entry proves the card is a re-entry",
+  );
 }
 
 // ── contacts calls contacts.graph: nested inside the contacts card ───────

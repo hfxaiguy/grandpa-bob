@@ -436,7 +436,9 @@ admin API. The tiled UI has one tile per app (the trunk plus every
 log; one composer is shown on the tile whose tree is paused at `.human()`.
 When a tree calls another app, the caller's chat also carries a compact
 **inline app tile** at that point in the thread — the called app's status,
-bubbles and its own sub-calls — with an `open ↗` link that brings the full tile
+bubbles and its own sub-calls. If the caller re-enters the same app later in
+the turn, the card moves to that newest call point. It has an `open ↗` link that
+brings the full tile
 over the caller (a sub-app takes over its parent's frame; on a phone a top-level
 app lifts into the front layer). On a phone, tapping a tile's header lifts that
 tile into the board-wide front layer, over the other apps and the trunk; tap it
