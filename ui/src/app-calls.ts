@@ -150,6 +150,10 @@ function collectCalls(
   const events = turn.events ?? [];
   const calls = new Map<string, OpenCall>();
   const order: string[] = [];
+  // Every app boundary that appears in this window, even one that belongs to
+  // another caller. The emit fallback below must not board such a run here as
+  // a second card: its bubbles are already carried by the caller's card.
+  const visibleEntries = new Set<string>();
 
   const ensure = (child: string, startedAt: number): OpenCall => {
     let call = calls.get(child);
@@ -196,6 +200,10 @@ function collectCalls(
       // tree_enter's position is the index of the next bubble to arrive.
       if (isBubble(ev)) emitted += 1;
       if (ev.kind === "tree_enter" && name && tagged === name) {
+        // Remember the entry even when it belongs to another caller: a visible
+        // nested run is already rendered inside that caller's card, so the
+        // emit fallback must not invent a second card for it down here.
+        if (!h.names || h.names.has(name)) visibleEntries.add(name);
         // Only a boundary directly below this chat opens a card here. A
         // capability (contacts_query, email's answer, …) keeps the caller as
         // the current app and stays inside the caller's own bubbles. A resumed
@@ -237,6 +245,10 @@ function collectCalls(
     if (child === app) continue;
     if (h.names && !h.names.has(child)) continue;
     if (!events.length || !calls.has(child)) {
+      // A visible entry under another caller already carries this app's
+      // bubbles inside that caller's card. The emit tag alone cannot tell the
+      // two apart, so do not synthesize a second card here.
+      if (events.length && visibleEntries.has(child)) continue;
       // With no hierarchy at all (tests/legacy), accept any non-self app; with
       // one, only a direct child belongs in this chat.
       if (h.parentOf && !isDirectChild(h, app, child)) continue;

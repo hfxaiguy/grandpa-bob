@@ -224,6 +224,43 @@ const turn = (events: SanitizedEvent[], over: Partial<Turn> = {}): Turn => ({
   assert.deepEqual(onContacts[0].emits, [1]);
 }
 
+// ── one top-level app calls another: no second card on trunk ─────────────
+{
+  const topLevel = [
+    { name: "trunk", description: "" },
+    { name: "enrich-profile", description: "" },
+    { name: "contacts", description: "" },
+  ];
+  const t = turn(
+    [
+      ev("tree_enter", { tool: "enrich-profile" }, "enrich-profile", 1),
+      ev("tree_enter", { tool: "contacts" }, "contacts", 2),
+      ev("emit", { child: "input", value: { text: "Read ONE stored contact" } }, "contacts", 3),
+      ev("emit", { child: "reply", value: { text: "Contact id 2" } }, "contacts", 4),
+      ev("tree_exit", { tool: "contacts" }, "contacts", 5),
+    ],
+    {
+      status: "running",
+      emits: ["Read ONE stored contact", "Contact id 2"],
+      emitApps: ["contacts", "contacts"],
+    },
+  );
+  const onTrunk = appCallsFor(t, "trunk", topLevel);
+  assert.deepEqual(
+    onTrunk.map((c) => c.app),
+    ["enrich-profile"],
+    "a top-level app called from another top-level app never boards trunk",
+  );
+  assert.deepEqual(onTrunk[0].children.map((c) => c.app), ["contacts"]);
+  assert.deepEqual(onTrunk[0].children[0].emits, [0, 1], "the nested card carries the bubbles");
+  assert.equal(onTrunk[0].children[0].status, "done");
+  assert.deepEqual(
+    appCallsFor(t, "enrich-profile", topLevel).map((c) => c.app),
+    ["contacts"],
+    "the caller sees its one nested call",
+  );
+}
+
 // ── a silent app still gets a card, and a failure keeps its error ────────
 {
   const silent = turn([

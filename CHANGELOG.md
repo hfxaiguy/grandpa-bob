@@ -2,6 +2,23 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-04 — a nested top-level app no longer gets a second inline card
+
+When one top-level app called another (`enrich-profile` → `contacts`), the
+caller's chat showed the real nested `contacts` card and a phantom trunk-level
+`contacts` card. The emit fallback boarded the nested run on the trunk because
+`contacts` has no parent, so `isDirectChild("trunk", "contacts")` was true; that
+synthetic card had no `tree_exit`, stayed `RUNNING`, and duplicated the app's
+bubbles. The fallback now leaves an app alone when its `tree_enter` is already
+visible under another caller.
+
+- **`ui/src/app-calls.ts`**: track visible app entries and skip the `emitApps`
+  fallback for an app already nested in another caller's card.
+- **`scripts/app-calls-test.ts`**: covers a top-level app calling another
+  top-level app — one nested card, no trunk duplicate.
+
+Tests: `npm run test:app-calls`; `npm --prefix ui run typecheck`.
+
 ## 2026-11-04 — desktop pairing shows the phrase before console approval
 
 The browser only revealed its phrase confirmation after `pairWithServer`
