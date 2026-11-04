@@ -696,40 +696,39 @@ body.dragging-tile { user-select: none !important; }
   user-select: text;
 }
 .turn-note.warn { color: var(--warn); opacity: 1; }
-/* A memory write in the chat: a quiet, faint line between messages. Opening it
-   reveals the exact value the slot held right after that write. */
+/* A memory write in the chat: a quiet, faint line between messages. Clicking
+   it opens the exact value the slot held right after that write in a modal. */
 .memory-line {
-  align-self: flex-start;
-  max-width: 92%;
-  min-width: 0;
-  font-size: 11px;
-  line-height: 1.5;
-}
-.memory-line > summary {
   display: flex;
   align-items: baseline;
   gap: 6px;
+  align-self: flex-start;
+  max-width: 92%;
   min-width: 0;
+  margin: 0;
   padding: 1px 2px;
+  border: 0;
   border-radius: 4px;
+  background: none;
   color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: left;
   opacity: 0.68;
   cursor: pointer;
-  list-style: none;
   user-select: text;
 }
-.memory-line > summary::-webkit-details-marker { display: none; }
-.memory-line > summary::before {
-  content: "▸";
+.memory-line::before {
+  content: "↗";
   flex: none;
   width: 9px;
   font-size: 9px;
   opacity: 0.8;
 }
-.memory-line[open] > summary::before { content: "▾"; }
-.memory-line > summary:hover,
-.memory-line > summary:focus-visible { opacity: 1; background: rgba(27, 39, 66, 0.55); }
-.memory-line > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 0; }
+.memory-line:hover,
+.memory-line:focus-visible { opacity: 1; background: rgba(27, 39, 66, 0.55); }
+.memory-line:focus-visible { outline: 1px solid var(--accent); outline-offset: 0; }
 .memory-line-badge { flex: none; color: var(--accent); opacity: 0.85; }
 .memory-line-slot {
   flex: none;
@@ -746,17 +745,6 @@ body.dragging-tile { user-select: none !important; }
   white-space: nowrap;
   opacity: 0.85;
 }
-.memory-line-body {
-  margin: 4px 0 3px 15px;
-  padding: 6px 8px;
-  border-left: 1px solid var(--border);
-  background: rgba(22, 32, 58, 0.4);
-  border-radius: 0 6px 6px 0;
-  color: var(--fg);
-  font-size: 12px;
-  opacity: 1;
-  white-space: normal;
-}
 .memory-line-meta {
   display: flex;
   flex-wrap: wrap;
@@ -766,7 +754,6 @@ body.dragging-tile { user-select: none !important; }
   font-size: 10.5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.memory-line-path { overflow-wrap: anywhere; }
 .memory-line-loading,
 .memory-line-note { color: var(--muted); font-size: 11px; font-style: italic; }
 .memory-line-note { margin-top: 4px; color: var(--warn); opacity: 0.85; }

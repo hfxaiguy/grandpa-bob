@@ -2,6 +2,21 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — a chat memory update opens in the inspector modal
+
+Clicking a memory-update line in the chat used to expand its value inline in
+the transcript. It now opens the same kind of modal as a memory-panel entry,
+giving long values room and keeping the conversation from reflowing.
+
+- `ui/src/components.tsx`: `MemoryLine` renders a button instead of a
+  `<details>` row; clicking it portals a value modal (path header, loaded
+  run-log value, ref links) and fetches the untruncated row once.
+- `ui/src/styles.css`: the line keeps its quiet hover/focus treatment, with a
+  `↗` affordance in place of the old expand caret; the inline body styles are
+  gone.
+
+Tests: `npm run test:ui`.
+
 ## 2026-11-03 — the trunk's cheap tool check is gone
 
 The per-round `tool_check` gate could refuse a sound call for the wrong reason:

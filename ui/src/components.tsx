@@ -573,15 +573,19 @@ function turnNote(t: Turn): string | null {
 }
 
 /**
- * A faint one-line note in the conversation for a memory update. Collapsed it
- * shows the slot and a compact hint of the new value; opening it loads the
- * run-log row so the user sees exactly what the slot held after that write
- * (the streamed event is sanitized, so arrays and long strings are capped).
+ * A faint one-line note in the conversation for a memory update. It shows the
+ * slot and a compact hint of the new value; clicking it opens a modal and
+ * loads the run-log row, so the user sees exactly what the slot held after
+ * that write (the streamed event is sanitized, so arrays and long strings are
+ * capped). The modal is portaled out of the tile for the same reason the
+ * memory panel's inspector is: fixed positioning must escape the tile's
+ * containing block and overflow clipping.
  */
 function MemoryLine(props: { note: MemoryNote }) {
   const [full, setFull] = createSignal<{ value: string; truncated: boolean } | null>(null);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal("");
+  const [open, setOpen] = createSignal(false);
   let requested = false;
 
   const load = () => {
@@ -596,50 +600,70 @@ function MemoryLine(props: { note: MemoryNote }) {
       .finally(() => setLoading(false));
   };
 
+  const show = () => {
+    setOpen(true);
+    load();
+  };
+
   const update = () => props.note.value;
 
   return (
-    <details
-      class="memory-line"
-      onToggle={(ev) => {
-        if ((ev.currentTarget as HTMLDetailsElement).open) load();
-      }}
-    >
-      <summary title={`${props.note.path} — the value this memory was updated to here`}>
+    <>
+      <button
+        type="button"
+        class="memory-line"
+        title={`${props.note.path} — the value this memory was updated to here`}
+        onClick={show}
+      >
         <span class="memory-line-badge">mem↻</span>
         <span class="memory-line-slot">{props.note.child}</span>
         <span class="memory-line-peek">{memoryPeek(update())}</span>
-      </summary>
-      <div class="memory-line-body">
-        <div class="memory-line-meta">
-          <span class="memory-line-path">{props.note.path}</span>
-          <Show when={props.note.scopeId != null}>
-            <span>scope #{props.note.scopeId}</span>
-          </Show>
-          <span>updated here</span>
-        </div>
-        <Show when={!loading()} fallback={<div class="memory-line-loading">loading the full value…</div>}>
-          <Show when={full()} fallback={<JsonView value={props.note.value} renderRef={refLink} />}>
-            {(data) => (
-              <>
-                <Show
-                  when={typeof props.note.value === "string"}
-                  fallback={<JsonView text={data().value} renderRef={refLink} />}
-                >
-                  <pre class="memory-line-raw">{data().value}</pre>
+      </button>
+      <Show when={open()}>
+        {/* Portaled like the memory inspector: `.tile`'s container-type makes
+            it the containing block for fixed-position children (and its
+            overflow clips them). */}
+        <Portal>
+          <div class="mem-modal" onClick={(ev) => ev.target === ev.currentTarget && setOpen(false)}>
+            <div class="mem-modal-card">
+              <div class="mem-modal-head">
+                <span class="mem-modal-path" title={props.note.path}>{props.note.path}</span>
+                <span class="spacer" />
+                <button onClick={() => setOpen(false)}>✕</button>
+              </div>
+              <div class="mem-modal-body">
+                <div class="memory-line-meta">
+                  <Show when={props.note.scopeId != null}>
+                    <span>scope #{props.note.scopeId}</span>
+                  </Show>
+                  <span>updated here</span>
+                </div>
+                <Show when={!loading()} fallback={<div class="memory-line-loading">loading the full value…</div>}>
+                  <Show when={full()} fallback={<JsonView value={props.note.value} renderRef={refLink} />}>
+                    {(data) => (
+                      <>
+                        <Show
+                          when={typeof props.note.value === "string"}
+                          fallback={<JsonView text={data().value} renderRef={refLink} />}
+                        >
+                          <pre class="memory-line-raw">{data().value}</pre>
+                        </Show>
+                        <Show when={data().truncated}>
+                          <div class="memory-line-note">value truncated for display</div>
+                        </Show>
+                      </>
+                    )}
+                  </Show>
+                  <Show when={error()}>
+                    <div class="memory-line-note">{error()}</div>
+                  </Show>
                 </Show>
-                <Show when={data().truncated}>
-                  <div class="memory-line-note">value truncated for display</div>
-                </Show>
-              </>
-            )}
-          </Show>
-          <Show when={error()}>
-            <div class="memory-line-note">{error()}</div>
-          </Show>
-        </Show>
-      </div>
-    </details>
+              </div>
+            </div>
+          </div>
+        </Portal>
+      </Show>
+    </>
   );
 }
 
