@@ -187,7 +187,16 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
               mirrorPath: typeof body.mirrorPath === "string" ? body.mirrorPath : undefined,
               exec: Array.isArray(body.exec) ? body.exec.map(String) : [],
             };
-            const info = await manager.createPairing(profile, capabilities);
+            const relay =
+              body.relay && typeof body.relay === "object"
+                ? (body.relay as Record<string, unknown>)
+                : null;
+            const info = relay
+              ? await manager.createRelayPairing(profile, capabilities, {
+                  baseUrl: String(relay.url ?? ""),
+                  key: typeof relay.key === "string" ? relay.key : undefined,
+                })
+              : await manager.createPairing(profile, capabilities);
             return send(req, res, 200, info);
           }
           if (parts[1] === "pairing" && parts[2] && parts[3] === "events" && req.method === "GET") {

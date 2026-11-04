@@ -342,6 +342,13 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    the `npm run bob` process, so restarting it means running `npm run pair`
    again. Add `--debug` to that command to log each
    pairing event.
+   A phone on another network cannot reach the loopback mailbox. Use
+   `npm run pair -- --relay` (set `BOB_SYNC_RELAY_KEY` to a read-scope BobSwap
+   key) to create the signaling channel on BobSwap instead; in the phone's
+   **My desktop / server** dialog enter the relay URL and the printed code.
+   Only SDP/ICE go through BobSwap — files, desktop ops and voice clips stay on
+   the WebRTC datachannel. A relay channel is single-session: after a page
+   reload or a dropped connection, run `npm run pair -- --relay` again.
    While the tab is paired, it streams its run log to
    `~/.bobkat/peers/<profile>/logs/grandma-kat.db`; read it with
    `npm run peer:log -- --profile <name>` (latest errors by default, `--all`

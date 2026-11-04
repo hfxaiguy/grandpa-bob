@@ -297,7 +297,7 @@ export class BobSwapSignaling implements SignalingProvider {
       let hit: { sdp: string } | null = null;
       for (const m of entries) {
         if (this.isOwn(m.from)) continue;
-        if (m.type === "error") {
+        if (m.type === "error" || m.type === "bye") {
           const message = (m.payload as { message?: unknown }).message;
           throw new Error(
             typeof message === "string" && message ? message : "the peer closed the pairing session",

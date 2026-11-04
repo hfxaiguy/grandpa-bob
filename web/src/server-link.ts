@@ -21,6 +21,8 @@ export interface ServerLinkInfo {
   /** Stable bridge device id from the catalog (when the bridge reports one). */
   deviceId?: string;
   clientKey: string;
+  /** This link was paired through BobSwap relay signaling. */
+  relay?: boolean;
   /** Per-profile server proof key (pinned; not the server master key). */
   serverKey: string;
   fingerprint: string;
@@ -109,6 +111,7 @@ export function loadServerLink(profile: string): ServerLinkInfo | null {
       profile,
       deviceId: typeof parsed.deviceId === "string" ? parsed.deviceId : undefined,
       clientKey: parsed.clientKey,
+      relay: parsed.relay === true,
       serverKey: parsed.serverKey,
       fingerprint: parsed.fingerprint,
       mirror: typeof parsed.mirror === "string" ? parsed.mirror : profile,
@@ -498,6 +501,7 @@ function negotiate(
           profile: opts.profile,
           deviceId: typeof control.deviceId === "string" ? control.deviceId : undefined,
           clientKey: String(control.clientKey ?? ""),
+          relay: control.transport === "relay",
           serverKey: String(control.serverKey ?? ""),
           fingerprint: String(control.fingerprint ?? ""),
           mirror: capabilities.mirror ?? opts.profile,
@@ -593,6 +597,12 @@ export async function resumeServer(opts: {
   onSas?: (phrase: string) => void;
   onStatus?: (text: string) => void;
 }): Promise<ServerConnection> {
+  if (opts.info.relay) {
+    throw new Error(
+      "this desktop was paired through the BobSwap relay, which is a single-session signaling channel — " +
+        "run `npm run pair -- --relay` again for a new code",
+    );
+  }
   const base = normalizeUrl(opts.info.url);
   const profile = opts.profile ?? opts.info.profile;
   opts.onStatus?.("finding the server…");

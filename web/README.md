@@ -19,7 +19,7 @@ Companion channels — one process, one port (`npm run bob`, loopback only):
 |---|---|---|
 | Telegram | `:8795` `/api/*` | grammY long-poll; parks text + channel-side voice transcripts in a file mailbox (`~/.bobkat/telegram/`); the tab claims and answers them |
 | Peer mailbox | `:8795` `/api/v1/sync/*`, `/admin/*` | BobSwap-shaped pairing channels + loopback admin API for `npm run pair`; STT/health stay |
-| STT | `:8795` `/stt` (`BOB_STT=1`) | raw audio bytes → ffmpeg → whisper-server → transcript (composer on the desktop; a phone sends its clip to the paired desktop over the peer channel) |
+| STT | `:8795` `/stt` (`BOB_STT=1`) | raw audio bytes → ffmpeg → whisper-server → transcript (composer on the desktop; a phone sends its clip to the paired desktop over the peer channel, paired through the BobSwap relay when the loopback mailbox is unreachable) |
 | Whisper | `npm run whisper:up` (`:8178`) | the transcription backend both paths call |
 
 The same modules keep their standalone CLIs (`npm run storage-server`,
@@ -29,7 +29,10 @@ Same-origin tabs sync live (BroadcastChannel) when they share a profile.
 Different profiles are different workspaces and pair through the
 Sync… → Live sync dialog (WebRTC; BobSwap REST or manual paste). A profile may
 also pair with a **desktop/server peer** (same channel flow, SAS, mirror and
-allowlisted ops). The full model — profiles, git vs replica sync, pairing, the verification phrase,
+allowlisted ops). When the phone cannot reach the desktop's loopback mailbox,
+run `npm run pair -- --relay` and enter the BobSwap URL in the desktop/server
+dialog: the relay carries only SDP/ICE, while files, ops and voice stay on the
+datachannel. The full model — profiles, git vs replica sync, pairing, the verification phrase,
 and troubleshooting — is in
 [docs/pairing-and-sync.md](../docs/pairing-and-sync.md).
 

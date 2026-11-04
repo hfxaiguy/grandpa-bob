@@ -13,7 +13,7 @@
  * uses (STUN, plus TURN when configured).
  */
 import { activeSwapService, defaultSwapService, type SwapService } from "./swap";
-import { pairWithServer } from "./server-link";
+import { pairWithServer, type ServerConnection } from "./server-link";
 import { bindDesktopMirror } from "./profiles";
 import { loadStorageServer } from "./settings";
 import { toIceServers } from "./sync/transport-webrtc";
@@ -359,11 +359,21 @@ export function wireSyncUi(getSync: SyncGetter): void {
   /** Transport callbacks only feed the timeline while an attempt is live. */
   const onPairStatus = (text: string): void => progress(text);
   const activeProfile = (): string => localStorage.getItem("bob:profile") || "default";
+  const defaultDesktopUrl = (): string => {
+    // A phone cannot reach the desktop's loopback mailbox. On a remote page
+    // the shared BobSwap relay is the useful default; a local desktop keeps
+    // its loopback bridge.
+    const local = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname);
+    if (local) return loadStorageServer();
+    const saved = loadStorageServer();
+    if (!/^http:\/\/(127\.0\.0\.1|localhost):8795\/?$/.test(saved)) return saved;
+    return activeSwapService()?.baseUrl ?? defaultSwapService().baseUrl;
+  };
   const serverUrl = (): string => {
     const input = el<HTMLInputElement>("pair-server-url");
     // Normalize the saved bridge URL: a stale file:/// or bare host value would
     // otherwise reach fetch() and surface as Firefox's bare NetworkError.
-    const fallback = loadStorageServer();
+    const fallback = defaultDesktopUrl();
     if (input && !input.value) input.value = fallback;
     return input?.value.trim() || fallback;
   };
@@ -413,7 +423,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
   };
   const fillServerUrl = (): void => {
     const input = el<HTMLInputElement>("pair-server-url");
-    if (input && !input.value) input.value = loadStorageServer();
+    if (input && !input.value) input.value = defaultDesktopUrl();
   };
 
   // Live status line in the Sync… dialog. Subscribe lazily: a secondary tab
@@ -715,6 +725,22 @@ export function wireSyncUi(getSync: SyncGetter): void {
           progress("binding the mirror folder…");
           await bindDesktopMirror(profile, connection.info.mirror);
           progressDone();
+          if (connection.info.relay) {
+            // BobSwap channels are single-session signaling: reloading would
+            // throw this datachannel away and there is nothing to resume.
+            const globals = window as unknown as {
+              __bobServer?: unknown;
+              __bobAdoptServer?: (connection: ServerConnection) => void;
+            };
+            if (typeof globals.__bobAdoptServer === "function") globals.__bobAdoptServer(connection);
+            else globals.__bobServer = connection;
+            setStatus(
+              `paired over the relay for this tab session · fingerprint ${connection.info.fingerprint} — ` +
+                "keep this tab open; after a reload run `npm run pair -- --relay` again",
+            );
+            updateLiveStatus();
+            return;
+          }
           setStatus(`paired · fingerprint ${connection.info.fingerprint} — reloading…`);
           setTimeout(() => location.reload(), 800);
         });

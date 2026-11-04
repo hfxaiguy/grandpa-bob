@@ -230,6 +230,13 @@ channel flow used between two browsers:
    Add `--debug` (`npm run pair -- --debug`, or `BOB_PAIR_DEBUG=1`) to trace
    the handshake: waiting for the offer, offer/answer, channel open, control
    `hello`, SAS and the first error.
+   A phone on another network cannot reach the loopback mailbox. Run
+   `npm run pair -- --relay` instead (with `BOB_SYNC_RELAY_KEY` set to a
+   read-scope BobSwap key) and enter the relay URL in the tab. The relay carries
+   only SDP/ICE; the datachannel still carries files, ops and voice. Relay
+   channels are single-session signaling, so after a page reload or a dropped
+   connection run `npm run pair -- --relay` again. Direct mailbox pairings keep
+   the automatic client-key reconnect below.
 2. In the tab, **Sync… → Pair… → Pair with a code**, select **My desktop /
    server**, and enter the code — no channel id. The dialog shows the active
    profile and, once the channel opens, the mirror + exec capabilities the
@@ -237,9 +244,10 @@ channel flow used between two browsers:
    fingerprints; the operator confirms it on the console, then presses
    **Phrase matches** in the tab. Nothing (catalog included) moves before both.
 3. On approval the server mints a per-profile **client key** and the tab pins
-   a per-profile **server proof key**. Reconnects use a client-key channel and
-   mutual HMAC proofs — no human step or phrase prompt. Revoking on the server
-   drops the key and live channel.
+   a per-profile **server proof key**. Direct-mailbox reconnects use a
+   client-key channel and mutual HMAC proofs — no human step or phrase prompt.
+   Relay pairings have no reconnect lookup. Revoking on the server drops the
+   key and live channel.
 4. First pairing: a non-empty desktop folder replaces the profile's workspace;
    an empty folder receives the tab's workspace. Every mirror folder carries
    `.bob-profile.json` with the profile UUID, and the bridge keeps

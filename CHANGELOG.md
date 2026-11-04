@@ -2,6 +2,35 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — a phone can pair with the desktop through the BobSwap relay
+
+The desktop/server path used the loopback mailbox for signaling, so a phone on
+another network could not pair without exposing `:8795`. `npm run pair
+-- --relay` now creates the signaling channel on BobSwap and prints its code;
+the phone enters that URL in **My desktop / server**. Only SDP/ICE touch the
+relay — the DTLS datachannel still carries files, desktop ops and voice clips.
+
+The relay channel is single-session signaling: it expires 30 minutes after the
+join and has no reconnect lookup, so a reload or dropped connection needs a
+fresh `npm run pair -- --relay`. Direct loopback pairings keep their automatic
+client-key reconnect. BobSwap channel creation needs a read-scope key
+(`BOB_SYNC_RELAY_KEY` / `--relay-key`).
+
+- **`src/bridge/relay.ts`**: BobSwap channel creation, signaling feed, and the
+  Node offerer side of the WebRTC datachannel (werift), including SAS.
+- **`src/bridge/peer.ts`, `src/bridge/server.ts`**: a `PeerTransport` seam for
+  the local mailbox vs relay, and `createRelayPairing` behind the admin pairing
+  route.
+- **`scripts/pair.ts`**: `--relay`, `--relay-url`, `--relay-key`; prints the
+  relay URL to enter in the browser.
+- **`web/src/server-link.ts`, `web/src/sync-ui.ts`**: store the relay flag,
+  skip loopback resume for relay links, and keep a relay-paired tab session
+  alive instead of reloading it away.
+- **`.env.example`, README, pairing docs**: relay setup and the single-session
+  limitation.
+
+Tests: `npm run typecheck`; `npm --prefix web run typecheck`;
+`npm --prefix ui run typecheck`; `npm run build:bridge`; `npm run build:web`.
 ## 2026-11-03 — profiles sync by UUID with a per-peer consent matrix
 
 Profiles were local names, and pairing bound exactly one profile. They now

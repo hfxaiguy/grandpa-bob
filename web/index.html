@@ -435,9 +435,9 @@
       <details id="pair-advanced" hidden>
         <summary>Advanced</summary>
         <div class="grid">
-          <label>Desktop mailbox URL<input id="pair-server-url" placeholder="http://127.0.0.1:8795" autocomplete="off" /></label>
+          <label>Desktop mailbox URL<input id="pair-server-url" placeholder="http://127.0.0.1:8795 or https://bobswap.hfxaiguy.com" autocomplete="off" /></label>
         </div>
-        <p class="muted">Only needed for a non-default <code>BOB_CHANNEL_PORT</code> or an SSH tunnel.</p>
+        <p class="muted">Use the loopback mailbox for a desktop on this machine. For a phone on another network use the BobSwap URL printed by <code>npm run pair -- --relay</code>; only signaling goes through the relay.</p>
       </details>
       <p>Verification phrase <strong id="pair-verify">—</strong>
         <span class="muted">(must match on both devices before trusting the link)</span></p>

@@ -3,6 +3,7 @@
  *
  *   npm run pair                         # pair the active browser profile
  *   npm run pair -- --profile travel --mirror travel --exec git,make
+ *   npm run pair -- --relay              # pair a phone through BobSwap
  *   npm run pair -- --yes                # approve without a prompt (CI)
  *   npm run pair -- --list
  *   npm run pair -- --revoke travel
@@ -11,13 +12,20 @@
  * admin API, authenticating with ~/.bobkat/admin-key. Browsers never see that
  * key. The pairing code and SAS are printed here; nothing is written until the
  * operator approves.
+ *
+ * `--relay` creates the signaling channel on BobSwap instead of the loopback
+ * mailbox. Only SDP/ICE go through the relay; workspace bytes, ops and voice
+ * stay on the DTLS datachannel.
  */
 import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+// Load .env (the same file `npm run bob` reads) before parsing BOB_SYNC_RELAY*.
+import "../src/config.js";
 import { statePath } from "../src/state-dir.js";
 
 const DEFAULT_URL = "http://127.0.0.1:8795";
+const DEFAULT_RELAY_URL = "https://bobswap.hfxaiguy.com";
 
 interface Args {
   profile: string;
@@ -30,6 +38,9 @@ interface Args {
   allow?: string;
   deny?: string;
   url: string;
+  relay: boolean;
+  relayUrl: string;
+  relayKey?: string;
   debug: boolean;
 }
 
@@ -43,6 +54,9 @@ function parseArgs(argv: string[]): Args {
     yes: false,
     list: false,
     url: process.env.BOB_PAIR_URL ?? DEFAULT_URL,
+    relay: false,
+    relayUrl: process.env.BOB_SYNC_RELAY?.trim() || DEFAULT_RELAY_URL,
+    relayKey: process.env.BOB_SYNC_RELAY_KEY?.trim() || undefined,
     debug: /^(1|true|yes)$/i.test(process.env.BOB_PAIR_DEBUG ?? ""),
   };
   for (let i = 0; i < argv.length; i++) {
@@ -62,6 +76,14 @@ function parseArgs(argv: string[]): Args {
     else if (flag === "--allow") args.allow = value();
     else if (flag === "--deny") args.deny = value();
     else if (flag === "--url") args.url = value();
+    else if (flag === "--relay") args.relay = true;
+    else if (flag === "--relay-url") {
+      args.relay = true;
+      args.relayUrl = value();
+    } else if (flag === "--relay-key") {
+      args.relay = true;
+      args.relayKey = value();
+    }
     else if (flag === "--debug" || flag === "-d") args.debug = true;
     else if (flag === "--help" || flag === "-h") {
       printHelp();
@@ -85,6 +107,9 @@ function printHelp(): void {
   --allow <profile>     allow this desktop profile for all paired devices
   --deny <profile>      veto this desktop profile for all paired devices
   --url <url>           admin API origin (default: ${DEFAULT_URL})
+  --relay               create the code on BobSwap instead of the local mailbox
+  --relay-url <url>     relay origin (default: ${DEFAULT_RELAY_URL})
+  --relay-key <key>     BobSwap read key (default: BOB_SYNC_RELAY_KEY)
   --debug, -d           log admin API calls and every pairing event
                         (or set BOB_PAIR_DEBUG=1)
 
@@ -94,6 +119,11 @@ Profiles dialog. Use --profile only when you want to pin the tab's active
 profile for the first mirror. --mirror and --mirror-path choose that first
 folder independently; every other profile defaults to
 ~/.bobkat/folders/<name>.
+
+--relay is for a phone on another network: the local mailbox is loopback-only.
+In the browser use Sync… → Pair… → My desktop / server and enter the relay URL
+plus the code. Only SDP/ICE touch the relay; files, ops and voice stay on the
+datachannel.
 `);
 }
 
@@ -118,7 +148,10 @@ async function api<T>(
   const url = `${args.url.replace(/\/$/, "")}${route}`;
   const isEventPoll = /\/admin\/pairing\/[^/]+\/events/.test(route);
   if (args.debug && !isEventPoll) {
-    const body = init.body === undefined ? "" : ` ${JSON.stringify(init.body)}`;
+    const body =
+      init.body === undefined
+        ? ""
+        : ` ${JSON.stringify(init.body).replace(/("key"\s*:\s*")[^"]+(")/g, "$1***$2")}`;
     console.error(`[pair:debug] ${method} ${url}${body}`);
   }
   const started = Date.now();
@@ -177,6 +210,7 @@ async function runPairing(args: Args): Promise<void> {
       mirror: args.mirror || undefined,
       mirrorPath: args.mirrorPath,
       exec: args.exec,
+      relay: args.relay ? { url: args.relayUrl, key: args.relayKey } : undefined,
     },
   });
 
@@ -191,11 +225,12 @@ async function runPairing(args: Args): Promise<void> {
       : `mirror:    default per profile → ~/.bobkat/folders/<profile>`,
   );
   console.log(`exec:      ${args.exec.length ? args.exec.join(", ") : "(none)"}`);
+  if (args.relay) console.log(`relay:     ${args.relayUrl} (signaling only)`);
   console.log("");
   console.log(`code:      ${info.code}`);
   console.log("");
   console.log("In the browser: Sync… → Pair… → My desktop / server.");
-  console.log(`Enter:     ${args.url} and the code above — no channel id.`);
+  console.log(`Enter:     ${args.relay ? args.relayUrl : args.url} and the code above — no channel id.`);
   if (info.profile !== "*") {
     console.log("Tab on another profile? Stop (Ctrl-C) and rerun with --profile <name>.");
   }

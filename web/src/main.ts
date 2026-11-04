@@ -297,6 +297,15 @@ async function connectServerPeer(): Promise<boolean> {
   const folder = mirrorFolder() ?? "";
   if (!info || !syncHandle || serverConnecting || serverConnection) return false;
   if (lease?.status() !== "primary") return false;
+  if (info.relay) {
+    renderMirrorStatus({
+      phase: "offline",
+      detail: "relay session ended — run npm run pair -- --relay",
+      folder,
+      lastSyncAt: null,
+    });
+    return false;
+  }
   serverConnecting = true;
   try {
     const connection = await resumeServer({
@@ -1592,11 +1601,56 @@ async function main(): Promise<void> {
     enabled: !!serverConnection && (serverConnection.info.exec.length > 0 || !!linked?.exec.length),
     allow: serverConnection?.info.exec ?? linked?.exec ?? [],
   });
+  const globals = window as unknown as {
+    __bobServer?: unknown;
+    __bobOpsProbe?: unknown;
+    __bobAdoptServer?: unknown;
+  };
   if (serverConnection) {
-    (window as unknown as { __bobServer?: unknown }).__bobServer = serverConnection;
-    (window as unknown as { __bobOpsProbe?: unknown }).__bobOpsProbe = (command: string, args: string[]) =>
-      agent.probeOps(command, args);
+    globals.__bobServer = serverConnection;
+    globals.__bobOpsProbe = (command: string, args: string[]) => agent.probeOps(command, args);
   }
+  // A relay pairing normally keeps its datachannel instead of reloading (the
+  // relay is single-session signaling). Adopt that live connection into the
+  // same slots the boot-time reconnect uses, so ops, the log stream and the
+  // retry timer all see it.
+  globals.__bobAdoptServer = (connection: ServerConnection): void => {
+    // The pairing dialog just wrote the mirror binding; refresh the cached
+    // registry so `mirrorFolder()` and the board see it without a reload.
+    void loadRegistry().then((registry) => {
+      profileRegistry = registry;
+    });
+    serverConnection = connection;
+    globals.__bobServer = connection;
+    globals.__bobOpsProbe = (command: string, args: string[]) => agent.probeOps(command, args);
+    attachLogStream(connection);
+    agent.setOpsConfig({
+      enabled: connection.info.exec.length > 0,
+      allow: connection.info.exec,
+    });
+    const bound = mirrorFolder() ?? connection.info.mirror;
+    renderMirrorStatus({
+      phase: "idle",
+      detail: connection.info.relay ? "connected over relay" : "connected",
+      folder: bound,
+      lastSyncAt: new Date().toISOString(),
+    });
+    connection.peer.onClosed(() => {
+      if (serverConnection !== connection) return;
+      serverConnection = null;
+      delete globals.__bobServer;
+      delete globals.__bobOpsProbe;
+      agent.setOpsConfig({ enabled: false, allow: [] });
+      renderMirrorStatus({
+        phase: "offline",
+        detail: connection.info.relay
+          ? "relay session ended — run npm run pair -- --relay"
+          : "disconnected",
+        folder: bound,
+        lastSyncAt: null,
+      });
+    });
+  };
   // A paired server may have been offline at boot; keep trying while this tab
   // hosts the workspace. The manual pair dialog is still the recovery path.
   serverRetryTimer = setInterval(() => {

@@ -33,6 +33,14 @@ import { createNodePlatform } from "../platform/node.js";
 import { ShellTools } from "../tools/shell.js";
 import { Mailbox, type MailboxChannel, type SignalEntry } from "./mailbox.js";
 import { expandLocalCandidate, expandLocalSdp, localMdnsHosts } from "./mdns.js";
+import {
+  createRelayChannel,
+  RelayTransport,
+  type OpenedPeer,
+  type PeerEvent,
+  type PeerTransport,
+  type SyncRelayOptions,
+} from "./relay.js";
 import { appendPeerLog, handshakePeerLog } from "./peer-log.js";
 import {
   defaultMirrorDir,
@@ -249,6 +257,33 @@ interface BridgeRuntime {
   known: Hashmap;
 }
 
+/** Local in-memory mailbox transport (same-machine pairing and reconnect). */
+class MailboxTransport implements PeerTransport {
+  readonly kind = "mailbox" as const;
+  readonly id: string;
+  readonly profile: string;
+
+  constructor(
+    private readonly mailbox: Mailbox,
+    private readonly channel: MailboxChannel,
+  ) {
+    this.id = channel.id;
+    this.profile = channel.profile;
+  }
+
+  open(iceServers: unknown[], onEvent?: PeerEvent): Promise<OpenedPeer> {
+    return answerChannel(this.mailbox, this.channel, iceServers, onEvent);
+  }
+
+  signalError(message: string): void {
+    this.mailbox.append(this.channel, "answerer", "error", { message });
+  }
+
+  close(): void {
+    this.mailbox.close(this.channel);
+  }
+}
+
 export class PeerSession {
   readonly id = randomUUID();
   profile: string;
@@ -256,7 +291,6 @@ export class PeerSession {
   authProfile = "";
   readonly capabilities: PeerCapabilities;
   readonly mode: "pairing" | "reconnect";
-  readonly channel: MailboxChannel;
   readonly events: PairingEvent[] = [];
   done = false;
   private eventSeq = 0;
@@ -286,17 +320,15 @@ export class PeerSession {
   });
 
   constructor(
-    private mailbox: Mailbox,
+    private readonly transport: PeerTransport,
     mode: "pairing" | "reconnect",
-    channel: MailboxChannel,
     capabilities: PeerCapabilities,
     private iceServers: unknown[] = [],
     private onReady?: (session: PeerSession) => void,
     private onClosed?: (session: PeerSession) => void,
   ) {
     this.mode = mode;
-    this.channel = channel;
-    this.profile = channel.profile;
+    this.profile = transport.profile;
     this.capabilities = capabilities;
   }
 
@@ -308,7 +340,7 @@ export class PeerSession {
     return {
       id: this.id,
       profile: this.profile,
-      channelId: this.channel.id,
+      channelId: this.transport.id,
       code,
       capabilities: { ...this.capabilities, mirrorPath: undefined },
     };
@@ -339,9 +371,7 @@ export class PeerSession {
         mirror: this.capabilities.mirror,
         exec: this.capabilities.exec,
       });
-      const answer = await answerChannel(
-        this.mailbox,
-        this.channel,
+      const answer = await this.transport.open(
         this.iceServers,
         (type, data) => this.emit(type, data ?? {}),
       );
@@ -430,6 +460,7 @@ export class PeerSession {
             serverKey: proofKey,
             fingerprint: record.fingerprint,
             bootstrap: Object.keys(existing).length,
+            transport: this.transport.kind,
             capabilities: { mirror: this.capabilities.mirror, exec: this.capabilities.exec },
           }),
         );
@@ -459,7 +490,7 @@ export class PeerSession {
       } else {
         // No control link yet: leave an error in the signal feed so the
         // browser's offer/answer wait fails with this message, not a 404.
-        this.mailbox.append(this.channel, "answerer", "error", { message });
+        this.transport.signalError(message);
       }
       this.closeSoon(this.link ? 1_500 : 3_000);
     }
@@ -1013,7 +1044,7 @@ export class PeerSession {
       /* already closed */
     }
     this.link = null;
-    this.mailbox.close(this.channel);
+    this.transport.close();
     this.onClosed?.(this);
   }
 }
@@ -1039,31 +1070,62 @@ export class PeerManager {
     this.liveByProfile.set(session.profile, session);
   }
 
-  async createPairing(profile: string, capabilities: Partial<PeerCapabilities> = {}): Promise<PairingInfo> {
+  private capabilitiesFor(
+    profile: string,
+    capabilities: Partial<PeerCapabilities>,
+  ): PeerCapabilities {
     if (profile !== "*" && !PROFILE_RE.test(profile)) throw new Error("invalid profile name");
     // A wildcard pairing takes the browser's active profile from `hello`; the
     // mirror then defaults to that name. An explicit --mirror still wins.
     const mirror = capabilities.mirror ?? (profile === "*" ? undefined : profile);
     if (mirror !== undefined && !PROFILE_RE.test(mirror)) throw new Error("invalid mirror folder name");
     const mirrorPath = capabilities.mirrorPath ? path.resolve(capabilities.mirrorPath) : undefined;
-    const caps: PeerCapabilities = {
+    return {
       mirror,
       mirrorPath,
       exec: Array.isArray(capabilities.exec) ? capabilities.exec.map(String).filter(Boolean) : [],
     };
+  }
+
+  async createPairing(profile: string, capabilities: Partial<PeerCapabilities> = {}): Promise<PairingInfo> {
+    const caps = this.capabilitiesFor(profile, capabilities);
     const created = this.mailbox.createPairing(profile);
+    const transport = new MailboxTransport(this.mailbox, created.channel);
     const session = new PeerSession(
-      this.mailbox,
+      transport,
       "pairing",
-      created.channel,
       caps,
       this.iceServers,
       (s) => this.makeLive(s),
       (s) => this.unregister(s),
     );
     this.register(session, created.code);
-    session.channel.onJoined = () => undefined;
+    created.channel.onJoined = () => undefined;
     return session.info(created.code ?? "");
+  }
+
+  /**
+   * Pair through a BobSwap sync channel instead of the loopback mailbox.
+   * Only SDP/ICE touch the relay; the datachannel still carries every byte.
+   */
+  async createRelayPairing(
+    profile: string,
+    capabilities: Partial<PeerCapabilities>,
+    relay: SyncRelayOptions,
+  ): Promise<PairingInfo> {
+    const caps = this.capabilitiesFor(profile, capabilities);
+    const channel = await createRelayChannel(relay, profile);
+    const transport = new RelayTransport(channel);
+    const session = new PeerSession(
+      transport,
+      "pairing",
+      caps,
+      channel.iceServers,
+      (s) => this.makeLive(s),
+      (s) => this.unregister(s),
+    );
+    this.register(session, channel.code);
+    return session.info(channel.code);
   }
 
   /** A reconnect channel for an already-paired profile (client-key create). */
@@ -1078,10 +1140,10 @@ export class PeerManager {
       record.profile === profile
         ? record.capabilities
         : { exec: record.capabilities.exec };
+    const transport = new MailboxTransport(this.mailbox, created.channel);
     const session = new PeerSession(
-      this.mailbox,
+      transport,
       "reconnect",
-      created.channel,
       caps,
       this.iceServers,
       (s) => this.makeLive(s),
