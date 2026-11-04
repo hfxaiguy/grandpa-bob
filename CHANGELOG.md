@@ -2,6 +2,24 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — an inline call's `open` puts the app over its parent
+
+`open ↗` on an app-call card opened the called app's tile, but a sub-app landed
+in its parent's shared frame rather than in front of the conversation that
+called it. It now takes the same full-frame layer as the tile's own `⤢`: the
+sub-app claims its parent's frame, so the parent chat sits beneath it, and `⤡`
+gives the frame back. A top-level app opened from the trunk on a phone is lifted
+into the front layer over the board instead of leaving any other front tile up.
+
+- **`ui/src/store.ts`**: `showApp()` expands a parented target after opening the
+  chain, keeps a front tile only when it is an ancestor of the destination, and
+  otherwise lowers it; on a phone it lifts a top-level target into `front`.
+- **`scripts/ui-order-test.ts`**: asserts the hidden parent is restored, the
+  sub-app is opened and expanded over it, and a top-level phone open lifts the
+  tile to the front.
+
+Tests: `npm run test:ui-order`; `npm --prefix ui run typecheck`.
+
 ## 2026-11-03 — a chat memory update opens in the inspector modal
 
 Clicking a memory-update line in the chat used to expand its value inline in
@@ -16,6 +34,29 @@ giving long values room and keeping the conversation from reflowing.
   gone.
 
 Tests: `npm run test:ui`.
+
+## 2026-11-03 — human rows say who spoke; insight reads the transcript first
+
+Grandma-kat now records where a delivered `human` row came from — `source:
+"human"` for a direct reply, `"memory"` for `Human(readFromMemoryOnce())`, and
+`"goto"` for an armed Goto/redirect — so a log reader can tell the user's words
+from a slot the tree filled. `read_runs` surfaces that as `source`, labels
+emits with `channel: "user" | "machine"`, and adds `mode: "transcript"`: direct
+human replies plus every emit, oldest first, as
+`{ seq, speaker, source | channel, text }`.
+
+- `package.json` / `package-lock.json`: bump `grandma-kat` to
+  `d74ee80b72032fc7de860e99139a01c925fb944c`.
+- `web/src/tool-guides.ts`: the `read_runs` guide names transcript mode and
+  warns that only a `human` row with source `"human"` is the user speaking.
+- `app/insight` (seed workspace): a deterministic first step calls
+  `read_runs { mode: "transcript", limit: 120 }` (narrowed by a named
+  `run_id`), passes the result to LOCATE and EXPLAIN, and makes transcript
+  orientation strategy 0 before any other lookup.
+- Re-packed `web/public/seed/workspace.json`.
+
+Tests: grandma-kat `npm test` (356 pass), `npm run typecheck`,
+`test:read-runs-args`, `test:provenance`, `test:seed-freshness`, `build:web`.
 
 ## 2026-11-03 — the trunk's cheap tool check is gone
 

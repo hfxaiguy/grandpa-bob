@@ -307,7 +307,9 @@ follows the tree guides.
 Two engine readers are registered by BOB itself, not by an app's `tools.mjs`:
 
 - **`read_runs`** — grandma-kat's run-log reader (`runLogTools`), for recall and
-  provenance.
+  provenance. Its `transcript` mode is the user-facing conversation (direct
+  human replies + every emit, oldest first, machine emits labeled); condensed
+  rows carry `source` on human rows and `channel` on emits.
 - **`inspect_memory`** — grandma-kat's bounded view of a value held by a
   `ref://<name>.<seq>` handle or a live memory slot. It lets the model peek
   (type/size + a random sample) before handing a big value to another tree.

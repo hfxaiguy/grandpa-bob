@@ -24,10 +24,15 @@ export const HOST_GUIDES: HostGuide[] = [
       'RECALLING THE PAST: the run log records every past session. To answer ' +
       '"what have we been doing", "who did I talk to recently", or "I just spoke ' +
       'to her", call read_runs with type "emit" — the recent emit timeline ' +
-      "(what the bot told the user, newest first). By default read_runs returns the " +
+      "(what the bot told the user, newest first). For the conversation as the " +
+      'user experienced it, call read_runs with mode "transcript" — direct human ' +
+      'replies plus every emit, oldest first (machine emits are labeled, not hidden). ' +
+      'By default read_runs returns the ' +
       'most recent rows of every kind, so set `type` explicitly ("emit" for what the ' +
-      'bot said, "human" for what the user said) and use `limit` / `before` / `after` ' +
-      '/ `run_id` to narrow it. Then mode "expanded" with a row\'s seq for the trace ' +
+      'bot said, "human" for a human row) and use `limit` / `before` / `after` ' +
+      '/ `run_id` to narrow it. A human row\'s `source` is "human" only for a direct ' +
+      'reply; "memory" and "goto" are values the tree supplied, not the user speaking. ' +
+      'Then mode "expanded" with a row\'s seq for the trace ' +
       "behind it (the llm calls, tool calls and results). The emits carry the names the " +
       "apps resolved, so recall does not depend on spelling, and the log is the source " +
       'of truth for "recently", not the current conversation.',

@@ -90,7 +90,7 @@
   "dependencies": {
     "dotenv": "^17.4.2",
     "grammy": "^1.45.1",
-    "grandma-kat": "git+https://github.com/hfxaiguy/grandma-kat.git#921f9f252e76ed9b8160bb29c6146d773a8b1869",
+    "grandma-kat": "git+https://github.com/hfxaiguy/grandma-kat.git#d74ee80b72032fc7de860e99139a01c925fb944c",
     "werift": "^0.25.2"
   },
   "devDependencies": {
