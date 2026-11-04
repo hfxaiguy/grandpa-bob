@@ -187,3 +187,12 @@ async function guideFrom(files: string[]): Promise<string> {
 export async function listTreeSources(workspaceDir: string): Promise<TreeSource[]> {
   return [...(await listPatterns(workspaceDir)), ...(await listAppTrees(workspaceDir))];
 }
+
+/**
+ * True when the workspace has at least one runnable tree. A profile whose
+ * desktop mirror has not pulled yet (or a blank profile) has no tree to load;
+ * callers use this to wait instead of claiming work they cannot run.
+ */
+export async function hasRunnableTree(workspaceDir: string): Promise<boolean> {
+  return (await listTreeSources(workspaceDir)).length > 0;
+}

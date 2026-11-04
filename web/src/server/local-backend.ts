@@ -11,7 +11,7 @@
  */
 import type { AgentClient } from "../agent/agent-client";
 import type { Platform } from "../platform/types";
-import { listAppTrees, listPatterns, listTreeSources } from "../tree-sources";
+import { hasRunnableTree, listAppTrees, listPatterns, listTreeSources } from "../tree-sources";
 import { resolveModuleEntry, resolveTreeEntry } from "../tree-files";
 import { serializeTree } from "../tree-serialize";
 import { newTurnApps, seedPausedApp, tagEventApp, type TurnApps } from "../app-attribution";
@@ -1814,12 +1814,31 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     await channelPost("/api/ack", { conv: msg.conv, ids: [msg.id] });
   }
 
+  /**
+   * A profile can exist before its workspace does: a desktop-mirrored profile
+   * whose first pull has not landed, or a blank profile the user has not
+   * seeded. Such a tab cannot answer a phone message; claiming the chat would
+   * hold the binding while every turn fails with "unknown tree". Leave the
+   * mailbox alone so a working workspace can claim it.
+   */
+  async function workspaceCanRun(): Promise<boolean> {
+    try {
+      return await hasRunnableTree(platform.workspaceRoot);
+    } catch {
+      return false;
+    }
+  }
+
   /** Claim (inbox) → run → relay → ack. Reschedules itself (visibility-aware). */
   async function bridgeTick(): Promise<void> {
     try {
       if (lstore.read(BRIDGE_KEY) !== "1") {
         if (bridgeWasOn) bridgeWasOn = false;
         return;
+      }
+      if (!(await workspaceCanRun())) {
+        bridgeWasOn = false;
+        return; // keep the messages parked for a tab that can run them
       }
       // Claim: parked messages for unclaimed chats (bound to this profile
       // now) plus chats already bound to it. The channel drops chats whose

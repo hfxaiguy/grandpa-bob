@@ -11,16 +11,18 @@ import os from "node:os";
 import path from "node:path";
 import type { Platform } from "../web/src/platform/types";
 import { createNodePlatform } from "../src/platform/node";
-import { listTreeSources } from "../web/src/tree-sources";
+import { hasRunnableTree, listTreeSources } from "../web/src/tree-sources";
 import { resolvePatternPath } from "../web/src/agent/pattern-path";
 
 async function main(): Promise<void> {
   const ws = await mkdtemp(path.join(os.tmpdir(), "bob-pattern-path-"));
   try {
+    assert.equal(await hasRunnableTree(ws), false, "an empty workspace has no runnable tree");
     await mkdir(path.join(ws, "patterns"), { recursive: true });
     for (const file of ["context_manager.prod.mjs", "trunk.prod.mjs", "legacy.prod.mjs"]) {
       await writeFile(path.join(ws, "patterns", file), "export default {};\n");
     }
+    assert.equal(await hasRunnableTree(ws), true, "a discovered tree makes the workspace runnable");
 
     const platform = createNodePlatform(ws) as Platform;
 

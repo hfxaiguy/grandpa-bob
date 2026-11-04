@@ -2,6 +2,24 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-04 — an empty profile no longer swallows Telegram messages
+
+A desktop-mirrored profile can exist before its workspace arrives (the first
+pull has not landed, or the profile is still blank). Its tab has no tree to
+run, but the phone bridge still claimed the chat and marked the message seen;
+every turn then failed with `unknown tree 'trunk'` and the message was acked
+away. The bridge now checks for a runnable tree before draining the inbox and
+leaves the mailbox untouched when there is none, so a seeded profile (or the
+next boot after the mirror pull) answers it instead.
+
+- **`web/src/tree-sources.ts`**: `hasRunnableTree(workspaceDir)`.
+- **`web/src/server/local-backend.ts`**: the Telegram tick skips claiming when
+  `hasRunnableTree` is false.
+- **`scripts/pattern-path-test.ts`**: empty vs. populated workspace checks.
+
+Tests: `npm run test:pattern-path`; `npm --prefix web run typecheck`;
+`npm run typecheck`.
+
 ## 2026-11-04 — a timed-out model call keeps a retry action
 
 A model call that timed out inside an app subtree (or another swallowed layer,
