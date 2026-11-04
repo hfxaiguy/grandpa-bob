@@ -10,6 +10,8 @@ those early frames, so the desktop showed a SAS and then waited forever for the
 browser profile: no console approval prompt, while the browser showed “waiting
 for approval on the desktop console”.
 
+- **`src/bridge/relay.ts`**: install the datachannel handler as soon as the
+  channel is created and hold early text frames until the peer attaches.
 - **`web/src/sync/chunking.ts`**: buffer non-chunk envelopes until the caller
   attaches `onMessage`, then flush them in order. This also covers reassembled
   chunked frames.

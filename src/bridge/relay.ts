@@ -245,6 +245,23 @@ export function offerRelayChannel(
       iceServers: (channel.iceServers.length ? channel.iceServers : iceServers) as never,
     });
     const dc = pc.createDataChannel("bob-sync", { ordered: true });
+    // The datachannel can carry the browser's first frame (`hello`) as soon
+    // as it opens, before `finish` below builds the SyncPeer. Install the
+    // message handler now and hold text frames until `onMessage` attaches;
+    // otherwise werift drops them at the transport layer.
+    let frameHandler: ((text: string) => void) | null = null;
+    const earlyFrames: string[] = [];
+    dc.onmessage = (event: unknown) => {
+      const raw = (event as { data?: unknown })?.data ?? event;
+      const text =
+        typeof raw === "string"
+          ? raw
+          : Buffer.isBuffer(raw)
+            ? raw.toString("utf8")
+            : String(raw);
+      if (frameHandler) frameHandler(text);
+      else if (earlyFrames.length < 200) earlyFrames.push(text);
+    };
     const mdnsHosts = localMdnsHosts();
     const pending: unknown[] = [];
     let remoteSet = false;
@@ -308,20 +325,14 @@ export function offerRelayChannel(
         },
         connected: () => dc.readyState === "open" && pc.connectionState !== "closed",
         onMessage(cb) {
-          dc.onmessage = (event: unknown) => {
-            const raw = (event as { data?: unknown })?.data ?? event;
-            const text =
-              typeof raw === "string"
-                ? raw
-                : Buffer.isBuffer(raw)
-                  ? raw.toString("utf8")
-                  : String(raw);
+          frameHandler = (text) => {
             try {
               cb(JSON.parse(text) as SyncEnvelope);
             } catch {
               /* torn frame */
             }
           };
+          for (const text of earlyFrames.splice(0)) frameHandler(text);
         },
         onClosed(cb) {
           const fire = (): void => cb();
