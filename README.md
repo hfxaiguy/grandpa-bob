@@ -376,6 +376,10 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    slots: `cheap` (routing + direct answers) and `strong` (the tool-using
    loop). Each entry has `baseURL`, `apiKey` (browser-local, never in the
    workspace), `model`, and optional `transform`/`protocol`/`thinking`.
+   Optional call bounds are `timeout` and `idleTimeout` (milliseconds) and
+   `retries` (attempts): the whole-call deadline defaults to 2 min on
+   OpenAI-compatible endpoints and 10 min on Ollama, and a timed-out call gets
+   two attempts before it fails.
    Any OpenAI-compatible endpoint works (OpenAI, OpenRouter, Neuralwatt,
    llama.cpp, LM Studio, HF router); `protocol: "ollama"` is only for Ollama's
    native `/api/chat`. The **Test** button probes a slot from the tab.
@@ -649,6 +653,13 @@ conversation, exactly like `/model` — and re-runs the killed turn on it. A pla
 5xx or timeout is *not* treated as a quota wall; grandma-kat retries those with
 backoff. Only the model call itself is retried — the turn is re-delivered from
 its last `.human()` checkpoint, so no work before the failure is repeated.
+A timeout that survives those retries, and a model call that fails inside an
+app subtree (where the engine folds it into a tool result), both keep the
+**↻ retry** action: on the global banner and, for an app call, on its inline
+card. The retry resends the turn's message from the checkpoint; a transient
+failure that the model layer recovered from is not reported as a failure. The
+per-slot `timeout`/`idleTimeout`/`retries` fields in `models.json` tune the
+bounds when a provider needs longer than the defaults.
 
 **Why does tool support depend on the *provider*, not just the model?**
 On the HF router, each provider serves the same weights with its own chat template

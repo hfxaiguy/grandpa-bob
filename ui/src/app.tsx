@@ -148,13 +148,11 @@ export function App() {
   // the only visible entry point; the count matches the header's event count
   // (one line per event — turn dividers are not events).
   const streamEvents = createMemo(() => state.turns.reduce((n, t) => n + (t.events?.length ?? 0), 0));
-  // A hard-failed last turn can be resent with one click — unless it hit a
-  // quota wall, where the fallback buttons are the right action (a plain retry
-  // would just hit the same 402).
-  const canRetry = () => {
-    const t = state.turns[state.turns.length - 1];
-    return !!t && t.status === "error" && !!t.input && !t.fallback?.length;
-  };
+  // The store derives this beside the failure itself: a hard-failed turn and a
+  // completed turn with an unhandled model call both keep their input, so both
+  // can be resent. A quota wall is not retryable (the fallback buttons are the
+  // right action; a plain retry would just hit the same 402).
+  const canRetry = () => !!state.lastError?.retryable;
 
   onMount(() => {
     // The browser shell's Session button lives in its own toolbar, above this

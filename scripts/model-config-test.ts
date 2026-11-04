@@ -85,4 +85,41 @@ assert.throws(
   /thinking\.options must be an object/,
 );
 
-console.log("model-config: parse, interpolation, transform wiring, thinking and errors OK");
+// Per-model call bounds survive the browser parser; grandma-kat reads them
+// verbatim, so dropping them made a configured timeout silently ineffective.
+const bounded = parseModels(
+  JSON.stringify({
+    slow: {
+      baseURL: "https://api.example.com/v1",
+      model: "slow-model",
+      apiKey: "k",
+      timeout: 300_000,
+      idleTimeout: 45_000,
+      retries: 2,
+    },
+    unset: { baseURL: "https://api.example.com/v1", model: "m", apiKey: "k" },
+  }),
+);
+assert.equal(bounded.slow.timeout, 300_000);
+assert.equal(bounded.slow.idleTimeout, 45_000);
+assert.equal(bounded.slow.retries, 2);
+assert.equal(bounded.unset.timeout, undefined, "absent bounds stay absent (grandma-kat defaults apply)");
+for (const field of ["timeout", "idleTimeout", "retries"]) {
+  assert.throws(
+    () => parseModels(JSON.stringify({ m: { baseURL: "x", model: "y", [field]: 0 } })),
+    new RegExp(`"${field}" must be a positive number`),
+    `${field} below 1 is rejected`,
+  );
+  assert.throws(
+    () => parseModels(JSON.stringify({ m: { baseURL: "x", model: "y", [field]: 0.5 } })),
+    new RegExp(`"${field}" must be a positive number`),
+    `${field} must be a whole millisecond/attempt`,
+  );
+  assert.throws(
+    () => parseModels(JSON.stringify({ m: { baseURL: "x", model: "y", [field]: "1" } })),
+    new RegExp(`"${field}" must be a positive number`),
+    `${field} must be a number`,
+  );
+}
+
+console.log("model-config: parse, interpolation, transform wiring, thinking, call bounds and errors OK");

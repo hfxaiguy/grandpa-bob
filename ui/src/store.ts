@@ -4,6 +4,7 @@
 import { createSignal } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
 import { getJSON, postJSON, postForm, openEventStream } from "./api";
+import { lastTurnFailure } from "./turn-failure";
 import type { AppInfo, PatternInfo, Provenance, RefTarget, SessionInfo, Slot, Turn } from "./types";
 
 /** Events kept per turn in the live store. The full trace lives in the run log
@@ -87,9 +88,9 @@ export interface UiState {
   bridgeOn: boolean;
   toast: string;
   toastErr: boolean;
-  /** The most recent failure (a failed turn or a failed model call), shown
-   *  as a dismissible banner. */
-  lastError: { title: string; text: string } | null;
+  /** The most recent failure (a failed turn or an unhandled model call), shown
+   *  as a dismissible banner. `retryable` adds the ↻ action. */
+  lastError: { title: string; text: string; retryable: boolean } | null;
   /** A hidden tile whose app is active but could not raise because both app
    *  seats are taken; its rail square pulses until opened (or the pulse
    *  times out). */
@@ -496,31 +497,9 @@ export async function refreshTurns(): Promise<void> {
 
 /** Reflect the latest failure in the banner (so a reload still warns). Covers
  *  a failed turn AND a turn that completed with a swallowed model-call
- *  failure (e.g. the context condenser timing out). */
+ *  failure (e.g. an app subtree or the context condenser timing out). */
 function syncLastError(turns: Turn[]): void {
-  const last = turns[turns.length - 1];
-  if (!last) {
-    setState("lastError", null);
-    return;
-  }
-  if (last.status === "error") {
-    setState("lastError", {
-      title: last.fallback?.length ? "MODEL OUT OF CREDIT" : "TURN FAILED",
-      text: last.error || "the turn failed",
-    });
-    return;
-  }
-  if (last.status === "stopped") {
-    setState("lastError", null);
-    return;
-  }
-  const llmErr = last.events.find((e) => e.kind === "llm_error");
-  if (llmErr) {
-    const text = String((llmErr.content as Record<string, unknown> | null)?.error ?? "a model call failed");
-    setState("lastError", { title: "MODEL CALL FAILED", text });
-    return;
-  }
-  setState("lastError", null);
+  setState("lastError", lastTurnFailure(turns));
 }
 
 // ── actions ─────────────────────────────────────────────────────────────
@@ -549,11 +528,19 @@ export async function stop(): Promise<void> {
   }
 }
 
-/** Resend the last turn's input — the manual escape when a turn failed. */
+/** Resend a turn's input — the manual escape when a turn (or a call inside it)
+ *  failed. The engine resumes from its last checkpoint, so work before the
+ *  failure is not repeated. */
+export async function retryTurn(turnId: string): Promise<void> {
+  const turn = state.turns.find((t) => t.turnId === turnId);
+  if (!turn || !turn.input || turn.status === "running") return;
+  await send(turn.input);
+}
+
+/** Resend the last turn's input — the banner's ↻ action. */
 export async function retryLast(): Promise<void> {
   const last = state.turns[state.turns.length - 1];
-  if (!last || !last.input) return;
-  await send(last.input);
+  if (last) await retryTurn(last.turnId);
 }
 
 // ── attachments & voice ─────────────────────────────────────────────────
@@ -1570,12 +1557,19 @@ export function handleSSE(msg: any): void {
           if (t.events.length > MAX_TURN_EVENTS) t.events.splice(0, t.events.length - MAX_TURN_EVENTS);
         }),
       );
-      // A swallowed model-call failure (the context condenser, a fold, …) has
-      // no turn error of its own — surface it the moment it happens.
+      // A swallowed model-call failure (an app subtree, the context condenser,
+      // a fold, …) has no turn error of its own — surface it the moment it
+      // happens. Re-derive on a later successful call too: a failure grandma-kat
+      // retried successfully must not leave a permanent banner.
       if (ev?.kind === "llm_error") {
-        const text = String(ev.content?.error ?? "a model call failed");
-        setState("lastError", { title: "MODEL CALL FAILED", text });
-        toast(`model call failed: ${text}`, true);
+        syncLastError(state.turns);
+        if (state.lastError?.title === "MODEL CALL FAILED") {
+          toast(`model call failed: ${state.lastError.text}`, true);
+        }
+      } else if (ev?.kind === "llm_call" && state.lastError?.title === "MODEL CALL FAILED") {
+        // A later attempt with the same child/round means grandma-kat recovered;
+        // re-derive so a transient failure does not leave the banner behind.
+        syncLastError(state.turns);
       }
       break;
     }

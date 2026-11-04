@@ -609,6 +609,7 @@ body.dragging-tile { user-select: none !important; }
 .app-call-head button { padding: 0 6px; font-size: 11px; flex: none; }
 .app-call-open { color: var(--accent); opacity: 0.85; }
 .app-call-open:hover, .app-call-open:focus-visible { opacity: 1; }
+.app-call-retry { color: var(--err); }
 .app-call-toggle { color: var(--muted); }
 .app-call-body {
   display: flex;

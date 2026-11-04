@@ -13,6 +13,7 @@ import { componentDoc, type ComponentTheme } from "./emit-component";
 import {
   state,
   send,
+  retryTurn,
   selectSession,
   newSession,
   deleteSession,
@@ -424,6 +425,15 @@ function AppCallCard(props: { turn: Turn; call: AppCall; depth?: number }) {
   const [open, setOpen] = createSignal(true);
   const status = () => props.call.status;
   const info = () => state.apps.find((a) => a.name === props.call.app);
+  // A failed app call has no retry of its own inside the engine, and its
+  // failure can end the turn with a normal-looking reply. Offer the same
+  // checkpoint resend as the banner, right where the error is visible. Only the
+  // newest turn can be restarted (older turns would jump the conversation).
+  const retryable = () =>
+    props.call.failed &&
+    props.turn.status !== "running" &&
+    !!props.turn.input &&
+    state.turns[state.turns.length - 1]?.turnId === props.turn.turnId;
   const rows = createMemo(() => {
     const base = props.call.emits
       .map((i) => ({
@@ -481,6 +491,16 @@ function AppCallCard(props: { turn: Turn; call: AppCall; depth?: number }) {
         </span>
         <span class="app-call-status">{status()}</span>
         <span class="spacer" />
+        <Show when={retryable()}>
+          <button
+            type="button"
+            class="app-call-retry"
+            title="retry this failed call (resumes the turn from its checkpoint)"
+            onClick={() => void retryTurn(props.turn.turnId)}
+          >
+            ↻ retry
+          </button>
+        </Show>
         <button
           type="button"
           class="app-call-open"

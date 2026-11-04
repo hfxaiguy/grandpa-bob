@@ -2,6 +2,32 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-04 — a timed-out model call keeps a retry action
+
+A model call that timed out inside an app subtree (or another swallowed layer,
+such as the context condenser) was folded into a tool result, so the turn
+completed normally. The banner said **MODEL CALL FAILED** but had no **↻ retry**
+because the button only existed for a turn whose status was `error`; the failed
+app card was a dead end too. The session looked stopped with no way to retry the
+call.
+
+- **`ui/src/turn-failure.ts`**: derive the banner and its retryability from the
+  latest turn. A completed turn with an unhandled `llm_error` is retryable; an
+  `llm_error` followed by an `llm_call` for the same child/round is a transient
+  failure grandma-kat already recovered from and is not reported.
+- **`ui/src/store.ts`**, **`ui/src/app.tsx`**: the banner's ↻ action follows
+  that derivation, and a later successful retry clears a transient failure.
+- **`ui/src/components.tsx`**: a failed inline app call gets its own **↻ retry**
+  (only on the newest turn), next to the visible error.
+- **`web/src/model-config.ts`**: pass per-slot `timeout`, `idleTimeout` and
+  `retries` through to grandma-kat. The browser parser used to drop them, so a
+  configured timeout was silently ignored and every slow endpoint hit the
+  2-minute default.
+
+Tests: `npm run test:turn-failure`; `npm run test:models`; `npm run typecheck`;
+`npm --prefix ui run typecheck`; `npm --prefix web run typecheck`; browser
+timeout repro (app call error shows both retry actions after the turn settles).
+
 ## 2026-11-04 — relay pairing no longer drops the browser's first frame
 
 A relay data channel can open and start carrying the browser's `hello` before

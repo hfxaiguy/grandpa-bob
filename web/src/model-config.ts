@@ -49,6 +49,16 @@ export type ModelEntry = {
   protocol?: "ollama";
   /** Optional reasoning level / thinking controls for this model slot. */
   thinking?: ModelThinking;
+  /**
+   * Whole-call deadline in ms (connect, headers and body). grandma-kat defaults
+   * to 2 min on OpenAI-compatible endpoints and 10 min on Ollama. A value that
+   * exceeds the deadline fails with `llm_timeout` and is retried once.
+   */
+  timeout?: number;
+  /** Max gap between body bytes before the call is treated as stalled. */
+  idleTimeout?: number;
+  /** Attempts for transient failures (429/5xx/transport); timeouts get 2. */
+  retries?: number;
 };
 
 export type ModelRegistry = Record<string, ModelEntry>;
@@ -102,6 +112,18 @@ function normalizeEntry(raw: unknown, name: string, env: EnvMap): ModelEntry {
   }
   if (r.protocol === "ollama") {
     entry.protocol = "ollama";
+  }
+  // Call bounds are forwarded to grandma-kat verbatim. Without this a
+  // models.json `timeout`/`idleTimeout`/`retries` was silently dropped by the
+  // browser parser, so a slow endpoint always hit the 2-minute default and the
+  // operator had no way to tune it.
+  for (const field of ["timeout", "idleTimeout", "retries"] as const) {
+    const value = r[field];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 1) {
+      throw new Error(`models.json: entry "${name}" field "${field}" must be a positive number`);
+    }
+    entry[field] = Math.floor(value);
   }
   if (r.thinking !== undefined) {
     if (r.thinking === null || typeof r.thinking !== "object" || Array.isArray(r.thinking)) {
