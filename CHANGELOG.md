@@ -2,6 +2,27 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-04 — desktop pairing shows the phrase before console approval
+
+The browser only revealed its phrase confirmation after `pairWithServer`
+resolved, but that promise waits for the desktop console approval. The tab
+looked stuck with no button to press, and the operator had to approve without
+seeing the browser phrase. The confirmation now appears as soon as the data
+channel opens; the tab sends `ready` once the operator approves.
+
+- **`web/src/sync-ui.ts`**: deferred desktop confirmation, phrase controls
+  before approval, and a clear wait state after pressing “Phrase matches”.
+- **`web/index.html`**: “Another tab / relay” is now “Another browser tab”, and
+  the hints distinguish browser-to-browser relay pairing from a desktop over
+  the relay.
+- **`scripts/pair.ts`**: after 15 seconds without a `hello`, explain that
+  “Pair with browser” is the tab-to-tab path and the desktop will never prompt.
+- **`web/scripts/server-peer-smoke.mjs`**: assert the browser can confirm the
+  phrase before the console approval.
+
+Tests: `npm --prefix web run typecheck`; `npm --prefix web run build`;
+`npm run typecheck`.
+
 ## 2026-11-04 — the Profiles dialog stops repainting itself
 
 Opening Profiles could fall into a render loop: the list refreshed the registry,

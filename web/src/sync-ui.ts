@@ -405,7 +405,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
     const advanced = el<HTMLDetailsElement>("pair-advanced");
     if (advanced) advanced.hidden = !desktop;
     const join = el<HTMLButtonElement>("pair-join-code");
-    if (join) join.textContent = desktop ? "Pair with desktop" : "Pair with code";
+    if (join) join.textContent = desktop ? "Pair with desktop" : "Pair with browser";
     const saved = activeSwapService();
     const keyNote = el<HTMLElement>("pair-relay-key-note");
     if (keyNote) keyNote.hidden = desktop || Boolean(saved?.readKey || saved?.uploadKey);
@@ -675,19 +675,89 @@ export function wireSyncUi(getSync: SyncGetter): void {
     beginPairing(startDesktopJoin);
     setVerify("—");
     void (async () => {
+      const profile = activeProfile();
+      const url = serverUrl();
+      showActiveProfile();
+      progress(`joining ${url}…`);
+      setStatus(`joining ${url}…`);
+
+      let connection: ServerConnection | null = null;
+      let confirmed = false;
+      let rejected: string | null = null;
+      let resolveReady!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        resolveReady = resolve;
+      });
+
+      // The phrase buttons appear as soon as the data channel opens, before
+      // the desktop operator approves. Otherwise the tab would look stuck:
+      // pairWithServer does not resolve until that approval, but the operator
+      // needs the browser phrase to compare first.
+      const pairing: PendingPairing = {
+        done: Promise.resolve(""),
+        ready,
+        accept: () => undefined,
+        confirm: () => {
+          confirmed = true;
+          if (!connection) {
+            setStatus("phrase confirmed — waiting for desktop approval…");
+            return;
+          }
+          connection.confirmPhrase();
+          handle.attachDevice(connection.peer, {
+            kind: "desktop",
+            deviceId: connection.info.deviceId,
+            deviceName: connection.info.mirror || "desktop",
+            requirePhrase: false,
+            freshPairing: true,
+          });
+          resolveReady();
+        },
+        reject: (reason) => {
+          rejected = reason || "the phrase does not match";
+          if (connection) {
+            connection.rejectPhrase(rejected);
+            connection.close();
+          } else {
+            setStatus("phrase rejected — waiting for the desktop to cancel…");
+          }
+        },
+      };
+
+      void pairing.ready.then(async () => {
+        if (!connection || rejected) return;
+        progress("binding the mirror folder…");
+        await bindDesktopMirror(profile, connection.info.mirror);
+        progressDone();
+        if (connection.info.relay) {
+          // BobSwap channels are single-session signaling: reloading would
+          // throw this datachannel away and there is nothing to resume.
+          const globals = window as unknown as {
+            __bobServer?: unknown;
+            __bobAdoptServer?: (connection: ServerConnection) => void;
+          };
+          if (typeof globals.__bobAdoptServer === "function") globals.__bobAdoptServer(connection);
+          else globals.__bobServer = connection;
+          setStatus(
+            `paired over the relay for this tab session · fingerprint ${connection.info.fingerprint} — ` +
+              "keep this tab open; after a reload run `npm run pair -- --relay` again",
+          );
+          updateLiveStatus();
+          return;
+        }
+        setStatus(`paired · fingerprint ${connection.info.fingerprint} — reloading…`);
+        setTimeout(() => location.reload(), 800);
+      });
+
       try {
-        const profile = activeProfile();
-        const url = serverUrl();
-        showActiveProfile();
-        progress(`joining ${url}…`);
-        setStatus(`joining ${url}…`);
-        const connection = await pairWithServer({
+        connection = await pairWithServer({
           url,
           code,
           profile,
           localId: handle.engine.id,
           onSas: (phrase) => {
             setVerify(phrase);
+            showPhraseConfirm(pairing, phrase);
             progress("verification phrase ready");
           },
           onStatus: (text) => {
@@ -695,56 +765,20 @@ export function wireSyncUi(getSync: SyncGetter): void {
             progress(text);
           },
         });
-        let resolveReady!: () => void;
-        let rejected = false;
-        const ready = new Promise<void>((resolve) => (resolveReady = resolve));
-        const pairing: PendingPairing = {
-          done: Promise.resolve(connection.phrase),
-          ready,
-          accept: () => undefined,
-          confirm: () => {
-            connection.confirmPhrase();
-            handle.attachDevice(connection.peer, {
-              kind: "desktop",
-              deviceId: connection.info.deviceId,
-              deviceName: connection.info.mirror || "desktop",
-              requirePhrase: false,
-              freshPairing: true,
-            });
-            resolveReady();
-          },
-          reject: (reason) => {
-            rejected = true;
-            connection.rejectPhrase(reason);
-            connection.close();
-          },
-        };
-        showPhraseConfirm(pairing, connection.phrase);
-        void pairing.ready.then(async () => {
-          if (rejected) return;
-          progress("binding the mirror folder…");
-          await bindDesktopMirror(profile, connection.info.mirror);
-          progressDone();
-          if (connection.info.relay) {
-            // BobSwap channels are single-session signaling: reloading would
-            // throw this datachannel away and there is nothing to resume.
-            const globals = window as unknown as {
-              __bobServer?: unknown;
-              __bobAdoptServer?: (connection: ServerConnection) => void;
-            };
-            if (typeof globals.__bobAdoptServer === "function") globals.__bobAdoptServer(connection);
-            else globals.__bobServer = connection;
-            setStatus(
-              `paired over the relay for this tab session · fingerprint ${connection.info.fingerprint} — ` +
-                "keep this tab open; after a reload run `npm run pair -- --relay` again",
-            );
-            updateLiveStatus();
-            return;
-          }
-          setStatus(`paired · fingerprint ${connection.info.fingerprint} — reloading…`);
-          setTimeout(() => location.reload(), 800);
-        });
+        pairing.done = Promise.resolve(connection.phrase);
+        if (rejected) {
+          connection.rejectPhrase(rejected);
+          connection.close();
+          return;
+        }
+        if (!confirmed) {
+          showPhraseConfirm(pairing, connection.phrase);
+          setStatus("compare the phrase, then press “Phrase matches”");
+          return;
+        }
+        pairing.confirm();
       } catch (err) {
+        hideConfirm();
         const text = err instanceof Error ? err.message : String(err);
         progressFailed(`desktop pairing failed: ${text}`);
         setStatus(`desktop pairing failed: ${text}`);

@@ -245,6 +245,8 @@ async function runPairing(args: Args): Promise<void> {
 
   let after = -1;
   let approved = false;
+  let connectedAt = 0;
+  let modeHinted = false;
   const deadline = Date.now() + 10 * 60_000;
   while (Date.now() < deadline) {
     const view = await api<{ events: PairingEvent[]; done: boolean }>(
@@ -259,7 +261,10 @@ async function runPairing(args: Args): Promise<void> {
         );
       }
       if (event.type === "joined") console.log("browser joined the channel");
-      if (event.type === "connected") console.log(`SAS: ${String(event.data.sas ?? "—")}`);
+      if (event.type === "connected") {
+        connectedAt = Date.now();
+        console.log(`SAS: ${String(event.data.sas ?? "—")}`);
+      }
       if (event.type === "sas") console.log(`verification phrase: ${String(event.data.sas ?? "—")}`);
       if (event.type === "awaiting-approval" && !approved) {
         console.log(`\nverification phrase: ${String(event.data.sas ?? "—")}`);
@@ -295,6 +300,15 @@ async function runPairing(args: Args): Promise<void> {
     }
     if (args.debug && (view.events.length || view.done)) {
       console.error(`[pair:debug] poll after=${after} events=${view.events.length} done=${view.done}`);
+    }
+    if (connectedAt && !approved && !modeHinted && Date.now() - connectedAt > 15_000) {
+      modeHinted = true;
+      console.log(
+        "\nstill waiting for the browser to identify itself as a desktop client.\n" +
+          "If its button says “Pair with browser”, it is on the tab-to-tab relay path:\n" +
+          "stop, choose “My desktop / server”, set the mailbox URL to the relay URL\n" +
+          "above, and rerun with a fresh code.",
+      );
     }
     if (view.done) {
       console.log("pairing session closed");

@@ -203,6 +203,11 @@ try {
       const browserSas = await evaluate(`document.getElementById("pair-verify")?.textContent || ""`);
       console.log("SAS browser:", browserSas, "server:", sas);
       assert(browserSas === sas, "the browser and server SAS match");
+      const canConfirm = await evaluate(
+        `!document.getElementById("pair-confirm-wrap")?.hidden && !document.getElementById("pair-phrase-ok")?.disabled`,
+      );
+      assert(canConfirm, "the browser shows the phrase confirmation before approval");
+      await evaluate(`document.getElementById("pair-phrase-ok").click()`);
       await admin(`/admin/pairing/${pairing.id}/approve`, { method: "POST", body: { approve: true } });
       approved = true;
       break;
