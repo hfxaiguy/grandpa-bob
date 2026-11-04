@@ -23,6 +23,13 @@ export interface ServerLinkInfo {
   clientKey: string;
   /** This link was paired through BobSwap relay signaling. */
   relay?: boolean;
+  /** Relay channel credentials used to renegotiate on the same channel. */
+  relayChannel?: {
+    id: string;
+    roleToken: string;
+    expiresAt?: string;
+    iceServers?: unknown[];
+  };
   /** Per-profile server proof key (pinned; not the server master key). */
   serverKey: string;
   fingerprint: string;
@@ -69,6 +76,7 @@ interface JoinResponse {
   role_token: string;
   role?: string;
   ice_servers?: unknown[];
+  expires_at?: string;
 }
 
 type Control = Record<string, unknown>;
@@ -112,6 +120,23 @@ export function loadServerLink(profile: string): ServerLinkInfo | null {
       deviceId: typeof parsed.deviceId === "string" ? parsed.deviceId : undefined,
       clientKey: parsed.clientKey,
       relay: parsed.relay === true,
+      relayChannel:
+        parsed.relayChannel &&
+        typeof parsed.relayChannel === "object" &&
+        typeof parsed.relayChannel.id === "string" &&
+        typeof parsed.relayChannel.roleToken === "string"
+          ? {
+              id: parsed.relayChannel.id,
+              roleToken: parsed.relayChannel.roleToken,
+              expiresAt:
+                typeof parsed.relayChannel.expiresAt === "string"
+                  ? parsed.relayChannel.expiresAt
+                  : undefined,
+              iceServers: Array.isArray(parsed.relayChannel.iceServers)
+                ? parsed.relayChannel.iceServers
+                : undefined,
+            }
+          : undefined,
       serverKey: parsed.serverKey,
       fingerprint: parsed.fingerprint,
       mirror: typeof parsed.mirror === "string" ? parsed.mirror : profile,
@@ -270,23 +295,7 @@ interface Opened {
   close: () => void;
 }
 
-async function openLink(
-  url: string,
-  channelId: string,
-  roleToken: string,
-  role: "offerer" | "answerer",
-  localId: string,
-  onSas: (phrase: string) => void,
-  iceServers?: unknown[],
-): Promise<Opened> {
-  const provider = new BobSwapSignaling({ baseUrl: url }, { id: channelId, roleToken, role });
-  const servers = toIceServers(iceServers);
-  const { peer, phrase } = await rtcPeer(provider, localId, {
-    createChannel: role === "offerer",
-    // Loopback/self-hosted: none. A remote mailbox may advertise STUN/TURN.
-    iceServers: servers,
-  });
-  onSas(phrase);
+function wrapOpened(peer: SyncPeer, phrase: string, localId: string): Opened {
   let controlListener: ((control: Control) => void) | null = null;
   const queued: Control[] = [];
   const link = controlPeer(peer, (control) => {
@@ -308,12 +317,34 @@ async function openLink(
   };
 }
 
+async function openLink(
+  url: string,
+  channelId: string,
+  roleToken: string,
+  role: "offerer" | "answerer",
+  localId: string,
+  onSas: (phrase: string) => void,
+  iceServers?: unknown[],
+): Promise<Opened> {
+  const provider = new BobSwapSignaling({ baseUrl: url }, { id: channelId, roleToken, role });
+  const servers = toIceServers(iceServers);
+  const { peer, phrase } = await rtcPeer(provider, localId, {
+    createChannel: role === "offerer",
+    // Loopback/self-hosted: none. A remote mailbox may advertise STUN/TURN.
+    iceServers: servers,
+  });
+  onSas(phrase);
+  return wrapOpened(peer, phrase, localId);
+}
+
 interface HandshakeOptions {
   opened: Opened;
   mode: "pairing" | "resume";
   url: string;
   profile: string;
   info?: ServerLinkInfo;
+  /** Credentials for a relay channel, so a reload can renegotiate on it. */
+  relayChannel?: ServerLinkInfo["relayChannel"];
   onStatus: (text: string) => void;
 }
 
@@ -502,6 +533,7 @@ function negotiate(
           deviceId: typeof control.deviceId === "string" ? control.deviceId : undefined,
           clientKey: String(control.clientKey ?? ""),
           relay: control.transport === "relay",
+          relayChannel: control.transport === "relay" ? opts.relayChannel : undefined,
           serverKey: String(control.serverKey ?? ""),
           fingerprint: String(control.fingerprint ?? ""),
           mirror: capabilities.mirror ?? opts.profile,
@@ -582,7 +614,72 @@ export async function pairWithServer(opts: {
   }
   return new Promise<ServerConnection>((resolve, reject) => {
     negotiate(
-      { opened, mode: "pairing", url: base, profile: opts.profile, onStatus: opts.onStatus },
+      {
+        opened,
+        mode: "pairing",
+        url: base,
+        profile: opts.profile,
+        relayChannel: {
+          id: joined.channel_id,
+          roleToken: joined.role_token,
+          expiresAt: joined.expires_at,
+          iceServers: joined.ice_servers,
+        },
+        onStatus: opts.onStatus,
+      },
+      resolve,
+      reject,
+    );
+  });
+}
+
+/**
+ * Reopen the same BobSwap signaling channel after a reload or profile switch.
+ * The browser sends a generation-tagged reconnect request; the desktop waits
+ * on the channel and offers a fresh datachannel. Only signaling is repeated.
+ */
+async function resumeRelayServer(opts: {
+  info: ServerLinkInfo;
+  profile?: string;
+  localId: string;
+  onSas?: (phrase: string) => void;
+  onStatus?: (text: string) => void;
+}): Promise<ServerConnection> {
+  const channel = opts.info.relayChannel!;
+  const base = normalizeUrl(opts.info.url);
+  const profile = opts.profile ?? opts.info.profile;
+  const nonce = crypto.randomUUID();
+  opts.onStatus?.("reopening the relay channel…");
+  let opened: Opened;
+  try {
+    const provider = new BobSwapSignaling(
+      { baseUrl: base },
+      { id: channel.id, roleToken: channel.roleToken, role: "joiner" },
+      opts.onStatus,
+      { nonce, profile },
+    );
+    const { peer, phrase } = await rtcPeer(provider, opts.localId, {
+      createChannel: false,
+      iceServers: toIceServers(channel.iceServers),
+    });
+    opts.onSas?.(phrase);
+    opened = wrapOpened(peer, phrase, opts.localId);
+  } catch (err) {
+    throw new Error(
+      `the relay session could not reopen (${err instanceof Error ? err.message : String(err)}) — ` +
+        "run `npm run pair -- --relay` again for a new code",
+    );
+  }
+  return new Promise<ServerConnection>((resolve, reject) => {
+    negotiate(
+      {
+        opened,
+        mode: "resume",
+        url: base,
+        profile,
+        info: { ...opts.info, profile },
+        onStatus: opts.onStatus ?? (() => {}),
+      },
       resolve,
       reject,
     );
@@ -598,10 +695,12 @@ export async function resumeServer(opts: {
   onStatus?: (text: string) => void;
 }): Promise<ServerConnection> {
   if (opts.info.relay) {
-    throw new Error(
-      "this desktop was paired through the BobSwap relay, which is a single-session signaling channel — " +
-        "run `npm run pair -- --relay` again for a new code",
-    );
+    if (!opts.info.relayChannel) {
+      throw new Error(
+        "this desktop was paired before relay reuse was supported — run `npm run pair -- --relay` again",
+      );
+    }
+    return resumeRelayServer(opts);
   }
   const base = normalizeUrl(opts.info.url);
   const profile = opts.profile ?? opts.info.profile;

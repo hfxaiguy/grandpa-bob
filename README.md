@@ -347,8 +347,10 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    key) to create the signaling channel on BobSwap instead; in the phone's
    **My desktop / server** dialog enter the relay URL and the printed code.
    Only SDP/ICE go through BobSwap — files, desktop ops and voice clips stay on
-   the WebRTC datachannel. A relay channel is single-session: after a page
-   reload or a dropped connection, run `npm run pair -- --relay` again.
+   the WebRTC datachannel. The channel is reused for a nonce-tagged reconnect,
+   so a reload, profile switch or short network drop resumes without a new
+   code while the channel is alive (30 minutes after the join). After that,
+   run `npm run pair -- --relay` again.
    While the tab is paired, it streams its run log to
    `~/.bobkat/peers/<profile>/logs/grandma-kat.db`; read it with
    `npm run peer:log -- --profile <name>` (latest errors by default, `--all`

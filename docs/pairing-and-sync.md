@@ -233,10 +233,12 @@ channel flow used between two browsers:
    A phone on another network cannot reach the loopback mailbox. Run
    `npm run pair -- --relay` instead (with `BOB_SYNC_RELAY_KEY` set to a
    read-scope BobSwap key) and enter the relay URL in the tab. The relay carries
-   only SDP/ICE; the datachannel still carries files, ops and voice. Relay
-   channels are single-session signaling, so after a page reload or a dropped
-   connection run `npm run pair -- --relay` again. Direct mailbox pairings keep
-   the automatic client-key reconnect below.
+   only SDP/ICE; the datachannel still carries files, ops and voice. A reload,
+   profile switch or short drop reopens the same relay channel with a
+   nonce-tagged reconnect, so it needs no new code while the channel is alive
+   (30 minutes after the join). Once it expires, run `npm run pair -- --relay`
+   again. Direct mailbox pairings keep the automatic client-key reconnect
+   below.
 2. In the tab, **Sync… → Pair… → Pair with a code**, select **My desktop /
    server**, and enter the code — no channel id. The dialog shows the active
    profile and, once the channel opens, the mirror + exec capabilities the

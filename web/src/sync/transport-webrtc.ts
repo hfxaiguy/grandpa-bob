@@ -205,6 +205,8 @@ export class BobSwapSignaling implements SignalingProvider {
       role: "offerer" | "answerer" | "joiner";
     },
     private onStatus?: (text: string) => void,
+    /** Reopen an existing channel with a fresh, nonce-tagged generation. */
+    private resume?: { nonce: string; profile?: string },
   ) {}
 
   /** Normalize the relay's public role names onto the signal-feed sides. */
@@ -216,6 +218,17 @@ export class BobSwapSignaling implements SignalingProvider {
   private isOwn(entryFrom: unknown): boolean {
     if (entryFrom === this.ownSide()) return true;
     return this.ownSide() === "answerer" && entryFrom === "joiner";
+  }
+
+  /** Add the reconnect generation to a payload. */
+  private tagged(payload: Record<string, unknown>): Record<string, unknown> {
+    return this.resume ? { ...payload, nonce: this.resume.nonce } : payload;
+  }
+
+  /** Old pairing messages on the same channel are not part of this generation. */
+  private currentGeneration(payload: unknown): boolean {
+    if (!this.resume) return true;
+    return (payload as { nonce?: unknown } | null)?.nonce === this.resume.nonce;
   }
 
   private url(pathname: string): string {
@@ -303,6 +316,7 @@ export class BobSwapSignaling implements SignalingProvider {
             typeof message === "string" && message ? message : "the peer closed the pairing session",
           );
         }
+        if (!this.currentGeneration(m.payload)) continue;
         if (m.type === kind && !hit) {
           const sdp = (m.payload as { sdp?: unknown }).sdp;
           if (typeof sdp !== "string" || sdp.length === 0) throw new Error(`peer sent an empty ${kind}`);
@@ -342,7 +356,9 @@ export class BobSwapSignaling implements SignalingProvider {
         cursor = next;
         for (const m of entries) {
           if (this.isOwn(m.from)) continue;
-          if (m.type === "candidates") void this.applyCandidates(pc, m.payload);
+          if (m.type === "candidates" && this.currentGeneration(m.payload)) {
+            void this.applyCandidates(pc, m.payload);
+          }
         }
       } catch (err) {
         if (this.stopped) return;
@@ -356,7 +372,10 @@ export class BobSwapSignaling implements SignalingProvider {
     pc.onicecandidate = (event) => {
       const candidate = event.candidate?.toJSON();
       if (candidate) {
-        void this.signal({ type: "candidates", payload: { candidates: [candidate] } }).catch(() => {});
+        void this.signal({
+          type: "candidates",
+          payload: this.tagged({ candidates: [candidate] }),
+        }).catch(() => {});
       }
     };
     pc.addEventListener("connectionstatechange", () => {
@@ -370,7 +389,10 @@ export class BobSwapSignaling implements SignalingProvider {
       this.onStatus?.("creating the offer…");
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      await this.signal({ type: "offer", payload: { sdp: pc.localDescription!.sdp, type: "offer" } });
+      await this.signal({
+        type: "offer",
+        payload: this.tagged({ sdp: pc.localDescription!.sdp, type: "offer" }),
+      });
       this.onStatus?.("offer sent — waiting for the peer's answer");
       const remote = await this.awaitPeerSdp("answer");
       this.onStatus?.("answer received — connecting");
@@ -378,6 +400,13 @@ export class BobSwapSignaling implements SignalingProvider {
       await this.flushPending(pc);
       void this.drainCandidates(pc, remote.cursor);
     } else {
+      if (this.resume) {
+        this.onStatus?.("requesting a relay reconnect…");
+        await this.signal({
+          type: "candidates",
+          payload: { reconnect: this.resume.nonce, profile: this.resume.profile },
+        });
+      }
       this.onStatus?.("waiting for the peer's offer…");
       const remote = await this.awaitPeerSdp("offer");
       this.onStatus?.("offer received — answering");
@@ -385,7 +414,10 @@ export class BobSwapSignaling implements SignalingProvider {
       await this.flushPending(pc);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      await this.signal({ type: "answer", payload: { sdp: pc.localDescription!.sdp, type: "answer" } });
+      await this.signal({
+        type: "answer",
+        payload: this.tagged({ sdp: pc.localDescription!.sdp, type: "answer" }),
+      });
       this.onStatus?.("answer sent — connecting");
       void this.drainCandidates(pc, remote.cursor);
     }

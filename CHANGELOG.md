@@ -2,6 +2,34 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-04 — a relay pairing survives a profile switch
+
+Switching profiles reloads the tab, which closed the relay-paired datachannel
+and left the new profile with no desktop link. A relay pairing now reuses its
+BobSwap channel for a nonce-tagged reconnect: the phone asks on the same
+channel, the desktop offers a fresh datachannel, and the client-key proof
+resumes the device link under the new profile. No new pairing code is needed
+until the channel's 30-minute lifetime ends.
+
+Wildcard pairings also record which proof profile minted the server key, so a
+profile other than the first can verify the same device proof. Existing records
+are matched against their fingerprint.
+
+- **`src/bridge/relay.ts`**: reconnect watcher on the existing channel and
+  nonce-tagged offers/candidates.
+- **`src/bridge/peer.ts`**: keeps a paired relay session alive after its
+  datachannel drops, resumes under the profile named in the reconnect request,
+  and reattaches the profile catalog.
+- **`src/bridge/store.ts`**: `PeerRecord.proofProfile` for wildcard-proof
+  reuse.
+- **`web/src/server-link.ts`**, **`web/src/sync/transport-webrtc.ts`**: store
+  the relay channel credentials and renegotiate with a generation nonce.
+- **`web/src/main.ts`**: the boot reconnect now runs for relay links too.
+
+Tests: `npm run typecheck`; `npm --prefix web run typecheck`;
+`npm --prefix ui run typecheck`; local fake-relay pairing + profile-switch
+resume smoke.
+
 ## 2026-11-03 — a phone can pair with the desktop through the BobSwap relay
 
 The desktop/server path used the loopback mailbox for signaling, so a phone on

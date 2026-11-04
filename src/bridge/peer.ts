@@ -289,6 +289,9 @@ export class PeerSession {
   profile: string;
   /** Profile whose key/fingerprint authenticated this device link. */
   authProfile = "";
+  /** Profile (or `*`) whose `pair:<profile>` secret produced the proof key. */
+  private proofProfile: string;
+  private reconnecting = false;
   readonly capabilities: PeerCapabilities;
   readonly mode: "pairing" | "reconnect";
   readonly events: PairingEvent[] = [];
@@ -329,7 +332,24 @@ export class PeerSession {
   ) {
     this.mode = mode;
     this.profile = transport.profile;
+    this.proofProfile = transport.profile;
     this.capabilities = capabilities;
+  }
+
+  /** The server proof key a record was paired with (wildcard-aware). */
+  private async proofKeyFor(record: PeerRecord): Promise<string> {
+    const key = await serverKey();
+    for (const candidate of new Set(
+      [record.proofProfile, record.profile, "*"].filter((value): value is string => !!value),
+    )) {
+      const proof = hmac(key, `pair:${candidate}`);
+      if (secretFingerprint(proof) === record.fingerprint) {
+        this.proofProfile = candidate;
+        return proof;
+      }
+    }
+    this.proofProfile = record.proofProfile ?? record.profile;
+    return hmac(key, `pair:${this.proofProfile}`);
   }
 
   private emit(type: string, data: Record<string, unknown> = {}): void {
@@ -386,16 +406,16 @@ export class PeerSession {
         if (envelope.kind !== "control") return;
         void this.onControl(envelope.control ?? {}, link);
       });
-      link.onClosed(() => {
-        this.emit("link-closed", { paired: this.paired });
-        if (this.mode === "pairing" && !this.paired && !this.closed) {
-          this.emit("error", { message: "the browser disconnected before pairing finished" });
-        }
-        this.dispose();
-      });
+      link.onClosed(() => this.onLinkClosed());
       this.emit("connected", { sas: this.sas });
-      const key = await serverKey();
-      const proofKey = hmac(key, `pair:${this.authProfile || this.profile}`);
+      const reconnectRecord =
+        this.mode === "reconnect"
+          ? (await readPeers()).peers[this.authProfile || this.profile]
+          : null;
+      const proofKey =
+        this.mode === "reconnect" && reconnectRecord
+          ? await this.proofKeyFor(reconnectRecord)
+          : hmac(await serverKey(), `pair:${this.proofProfile}`);
       const nonce = randomBytes(16).toString("hex");
       link.send(
         controlEnvelope(channelPeerId(this.profile), {
@@ -444,6 +464,7 @@ export class PeerSession {
           capabilities: this.capabilities,
           pairedAt: new Date().toISOString(),
           fingerprint: secretFingerprint(proofKey),
+          proofProfile: this.proofProfile,
         };
         await savePeer(record);
         // If the folder already holds a workspace, the first pairing replaces
@@ -468,12 +489,12 @@ export class PeerSession {
         this.authed = true;
         this.emit("paired", { profile: this.profile, fingerprint: record.fingerprint });
       } else {
-        const record = (await readPeers()).peers[this.profile];
-        if (!record) {
+        if (!reconnectRecord) {
           link.send(controlEnvelope(channelPeerId(this.profile), { op: "error", message: "unknown profile" }));
           this.dispose();
           return;
         }
+        this.authProfile = reconnectRecord.profile;
         this.pendingNonce = nonce;
         this.pendingProofKey = proofKey;
         this.emit("resume-requested", { profile: this.profile });
@@ -493,6 +514,86 @@ export class PeerSession {
         this.transport.signalError(message);
       }
       this.closeSoon(this.link ? 1_500 : 3_000);
+    }
+  }
+
+  /**
+   * A relay pairing keeps its signaling channel for 30 minutes. When the
+   * datachannel drops (profile switch, reload, network loss), wait for the
+   * browser's reconnect request on that channel instead of tearing the device
+   * link down. Direct-mailbox links still reconnect through their own channel.
+   */
+  private onLinkClosed(): void {
+    this.emit("link-closed", { paired: this.paired });
+    this.link = null;
+    this.authed = false;
+    const relay = this.transport.kind === "relay" && this.paired;
+    if (relay) this.reconnecting = true;
+    // Drop the old catalog/file link without disposing the session; a relay
+    // reconnect reattaches a fresh ProfileLink below.
+    this.profileLink?.close();
+    this.profileLink = null;
+    for (const id of [...this.attached.keys()]) this.detachProfile(id);
+    this.attached.clear();
+    if (this.closed) return;
+    if (relay) {
+      void this.reconnectRelay();
+      return;
+    }
+    if (this.mode === "pairing" && !this.paired) {
+      this.emit("error", { message: "the browser disconnected before pairing finished" });
+    }
+    this.dispose();
+  }
+
+  private async reconnectRelay(): Promise<void> {
+    try {
+      const answer = await (this.transport as RelayTransport).waitForReconnect();
+      if (this.closed) {
+        answer.close();
+        return;
+      }
+      const requested = answer.profile;
+      if (requested && requested !== this.profile) {
+        if (!PROFILE_RE.test(requested)) {
+          throw new Error(`invalid browser profile name: ${JSON.stringify(requested)}`);
+        }
+        this.profile = requested;
+        // The first pairing's --mirror applies to its first profile; a profile
+        // the tab switched to defaults to its own name.
+        this.capabilities.mirror = requested;
+        await ensureBridgeProfile(requested).catch(() => undefined);
+      }
+      this.sas = answer.phrase;
+      const link = answer.peer;
+      this.link = link;
+      link.onMessage((envelope) => {
+        if (envelope.kind !== "control") return;
+        void this.onControl(envelope.control ?? {}, link);
+      });
+      link.onClosed(() => this.onLinkClosed());
+      this.emit("connected", { sas: this.sas });
+      const proofKey = hmac(await serverKey(), `pair:${this.proofProfile}`);
+      const nonce = randomBytes(16).toString("hex");
+      this.pendingNonce = nonce;
+      this.pendingProofKey = proofKey;
+      link.send(
+        controlEnvelope(channelPeerId(this.profile), {
+          op: "server",
+          v: 1,
+          deviceId: await bridgeDeviceId(),
+          profile: this.profile,
+          fingerprint: secretFingerprint(proofKey),
+          pairing: false,
+          capabilities: { mirror: this.capabilities.mirror, exec: this.capabilities.exec },
+          nonce,
+        }),
+      );
+      this.emit("server-frame", { profile: this.profile, pairing: false, relay: true });
+      this.emit("resume-requested", { profile: this.profile });
+    } catch (err) {
+      this.emit("error", { message: err instanceof Error ? err.message : String(err) });
+      this.dispose();
     }
   }
 
@@ -546,7 +647,7 @@ export class PeerSession {
       return;
     }
     if (op === "resume") {
-      if (this.mode !== "reconnect") {
+      if (this.mode !== "reconnect" && !this.reconnecting) {
         link.send(controlEnvelope(channelPeerId(this.profile), { op: "error", message: "pairing required" }));
         return;
       }
@@ -566,6 +667,9 @@ export class PeerSession {
         return;
       }
       this.emit("sas", { sas: this.sas });
+      this.authProfile = record.profile;
+      this.paired = true;
+      this.reconnecting = false;
       this.authed = true;
       this.pendingClientNonce = String(control.clientNonce ?? randomBytes(16).toString("hex"));
       link.send(
@@ -713,7 +817,11 @@ export class PeerSession {
       onControl: (control) => {
         if (this.link) void this.onControl(control, this.link);
       },
-      onClosed: () => this.dispose(),
+      // Closing the old catalog link is part of a relay reconnect; keep the
+      // session alive until the replacement link proves the client key.
+      onClosed: () => {
+        if (!this.reconnecting) this.dispose();
+      },
     });
     this.profileLink = link;
     link.start();
@@ -1067,6 +1175,11 @@ export class PeerManager {
   private makeLive(session: PeerSession): void {
     const previous = this.liveByProfile.get(session.profile);
     if (previous && previous !== session) previous.dispose();
+    // A relay session can resume under the profile the tab switched to; drop
+    // its old map entry so two names cannot point at one session.
+    for (const [name, live] of this.liveByProfile) {
+      if (live === session && name !== session.profile) this.liveByProfile.delete(name);
+    }
     this.liveByProfile.set(session.profile, session);
   }
 

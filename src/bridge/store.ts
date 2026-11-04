@@ -28,6 +28,12 @@ export interface PeerRecord {
   capabilities: PeerCapabilities;
   pairedAt: string;
   fingerprint: string;
+  /**
+   * Profile whose `pair:<profile>` secret produced `fingerprint`. A wildcard
+   * pairing uses `*`, so every profile on the device can verify the same
+   * server proof after a profile switch.
+   */
+  proofProfile?: string;
 }
 
 export interface PeersFile {

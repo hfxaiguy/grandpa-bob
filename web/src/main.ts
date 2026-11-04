@@ -297,14 +297,17 @@ async function connectServerPeer(): Promise<boolean> {
   const folder = mirrorFolder() ?? "";
   if (!info || !syncHandle || serverConnecting || serverConnection) return false;
   if (lease?.status() !== "primary") return false;
-  if (info.relay) {
-    renderMirrorStatus({
-      phase: "offline",
-      detail: "relay session ended — run npm run pair -- --relay",
-      folder,
-      lastSyncAt: null,
-    });
-    return false;
+  if (info.relay && info.relayChannel?.expiresAt) {
+    const expires = Date.parse(info.relayChannel.expiresAt);
+    if (Number.isFinite(expires) && Date.now() >= expires) {
+      renderMirrorStatus({
+        phase: "offline",
+        detail: "relay channel expired — run npm run pair -- --relay",
+        folder,
+        lastSyncAt: null,
+      });
+      return false;
+    }
   }
   serverConnecting = true;
   try {

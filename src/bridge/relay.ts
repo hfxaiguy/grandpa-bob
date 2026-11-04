@@ -45,6 +45,18 @@ export interface OpenedPeer {
   close(): void;
 }
 
+/** A reconnect offer on an existing channel, tagged with the waiting tab's profile. */
+export interface ReconnectedPeer extends OpenedPeer {
+  profile?: string;
+}
+
+interface OfferOptions {
+  /** Reconnect generation; fresh offers/answers/candidates carry it. */
+  nonce?: string;
+  /** Start polling after this signal sequence (old pairing messages are ignored). */
+  after?: number;
+}
+
 export type PeerEvent = (type: string, data?: Record<string, unknown>) => void;
 
 /** The transport a peer session speaks over: local mailbox or BobSwap relay. */
@@ -225,7 +237,9 @@ export function offerRelayChannel(
   channel: RelayChannel,
   iceServers: unknown[] = [],
   onEvent?: PeerEvent,
+  options: OfferOptions = {},
 ): Promise<OpenedPeer> {
+  const nonce = options.nonce;
   return new Promise((resolve, reject) => {
     const pc = new RTCPeerConnection({
       iceServers: (channel.iceServers.length ? channel.iceServers : iceServers) as never,
@@ -237,7 +251,7 @@ export function offerRelayChannel(
     let opened = false;
     let settled = false;
     let closed = false;
-    let cursor = 0;
+    let cursor = options.after ?? 0;
     let phrase = "";
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
     let writes: Promise<void> = Promise.resolve();
@@ -349,6 +363,7 @@ export function offerRelayChannel(
           typeof message === "string" && message ? message : "the browser closed the pairing channel",
         );
       }
+      if (nonce && entry.payload.nonce !== nonce) return;
       if (entry.type === "candidates") {
         const list = entry.payload.candidates;
         if (!Array.isArray(list)) return;
@@ -400,7 +415,9 @@ export function offerRelayChannel(
       candidateTimer = setTimeout(() => {
         candidateTimer = null;
         const list = candidateBuf.splice(0);
-        if (list.length) void send("candidates", { candidates: list });
+        if (list.length) {
+          void send("candidates", { candidates: list, ...(nonce ? { nonce } : {}) });
+        }
       }, 250);
     };
     pc.addEventListener("connectionstatechange", () => {
@@ -418,6 +435,7 @@ export function offerRelayChannel(
         await send("offer", {
           type: "offer",
           sdp: pc.localDescription?.sdp ?? "",
+          ...(nonce ? { nonce } : {}),
         });
         onEvent?.("offer-sent", { bytes: pc.localDescription?.sdp?.length ?? 0 });
         void poll();
@@ -435,6 +453,11 @@ export class RelayTransport implements PeerTransport {
   readonly profile: string;
   private opened: OpenedPeer | null = null;
   private closed = false;
+  private onEvent?: PeerEvent;
+  /** Signal sequence already read by the reconnect watcher. */
+  private cursor = 0;
+  private reconnectWait: Promise<ReconnectedPeer> | null = null;
+  private handled = new Set<string>();
 
   constructor(private readonly channel: RelayChannel) {
     this.id = channel.id;
@@ -442,10 +465,55 @@ export class RelayTransport implements PeerTransport {
   }
 
   open(iceServers: unknown[], onEvent?: PeerEvent): Promise<OpenedPeer> {
+    this.onEvent = onEvent;
     return offerRelayChannel(this.channel, iceServers, onEvent).then((opened) => {
       this.opened = opened;
       return opened;
     });
+  }
+
+  /**
+   * Wait for the browser to ask for a reconnect on the same signaling channel.
+   * The browser sends `{ reconnect: nonce, profile }`; we answer with a fresh
+   * offer tagged by that nonce.
+   */
+  waitForReconnect(): Promise<ReconnectedPeer> {
+    if (this.reconnectWait) return this.reconnectWait;
+    const promise = this.watchReconnect().finally(() => {
+      if (this.reconnectWait === promise) this.reconnectWait = null;
+    });
+    this.reconnectWait = promise;
+    return promise;
+  }
+
+  private async watchReconnect(): Promise<ReconnectedPeer> {
+    for (;;) {
+      if (this.closed) throw new Error("the relay transport is closed");
+      const feed = await relayFeed(this.channel, this.cursor);
+      this.cursor = feed.cursor;
+      for (const entry of feed.entries) {
+        if (entry.from === "offerer") continue;
+        const nonce = entry.payload.reconnect;
+        if (
+          entry.type !== "candidates" ||
+          typeof nonce !== "string" ||
+          !nonce ||
+          this.handled.has(nonce)
+        ) {
+          continue;
+        }
+        this.handled.add(nonce);
+        const profile =
+          typeof entry.payload.profile === "string" ? entry.payload.profile : undefined;
+        const opened = await offerRelayChannel(this.channel, [], this.onEvent, {
+          nonce,
+          after: this.cursor,
+        });
+        this.opened = opened;
+        return { ...opened, profile };
+      }
+      await sleep(POLL_MS);
+    }
   }
 
   signalError(message: string): void {
