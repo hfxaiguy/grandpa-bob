@@ -26,6 +26,7 @@ const {
   toggleSub,
   subApps,
   openSubApps,
+  showApp,
   parkAllExcept,
   applyProfileVisibleExceptions,
   resetBoardForNewSession,
@@ -102,6 +103,25 @@ assert.deepEqual(openSubApps("alpha").map((a) => a.name), ["alpha.sub"], "the pa
 assert.deepEqual(subApps("alpha").map((a) => a.name), ["alpha.sub"], "the parent's rail lists every sub");
 toggleSub("alpha.sub");
 assert.deepEqual(state.layout.subsOpen, [], "parking a sub removes it again");
+
+// The inline card's `open ↗` opens the whole parented chain *and* puts the
+// called app over the chat that called it: the sub-app claims its parent's
+// frame (the tile's own expand layer), and a hidden parent is restored first.
+setState("layout", "hidden", ["alpha"]);
+showApp("alpha.sub");
+assert.ok(!state.layout.hidden.includes("alpha"), "open brings the top-level parent back first");
+assert.deepEqual(state.layout.subsOpen, ["alpha.sub"], "open shows the sub-app in the parent's rail");
+assert.ok(state.layout.expanded.includes("alpha.sub"), "open puts the sub-app over its parent's frame");
+toggleSub("alpha.sub");
+setState("layout", "expanded", []);
+setState("layout", "hidden", []);
+// A top-level app is the board's own layer: on a phone, open lifts it over the
+// grid and the trunk dock instead of leaving it beneath the front tile.
+setSmallScreen(true);
+showApp("alpha");
+assert.equal(state.front, "alpha", "open lifts a top-level app into the phone's front layer");
+clearFront();
+setSmallScreen(false);
 
 // ── live frames ─────────────────────────────────────────────────────────
 setState("active", "web:t");

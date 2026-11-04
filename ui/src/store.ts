@@ -1393,13 +1393,13 @@ export function toggleSub(name: string): void {
 
 /** Bring an app's real tile into view: unhide its top-level ancestor, open the
  *  parented chain in each parent's rail, then scroll the tile into view. The
- *  inline app cards use this as their "open" action. */
+ *  inline app cards use this as their "open" action. The opened app is brought
+ *  *over* the chat it was called from: a sub-app takes over its parent's frame
+ *  (the same layer `⤢` gives it), and a top-level app on a phone is lifted into
+ *  the front layer above the board and trunk dock. */
 export function showApp(name: string): void {
   const app = state.apps.find((a) => a.name === name);
   if (!app) return;
-  // Opening a real tile is a request to see it, not the tile currently lifted
-  // over the board: lower that first or it would cover the destination.
-  clearFront();
   // Walk to the top-level ancestor, remembering the parented chain root-first.
   const chain: string[] = [];
   let cur: AppInfo | undefined = app;
@@ -1411,9 +1411,25 @@ export function showApp(name: string): void {
     cur = state.apps.find((a) => a.name === parent);
   }
   if (!cur) return;
-  if (state.layout.hidden.includes(cur.name)) toggleHidden(cur.name);
+  // Opening a real tile is a request to see it, not whichever tile is currently
+  // lifted over the board. Keep an ancestor that is already in front — the
+  // destination lives inside it — and lower anything else that would cover it.
+  const root = cur.name;
+  if (state.front && state.front !== root && !chain.includes(state.front)) clearFront();
+  if (state.layout.hidden.includes(root)) toggleHidden(root);
   for (const n of chain.reverse()) {
     if (!state.layout.subsOpen.includes(n)) toggleSub(n);
+  }
+  if (app.parent) {
+    // Over the caller, not beside it: the sub-app claims the parent's frame
+    // until its `⤡` gives the frame back. This is the layer the tile's own
+    // expand control uses, so the parent chat is beneath it rather than making
+    // the new tile share the frame.
+    if (!state.layout.expanded.includes(name)) toggleExpanded(name);
+  } else if (smallScreen() && state.front !== name) {
+    // A top-level app is the board's own layer: on a phone lift it over the
+    // grid and the trunk dock, the same seat a header tap gives it.
+    toggleFront(name);
   }
   // The tile may have just been mounted; one frame later its seat exists.
   if (typeof requestAnimationFrame !== "function") return;
