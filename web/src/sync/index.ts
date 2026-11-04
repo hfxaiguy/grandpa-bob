@@ -589,7 +589,9 @@ class MultiProfileSync implements SyncHandle {
       session.link.setCatalog(this.catalogEntries());
       this.applyConsent(session);
     }
-    this.notifyPeers();
+    // No notifyPeers() here: pushing a catalog does not change peer records.
+    // Notifying would re-enter the Profiles dialog, whose refresh pushes the
+    // catalog again (and re-renders the row list).
   }
 
   pushCatalog(): void {

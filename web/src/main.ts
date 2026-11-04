@@ -94,6 +94,15 @@ function publishProfileVisibleApps(): void {
   (window as unknown as { __bobProfileVisibleApps?: string[] | null }).__bobProfileVisibleApps =
     Array.isArray(record?.visibleApps) ? [...record.visibleApps] : null;
 }
+
+/** The catalog fields peers care about; order alone is not a change. */
+function profileCatalogKey(registry: ProfileRegistry | null): string {
+  return (registry?.profiles ?? [])
+    .map((profile) => `${profile.id.toLowerCase()}:${profile.name}:${profile.createdAt}`)
+    .sort()
+    .join("\n");
+}
+
 // The launcher (`npm run chrome`) opens the app with ?cdp=<browser ws url>;
 // persist it so a plain reload keeps the browser tools connected. An explicit
 // empty value (BOB_NO_CDP=1) clears a previously persisted socket instead.
@@ -1699,8 +1708,12 @@ async function main(): Promise<void> {
     flash: flashStatus,
     reload: () => location.reload(),
     refreshRegistry: async () => {
+      const previousCatalog = profileCatalogKey(profileRegistry);
       profileRegistry = await loadRegistry();
-      syncHandle?.refreshProfiles();
+      // Only a real catalog change needs a push. Pushing from every render
+      // notified the open Profiles dialog, which re-rendered and pushed
+      // again — an endless repaint loop.
+      if (profileCatalogKey(profileRegistry) !== previousCatalog) syncHandle?.refreshProfiles();
       publishProfileVisibleApps();
       return (
         profileRegistry ?? {

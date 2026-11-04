@@ -2,6 +2,22 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-04 — the Profiles dialog stops repainting itself
+
+Opening Profiles could fall into a render loop: the list refreshed the registry,
+which pushed the peer catalog, which notified the dialog to paint again. The
+rows visibly alternated between their loading and summarized contents. Registry
+refreshes now push the catalog only when the peer-visible profiles actually
+changed, and a catalog push no longer notifies local peer listeners.
+
+- **`web/src/main.ts`**: compare profile id/name/createdAt before calling
+  `refreshProfiles()`, so a plain repaint is not a catalog event.
+- **`web/src/sync/index.ts`**: `refreshProfiles()` re-applies consent and pushes
+  the catalog without emitting `onPeersChanged`.
+
+Tests: `npm run typecheck`; `npm run test:profile-sync`;
+`npm run test:profile-link`; `npm run build:web`.
+
 ## 2026-11-04 — a relay pairing survives a profile switch
 
 Switching profiles reloads the tab, which closed the relay-paired datachannel
