@@ -108,7 +108,7 @@ interface TurnRecord {
   /** Summed `llm_call` usage for the turn; absent when the endpoint (or a
    *  mock) reported none. */
   tokens?: TurnTokens | null;
-  events: { seq?: number; run_id?: string; branch_path?: string | null; kind?: string; app?: string; content?: Record<string, unknown> }[];
+  events: { seq?: number; run_id?: string; branch_path?: string | null; kind?: string; app?: string; ts?: number; content?: Record<string, unknown> }[];
 }
 
 /** Fold a `llm_call` event's usage into the turn's totals before the event
@@ -621,7 +621,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       {
         onEvent: (event) => {
           watchdog.touch(key, turnId);
-          const ev = event as { kind?: string; content?: Record<string, unknown>; scope_id?: number | null; branch_path?: string };
+          const ev = event as { kind?: string; content?: Record<string, unknown>; scope_id?: number | null; branch_path?: string; ts?: number };
           addTurnTokens(record, ev);
           const app = tagEventApp(apps, ev);
           // Stream the push the tracker returns (the node paths a write landed
@@ -631,7 +631,9 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
           if (push) {
             broadcast({ type: "memory", session: push.session, app: push.app, values: push.values });
           }
-          const tagged = { ...ev, app };
+          // The engine's rows carry no clock: stamp the arrival time here so
+          // the live event stream (and the event-inspector header) has one.
+          const tagged = { ...ev, app, ts: typeof ev.ts === "number" ? ev.ts : Date.now() };
           record.events.push(tagged);
           broadcast({ type: "event", turnId, event: tagged });
         },

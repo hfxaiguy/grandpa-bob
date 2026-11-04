@@ -92,6 +92,13 @@ const numbered = streamLines([turn, t2]);
 assert.equal(numbered[0].text, "turn 1");
 assert.equal(numbered.find((l) => l.kind === "turn" && l.text === "turn 2")?.text, "turn 2");
 
+// A fixture or legacy live row without a clock must still render a valid time
+// in the event inspector (a missing ts used to become "Invalid Date").
+const untimed = { ...ev("tool_start", { tool: "enrich-profile" }, 15), ts: undefined } as unknown as SanitizedEvent;
+const untimedLine = describeEvent(untimed);
+assert.ok(Number.isFinite(untimedLine.ts), "an event without a ts gets a usable timestamp");
+assert.notEqual(new Date(untimedLine.ts).toLocaleTimeString(), "Invalid Date");
+
 // Memory updates become chat lines anchored between the right bubbles; plain
 // memory declarations are replayed every turn and stay out of the chat.
 const memTurn: Turn = {

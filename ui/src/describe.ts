@@ -70,7 +70,9 @@ function describeEventUncached(ev: SanitizedEvent): EventLine {
   );
   const base = {
     app,
-    ts: ev.ts,
+    // Live rows are stamped by the host; a fixture or a legacy row without a
+    // clock still needs a valid Date for the inspector header.
+    ts: typeof ev.ts === "number" && Number.isFinite(ev.ts) ? ev.ts : Date.now(),
     emit: false,
     kind: ev.kind,
     detail,

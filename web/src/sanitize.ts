@@ -44,7 +44,7 @@ export function sanitizeValue(v: unknown, depth = 0): unknown {
 }
 
 export function sanitizeEvent(
-  e: { kind?: string; branch_path?: string; iteration?: number; scope_id?: number | null; seq?: number; content?: Record<string, unknown> | null },
+  e: { kind?: string; branch_path?: string; iteration?: number; scope_id?: number | null; seq?: number; ts?: number; content?: Record<string, unknown> | null },
   app = "trunk",
 ): SanitizedEvent {
   const content: Record<string, unknown> = { ...(e.content ?? {}) };
@@ -85,7 +85,9 @@ export function sanitizeEvent(
     iteration: e.iteration ?? 0,
     scope_id: e.scope_id ?? null,
     content: clean,
-    ts: Date.now(),
+    // Keep the host's arrival clock when it has one; a replay that predates
+    // event timestamps falls back to load time rather than rendering Invalid Date.
+    ts: typeof e.ts === "number" && Number.isFinite(e.ts) ? e.ts : Date.now(),
     ...(Number.isInteger(e.seq) ? { seq: e.seq } : {}),
     app,
   };
