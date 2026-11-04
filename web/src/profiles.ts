@@ -26,7 +26,26 @@ export const DEFAULT_PROFILE = "default";
 export const PROFILE_DIR = "profiles";
 export const REGISTRY_FILE = "profiles.json";
 export const MIGRATION_FILE = "migration.json";
+export const PROFILE_REGISTRY_VERSION = 2;
 const ACTIVE_KEY = "bob:profile";
+
+/** UUIDs are the cross-device profile identity; names stay local labels. */
+const PROFILE_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A fresh profile id. WebCrypto is present in every supported runtime. */
+export function newProfileId(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return uuid.toLowerCase();
+  // Very old/embedded runtimes: retain the UUID shape without WebCrypto.
+  const hex = (n: number): string =>
+    Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+  return `${hex(8)}-${hex(4)}-4${hex(3)}-a${hex(3)}-${hex(12)}`;
+}
+
+export function isValidProfileId(id: unknown): id is string {
+  return typeof id === "string" && PROFILE_ID_RE.test(id);
+}
 
 /** Directory iteration is available in browsers but missing from some DOM libs. */
 interface IterableDirHandle {
@@ -55,6 +74,8 @@ export interface SeedBinding {
 }
 
 export interface ProfileRecord {
+  /** Stable cross-device identity. Names may change; this must not. */
+  id: string;
   name: string;
   createdAt: string;
   lastUsedAt?: string;
@@ -78,7 +99,7 @@ export interface ProfileRecord {
 }
 
 export interface ProfileRegistry {
-  version: 1;
+  version: typeof PROFILE_REGISTRY_VERSION;
   profiles: ProfileRecord[];
 }
 
@@ -145,18 +166,34 @@ function validVisibleApps(raw: unknown): string[] | undefined {
   return [...new Set(names)].slice(0, 200);
 }
 
-/** Validate a parsed `/profiles.json`; throws a user-facing message. */
+/**
+ * Validate a parsed `/profiles.json`; throws a user-facing message.
+ *
+ * Version 1 registries are upgraded in memory by minting ids. Boot persists
+ * the upgraded file, so the ids are stable from then on. A version 2 record
+ * with a missing/invalid id is also repaired rather than rejected: losing the
+ * whole registry over one damaged field would be worse than a new id.
+ */
 export function parseProfileRegistry(raw: unknown): ProfileRegistry {
   if (!isRecord(raw)) throw new Error("not a profile registry (expected a JSON object)");
-  if (raw.version !== 1) throw new Error(`unsupported profile registry version: ${String(raw.version)}`);
+  if (raw.version !== 1 && raw.version !== PROFILE_REGISTRY_VERSION) {
+    throw new Error(`unsupported profile registry version: ${String(raw.version)}`);
+  }
   if (!Array.isArray(raw.profiles)) throw new Error("profile registry is missing the profiles list");
-  const seen = new Set<string>();
+  const seenNames = new Set<string>();
+  const seenIds = new Set<string>();
   const profiles = raw.profiles.map((entry, index): ProfileRecord => {
     if (!isRecord(entry)) throw new Error(`profile entry ${index}: not an object`);
     if (!isValidProfileName(entry.name)) throw new Error(`profile entry ${index}: invalid name`);
-    if (seen.has(entry.name)) throw new Error(`profile entry ${index}: duplicate name ${entry.name}`);
-    seen.add(entry.name);
+    if (seenNames.has(entry.name)) throw new Error(`profile entry ${index}: duplicate name ${entry.name}`);
+    seenNames.add(entry.name);
+
+    let id = isValidProfileId(entry.id) ? entry.id.toLowerCase() : newProfileId();
+    while (seenIds.has(id)) id = newProfileId();
+    seenIds.add(id);
+
     const record: ProfileRecord = {
+      id,
       name: entry.name,
       createdAt: typeof entry.createdAt === "string" ? entry.createdAt : new Date(0).toISOString(),
     };
@@ -178,10 +215,62 @@ export function parseProfileRegistry(raw: unknown): ProfileRegistry {
     }
     return record;
   });
-  if (!seen.has(DEFAULT_PROFILE)) {
-    profiles.unshift({ name: DEFAULT_PROFILE, createdAt: new Date().toISOString() });
+  if (!seenNames.has(DEFAULT_PROFILE)) {
+    let id = newProfileId();
+    while (seenIds.has(id)) id = newProfileId();
+    profiles.unshift({ id, name: DEFAULT_PROFILE, createdAt: new Date().toISOString() });
   }
-  return { version: 1, profiles };
+  return { version: PROFILE_REGISTRY_VERSION, profiles };
+}
+
+/** The public catalog entry a peer sees for a profile. */
+export interface ProfileCatalogEntry {
+  id: string;
+  name: string;
+  /** Only used for the one-time same-name auto-link decision. */
+  createdAt: string;
+}
+
+export function profileCatalogEntry(record: ProfileRecord): ProfileCatalogEntry {
+  return { id: record.id, name: record.name, createdAt: record.createdAt };
+}
+
+export function profileById(
+  registry: ProfileRegistry,
+  id: string,
+): ProfileRecord | undefined {
+  return registry.profiles.find((profile) => profile.id === id);
+}
+
+export function profileByName(
+  registry: ProfileRegistry,
+  name: string,
+): ProfileRecord | undefined {
+  return registry.profiles.find((profile) => profile.name === name);
+}
+
+/**
+ * Rewrite a profile's id after an auto-link. Consent and peer records key by
+ * id, so callers must migrate those separately. Refuses collisions.
+ */
+export function relinkProfileId(
+  registry: ProfileRegistry,
+  fromId: string,
+  toId: string,
+): ProfileRegistry {
+  if (!isValidProfileId(toId)) throw new Error(`invalid profile id: ${toId}`);
+  const match = registry.profiles.find((profile) => profile.id === fromId);
+  if (!match) throw new Error(`unknown profile id: ${fromId}`);
+  if (fromId === toId) return registry;
+  if (registry.profiles.some((profile) => profile.id === toId)) {
+    throw new Error(`profile id already exists: ${toId}`);
+  }
+  return {
+    version: PROFILE_REGISTRY_VERSION,
+    profiles: registry.profiles.map((profile) =>
+      profile.id === fromId ? { ...profile, id: toId.toLowerCase() } : profile,
+    ),
+  };
 }
 
 /** Archive directory segments for a profile, e.g. `["profiles", "default"]`. */
@@ -234,7 +323,22 @@ export function patchRegistry(
   const profiles = [...registry.profiles];
   if (next === null) profiles.splice(index, 1);
   else profiles[index] = next;
-  return { version: 1, profiles };
+  return { version: PROFILE_REGISTRY_VERSION, profiles };
+}
+
+/** Patch by immutable id (the peer-facing key). */
+export function patchRegistryById(
+  registry: ProfileRegistry,
+  id: string,
+  patch: (record: ProfileRecord) => ProfileRecord | null,
+): ProfileRegistry {
+  const index = registry.profiles.findIndex((profile) => profile.id === id);
+  if (index === -1) throw new Error(`unknown profile id: ${id}`);
+  const next = patch(registry.profiles[index]);
+  const profiles = [...registry.profiles];
+  if (next === null) profiles.splice(index, 1);
+  else profiles[index] = next;
+  return { version: PROFILE_REGISTRY_VERSION, profiles };
 }
 
 // ── OPFS side ────────────────────────────────────────────────────────────
@@ -357,10 +461,11 @@ async function registryFromDirs(): Promise<ProfileRegistry | null> {
   if (!names.includes(DEFAULT_PROFILE)) names.unshift(DEFAULT_PROFILE);
   const mirror = readRegistryMirror();
   return {
-    version: 1,
+    version: PROFILE_REGISTRY_VERSION,
     profiles: names.map(
       (name) =>
         mirror?.profiles.find((profile) => profile.name === name) ?? {
+          id: newProfileId(),
           name,
           createdAt: new Date().toISOString(),
         },
@@ -564,8 +669,15 @@ async function migrate(rootNames: string[], marker: MigrationMarker): Promise<Pr
 
   await removeRootEntries(rootNames);
   const registry: ProfileRegistry = {
-    version: 1,
-    profiles: [{ name: DEFAULT_PROFILE, createdAt: marker.startedAt, lastUsedAt: new Date().toISOString() }],
+    version: PROFILE_REGISTRY_VERSION,
+    profiles: [
+      {
+        id: newProfileId(),
+        name: DEFAULT_PROFILE,
+        createdAt: marker.startedAt,
+        lastUsedAt: new Date().toISOString(),
+      },
+    ],
   };
   await writeRegistry(registry);
   await root.removeEntry(MIGRATION_FILE).catch(() => undefined);
@@ -641,8 +753,8 @@ export async function bootProfiles(): Promise<{
   }
 
   const registry: ProfileRegistry = {
-    version: 1,
-    profiles: [{ name: DEFAULT_PROFILE, createdAt: new Date().toISOString() }],
+    version: PROFILE_REGISTRY_VERSION,
+    profiles: [{ id: newProfileId(), name: DEFAULT_PROFILE, createdAt: new Date().toISOString() }],
   };
   await profileHandle(DEFAULT_PROFILE);
   await writeRegistry(registry);
@@ -712,13 +824,22 @@ async function stampSeededProfile(
 export async function createProfile(
   name: string,
   source: NewProfileSource = { kind: "blank" },
+  /**
+   * Adopt a remote-only profile's identity. Used after a preview + explicit
+   * confirmation, so a later sync does not need a second auto-link pass.
+   */
+  id?: string,
 ): Promise<ProfileRecord> {
   if (!isValidProfileName(name)) {
     throw new Error("profile names use lowercase letters, digits, dot, dash or underscore (max 64)");
   }
+  if (id !== undefined && !isValidProfileId(id)) throw new Error(`invalid profile id: ${id}`);
   const registry = await loadRegistry();
   if (registry.profiles.some((profile) => profile.name === name)) {
     throw new Error(`profile already exists: ${name}`);
+  }
+  if (id && registry.profiles.some((profile) => profile.id.toLowerCase() === id.toLowerCase())) {
+    throw new Error(`profile id already exists: ${id}`);
   }
   let dest = await profileHandle(name);
   if (source.kind === "duplicate") await copyTree(source.from, dest);
@@ -740,9 +861,16 @@ export async function createProfile(
       throw err;
     }
   }
-  const record: ProfileRecord = { name, createdAt: new Date().toISOString() };
+  const record: ProfileRecord = {
+    id: id ? id.toLowerCase() : newProfileId(),
+    name,
+    createdAt: new Date().toISOString(),
+  };
   if (source.kind === "seed") record.seed = source.binding;
-  const next: ProfileRegistry = { version: 1, profiles: [...registry.profiles, record] };
+  const next: ProfileRegistry = {
+    version: PROFILE_REGISTRY_VERSION,
+    profiles: [...registry.profiles, record],
+  };
   await writeRegistry(next);
   return record;
 }

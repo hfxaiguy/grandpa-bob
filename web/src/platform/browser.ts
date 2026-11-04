@@ -13,6 +13,9 @@ import { sha256hex } from "./sha256";
 import { createCoreutilsShell } from "./coreutils";
 import type { CryptoOps, Platform, SqliteFactory } from "./types";
 import { opfsFs } from "./corefs";
+import { createHandleFs } from "./handle-fs";
+import { resolveOpfsDir } from "./opfs-root";
+import { profileSegmentsFor } from "../profiles";
 import { createSqliteWasm, initSqlite } from "./sqlite-wasm";
 import { createOpfsGit } from "./git-opfs";
 
@@ -32,6 +35,25 @@ export function createBrowserPlatform(workspaceRoot = "/workspace"): Platform {
     fs: opfsFs,
     crypto: browserCrypto,
     shell: createCoreutilsShell({ fs: opfsFs, path: posixPath, workspaceRoot }),
+    git: createOpfsGit(workspaceRoot),
+    sqlite: browserSqlite,
+    workspaceRoot,
+  };
+}
+
+/**
+ * A platform rooted at one profile's OPFS directory, independent of the active
+ * profile. Used by the multi-profile sync manager for background engines.
+ */
+export function createProfilePlatform(profileName: string, workspaceRoot = "/workspace"): Platform {
+  const segments = profileSegmentsFor(profileName);
+  const fs = createHandleFs(() => resolveOpfsDir(segments));
+  return {
+    kind: "browser",
+    path: posixPath,
+    fs,
+    crypto: browserCrypto,
+    shell: createCoreutilsShell({ fs, path: posixPath, workspaceRoot }),
     git: createOpfsGit(workspaceRoot),
     sqlite: browserSqlite,
     workspaceRoot,

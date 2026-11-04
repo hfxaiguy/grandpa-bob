@@ -25,9 +25,16 @@ export function hostUi(
   installShim(window);
 
   let disposeChat: (() => void) | undefined;
+  // The shell's phone Session button sits beside Sync…; the mounted chat owns
+  // the drawer, so the click becomes a same-window request to open it.
+  const sessionButton = document.getElementById("session-menu") as HTMLButtonElement | null;
+  sessionButton?.addEventListener("click", () => {
+    window.dispatchEvent(new Event("bob:open-session"));
+  });
 
   const showChat = (): void => {
     disposeChat?.();
+    sessionButton?.removeAttribute("hidden");
     const el = document.createElement("div");
     el.style.cssText = "height:100%;display:flex;flex-direction:column";
     container.replaceChildren(el);
@@ -37,6 +44,7 @@ export function hostUi(
   const showSettings = (): void => {
     disposeChat?.();
     disposeChat = undefined;
+    sessionButton?.setAttribute("hidden", "");
     const iframe = document.createElement("iframe");
     iframe.id = "bob-ui";
     iframe.style.cssText = "border:0;width:100%;height:100%;display:block;background:transparent";

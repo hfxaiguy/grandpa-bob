@@ -17,6 +17,8 @@
     "web/src/sync/journal.ts",
     "web/src/sync/chunking.ts",
     "web/src/sync/control-peer.ts",
+    "web/src/sync/profile-link.ts",
+    "web/src/profile-sync-model.ts",
     "web/src/sync/sas.ts",
     "web/src/platform/types.ts",
     "web/src/platform/paths.ts"

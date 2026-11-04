@@ -40,6 +40,11 @@ export interface SyncEnvelope {
   v: 1;
   kind: "hashmap" | "ops" | "file-req" | "chunk" | "control";
   from: string;
+  /**
+   * Multiplexed device links carry several profile workspaces over one wire.
+   * Absent on legacy links (routed to the link's default profile).
+   */
+  profile?: string;
   hashmap?: Hashmap;
   lamports?: Record<string, number>;
   /** Tombstones: paths whose last journal op is a delete, with its lamport. */

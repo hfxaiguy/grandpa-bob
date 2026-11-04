@@ -448,10 +448,17 @@ again to put it back.
 
 **Storage & profiles.** The workspace always lives in the tab's OPFS sandbox
 (Export/Import move a whole workspace as JSON); there is no storage backend to
-choose. A profile can **pair with a desktop/server** — the same WebRTC channel
-flow as two browsers, with a code + SAS approval — to mirror the workspace to a
-real folder and run allowlisted desktop exec through the authenticated channel.
-Profiles have their own chats, patterns, run log, git history and board layout.
+choose. Every profile carries a stable UUID, so the same profile is recognised
+across devices even when its display name differs. Pairing is **per device**:
+after a code + SAS confirmation, both sides exchange a profile catalog and the
+Profiles dialog shows a peer list under each profile. Each profile × peer has
+its own checkbox; both sides must allow it before any bytes move, and
+unchecking either side detaches that profile immediately. Profiles are visible
+as **remote only** until they are previewed and explicitly pulled. A browser
+can **pair with a desktop/server** over the same WebRTC flow; the bridge mirrors
+each allowed profile to its own folder (`~/.bobkat/folders/<name>` by default)
+and runs allowlisted exec through the authenticated channel. Profiles have
+their own chats, patterns, run log, git history and board layout.
 A profile can also choose which tiles stay visible (**Profiles** →
 **Hidden… except:**); every other app starts in the hidden rail. A new chat
 opens on trunk alone; as apps run, their tiles raise themselves (up to two beside trunk), and
@@ -473,8 +480,11 @@ dialog. Cross-device pairing (WebRTC, with a 6-word verification phrase derived
 from both DTLS certificates) is in the Sync… dialog under **Live sync →
 Pair…**: one code field with a source switch — **Another tab / relay**
 (BobSwap, defaulting to the built-in deployment) or **My desktop / server**.
-Manual paste remains the no-service fallback. **Sync now** in the same row runs
-an explicit round with every paired peer; the agent worker reports its commits,
+Both ends must press **Phrase matches** (the desktop console asks during
+approval; `npm run pair --yes` auto-confirms) before the catalog or any file
+frame is exchanged. Manual paste remains the no-service fallback. **Sync now**
+in the same row runs an explicit round with every paired peer; the agent worker
+reports its commits,
 so files BOB writes sync without it. A transfer line beside it shows the
 direction and progress (↑ sending, ↓ receiving, file count and bytes) while a
 round moves files. Signaling blobs carry only

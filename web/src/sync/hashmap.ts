@@ -16,6 +16,9 @@ const EXCLUDED = [
   /^logs\//,
   /^assets\/inbox\//,
   /(^|\/)\.gpb-sync\//,
+  // Desktop mirror identity lives beside the workspace; it is machine-local
+  // metadata, not profile content.
+  /(^|\/)\.bob-profile\.json$/,
   // SQLite databases are live files, not workspace documents. A browser app
   // DB is a whole-file engine (sqlite-wasm loads it into memory and exports
   // the whole image after each commit), so a raw peer copy can race that

@@ -12,6 +12,11 @@ import { adminKey, readPeers, sameSecret, type PeerCapabilities } from "./store.
 import { Mailbox, sha256 } from "./mailbox.js";
 import { readPeerLog, statsPeerLog } from "./peer-log.js";
 import { PeerManager } from "./peer.js";
+import {
+  ensureBridgeProfile,
+  listBridgeProfiles,
+  setBridgeProfileConsent,
+} from "./profiles.js";
 
 const MAX_BODY = 2 * 1024 * 1024;
 const PROFILE_RE = /^[a-z0-9._-]{1,64}$/;
@@ -127,7 +132,8 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
     const pathname = url.pathname;
     const isMailbox = pathname === "/api/v1/sync/channels" || pathname.startsWith("/api/v1/sync/channels/");
     const isAdmin = pathname === "/admin/pairing" || pathname.startsWith("/admin/pairing/") ||
-      pathname === "/admin/peers" || pathname.startsWith("/admin/peers/");
+      pathname === "/admin/peers" || pathname.startsWith("/admin/peers/") ||
+      pathname === "/admin/profiles" || pathname.startsWith("/admin/profiles/");
     if (!isMailbox && !isAdmin) return false;
 
     const origin = String(req.headers.origin ?? "");
@@ -171,7 +177,11 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
           const parts = pathname.split("/").filter(Boolean); // admin, pairing|peers, id, action
           if (parts[1] === "pairing" && req.method === "POST" && !parts[2]) {
             const profile = String(body.profile ?? "").trim();
-            if (!PROFILE_RE.test(profile)) return send(req, res, 400, { error: "invalid profile name" });
+            // "*" is the device-level pairing code: the browser's first hello
+            // names its active profile and the catalog covers the rest.
+            if (profile !== "*" && !PROFILE_RE.test(profile)) {
+              return send(req, res, 400, { error: "invalid profile name" });
+            }
             const capabilities: Partial<PeerCapabilities> = {
               mirror: typeof body.mirror === "string" ? body.mirror : undefined,
               mirrorPath: typeof body.mirrorPath === "string" ? body.mirrorPath : undefined,
@@ -221,6 +231,29 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
             await manager.revoke(parts[2]);
             return send(req, res, 200, { ok: true });
           }
+          if (parts[1] === "profiles" && req.method === "GET" && !parts[2]) {
+            const profiles = await listBridgeProfiles();
+            return send(req, res, 200, {
+              profiles: profiles.map((profile) => ({
+                id: profile.id,
+                name: profile.name,
+                folder: profile.folder,
+                allow: profile.allow ?? {},
+              })),
+            });
+          }
+          if (parts[1] === "profiles" && parts[2] && parts[3] === "consent" && req.method === "POST") {
+            const name = decodeURIComponent(parts[2]);
+            const profiles = await listBridgeProfiles();
+            const profile = profiles.find((entry) => entry.name === name);
+            if (!profile) return send(req, res, 404, { error: "unknown profile" });
+            if (typeof body.allow !== "boolean") {
+              return send(req, res, 400, { error: "allow must be a boolean" });
+            }
+            const deviceId = typeof body.deviceId === "string" && body.deviceId ? body.deviceId : "*";
+            await setBridgeProfileConsent(profile.id, deviceId, body.allow);
+            return send(req, res, 200, { ok: true, profile: profile.name, deviceId, allow: body.allow });
+          }
           return send(req, res, 404, { error: "not found" });
         }
 
@@ -231,9 +264,24 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
           if (!PROFILE_RE.test(profile) || !clientKey) {
             return send(req, res, 401, { error: "profile and client key required" });
           }
-          const record = (await readPeers()).peers[profile];
-          if (!record || !sameSecret(sha256(clientKey), record.keyHash)) {
+          const peers = await readPeers();
+          const hash = sha256(clientKey);
+          // Device-level pairing: the key minted for the first profile is
+          // valid for every profile this bridge hosts. Fall back to scanning
+          // the device's records when the tab switched profiles.
+          const record =
+            (peers.peers[profile] &&
+            sameSecret(hash, peers.peers[profile].keyHash)
+              ? peers.peers[profile]
+              : undefined) ??
+            Object.values(peers.peers).find((entry) => sameSecret(hash, entry.keyHash));
+          if (!record) {
             return send(req, res, 401, { error: "client key rejected" });
+          }
+          if (!peers.peers[profile]) {
+            // The catalog will create the actual mirror on consent; keep the
+            // reconnect record's capabilities as the device capability set.
+            await ensureBridgeProfile(profile).catch(() => undefined);
           }
           const reconnect = manager.createReconnect(profile, record);
           return send(req, res, 200, {

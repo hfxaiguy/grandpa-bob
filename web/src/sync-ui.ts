@@ -17,7 +17,7 @@ import { pairWithServer } from "./server-link";
 import { bindDesktopMirror } from "./profiles";
 import { loadStorageServer } from "./settings";
 import { toIceServers } from "./sync/transport-webrtc";
-import type { SyncHandle } from "./sync";
+import type { PendingPairing, SyncHandle } from "./sync";
 import { emptyTransfer, type SyncState, type TransferState } from "./sync/engine";
 
 type SyncGetter = () => SyncHandle | null;
@@ -205,6 +205,65 @@ export function wireSyncUi(getSync: SyncGetter): void {
   const setStatus = (text: string): void => setText("pair-status", text);
   const setVerify = (phrase: string): void => setText("pair-verify", phrase);
 
+  // ── explicit phrase confirmation ─────────────────────────────────────
+  // A displayed phrase is not consent. Both ends must press the button before
+  // the link exchanges catalogs or data. The desktop path uses the CLI approval
+  // as its confirmation; the browser still presses here before sending `ready`.
+  let pendingPairing: PendingPairing | null = null;
+  const confirmWrap = el<HTMLElement>("pair-confirm-wrap");
+  const confirmButton = el<HTMLButtonElement>("pair-phrase-ok");
+  const rejectButton = el<HTMLButtonElement>("pair-phrase-no");
+  const hideConfirm = (): void => {
+    if (confirmWrap) confirmWrap.hidden = true;
+    if (confirmButton) confirmButton.disabled = false;
+    if (rejectButton) rejectButton.disabled = false;
+  };
+  const waitForPairingReady = (pairing: PendingPairing): void => {
+    hideConfirm();
+    setStatus("waiting for the other side to confirm the phrase…");
+    progress("waiting for the other side to confirm…");
+    void pairing.ready
+      .then(() => {
+        progress("verification phrase confirmed");
+        progressDone();
+        setStatus("connected — profile catalog exchanged");
+        updateLiveStatus();
+      })
+      .catch((err) => {
+        const text = err instanceof Error ? err.message : String(err);
+        progressFailed(`pairing aborted: ${text}`);
+        setStatus(`pairing aborted: ${text}`);
+      });
+  };
+  const showPhraseConfirm = (pairing: PendingPairing, phrase: string): void => {
+    pendingPairing = pairing;
+    // The gate can reject on timeout/peer mismatch while the user is still
+    // comparing; keep that from surfacing as an unhandled rejection.
+    void pairing.ready.catch(() => undefined);
+    setVerify(phrase);
+    if (confirmWrap) confirmWrap.hidden = false;
+    progress("verification phrase ready — compare it, then confirm");
+    setStatus("compare the phrase on both devices, then press “Phrase matches” on both");
+  };
+  confirmButton?.addEventListener("click", () => {
+    const pairing = pendingPairing;
+    if (!pairing) return;
+    pendingPairing = null;
+    if (confirmButton) confirmButton.disabled = true;
+    if (rejectButton) rejectButton.disabled = true;
+    pairing.confirm();
+    waitForPairingReady(pairing);
+  });
+  rejectButton?.addEventListener("click", () => {
+    const pairing = pendingPairing;
+    if (!pairing) return;
+    pendingPairing = null;
+    pairing.reject("the phrase does not match");
+    hideConfirm();
+    progressFailed("phrase rejected — nothing was exchanged");
+    setStatus("phrase rejected — nothing was exchanged");
+  });
+
   // ── pairing progress ──────────────────────────────────────────────────
   // A short, live timeline so a browser-to-browser handshake is observable on
   // both ends: each transport status becomes a line and the last one stays
@@ -248,6 +307,9 @@ export function wireSyncUi(getSync: SyncGetter): void {
     pairingActive = true;
     progressLines = [];
     retryAction = retry;
+    pendingPairing = null;
+    hideConfirm();
+    setVerify("—");
     if (retryWrap) retryWrap.hidden = false;
     if (retryButton) retryButton.disabled = true;
     renderProgress();
@@ -453,11 +515,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
     manual = pairing;
     pairing.done
       .then((phrase) => {
-        setVerify(phrase);
-        progress("verification phrase ready");
-        progressDone();
-        setStatus("connected — both devices must show the same phrase");
-        updateLiveStatus();
+        showPhraseConfirm(pairing, phrase);
       })
       .catch((err) => {
         const text = err instanceof Error ? err.message : String(err);
@@ -492,11 +550,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
     pairing.accept(offer);
     pairing.done
       .then((phrase) => {
-        setVerify(phrase);
-        progress("verification phrase ready");
-        progressDone();
-        setStatus("connected — both devices must show the same phrase");
-        updateLiveStatus();
+        showPhraseConfirm(pairing, phrase);
       })
       .catch((err) => {
         const text = err instanceof Error ? err.message : String(err);
@@ -550,7 +604,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
         setStatus(`joining via ${swap.baseUrl}…`);
         const joined = await joinSwapChannel(swap, code);
         progress("code accepted — pairing");
-        const phrase = await handle.pairBobSwap({
+        const pairing = await handle.pairBobSwap({
           baseUrl: swap.baseUrl,
           readKey: swap.readKey ?? swap.uploadKey,
           id: joined.id,
@@ -559,11 +613,8 @@ export function wireSyncUi(getSync: SyncGetter): void {
           iceServers: joined.iceServers,
           onStatus: onPairStatus,
         });
-        setVerify(phrase);
-        progress("verification phrase ready");
-        progressDone();
-        setStatus("connected — both devices must show the same phrase");
-        updateLiveStatus();
+        const phrase = await pairing.done;
+        showPhraseConfirm(pairing, phrase);
       } catch (err) {
         const text = err instanceof Error ? err.message : String(err);
         progressFailed(`relay pairing failed: ${text}`);
@@ -587,7 +638,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
         setText("pair-created-code", channel.code);
         progress(`code ${channel.code} created — share it with the other browser`);
         setStatus("share the 8-digit code with the other device, then wait");
-        const phrase = await handle.pairBobSwap({
+        const pairing = await handle.pairBobSwap({
           baseUrl: swap.baseUrl,
           readKey: swap.readKey ?? swap.uploadKey,
           id: channel.id,
@@ -596,11 +647,8 @@ export function wireSyncUi(getSync: SyncGetter): void {
           iceServers: channel.iceServers,
           onStatus: onPairStatus,
         });
-        setVerify(phrase);
-        progress("verification phrase ready");
-        progressDone();
-        setStatus("connected — both devices must show the same phrase");
-        updateLiveStatus();
+        const phrase = await pairing.done;
+        showPhraseConfirm(pairing, phrase);
       } catch (err) {
         const text = err instanceof Error ? err.message : String(err);
         progressFailed(`pairing failed: ${text}`);
@@ -637,12 +685,39 @@ export function wireSyncUi(getSync: SyncGetter): void {
             progress(text);
           },
         });
-        handle.attach(connection.peer);
-        progress("binding the mirror folder…");
-        await bindDesktopMirror(profile, connection.info.mirror);
-        progressDone();
-        setStatus(`paired · fingerprint ${connection.info.fingerprint} — reloading…`);
-        setTimeout(() => location.reload(), 800);
+        let resolveReady!: () => void;
+        let rejected = false;
+        const ready = new Promise<void>((resolve) => (resolveReady = resolve));
+        const pairing: PendingPairing = {
+          done: Promise.resolve(connection.phrase),
+          ready,
+          accept: () => undefined,
+          confirm: () => {
+            connection.confirmPhrase();
+            handle.attachDevice(connection.peer, {
+              kind: "desktop",
+              deviceId: connection.info.deviceId,
+              deviceName: connection.info.mirror || "desktop",
+              requirePhrase: false,
+              freshPairing: true,
+            });
+            resolveReady();
+          },
+          reject: (reason) => {
+            rejected = true;
+            connection.rejectPhrase(reason);
+            connection.close();
+          },
+        };
+        showPhraseConfirm(pairing, connection.phrase);
+        void pairing.ready.then(async () => {
+          if (rejected) return;
+          progress("binding the mirror folder…");
+          await bindDesktopMirror(profile, connection.info.mirror);
+          progressDone();
+          setStatus(`paired · fingerprint ${connection.info.fingerprint} — reloading…`);
+          setTimeout(() => location.reload(), 800);
+        });
       } catch (err) {
         const text = err instanceof Error ? err.message : String(err);
         progressFailed(`desktop pairing failed: ${text}`);

@@ -54,6 +54,7 @@ import {
 import type { AppInfo, EmitComponent, ProvPiece, ProvWriter, Provenance, RefTarget, Turn, TurnTokens } from "./types";
 import { Markdown } from "./markdown";
 import { liveActivity, runningAppOf, toolLabel } from "./live-tool";
+import { buildInfo } from "./build-info";
 
 const trunkOf = (a?: string | null) => a || "trunk";
 
@@ -2435,6 +2436,58 @@ export function GlobalStream() {
   );
 }
 
+/**
+ * The small status line the browser shell keeps in its top toolbar: build
+ * version, OPFS/snapshot freshness and the desktop mirror. On a phone the
+ * toolbar hides those, so the same live values are mirrored here; wider
+ * screens show both (the toolbar plus this footer).
+ */
+function SessionStatus() {
+  const [workspace, setWorkspace] = createSignal("");
+  const [mirror, setMirror] = createSignal("");
+  onMount(() => {
+    const statusEl = document.getElementById("status");
+    const mirrorEl = document.getElementById("mirror-status");
+    const read = () => {
+      setWorkspace(statusEl?.textContent?.trim() ?? "");
+      setMirror(mirrorEl && !mirrorEl.hidden ? (mirrorEl.textContent || "").trim() : "");
+    };
+    read();
+    const observer = new MutationObserver(read);
+    if (statusEl) observer.observe(statusEl, { childList: true, characterData: true, subtree: true });
+    if (mirrorEl) {
+      observer.observe(mirrorEl, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["hidden"],
+      });
+    }
+    onCleanup(() => observer.disconnect());
+  });
+  return (
+    <div class="session-status">
+      <div class="session-status-line" title={buildInfo.title}>
+        <span class="session-status-key">version</span>
+        <span>{buildInfo.label}</span>
+      </div>
+      <Show when={workspace()}>
+        <div class="session-status-line">
+          <span class="session-status-key">workspace</span>
+          <span>{workspace()}</span>
+        </div>
+      </Show>
+      <Show when={mirror()}>
+        <div class="session-status-line">
+          <span class="session-status-key">mirror</span>
+          <span>{mirror()}</span>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
 export function SessionPanel(props: { onClose: () => void }) {
   const activeSession = createMemo(() => state.sessions.find((s) => s.key === state.active));
   // A local draft while editing the active session's name; null = show the
@@ -2453,6 +2506,7 @@ export function SessionPanel(props: { onClose: () => void }) {
           <span class="spacer" />
           <button onClick={props.onClose}>✕</button>
         </div>
+        <SessionStatus />
 
         <Show when={!state.browserMode}>
           <label class="row">

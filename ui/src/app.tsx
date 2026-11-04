@@ -55,13 +55,16 @@ function TilesMenu() {
 }
 
 /**
- * The phone toolbar folds upload, tiles, stream/machine/session (and the
- * settings page link) into one list, so those controls keep their behavior
- * without making the wrapped toolbar several rows taller. Desktop keeps the
- * direct buttons.
+ * The phone toolbar folds upload, tiles and stream/machine (plus the settings
+ * page link) into one list, so those controls keep their behavior without
+ * making the wrapped toolbar several rows taller. Desktop keeps the direct
+ * buttons; the shell toolbar hosts the phone's Session button beside Sync….
  */
 function SettingsMenu(props: { events: number; onSession: () => void }) {
   const [open, setOpen] = createSignal(false);
+  // The browser shell hosts a Session button beside Sync… on a phone. The
+  // standalone UI has no shell, so keep the action in this menu there.
+  const shellSession = !!document.getElementById("session-menu");
   let wrap: HTMLDivElement | undefined;
   // WorkspaceUpload keeps the hidden picker + destination drawer mounted even
   // while the menu is closed, so the file dialog's onChange still lands.
@@ -90,7 +93,7 @@ function SettingsMenu(props: { events: number; onSession: () => void }) {
         classList={{ active: open() }}
         aria-haspopup="menu"
         aria-expanded={open()}
-        title="upload, tiles, stream, machine notes, session and settings"
+        title="upload, tiles, stream, machine notes and settings"
         onClick={() => setOpen(!open())}
       >
         settings ▾
@@ -105,8 +108,6 @@ function SettingsMenu(props: { events: number; onSession: () => void }) {
           >
             ⬆ upload
           </button>
-          <div class="menu-section">tiles</div>
-          <TileToggles />
           <div class="menu-section">view</div>
           <label class="menu-row" role="menuitemcheckbox" aria-checked={state.streamOpen}>
             <input
@@ -120,12 +121,16 @@ function SettingsMenu(props: { events: number; onSession: () => void }) {
             <input type="checkbox" checked={state.showMachine} onChange={() => pick(toggleMachine)} />
             machine
           </label>
-          <button type="button" class="menu-row menu-action" role="menuitem" onClick={() => pick(props.onSession)}>
-            session
-          </button>
+          <Show when={!shellSession}>
+            <button type="button" class="menu-row menu-action" role="menuitem" onClick={() => pick(props.onSession)}>
+              session
+            </button>
+          </Show>
           <a class="menu-row menu-action" role="menuitem" href="/settings" onClick={() => setOpen(false)}>
             settings page
           </a>
+          <div class="menu-section">tiles</div>
+          <TileToggles />
         </div>
       </Show>
       <WorkspaceUpload hideTrigger onReady={(opener) => (openUpload = opener)} />
@@ -152,6 +157,12 @@ export function App() {
   };
 
   onMount(() => {
+    // The browser shell's Session button lives in its own toolbar, above this
+    // app. It asks the mounted chat to open the same drawer as the direct
+    // desktop button.
+    const openSession = () => setShowSession(true);
+    window.addEventListener("bob:open-session", openSession);
+    onCleanup(() => window.removeEventListener("bob:open-session", openSession));
     void init();
   });
 

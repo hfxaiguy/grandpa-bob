@@ -18,6 +18,8 @@ import { sha256hex } from "./platform/sha256";
 export interface ServerLinkInfo {
   url: string;
   profile: string;
+  /** Stable bridge device id from the catalog (when the bridge reports one). */
+  deviceId?: string;
   clientKey: string;
   /** Per-profile server proof key (pinned; not the server master key). */
   serverKey: string;
@@ -37,6 +39,12 @@ export interface ServerOpResult {
 export interface ServerConnection {
   peer: SyncPeer;
   info: ServerLinkInfo;
+  /** The SAS phrase this pairing attempt showed (not persisted). */
+  phrase: string;
+  /** The operator confirmed the phrase in the browser; this releases `ready`. */
+  confirmPhrase(): void;
+  /** The phrase did not match: abort before any catalog/file data. */
+  rejectPhrase(reason?: string): void;
   /** Run an allowlisted executable on the desktop/server. */
   run(binary: string, args: string[], timeoutMs?: number): Promise<ServerOpResult>;
   /**
@@ -64,6 +72,12 @@ interface JoinResponse {
 type Control = Record<string, unknown>;
 
 const LINK_KEY = (profile: string): string => `bob:server:${profile}`;
+/**
+ * Device-level link. Pairing covers every profile now, so a tab that switches
+ * to a profile that was never the pairing target can still reconnect with the
+ * same client key. The bridge accepts a known key for any of its profiles.
+ */
+const DEVICE_LINK_KEY = "bob:server:device";
 
 /** First pairing with a non-empty server folder replaces the tab's copy. */
 async function clearProfileWorkspace(profile: string): Promise<void> {
@@ -79,7 +93,7 @@ async function clearProfileWorkspace(profile: string): Promise<void> {
 
 export function loadServerLink(profile: string): ServerLinkInfo | null {
   try {
-    const raw = localStorage.getItem(LINK_KEY(profile));
+    const raw = localStorage.getItem(LINK_KEY(profile)) ?? localStorage.getItem(DEVICE_LINK_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<ServerLinkInfo>;
     if (
@@ -93,6 +107,7 @@ export function loadServerLink(profile: string): ServerLinkInfo | null {
     return {
       url: parsed.url,
       profile,
+      deviceId: typeof parsed.deviceId === "string" ? parsed.deviceId : undefined,
       clientKey: parsed.clientKey,
       serverKey: parsed.serverKey,
       fingerprint: parsed.fingerprint,
@@ -107,7 +122,9 @@ export function loadServerLink(profile: string): ServerLinkInfo | null {
 
 export function saveServerLink(link: ServerLinkInfo): void {
   try {
-    localStorage.setItem(LINK_KEY(link.profile), JSON.stringify(link));
+    const json = JSON.stringify(link);
+    localStorage.setItem(LINK_KEY(link.profile), json);
+    localStorage.setItem(DEVICE_LINK_KEY, json);
   } catch {
     /* private mode */
   }
@@ -116,6 +133,8 @@ export function saveServerLink(link: ServerLinkInfo): void {
 export function clearServerLink(profile: string): void {
   try {
     localStorage.removeItem(LINK_KEY(profile));
+    // The device link stays: other profiles may still use it. A full revoke
+    // happens on the bridge (`npm run pair -- --revoke <profile>`).
   } catch {
     /* ignore */
   }
@@ -305,11 +324,22 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function finishHandshake(opts: HandshakeOptions, info: ServerLinkInfo): ServerConnection {
+function finishHandshake(
+  opts: HandshakeOptions,
+  info: ServerLinkInfo,
+  autoReady: boolean,
+): ServerConnection {
   const { opened } = opts;
   const pendingOps = new Map<string, (result: ServerOpResult) => void>();
   const pendingStt = new Map<string, (result: { text?: string; error?: string }) => void>();
   const controlSubs = new Set<(control: Record<string, unknown>) => void>();
+  let readySent = false;
+  const sendReady = (): void => {
+    if (readySent) return;
+    readySent = true;
+    saveServerLink(info);
+    opened.send({ op: "ready" });
+  };
   opts.opened.setControl((control) => {
     if (control.op === "ops-result") {
       const id = String(control.id ?? "");
@@ -345,11 +375,19 @@ function finishHandshake(opts: HandshakeOptions, info: ServerLinkInfo): ServerCo
       }
     }
   });
-  opened.send({ op: "ready" });
-  saveServerLink(info);
+  if (autoReady) sendReady();
   return {
     peer: opened.peer,
     info,
+    phrase: opened.phrase,
+    confirmPhrase() {
+      opened.send({ op: "phrase-ok" });
+      sendReady();
+    },
+    rejectPhrase(reason = "the phrase does not match") {
+      opened.send({ op: "phrase-mismatch", reason });
+      opened.close();
+    },
     sendControl(control) {
       opened.send(control);
     },
@@ -404,7 +442,9 @@ function negotiate(
     if (settled) return;
     settled = true;
     clearTimeout(timer);
-    resolve(finishHandshake(opts, info));
+    // Resume already proved identity; only first pairing needs the human
+    // phrase confirmation before the catalog or any file frame may move.
+    resolve(finishHandshake(opts, info, opts.mode === "resume"));
   };
 
   opts.opened.setControl((control) => {
@@ -412,7 +452,7 @@ function negotiate(
     if (op === "server") {
       serverNonce = String(control.nonce ?? "");
       const serverProfile = String(control.profile ?? "");
-      if (serverProfile && serverProfile !== opts.profile) {
+      if (serverProfile && serverProfile !== "*" && serverProfile !== opts.profile) {
         settled = true;
         clearTimeout(timer);
         reject(
@@ -456,6 +496,7 @@ function negotiate(
         done({
           url: opts.url,
           profile: opts.profile,
+          deviceId: typeof control.deviceId === "string" ? control.deviceId : undefined,
           clientKey: String(control.clientKey ?? ""),
           serverKey: String(control.serverKey ?? ""),
           fingerprint: String(control.fingerprint ?? ""),
@@ -481,6 +522,8 @@ function negotiate(
         opts.onStatus("reconnected");
         done({
           ...opts.info,
+          deviceId:
+            typeof control.deviceId === "string" ? control.deviceId : opts.info.deviceId,
           mirror: capabilities.mirror ?? opts.info.mirror,
           exec: Array.isArray(capabilities.exec)
             ? capabilities.exec.filter((x): x is string => typeof x === "string")
@@ -544,13 +587,16 @@ export async function pairWithServer(opts: {
 
 export async function resumeServer(opts: {
   info: ServerLinkInfo;
+  /** Current tab profile; defaults to the profile that created the link. */
+  profile?: string;
   localId: string;
   onSas?: (phrase: string) => void;
   onStatus?: (text: string) => void;
 }): Promise<ServerConnection> {
   const base = normalizeUrl(opts.info.url);
+  const profile = opts.profile ?? opts.info.profile;
   opts.onStatus?.("finding the server…");
-  const channel = await createReconnectChannel(base, opts.info.profile, opts.info.clientKey);
+  const channel = await createReconnectChannel(base, profile, opts.info.clientKey);
   let opened: Opened;
   try {
     opened = await openLink(
@@ -571,8 +617,8 @@ export async function resumeServer(opts: {
         opened,
         mode: "resume",
         url: base,
-        profile: opts.info.profile,
-        info: opts.info,
+        profile: profile,
+        info: { ...opts.info, profile },
         onStatus: opts.onStatus ?? (() => {}),
       },
       resolve,

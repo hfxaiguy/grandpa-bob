@@ -19,8 +19,15 @@ import { transcribeAudioBytes } from "../stt.js";
 import { SyncEngine, type SyncEnvelope, type SyncPeer, type SyncState } from "../../web/src/sync/engine.js";
 import { buildHashmap, type Hashmap } from "../../web/src/sync/hashmap.js";
 import { chunkedPeer } from "../../web/src/sync/chunking.js";
-import { controlEnvelope, controlPeer } from "../../web/src/sync/control-peer.js";
+import { controlEnvelope } from "../../web/src/sync/control-peer.js";
+import { ProfileLink } from "../../web/src/sync/profile-link.js";
 import { pairingPhrase } from "../../web/src/sync/sas.js";
+import {
+  autoLinkProfiles,
+  effectiveAllow,
+  type ProfileCatalogEntry,
+  type ProfilePreview,
+} from "../../web/src/profile-sync-model.js";
 import { applyDatabaseDumps, isDatabaseDumpPath } from "../../web/src/db-sync.js";
 import { createNodePlatform } from "../platform/node.js";
 import { ShellTools } from "../tools/shell.js";
@@ -39,6 +46,17 @@ import {
   type PeerCapabilities,
   type PeerRecord,
 } from "./store.js";
+import {
+  bridgeCatalog,
+  bridgeConsent,
+  bridgeDeviceId,
+  clearBridgeProfileConsent,
+  ensureBridgeProfile,
+  listBridgeProfiles,
+  relinkBridgeProfile,
+  setBridgeProfileConsent,
+  type BridgeProfile,
+} from "./profiles.js";
 
 export interface PairingEvent {
   seq: number;
@@ -221,9 +239,21 @@ function answerChannel(
   });
 }
 
+interface BridgeRuntime {
+  profile: BridgeProfile;
+  platform: ReturnType<typeof createNodePlatform>;
+  engine: SyncEngine;
+  folder: string;
+  watcher: FSWatcher | null;
+  watchTimer: ReturnType<typeof setTimeout> | null;
+  known: Hashmap;
+}
+
 export class PeerSession {
   readonly id = randomUUID();
-  readonly profile: string;
+  profile: string;
+  /** Profile whose key/fingerprint authenticated this device link. */
+  authProfile = "";
   readonly capabilities: PeerCapabilities;
   readonly mode: "pairing" | "reconnect";
   readonly channel: MailboxChannel;
@@ -231,10 +261,16 @@ export class PeerSession {
   done = false;
   private eventSeq = 0;
   private link: SyncPeer | null = null;
+  /** Primary profile's engine (ops/log/status keep using this handle). */
   private engine: SyncEngine | null = null;
-  private watcher: FSWatcher | null = null;
-  private watchTimer: ReturnType<typeof setTimeout> | null = null;
-  private known: Hashmap = {};
+  private profileLink: ProfileLink | null = null;
+  private runtimes = new Map<string, BridgeRuntime>();
+  private attached = new Map<string, SyncPeer>();
+  private remoteCatalog: ProfileCatalogEntry[] = [];
+  private remoteConsent: Record<string, boolean> = {};
+  private catalogBusy = false;
+  private remoteDeviceId = "";
+  private remoteDeviceName = "browser";
   private approval: ((ok: boolean) => void) | null = null;
   private sas = "";
   private closed = false;
@@ -314,11 +350,12 @@ export class PeerSession {
         return;
       }
       this.sas = answer.phrase;
-      let link!: SyncPeer;
-      link = controlPeer(answer.peer, (control) => {
-        void this.onControl(control, link);
-      });
+      const link = answer.peer;
       this.link = link;
+      link.onMessage((envelope) => {
+        if (envelope.kind !== "control") return;
+        void this.onControl(envelope.control ?? {}, link);
+      });
       link.onClosed(() => {
         this.emit("link-closed", { paired: this.paired });
         if (this.mode === "pairing" && !this.paired && !this.closed) {
@@ -328,7 +365,7 @@ export class PeerSession {
       });
       this.emit("connected", { sas: this.sas });
       const key = await serverKey();
-      const proofKey = hmac(key, `pair:${this.profile}`);
+      const proofKey = hmac(key, `pair:${this.authProfile || this.profile}`);
       const nonce = randomBytes(16).toString("hex");
       link.send(
         controlEnvelope(channelPeerId(this.profile), {
@@ -388,6 +425,7 @@ export class PeerSession {
           controlEnvelope(channelPeerId(this.profile), {
             op: "paired",
             v: 1,
+            deviceId: await bridgeDeviceId(),
             clientKey,
             serverKey: proofKey,
             fingerprint: record.fingerprint,
@@ -450,8 +488,8 @@ export class PeerSession {
     });
     const expectedProfile = this.profile;
     if (op === "hello") {
-      if (control.profile !== expectedProfile) {
-        const got = String(control.profile ?? "");
+      const got = String(control.profile ?? "");
+      if (expectedProfile !== "*" && got !== expectedProfile) {
         const message =
           `this code is for browser profile "${expectedProfile}", but this tab is "${got}" — ` +
           `rerun \`npm run pair -- --profile ${got}\``;
@@ -459,6 +497,17 @@ export class PeerSession {
         link.send(controlEnvelope(channelPeerId(this.profile), { op: "error", message }));
         this.closeSoon();
         return;
+      }
+      if (expectedProfile === "*") {
+        if (!PROFILE_RE.test(got)) {
+          const message = `invalid browser profile name: ${JSON.stringify(got)}`;
+          this.emit("error", { message });
+          link.send(controlEnvelope(channelPeerId(this.profile), { op: "error", message }));
+          this.closeSoon();
+          return;
+        }
+        this.profile = got;
+        if (!this.capabilities.mirror) this.capabilities.mirror = got;
       }
       this.emit("joined", { profile: this.profile, sas: this.sas });
       if (this.mode === "pairing") this.emit("sas", { sas: this.sas });
@@ -471,7 +520,12 @@ export class PeerSession {
         return;
       }
       if (control.profile !== expectedProfile) return;
-      const record = (await readPeers()).peers[this.profile];
+      const records = (await readPeers()).peers;
+      const record =
+        records[this.profile] ??
+        Object.values(records).find((entry) =>
+          sameSecret(String(control.proof ?? ""), hmac(entry.keyHash, this.pendingNonce)),
+        );
       if (!record) return;
       const proof = String(control.proof ?? "");
       if (!sameSecret(proof, hmac(record.keyHash, this.pendingNonce))) {
@@ -487,6 +541,7 @@ export class PeerSession {
         controlEnvelope(channelPeerId(this.profile), {
           op: "resumed",
           v: 1,
+          deviceId: await bridgeDeviceId(),
           proof: hmac(this.pendingProofKey, this.pendingClientNonce),
           capabilities: { mirror: this.capabilities.mirror, exec: this.capabilities.exec },
         }),
@@ -494,9 +549,21 @@ export class PeerSession {
       return;
     }
     if (op === "ready") {
-      if (this.engine) return;
-      await this.attachEngine();
+      if (this.profileLink) return;
+      await this.attachProfileLink();
       return;
+    }
+    if (op === "ops-run" || op === "stt-run") {
+      if (!this.authed) {
+        link.send(
+          controlEnvelope(channelPeerId(this.profile), {
+            op: op === "ops-run" ? "ops-result" : "stt-result",
+            id: String(control.id ?? ""),
+            error: "pairing is not complete",
+          }),
+        );
+        return;
+      }
     }
     if (op === "log-handshake" || op === "log-batch") {
       // The control channel exists during pairing too; only a proven peer may
@@ -582,14 +649,139 @@ export class PeerSession {
     }
   }
 
-  private async attachEngine(): Promise<void> {
-    const folder = this.capabilities.mirrorPath ?? defaultMirrorDir(this.capabilities.mirror ?? this.profile);
-    await fs.mkdir(folder, { recursive: true });
+  /**
+   * Turn the authenticated connection into a multiplexed profile link. The
+   * catalog goes out first; consent then decides which desktop mirror folders
+   * get an engine. The primary profile's engine keeps the ops/log surface.
+   */
+  private async attachProfileLink(): Promise<void> {
+    if (!this.link || this.profileLink) return;
+    const deviceId = await bridgeDeviceId();
+    const localCatalog = await bridgeCatalog();
+    const primary = localCatalog.find((entry) => entry.name === this.profile) ?? localCatalog[0];
+    const link = new ProfileLink(this.link, {
+      deviceId,
+      deviceName: "desktop/server",
+      catalog: localCatalog,
+      consent: await bridgeConsent(this.remoteDeviceId || "pending"),
+      defaultProfileId: primary?.id,
+      peerId: channelPeerId(this.profile),
+      // Auth is complete (pairing approval or the resume proof); the browser
+      // still gates its own catalog on the explicit phrase button.
+      requirePhrase: false,
+      onCatalog: (catalog, remoteId, remoteName) => {
+        void this.onRemoteCatalog(catalog, remoteId, remoteName);
+      },
+      onConsent: (consent) => {
+        void this.onRemoteConsent(consent);
+      },
+      onReady: () => {
+        void this.applyConsent();
+      },
+      onPreviewRequest: (profileId) => this.previewProfile(profileId),
+      onControl: (control) => {
+        if (this.link) void this.onControl(control, this.link);
+      },
+      onClosed: () => this.dispose(),
+    });
+    this.profileLink = link;
+    link.start();
+  }
+
+  private async onRemoteCatalog(
+    catalog: ProfileCatalogEntry[],
+    remoteDeviceId: string,
+    remoteDeviceName: string,
+  ): Promise<void> {
+    this.remoteCatalog = catalog;
+    this.remoteDeviceId = remoteDeviceId;
+    this.remoteDeviceName = remoteDeviceName;
+    this.catalogBusy = true;
+    try {
+      const local = await bridgeCatalog();
+      const links = autoLinkProfiles(local, catalog, { linkedNames: [], unlinkedIds: [] });
+      for (const link of links) {
+        if (!link.adoptLocal) continue;
+        await relinkBridgeProfile(link.adoptLocal.from, link.adoptLocal.to).catch(() => undefined);
+      }
+      if (links.some((link) => link.adoptLocal)) {
+        this.profileLink?.setCatalog(await bridgeCatalog());
+      }
+      this.profileLink?.setConsent(await bridgeConsent(remoteDeviceId));
+    } finally {
+      this.catalogBusy = false;
+    }
+    await this.applyConsent();
+  }
+
+  private async onRemoteConsent(consent: Record<string, boolean>): Promise<void> {
+    this.remoteConsent = { ...consent };
+    // A catalog auto-link is in flight; its completion re-applies consent with
+    // the canonical ids.
+    if (this.catalogBusy) return;
+    await this.applyConsent();
+  }
+
+  /**
+   * Create local mirrors for browser-only profiles the browser has allowed,
+   * then attach exactly the intersection of both consent maps.
+   */
+  private async applyConsent(): Promise<void> {
+    if (!this.profileLink || !this.remoteDeviceId) return;
+    for (const entry of this.remoteCatalog) {
+      const id = entry.id.toLowerCase();
+      if (this.remoteConsent[id] !== true) continue;
+      const existing = await this.runtimeForId(id);
+      if (existing) continue;
+      await ensureBridgeProfile(entry.name, {
+        id,
+        createdAt: entry.createdAt,
+      }).catch(() => undefined);
+    }
+    const profiles = await listBridgeProfiles();
+    const localAllow = await bridgeConsent(this.remoteDeviceId);
+    for (const profile of profiles) {
+      const id = profile.id.toLowerCase();
+      const allowed = effectiveAllow(
+        { [id]: localAllow[id] ?? true },
+        this.remoteConsent,
+        id,
+      );
+      if (allowed) {
+        await this.attachProfile(profile);
+      } else {
+        this.detachProfile(id);
+      }
+    }
+    this.profileLink.setConsent(localAllow);
+    this.emit("catalog", {
+      device: this.remoteDeviceId,
+      profiles: profiles.map((profile) => ({ id: profile.id, name: profile.name })),
+    });
+  }
+
+  private async runtimeForId(id: string): Promise<BridgeRuntime | null> {
+    const existing = this.runtimes.get(id.toLowerCase());
+    if (existing) return existing;
+    const profile = (await listBridgeProfiles()).find((entry) => entry.id === id.toLowerCase());
+    if (!profile) return null;
+    return this.createRuntime(profile);
+  }
+
+  private async runtimeForName(name: string): Promise<BridgeRuntime | null> {
+    const profile = (await listBridgeProfiles()).find((entry) => entry.name === name);
+    if (!profile) return null;
+    return this.runtimes.get(profile.id) ?? this.createRuntime(profile);
+  }
+
+  private createRuntime(profile: BridgeProfile): BridgeRuntime {
+    const folder =
+      profile.name === this.profile && this.capabilities.mirrorPath
+        ? this.capabilities.mirrorPath
+        : profile.folder;
     const platform = createNodePlatform(folder, this.capabilities.exec);
-    this.engine = new SyncEngine(platform, channelPeerId(this.profile), {
-      journalRoot: peerJournalDir(this.profile),
-      // The tab no longer sends the raw .db (hashmap excludes it); a delivered
-      // dump is replayed here so the mirror's DBs stay usable by desktop SQL.
+    const engine = new SyncEngine(platform, channelPeerId(profile.name), {
+      journalRoot: peerJournalDir(profile.name),
       onApplied: (paths, previous) => {
         if (!paths.some(isDatabaseDumpPath)) return undefined;
         const baseline: Record<string, string> = {};
@@ -601,46 +793,95 @@ export class PeerSession {
         );
       },
     });
-    this.known = await buildHashmap(platform, platform.workspaceRoot);
-    // Materialize app DBs from the dumps already in the mirror: the raw .db
-    // is no longer a synced file, and a fresh attach may have no DB yet.
-    await applyDatabaseDumps(platform).catch(() => undefined);
-    this.engine.onState((state: SyncState) => this.emit("sync", { status: state.status, detail: state.detail }));
-    if (this.link) this.engine.attach(this.link);
-    this.onReady?.(this);
-    this.watchTimer = setTimeout(() => void this.scanExternal(), 800);
+    const runtime: BridgeRuntime = {
+      profile: { ...profile, folder },
+      platform,
+      engine,
+      folder,
+      watcher: null,
+      watchTimer: null,
+      known: {},
+    };
+    this.runtimes.set(profile.id, runtime);
+    engine.onState((state: SyncState) =>
+      this.emit("sync", { profile: profile.name, status: state.status, detail: state.detail }),
+    );
+    if (profile.name === this.profile) this.engine = engine;
+    void this.startRuntime(runtime);
+    return runtime;
+  }
+
+  private async startRuntime(runtime: BridgeRuntime): Promise<void> {
+    await fs.mkdir(runtime.folder, { recursive: true });
+    runtime.known = await buildHashmap(runtime.platform, runtime.platform.workspaceRoot);
+    await applyDatabaseDumps(runtime.platform).catch(() => undefined);
+    runtime.watchTimer = setTimeout(() => void this.scanExternal(runtime), 800);
     try {
-      this.watcher = watch(folder, { recursive: true }, () => {
-        if (this.watchTimer) return;
-        this.watchTimer = setTimeout(() => {
-          this.watchTimer = null;
-          void this.scanExternal();
+      runtime.watcher = watch(runtime.folder, { recursive: true }, () => {
+        if (runtime.watchTimer) return;
+        runtime.watchTimer = setTimeout(() => {
+          runtime.watchTimer = null;
+          void this.scanExternal(runtime);
         }, 500);
       });
-      this.watcher.on("error", () => undefined);
+      runtime.watcher.on("error", () => undefined);
     } catch {
       /* coarse/exhausted watcher: ops and reconciles still converge */
     }
-    this.emit("ready", { profile: this.profile, mirror: this.capabilities.mirror });
+    this.onReady?.(this);
+    this.emit("ready", {
+      profile: runtime.profile.name,
+      mirror: runtime.profile.name,
+    });
   }
 
-  private async scanExternal(): Promise<void> {
-    this.watchTimer = null;
-    if (!this.engine || !this.link) return;
-    const platform = createNodePlatform(this.capabilities.mirrorPath ?? defaultMirrorDir(this.capabilities.mirror ?? this.profile));
-    const current = await buildHashmap(platform, platform.workspaceRoot).catch(() => null);
+  private async attachProfile(profile: BridgeProfile): Promise<void> {
+    const id = profile.id.toLowerCase();
+    if (!this.profileLink || this.attached.has(id)) return;
+    const runtime = this.runtimes.get(id) ?? this.createRuntime(profile);
+    const virtual = this.profileLink.peerFor(id);
+    this.attached.set(id, virtual);
+    runtime.engine.attach(virtual);
+  }
+
+  private detachProfile(id: string): void {
+    const virtual = this.attached.get(id.toLowerCase());
+    if (!virtual) return;
+    this.attached.delete(id.toLowerCase());
+    virtual.close();
+  }
+
+  private async scanExternal(runtime: BridgeRuntime): Promise<void> {
+    runtime.watchTimer = null;
+    const current = await buildHashmap(runtime.platform, runtime.platform.workspaceRoot).catch(
+      () => null,
+    );
     if (!current) return;
     const changed: string[] = [];
     for (const [p, entry] of Object.entries(current)) {
-      if (this.known[p]?.hash !== entry.hash) changed.push(p);
+      if (runtime.known[p]?.hash !== entry.hash) changed.push(p);
     }
-    for (const p of Object.keys(this.known)) {
+    for (const p of Object.keys(runtime.known)) {
       if (!(p in current)) changed.push(p);
     }
-    this.known = current;
+    runtime.known = current;
     if (changed.length) {
-      await this.engine.noteMutation([...new Set(changed)]).catch(() => undefined);
+      await runtime.engine.noteMutation([...new Set(changed)]).catch(() => undefined);
     }
+  }
+
+  private async previewProfile(profileId: string): Promise<ProfilePreview | null> {
+    const id = profileId.toLowerCase();
+    if (!this.remoteDeviceId || this.remoteConsent[id] !== true) return null;
+    const runtime = await this.runtimeForId(id);
+    if (!runtime) return null;
+    const map = await buildHashmap(runtime.platform, runtime.platform.workspaceRoot);
+    return {
+      id,
+      files: Object.keys(map).length,
+      bytes: Object.values(map).reduce((sum, entry) => sum + entry.bytes, 0),
+      updatedAt: runtime.profile.createdAt,
+    };
   }
 
   /**
@@ -702,12 +943,20 @@ export class PeerSession {
       );
       return;
     }
-    const folder = this.capabilities.mirrorPath ?? defaultMirrorDir(this.capabilities.mirror ?? this.profile);
+    const runtime = await this.runtimeForName(this.profile);
+    const folder =
+      runtime?.folder ??
+      this.capabilities.mirrorPath ??
+      defaultMirrorDir(this.capabilities.mirror ?? this.profile);
     const timeoutMs = Math.min(OP_TIMEOUT_MS, Math.max(1_000, Number(control.timeoutMs ?? OP_TIMEOUT_MS)));
     this.busy = true;
     try {
-      if (this.engine) await this.engine.reconcileAndWait(link, 15_000).catch(() => false);
-      const before = await buildHashmap(createNodePlatform(folder, this.capabilities.exec), folder);
+      const virtual = runtime ? this.attached.get(runtime.profile.id) : undefined;
+      if (runtime && virtual) {
+        await runtime.engine.reconcileAndWait(virtual, 15_000).catch(() => false);
+      }
+      const platform = runtime?.platform ?? createNodePlatform(folder, this.capabilities.exec);
+      const before = await buildHashmap(platform, folder);
       const shell = new ShellTools(folder, this.capabilities.exec, { timeoutMs, maxOutput: 256 * 1024 });
       let output = "";
       let error: string | undefined;
@@ -718,16 +967,16 @@ export class PeerSession {
       }
       // Let the watcher settle, then compute exactly what the command wrote.
       await new Promise((r) => setTimeout(r, 350));
-      const after = await buildHashmap(createNodePlatform(folder, this.capabilities.exec), folder);
+      const after = await buildHashmap(platform, folder);
       const changed: string[] = [];
       for (const [p, entry] of Object.entries(after)) {
         if (before[p]?.hash !== entry.hash) changed.push(p);
       }
       for (const p of Object.keys(before)) if (!(p in after)) changed.push(p);
-      this.known = after;
-      if (this.engine && changed.length) {
-        await this.engine.noteMutation(changed).catch(() => undefined);
-        await this.engine.reconcileAndWait(link, 20_000).catch(() => false);
+      if (runtime) runtime.known = after;
+      if (runtime && virtual && changed.length) {
+        await runtime.engine.noteMutation(changed).catch(() => undefined);
+        await runtime.engine.reconcileAndWait(virtual, 20_000).catch(() => false);
       }
       link.send(
         controlEnvelope(channelPeerId(this.profile), {
@@ -749,8 +998,15 @@ export class PeerSession {
     this.closed = true;
     this.done = true;
     this.closedResolve?.();
-    if (this.watchTimer) clearTimeout(this.watchTimer);
-    this.watcher?.close();
+    for (const runtime of this.runtimes.values()) {
+      if (runtime.watchTimer) clearTimeout(runtime.watchTimer);
+      runtime.watcher?.close();
+      runtime.engine.detach();
+    }
+    this.runtimes.clear();
+    this.attached.clear();
+    this.profileLink?.close();
+    this.profileLink = null;
     try {
       this.link?.close();
     } catch {
@@ -784,9 +1040,11 @@ export class PeerManager {
   }
 
   async createPairing(profile: string, capabilities: Partial<PeerCapabilities> = {}): Promise<PairingInfo> {
-    if (!PROFILE_RE.test(profile)) throw new Error("invalid profile name");
-    const mirror = capabilities.mirror ?? profile;
-    if (!PROFILE_RE.test(mirror)) throw new Error("invalid mirror folder name");
+    if (profile !== "*" && !PROFILE_RE.test(profile)) throw new Error("invalid profile name");
+    // A wildcard pairing takes the browser's active profile from `hello`; the
+    // mirror then defaults to that name. An explicit --mirror still wins.
+    const mirror = capabilities.mirror ?? (profile === "*" ? undefined : profile);
+    if (mirror !== undefined && !PROFILE_RE.test(mirror)) throw new Error("invalid mirror folder name");
     const mirrorPath = capabilities.mirrorPath ? path.resolve(capabilities.mirrorPath) : undefined;
     const caps: PeerCapabilities = {
       mirror,
@@ -813,7 +1071,13 @@ export class PeerManager {
     // A reconnect replaces the old connection for this profile.
     this.liveByProfile.get(profile)?.dispose();
     const created = this.mailbox.createReconnect(profile);
-    const caps = record.capabilities;
+    // A device link may reconnect under another profile. Keep the proof key
+    // from the profile that originally paired, but default the mirror folder
+    // to the profile this tab is actually on.
+    const caps: PeerCapabilities =
+      record.profile === profile
+        ? record.capabilities
+        : { exec: record.capabilities.exec };
     const session = new PeerSession(
       this.mailbox,
       "reconnect",
@@ -823,6 +1087,7 @@ export class PeerManager {
       (s) => this.makeLive(s),
       (s) => this.unregister(s),
     );
+    session.authProfile = record.profile;
     this.register(session);
     return { session, channelId: created.channel.id, roleToken: created.clientToken };
   }
@@ -848,6 +1113,9 @@ export class PeerManager {
     this.liveByProfile.get(profile)?.dispose();
     this.liveByProfile.delete(profile);
     await removePeer(profile);
+    // Re-pairing starts from defaults, not a stale per-device veto.
+    const entry = (await listBridgeProfiles()).find((item) => item.name === profile);
+    if (entry) await clearBridgeProfileConsent(entry.id);
   }
 
   async peers(): Promise<PeerRecord[]> {

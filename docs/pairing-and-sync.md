@@ -216,12 +216,14 @@ A pair is **two independent copies**, not a cache hierarchy:
 A desktop/server is another peer, not a storage mode. Pairing is the same
 channel flow used between two browsers:
 
-1. On the desktop/server, `npm run pair` creates a mailbox channel on the
-   combined process's `:8795` and prints a single-use 8-digit code, the
-   mirror folder and requested exec allowlist. The tab's active profile must
-   match `--profile` (default `default`), while `--mirror` / `--mirror-path`
-   pick the folder independently — so one desktop can host a separate mirror
-   per browser profile. (`--exec git,make,…` grants ops; `--list` /
+1. On the desktop/server, `npm run pair` creates a device-level mailbox channel
+   on the combined process's `:8795` and prints a single-use 8-digit code, the
+   first mirror folder and requested exec allowlist. By default the profile is
+   `*`: the tab's active profile names the first mirror, and the catalog that
+   follows covers every other profile too. Use `--profile <name>` only to pin
+   that first profile; `--mirror` / `--mirror-path` choose its folder
+   independently. Every other profile defaults to
+   `~/.bobkat/folders/<name>`. (`--exec git,make,…` grants ops; `--list` /
    `--revoke <profile>` manage paired profiles.) Codes and pairing sessions
    live in the `npm run bob` process: restarting it invalidates any open code,
    so run `npm run pair` again after a restart.
@@ -232,14 +234,17 @@ channel flow used between two browsers:
    server**, and enter the code — no channel id. The dialog shows the active
    profile and, once the channel opens, the mirror + exec capabilities the
    console is approving. Both sides derive the same SAS from the DTLS
-   fingerprints; the operator compares it on the console before approving.
+   fingerprints; the operator confirms it on the console, then presses
+   **Phrase matches** in the tab. Nothing (catalog included) moves before both.
 3. On approval the server mints a per-profile **client key** and the tab pins
    a per-profile **server proof key**. Reconnects use a client-key channel and
-   mutual HMAC proofs — no human step. Revoking on the server drops the key and
-   live channel.
+   mutual HMAC proofs — no human step or phrase prompt. Revoking on the server
+   drops the key and live channel.
 4. First pairing: a non-empty desktop folder replaces the profile's workspace;
-   an empty folder receives the tab's workspace. The Node peer runs the same
-   `rtcPeer` + `SyncEngine` (werift polyfill); its journal lives in
+   an empty folder receives the tab's workspace. Every mirror folder carries
+   `.bob-profile.json` with the profile UUID, and the bridge keeps
+   `~/.bobkat/profiles.json`. The Node peer runs the same `rtcPeer` +
+   `SyncEngine` (werift polyfill) per allowed profile; journals live in
    `~/.bobkat/peers/<profile>/`, never in the mirror folder.
 5. Exec is the `ShellTools` allowlist (`execFile`, cwd, argument escape guard,
    git deny, timeout/output caps), never a shell string. The agent worker

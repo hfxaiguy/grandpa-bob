@@ -977,6 +977,11 @@ body.dragging-tile { user-select: none !important; }
 .drawer-head { display: flex; align-items: center; margin-bottom: 10px; }
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
 .col { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); flex: 1; }
+/* The build/workspace/mirror diagnostics that the phone toolbar folds away. */
+.session-status { display: flex; flex-direction: column; gap: 3px; margin: -2px 0 8px; font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+.session-status-line { display: flex; gap: 8px; min-width: 0; }
+.session-status-key { flex: none; width: 68px; opacity: 0.75; }
+.session-status-line > span:last-child { overflow-wrap: anywhere; }
 
 .menu-wrap { position: relative; }
 .menu { position: absolute; right: 0; top: 110%; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 6px; z-index: 30; min-width: 180px; max-height: 60vh; overflow: auto; }
@@ -1170,6 +1175,8 @@ body.dragging-tile { user-select: none !important; }
   .toolbar { flex-wrap: wrap; row-gap: 4px; gap: 6px; padding: 6px 8px; }
   .session-label { max-width: none; flex: 1 1 40%; min-width: 0; }
   .toolbar button, .toolbar .link-btn { padding: 6px 10px; }
+  /* Build/version diagnostics move into the session drawer on a phone. */
+  .build-stamp { display: none; }
   /* The folded settings list is the phone's primary control strip: give each
      row a comfortable touch target. */
   .menu .menu-row { padding: 8px 10px; }

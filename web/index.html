@@ -169,8 +169,15 @@
       .muted { color: var(--muted); }
       .hint-error { color: #ff9b9b; }
       .badge { font-size: 11px; border: 1px solid var(--border); border-radius: 99px; padding: 0.05rem 0.45rem; color: var(--muted); }
-      .profile-row { display: flex; justify-content: space-between; gap: 0.8rem; align-items: center; padding: 0.45rem 0; border-bottom: 1px solid var(--border); }
-      .profile-row:last-child { border-bottom: 0; }
+      .profile-block { padding: 0.35rem 0; border-bottom: 1px solid var(--border); }
+      .profile-block:last-child { border-bottom: 0; }
+      .profile-block[data-remote-only="true"] { opacity: 0.9; }
+      .profile-row { display: flex; justify-content: space-between; gap: 0.8rem; align-items: center; padding: 0.35rem 0; }
+      .profile-peers { margin: 0.15rem 0 0.35rem 1.2rem; display: grid; gap: 0.2rem; }
+      .profile-peer { display: flex; align-items: center; gap: 0.45rem; font-size: 0.9em; flex-wrap: wrap; }
+      .profile-peer-control { display: flex; align-items: center; gap: 0.45rem; }
+      .profile-peer-name { min-width: 8rem; }
+      .profile-peer[data-allowed="true"] .profile-peer-name { font-weight: 600; }
       #hidden-app-list { display: flex; flex-wrap: wrap; gap: 0.35rem 1.1rem; margin: 0.4rem 0; }
       .hidden-app-row { display: flex; align-items: center; gap: 0.4rem; width: auto; margin: 0; color: var(--fg); }
       .hidden-app-row input { display: inline; width: auto; margin: 0; }
@@ -224,6 +231,15 @@
       .boot-splash.errored .boot-pct { color: #ffd7d7; }
       .boot-splash.errored .boot-bar-fill { background: #7f3b46; }
       @media (max-width: 620px) { dialog .grid { grid-template-columns: 1fr; } }
+      /* Phone layout: the session drawer is the home for the workspace/build
+         status line. Keep the Session action itself on the toolbar beside
+         Sync…, and hide the small diagnostics it replaces. Desktop keeps the
+         status line too and also shows it inside the drawer. */
+      #session-menu { display: none; }
+      @media (max-width: 640px) {
+        #session-menu { display: inline-block; }
+        #status, #mirror-status, #seed-bar { display: none !important; }
+      }
     </style>
   </head>
   <body>
@@ -238,6 +254,7 @@
       <button id="ws-reseed-dismiss" type="button" title="Not now" hidden>×</button>
       <button id="profile-manage" type="button" title="Manage profiles: switch, create, seed, publish or delete">Profiles</button>
       <button id="sync-menu" type="button" title="Workspace transfer and BobSwap services">Sync…</button>
+      <button id="session-menu" type="button" title="Open sessions and workspace status" hidden>Session</button>
       <span id="status">starting…</span>
       <progress id="seed-bar" max="100" value="0" hidden title="Seed apply progress"></progress>
     </div>
@@ -424,6 +441,10 @@
       </details>
       <p>Verification phrase <strong id="pair-verify">—</strong>
         <span class="muted">(must match on both devices before trusting the link)</span></p>
+      <div class="row-actions" id="pair-confirm-wrap" hidden>
+        <button id="pair-phrase-ok" type="button">Phrase matches</button>
+        <button id="pair-phrase-no" type="button" class="danger">Doesn't match</button>
+      </div>
       <p id="pair-status" class="muted">idle</p>
       <ol id="pair-progress" class="pair-progress" aria-live="polite" hidden></ol>
       <div class="row-actions" id="pair-retry-wrap" hidden>

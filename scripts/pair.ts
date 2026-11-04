@@ -27,13 +27,17 @@ interface Args {
   yes: boolean;
   list: boolean;
   revoke?: string;
+  allow?: string;
+  deny?: string;
   url: string;
   debug: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
-    profile: "default",
+    // Wildcard: pair the device once; the browser's active profile names the
+    // first mirror, and the catalog covers every other profile too.
+    profile: "*",
     mirror: "",
     exec: [],
     yes: false,
@@ -55,6 +59,8 @@ function parseArgs(argv: string[]): Args {
     else if (flag === "--yes") args.yes = true;
     else if (flag === "--list") args.list = true;
     else if (flag === "--revoke") args.revoke = value();
+    else if (flag === "--allow") args.allow = value();
+    else if (flag === "--deny") args.deny = value();
     else if (flag === "--url") args.url = value();
     else if (flag === "--debug" || flag === "-d") args.debug = true;
     else if (flag === "--help" || flag === "-h") {
@@ -62,27 +68,32 @@ function parseArgs(argv: string[]): Args {
       process.exit(0);
     } else throw new Error(`unknown option: ${flag}`);
   }
-  if (!args.mirror) args.mirror = args.profile;
+  if (!args.mirror && args.profile !== "*") args.mirror = args.profile;
   return args;
 }
 
 function printHelp(): void {
   console.log(`Usage: npm run pair [options]
 
-  --profile <name>      browser profile to pair (default: default)
-  --mirror <name>       mirror folder name (default: the profile name)
+  --profile <name>      require this browser profile (default: any — device pairing)
+  --mirror <name>       first profile's mirror folder (default: the profile name)
   --mirror-path <dir>   absolute folder path (default: ~/.bobkat/folders/<name>)
   --exec <a,b,...>      allowlisted executables for ops (default: none)
-  --yes                 approve without prompting
-  --list                show paired profiles
+  --yes                 approve and confirm the phrase without prompting
+  --list                show paired browser profiles
   --revoke <profile>    revoke a profile's client key
+  --allow <profile>     allow this desktop profile for all paired devices
+  --deny <profile>      veto this desktop profile for all paired devices
   --url <url>           admin API origin (default: ${DEFAULT_URL})
   --debug, -d           log admin API calls and every pairing event
                         (or set BOB_PAIR_DEBUG=1)
 
-The tab's active browser profile must match --profile. --mirror and
---mirror-path choose the desktop folder independently, so one desktop can host
-a separate mirror per browser profile.
+By default this pairs the device, not one profile: after approval both sides
+exchange catalogs and each profile gets its own checkbox in the browser's
+Profiles dialog. Use --profile only when you want to pin the tab's active
+profile for the first mirror. --mirror and --mirror-path choose that first
+folder independently; every other profile defaults to
+~/.bobkat/folders/<name>.
 `);
 }
 
@@ -163,21 +174,31 @@ async function runPairing(args: Args): Promise<void> {
     method: "POST",
     body: {
       profile: args.profile,
-      mirror: args.mirror,
+      mirror: args.mirror || undefined,
       mirrorPath: args.mirrorPath,
       exec: args.exec,
     },
   });
 
-  console.log(`browser:   profile "${info.profile}" (the tab must be on this profile)`);
-  console.log(`mirror:    ${args.mirror} → ${args.mirrorPath ?? `~/.bobkat/folders/${args.mirror}`}`);
+  console.log(
+    info.profile === "*"
+      ? "browser:   any profile (device pairing; the tab's active profile names the first mirror)"
+      : `browser:   profile "${info.profile}" (the tab must be on this profile)`,
+  );
+  console.log(
+    args.mirror
+      ? `mirror:    ${args.mirror} → ${args.mirrorPath ?? `~/.bobkat/folders/${args.mirror}`}`
+      : `mirror:    default per profile → ~/.bobkat/folders/<profile>`,
+  );
   console.log(`exec:      ${args.exec.length ? args.exec.join(", ") : "(none)"}`);
   console.log("");
   console.log(`code:      ${info.code}`);
   console.log("");
-  console.log(`In the browser (profile "${info.profile}"): Sync… → Pair… → Desktop / server.`);
+  console.log("In the browser: Sync… → Pair… → My desktop / server.");
   console.log(`Enter:     ${args.url} and the code above — no channel id.`);
-  console.log("Tab on another profile? Stop (Ctrl-C) and rerun with --profile <name>.");
+  if (info.profile !== "*") {
+    console.log("Tab on another profile? Stop (Ctrl-C) and rerun with --profile <name>.");
+  }
   console.log("Waiting for the browser…\n");
 
   if (args.debug) {
@@ -208,7 +229,11 @@ async function runPairing(args: Args): Promise<void> {
       if (event.type === "awaiting-approval" && !approved) {
         console.log(`\nverification phrase: ${String(event.data.sas ?? "—")}`);
         console.log("Compare it with the phrase shown in the browser before approving.");
-        const ok = args.yes ? true : await ask(`Approve profile "${info.profile}" with the capabilities above?`);
+        const ok = args.yes
+          ? true
+          : await ask(
+              `Confirm the phrase matches and approve profile "${info.profile}" with the capabilities above?`,
+            );
         if (!ok) {
           await api(args, `/admin/pairing/${info.id}/deny`, { method: "POST", body: {} });
           console.log("pairing denied");
@@ -269,6 +294,16 @@ async function main(): Promise<void> {
   if (args.revoke) {
     await api(args, `/admin/peers/${encodeURIComponent(args.revoke)}/revoke`, { method: "POST", body: {} });
     console.log(`revoked ${args.revoke}`);
+    return;
+  }
+  if (args.allow || args.deny) {
+    const name = args.allow ?? args.deny!;
+    const allow = Boolean(args.allow);
+    await api(args, `/admin/profiles/${encodeURIComponent(name)}/consent`, {
+      method: "POST",
+      body: { allow },
+    });
+    console.log(`${allow ? "allowed" : "denied"} desktop profile "${name}" for paired devices`);
     return;
   }
   await runPairing(args);

@@ -2,6 +2,82 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — profiles sync by UUID with a per-peer consent matrix
+
+Profiles were local names, and pairing bound exactly one profile. They now
+carry a stable UUID, so two devices recognise the same profile even if its
+label differs. When two instances pair they exchange a catalog and the
+Profiles dialog grows a peer list under each profile row. Every profile × peer
+pair has an allow/deny checkbox; both sides must allow it, and either veto
+detaches that profile immediately. Profiles that exist only on the peer are
+shown as **remote only** and require a preview plus explicit confirmation
+before a local copy is created. Nothing but the SAS phrase handshake moves
+until both ends confirm the phrase.
+
+- **`web/src/profiles.ts`**: registry version 2 with UUIDs; version 1 files
+  migrate in memory and are persisted on the next registry write; id-aware
+  lookup, patch, relink and create helpers.
+- **`web/src/profile-sync-model.ts`** (new): catalog normalization, one-time
+  same-name auto-link, consent intersection, peer-store parsing, auto-link
+  remapping and the flattened profile/peer rows.
+- **`web/src/sync/profile-link.ts`** (new): phrase gate, catalog/consent
+  exchange, remote preview request/response and per-profile virtual peers over
+  one authenticated device link.
+- **`web/src/sync/index.ts`**: multi-profile manager with one engine per
+  profile, a BroadcastChannel per active profile, lazy runtime creation, device
+  links, immediate detach on veto, offline state and consent reset on re-pair.
+- **`web/src/sync/engine.ts`**, **`web/src/sync/hashmap.ts`**: envelopes carry
+  the profile id for multiplexing; mirror identity manifests are excluded from
+  sync.
+- **`web/src/profile-ui.ts`**, **`web/index.html`**: expandable peer rows,
+  per-peer checkboxes and state badges, remote-only preview/rename, Unlink and
+  local-deletion cleanup.
+- **`web/src/sync-ui.ts`**, **`web/src/server-link.ts`**: explicit phrase
+  confirmation on both browser ends, device-level link persistence so a tab
+  that switches profiles can still reconnect, and a fresh pairing that resets
+  stale consent.
+- **`src/bridge/profiles.ts`** (new): bridge profile catalog with UUIDs,
+  `.bob-profile.json` folder manifests, per-device consent and folder adoption.
+- **`src/bridge/peer.ts`**, **`src/bridge/server.ts`**, **`scripts/pair.ts`**:
+  device-level pairing (`--profile` optional, `*` wildcard), per-profile
+  mirrors/engines over one link, catalog/consent exchange, `--allow`/`--deny`,
+  consent reset on revoke, and wildcard reconnect from any active profile.
+- **`scripts/build-bridge.mjs`**: the ESM bridge bundle now injects a real
+  `createRequire`, fixing `Dynamic require of "fs" is not supported` which made
+  the peer server unavailable and every `/admin/*` route return `no route`.
+- Tests: `scripts/profile-sync-test.ts`, `scripts/profile-link-test.ts`,
+  `scripts/bridge-profiles-test.ts`; updated `scripts/profiles-test.ts` and
+  `scripts/desktop-profile-test.ts`.
+- Docs: profile/pairing sections in `README.md` and
+  `docs/pairing-and-sync.md`.
+
+Tests: `npm run typecheck`; `npm --prefix web run typecheck`;
+`npm --prefix ui run typecheck`; `npm run build`; `npm run test:profiles`;
+`npm run test:profile-sync`; `npm run test:profile-link`;
+`npm run test:bridge-profiles`; `npm run test:desktop-profile`;
+`npm run test:sync`; `npm run test:peer-log`; `npm run test:standalone`;
+`npm run test:web-restore`; `npm run lint:specs`.
+
+## 2026-11-03 — the phone toolbar gets a Session button and drawer status
+
+The phone toolbar hid the workspace/build/mirror diagnostics and had no direct
+way to open the session drawer. It now keeps a **Session** button beside
+**Sync…**, hides the duplicate status line on narrow screens, and mirrors the
+build version, workspace status and mirror status inside the drawer. The
+settings menu drops those duplicate rows when the shell hosts the button; the
+standalone UI keeps them.
+
+- **`web/index.html`**, **`web/src/ui-host.ts`**: the shell button and phone
+  status suppression, plus showing/hiding the button with the chat/settings
+  view.
+- **`ui/src/app.tsx`**: listens for the shell's `bob:open-session` request and
+  keeps the session action in the menu when no shell button exists.
+- **`ui/src/components.tsx`**, **`ui/src/styles.css`**: `SessionStatus` mirrors
+  the shell's status/mirror elements into the drawer.
+
+Tests: `npm --prefix ui run typecheck`; `npm --prefix ui run build`;
+`npm run build:web`.
+
 ## 2026-11-03 — voice input on a phone goes through the paired desktop
 
 A phone could not transcribe a recording: the composer posted it to the

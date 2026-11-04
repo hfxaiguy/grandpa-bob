@@ -8,11 +8,14 @@
 import assert from "node:assert/strict";
 import {
   compactTimestamp,
+  isValidProfileId,
   isValidProfileName,
   isValidSeedName,
   parseProfileRegistry,
   patchRegistry,
+  patchRegistryById,
   profileSegmentsFor,
+  relinkProfileId,
   seedVersionCreatedAt,
   seedVersionTag,
   type ProfileRegistry,
@@ -55,9 +58,12 @@ const stale = {
   ],
 };
 const parsed = parseProfileRegistry(JSON.parse(JSON.stringify(stale)));
+assert.equal(parsed.version, 2, "version 1 migrates to version 2 in memory");
 assert.equal(parsed.profiles.length, 2, "default is inserted when missing");
 assert.equal(parsed.profiles[0].name, "default");
+assert.equal(isValidProfileId(parsed.profiles[0].id), true, "the inserted default gets a UUID");
 assert.equal(parsed.profiles[1].name, "travel");
+assert.equal(isValidProfileId(parsed.profiles[1].id), true, "existing profiles get UUIDs on migration");
 assert.equal(parsed.profiles[1].seed?.baseUrl, "https://bobswap.example.com", "trailing slash trimmed");
 assert.equal(parsed.profiles[1].seed?.lastVersion?.version, "3f9a1b2c4d5e-20261023T005733Z");
 assert.deepEqual(parsed.profiles[1].visibleApps, ["kinit", "email"], "visible exceptions are trimmed and de-duplicated");
@@ -74,6 +80,21 @@ const badVisible = parseProfileRegistry({
 });
 assert.equal(badVisible.profiles[0].visibleApps, undefined, "a non-array exception list is ignored");
 
+// Version 2 keeps explicit ids and repairs a missing one instead of dropping
+// the whole registry.
+const ids = parseProfileRegistry({
+  version: 2,
+  profiles: [
+    { id: "11111111-1111-4111-8111-111111111111", name: "default", createdAt: "x" },
+    { name: "travel", createdAt: "y" },
+  ],
+});
+assert.equal(ids.profiles[0].id, "11111111-1111-4111-8111-111111111111");
+assert.equal(isValidProfileId(ids.profiles[1].id), true);
+const relinked = relinkProfileId(ids, ids.profiles[1].id, "22222222-2222-4222-8222-222222222222");
+assert.equal(relinked.profiles[1].id, "22222222-2222-4222-8222-222222222222");
+assert.throws(() => relinkProfileId(ids, ids.profiles[1].id, ids.profiles[0].id), /already exists/);
+
 // Idempotent round-trip.
 assert.deepEqual(parseProfileRegistry(JSON.parse(JSON.stringify(parsed))), parsed);
 
@@ -81,14 +102,14 @@ const invalid: unknown[] = [
   null,
   "registry",
   {},
-  { version: 2, profiles: [] },
-  { version: 1 },
-  { version: 1, profiles: "x" },
-  { version: 1, profiles: [null] },
-  { version: 1, profiles: [{ createdAt: "x" }] },
-  { version: 1, profiles: [{ name: "Bad Name", createdAt: "x" }] },
+  { version: 3, profiles: [] },
+  { version: 2 },
+  { version: 2, profiles: "x" },
+  { version: 2, profiles: [null] },
+  { version: 2, profiles: [{ createdAt: "x" }] },
+  { version: 2, profiles: [{ name: "Bad Name", createdAt: "x" }] },
   {
-    version: 1,
+    version: 2,
     profiles: [
       { name: "default", createdAt: "x" },
       { name: "default", createdAt: "y" },
@@ -125,15 +146,21 @@ assert.equal(seedVersionCreatedAt("3f9a1b2c4d5e-20261340T005733Z"), null);
 
 // ── immutable patches ────────────────────────────────────────────────────
 const registry: ProfileRegistry = {
-  version: 1,
+  version: 2,
   profiles: [
-    { name: "default", createdAt: "a" },
-    { name: "work", createdAt: "b" },
+    { id: "11111111-1111-4111-8111-111111111111", name: "default", createdAt: "a" },
+    { id: "22222222-2222-4222-8222-222222222222", name: "work", createdAt: "b" },
   ],
 };
 const touched = patchRegistry(registry, "work", (record) => ({ ...record, lastUsedAt: "now" }));
 assert.equal(touched.profiles[1].lastUsedAt, "now");
 assert.equal(registry.profiles[1].lastUsedAt, undefined, "the input registry is not mutated");
+
+const byId = patchRegistryById(registry, "22222222-2222-4222-8222-222222222222", (record) => ({
+  ...record,
+  name: "travel",
+}));
+assert.equal(byId.profiles[1].name, "travel");
 
 const removed = patchRegistry(touched, "work", () => null);
 assert.deepEqual(removed.profiles.map((p) => p.name), ["default"]);

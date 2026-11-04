@@ -17,6 +17,13 @@ await build({
   target: "node22",
   sourcemap: false,
   external: ["werift"],
+  // The bridge bundle includes CommonJS dependencies (dotenv via config.ts).
+  // esbuild's ESM output leaves `require` as a free variable; src/index.ts
+  // imports the bundle as native ESM, where `require` is undefined. Give the
+  // bundle a real CommonJS require before those helpers run.
+  banner: {
+    js: "import { createRequire as __bobCreateRequire } from 'node:module'; const require = __bobCreateRequire(import.meta.url);",
+  },
   logLevel: "warning",
 });
 console.log("bridge: dist/bridge/bridge.mjs");

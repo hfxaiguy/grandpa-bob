@@ -51,6 +51,13 @@ import {
 } from "./workspace-transfer";
 import { clearServerLink } from "./server-link";
 import type { MirrorStatus } from "./peer-status";
+import {
+  buildProfileRows,
+  type PeerProfileCatalog,
+  type PeerSyncStore,
+  type ProfilePreview,
+  type ProfileRow,
+} from "./profile-sync-model";
 
 export interface ProfileUiHooks {
   activeProfile(): string;
@@ -66,6 +73,13 @@ export interface ProfileUiHooks {
   syncMirror(): Promise<void>;
   /** Current desktop-mirror status (null when this profile has none). */
   mirrorStatus(): MirrorStatus | null;
+  /** Paired peers + per-profile consent (multi-profile sync). */
+  peers?(): PeerSyncStore;
+  onPeersChanged?(cb: () => void): () => void;
+  setProfileConsent?(peerId: string, profileId: string, allow: boolean): void;
+  unlinkProfile?(peerId: string, profileId: string): void;
+  removeProfile?(profileId: string): void;
+  requestPreview?(peerId: string, profileId: string): Promise<ProfilePreview | null>;
 }
 
 const ACCOUNT_RE = /^[a-z0-9._-]{1,64}$/;
@@ -201,26 +215,40 @@ async function renderProfileList(): Promise<void> {
   const ui = getHooks();
   const registry = await ui.refreshRegistry();
   const mirror = ui.mirrorStatus();
+  const peerStore = ui.peers?.() ?? { version: 1 as const, peers: {} };
+  const rows = buildProfileRows(registry.profiles, Object.values(peerStore.peers));
   list.replaceChildren();
 
-  for (const profile of registry.profiles) {
-    const row = document.createElement("div");
-    row.className = "profile-row";
+  for (const row of rows) {
+    const profile = row.local as ProfileRecord | undefined;
+    const block = document.createElement("div");
+    block.className = "profile-block";
+    if (row.remoteOnly) block.dataset.remoteOnly = "true";
+
+    const line = document.createElement("div");
+    line.className = "profile-row";
 
     const info = document.createElement("div");
     const name = document.createElement("strong");
-    name.textContent = profile.name;
+    name.textContent = row.name;
     const details = document.createElement("span");
     details.className = "muted";
-    details.textContent = " · …";
+    details.textContent = row.remoteOnly ? " · remote only" : " · …";
     info.append(name, details);
-    if (profile.seed) {
+    if (row.remoteOnly) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "remote only";
+      badge.title = "This profile lives on a paired peer. Preview it, then create a local copy to sync.";
+      info.append(" ", badge);
+    }
+    if (profile?.seed) {
       const badge = document.createElement("span");
       badge.className = "badge";
       badge.textContent = `seed: ${profile.seed.account}/${profile.seed.seedName}`;
       info.append(" ", badge);
     }
-    if (Array.isArray(profile.visibleApps)) {
+    if (Array.isArray(profile?.visibleApps)) {
       const badge = document.createElement("span");
       badge.className = "badge";
       badge.textContent = profile.visibleApps.length
@@ -235,9 +263,9 @@ async function renderProfileList(): Promise<void> {
     const actions = document.createElement("div");
     actions.className = "row-actions";
 
-    const isActive = profile.name === ui.activeProfile();
-    const mirrorBound = profile.kind === "desktop" && !!profile.folder;
-    if (!isActive) {
+    const isActive = profile?.name === ui.activeProfile();
+    const mirrorBound = profile?.kind === "desktop" && !!profile.folder;
+    if (profile && !isActive) {
       actions.append(
         actionButton("Switch", () => {
           activateProfile(profile.name);
@@ -245,12 +273,13 @@ async function renderProfileList(): Promise<void> {
         }),
       );
     }
-
-    actions.append(
-      actionButton("Hidden… except:", () => void openHiddenDialog(profile)),
-      actionButton("Seed…", () => void openSeedDialog(profile)),
-      actionButton("Publish…", () => void publishProfile(profile)),
-    );
+    if (profile) {
+      actions.append(
+        actionButton("Hidden… except:", () => void openHiddenDialog(profile)),
+        actionButton("Seed…", () => void openSeedDialog(profile)),
+        actionButton("Publish…", () => void publishProfile(profile)),
+      );
+    }
     if (mirrorBound && isActive && mirror) {
       actions.append(
         actionButton("Sync now", () => {
@@ -295,12 +324,13 @@ async function renderProfileList(): Promise<void> {
         ),
       );
     }
-    if (profile.name !== DEFAULT_PROFILE && !isActive) {
+    if (profile && profile.name !== DEFAULT_PROFILE && !isActive) {
       actions.append(
         actionButton(
           "Delete",
           () => {
             if (!confirm(`Delete profile "${profile.name}" and its workspace from this browser?`)) return;
+            ui.removeProfile?.(profile.id);
             void deleteProfile(profile.name)
               .then(() => renderProfileList())
               .catch((err) => ui.flash(`delete failed: ${errorText(err)}`, 8000));
@@ -310,12 +340,13 @@ async function renderProfileList(): Promise<void> {
       );
     }
 
-    row.append(info, actions);
-    list.append(row);
+    line.append(info, actions);
+    block.append(line);
+    if (row.peers.length) block.append(renderPeerRows(row, peerStore));
+    list.append(block);
 
+    if (!profile) continue;
     if (mirrorBound) {
-      // The workspace is still this browser's OPFS; name the synced folder
-      // and, for the active profile, how the last mirror pass went.
       const state = isActive && mirror ? ` · ${mirror.detail}` : "";
       details.textContent = ` · desktop mirror: ${profile.folder}${state}`;
       continue;
@@ -332,6 +363,120 @@ async function renderProfileList(): Promise<void> {
   const sourceSelect = el<HTMLSelectElement>("profile-new-source");
   if (sourceSelect?.options[1]) {
     sourceSelect.options[1].textContent = `copy of ${ui.activeProfile()}`;
+  }
+}
+
+/** Peer checkboxes under one profile line (the sync matrix). */
+function renderPeerRows(row: ProfileRow, store: PeerSyncStore): HTMLElement {
+  const ui = getHooks();
+  const wrap = document.createElement("div");
+  wrap.className = "profile-peers";
+  const peers = Object.values(store.peers);
+  if (!peers.length) return wrap;
+  for (const peer of peers) {
+    const entry = row.peers.find((item) => item.peerId === peer.peerId);
+    if (!entry) continue;
+    const line = document.createElement("div");
+    line.className = "profile-peer";
+    line.dataset.present = String(entry.present);
+    line.dataset.allowed = String(entry.allowed);
+    const control = document.createElement("label");
+    control.className = "profile-peer-control";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = entry.localAllow;
+    box.title = !entry.present
+      ? "This peer does not have this profile yet. Allow it here, then check it on that device to pull it."
+      : "Both devices must allow this profile before any bytes move.";
+    const device = document.createElement("span");
+    device.className = "profile-peer-name";
+    device.textContent = peer.deviceName;
+    control.append(box, device);
+
+    const state = document.createElement("span");
+    state.className = "badge";
+    if (peer.online === false) state.textContent = "offline";
+    else if (row.remoteOnly) state.textContent = "remote only";
+    else if (!entry.present) state.textContent = "not on peer";
+    else if (entry.allowed) state.textContent = "syncing";
+    else if (entry.localAllow && !entry.remoteAllow) state.textContent = "waiting for peer";
+    else if (!entry.localAllow && entry.remoteAllow) state.textContent = "peer allows — you denied";
+    else state.textContent = "not synced";
+    control.append(" ", state);
+    line.append(control);
+
+    box.addEventListener("change", () => {
+      ui.setProfileConsent?.(peer.peerId, row.id, box.checked);
+      if (box.checked && row.remoteOnly && entry.present) {
+        void previewRemoteProfile(row, peer);
+      } else {
+        void renderProfileList();
+      }
+    });
+
+    if (row.remoteOnly && entry.present) {
+      const preview = actionButton("Preview…", () => void previewRemoteProfile(row, peer));
+      line.append(" ", preview);
+    }
+    if (row.local && entry.present) {
+      const unlink = actionButton("Unlink", () => {
+        if (!confirm(`Stop linking "${row.name}" with ${peer.deviceName}?`)) return;
+        ui.unlinkProfile?.(peer.peerId, row.id);
+        void renderProfileList();
+      });
+      line.append(" ", unlink);
+    }
+    wrap.append(line);
+  }
+  return wrap;
+}
+
+/** Preview a remote-only profile, then create + sync after an explicit OK. */
+async function previewRemoteProfile(row: ProfileRow, peer: PeerProfileCatalog): Promise<void> {
+  const ui = getHooks();
+  if (!ui.requestPreview) return;
+  ui.flash(`asking ${peer.deviceName} for a preview…`, 4000);
+  const preview = await ui.requestPreview(peer.peerId, row.id);
+  if (!preview) {
+    ui.flash(
+      `${peer.deviceName} has not allowed "${row.name}" yet — check it on that device too`,
+      9000,
+    );
+    return;
+  }
+  const when = preview.updatedAt ? `\nlast used: ${new Date(preview.updatedAt).toLocaleString()}` : "";
+  if (
+    !confirm(
+      `Profile "${row.name}" exists only on ${peer.deviceName}.\n\n` +
+        `${preview.files} files · ${formatBytes(preview.bytes)}${when}\n\n` +
+        "Create a local copy and start syncing it?",
+    )
+  ) {
+    return;
+  }
+  const registry = await ui.refreshRegistry();
+  let name = row.name;
+  if (registry.profiles.some((profile) => profile.name === name && profile.id !== row.id)) {
+    const suggestion = `${name}-${row.id.slice(0, 4)}`;
+    const answer = prompt(
+      `A different profile named "${name}" already exists here.\nChoose a local name for the incoming profile:`,
+      suggestion,
+    );
+    if (!answer) return;
+    name = answer.trim();
+    if (!isValidProfileName(name)) {
+      ui.flash("profile names use lowercase letters, digits, dot, dash or underscore", 8000);
+      return;
+    }
+  }
+  try {
+    await createProfile(name, { kind: "blank" }, row.id);
+    ui.setProfileConsent?.(peer.peerId, row.id, true);
+    ui.flash(`created "${name}" from ${peer.deviceName} — syncing`, 7000);
+    await renderProfileList();
+    renderProfileSelect();
+  } catch (err) {
+    ui.flash(`could not create the remote profile: ${errorText(err)}`, 10_000);
   }
 }
 
@@ -1277,6 +1422,12 @@ export function wireProfileUi(profileHooks: ProfileUiHooks): void {
   wireSeedDialog();
   wireBrowserDialog();
   wireSyncDialog();
+
+  // Consent/catalog changes arrive while the dialog is open (the peer checked
+  // a box, a preview landed, a link dropped). Repaint only when visible.
+  profileHooks.onPeersChanged?.(() => {
+    if (el<HTMLDialogElement>("profile-dialog")?.open) void renderProfileList();
+  });
 
   // Keep the profile picker current after the manager dialog changes it.
   const dialog = el<HTMLDialogElement>("profile-dialog");

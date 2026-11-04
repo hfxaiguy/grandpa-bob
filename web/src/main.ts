@@ -12,7 +12,7 @@
  */
 import "./shims/process";
 import { setActiveFs, setFsIndex } from "./shims/node-fs-promises";
-import { createBrowserPlatform, initSqlite } from "./platform/browser";
+import { createBrowserPlatform, createProfilePlatform, initSqlite } from "./platform/browser";
 import { setOpfsRootSegments } from "./platform/opfs-root";
 import type { HandleFileSystem } from "./platform/handle-fs";
 import { AgentClient } from "./agent/agent-client";
@@ -39,9 +39,11 @@ import {
   loadRegistry,
   profileSegmentsFor,
   recordSeedVersion,
+  relinkProfileId,
   resolveActiveProfileName,
   setSeedBinding,
   touchProfile,
+  writeRegistry,
   type ProfileRegistry,
   type SeedBinding,
 } from "./profiles";
@@ -289,19 +291,28 @@ function attachLogStream(connection: ServerConnection): void {
  */
 async function connectServerPeer(): Promise<boolean> {
   const info = loadServerLink(activeProfile);
-  const folder = mirrorFolder();
-  if (!info || !folder || !syncHandle || serverConnecting || serverConnection) return false;
+  // A device link covers every profile. Only the ACTIVE profile needs a mirror
+  // binding to run the mirror chip; background profiles attach through the
+  // same link after the catalog arrives.
+  const folder = mirrorFolder() ?? "";
+  if (!info || !syncHandle || serverConnecting || serverConnection) return false;
   if (lease?.status() !== "primary") return false;
   serverConnecting = true;
   try {
     const connection = await resumeServer({
       info,
+      profile: activeProfile,
       localId: syncHandle.engine.id,
       onStatus: (text) => flashStatus(`desktop: ${text}`, 4000),
       onSas: (phrase) => console.log(`[peer] verification phrase ${phrase}`),
     });
     serverConnection = connection;
-    syncHandle.attach(connection.peer);
+    syncHandle.attachDevice(connection.peer, {
+      kind: "desktop",
+      deviceId: connection.info.deviceId,
+      deviceName: connection.info.mirror || "desktop",
+      requirePhrase: false,
+    });
     attachLogStream(connection);
     archiveAgent?.setOpsConfig({
       enabled: connection.info.exec.length > 0,
@@ -324,7 +335,7 @@ async function connectServerPeer(): Promise<boolean> {
       folder,
       lastSyncAt: new Date().toISOString(),
     });
-    await syncHandle.engine.reconcileAndWait(connection.peer, 15_000);
+    await syncHandle.syncNow().catch(() => undefined);
     (window as unknown as { __bobServer?: unknown }).__bobServer = connection;
     return true;
   } catch (err) {
@@ -1309,24 +1320,53 @@ async function startWorkspaceSync(): Promise<void> {
   } catch {
     syncId = crypto.randomUUID();
   }
+  const dumpBaseline = (previous: Record<string, string>): Record<string, string> => {
+    // `previous` is keyed by workspace path; the applier is keyed by DB name.
+    // These hashes are the strongest clean-replica baseline: the dump that was
+    // on disk before this delivery replaced it.
+    const baseline: Record<string, string> = {};
+    for (const [path, hash] of Object.entries(previous)) {
+      if (isDatabaseDumpPath(path)) baseline[path.slice("db/".length, -".sql".length)] = hash;
+    }
+    return baseline;
+  };
   const handle = await startSync(platform, {
     id: syncId,
     channelName: `bob-sync:opfs:${activeProfile}`,
+    activeProfile,
+    profiles: (profileRegistry?.profiles ?? []).map((record) => ({
+      id: record.id,
+      name: record.name,
+      createdAt: record.createdAt,
+    })),
+    catalog: () =>
+      (profileRegistry?.profiles ?? []).map((record) => ({
+        id: record.id,
+        name: record.name,
+        createdAt: record.createdAt,
+      })),
+    relinkProfile: async (fromId, toId) => {
+      if (!profileRegistry) return;
+      profileRegistry = relinkProfileId(profileRegistry, fromId, toId);
+      await writeRegistry(profileRegistry);
+    },
     onApplied: (paths, previous) => {
       if (!paths.some(isDatabaseDumpPath)) return;
-      // `previous` is keyed by workspace path; the applier is keyed by DB
-      // name. These hashes are the strongest clean-replica baseline: they
-      // are the dump that was on disk before this delivery replaced it.
-      const baseline: Record<string, string> = {};
-      for (const [path, hash] of Object.entries(previous)) {
-        if (isDatabaseDumpPath(path)) baseline[path.slice("db/".length, -".sql".length)] = hash;
-      }
+      const baseline = dumpBaseline(previous);
       // The worker owns the one writable DB handle; before it exists the
       // main thread may replay (boot-time, no app connection is open yet).
       return (archiveAgent
         ? archiveAgent.applyDatabaseDumps({ applyClean: true, previous: baseline })
         : applyDatabaseDumps(platform, { applyClean: true, previous: baseline })
       ).then(() => undefined);
+    },
+    onAppliedProfile: (name, paths, previous) => {
+      if (!paths.some(isDatabaseDumpPath)) return;
+      const profilePlatform = createProfilePlatform(name);
+      return applyDatabaseDumps(profilePlatform, {
+        applyClean: true,
+        previous: dumpBaseline(previous),
+      }).then(() => undefined);
     },
   });
   // The lease can move while startSync is attaching its first peers.
@@ -1435,12 +1475,17 @@ async function main(): Promise<void> {
   if (lease.status() === "primary") await startWorkspaceSync();
 
   const folder = mirrorFolder();
-  if (folder && lease.status() === "primary") {
+  if ((folder || loadServerLink(activeProfile)) && lease.status() === "primary") {
     bootProgress("connecting the desktop…", 24);
     bootStage = "serverResume";
     const connected = await connectServerPeer();
     if (!connected && !loadServerLink(activeProfile)) {
-      renderMirrorStatus({ phase: "offline", detail: "pairing needed", folder, lastSyncAt: null });
+      renderMirrorStatus({
+        phase: "offline",
+        detail: "pairing needed",
+        folder: folder ?? "",
+        lastSyncAt: null,
+      });
     }
   } else if (folder) {
     renderMirrorStatus({
@@ -1589,13 +1634,23 @@ async function main(): Promise<void> {
   wireWorkspaceTransfer();
   wireProfileUi({
     activeProfile: () => activeProfile,
-    registry: () => profileRegistry ?? { version: 1, profiles: [{ name: activeProfile, createdAt: "" }] },
+    registry: () =>
+      profileRegistry ?? {
+        version: 2,
+        profiles: [{ id: crypto.randomUUID(), name: activeProfile, createdAt: "" }],
+      },
     flash: flashStatus,
     reload: () => location.reload(),
     refreshRegistry: async () => {
       profileRegistry = await loadRegistry();
+      syncHandle?.refreshProfiles();
       publishProfileVisibleApps();
-      return profileRegistry ?? { version: 1, profiles: [{ name: activeProfile, createdAt: "" }] };
+      return (
+        profileRegistry ?? {
+          version: 2,
+          profiles: [{ id: crypto.randomUUID(), name: activeProfile, createdAt: "" }],
+        }
+      );
     },
     applySeedUpdate: (binding, _meta, version) => applyBoundSeedUpdate(binding, version),
     buildActiveArchive,
@@ -1610,6 +1665,14 @@ async function main(): Promise<void> {
         ? { phase: "idle", detail: "connected", folder: bound, lastSyncAt: new Date().toISOString() }
         : { phase: "offline", detail: "pairing needed", folder: bound, lastSyncAt: null };
     },
+    peers: () => syncHandle?.peers() ?? { version: 1, peers: {} },
+    onPeersChanged: (cb) => syncHandle?.onPeersChanged(cb) ?? (() => undefined),
+    setProfileConsent: (peerId, profileId, allow) =>
+      syncHandle?.setProfileConsent(peerId, profileId, allow),
+    unlinkProfile: (peerId, profileId) => syncHandle?.unlinkProfile(peerId, profileId),
+    removeProfile: (profileId) => syncHandle?.removeProfile(profileId),
+    requestPreview: (peerId, profileId) =>
+      syncHandle?.requestPreview(peerId, profileId) ?? Promise.resolve(null),
   });
   void checkSeedUpdate();
   startSeedWatcher();
