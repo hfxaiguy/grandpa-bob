@@ -2,6 +2,33 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-06 — Stop keeps the stopped turn's committed conversation
+
+Pressing **Stop** mid-turn used to drop the user's last message from the
+session's `conversation` slot. A stop unwinds the tree without pausing, so the
+session kept its **previous** checkpoint; the next resume replayed only rows up
+to that old pause and silently discarded everything the stopped turn had
+already committed — starting with the user message folded into `conversation`.
+The chat still showed the stopped turn, so the memory/Prompt lost words the
+person could see on screen, and this happened whichever app was active when
+Stop was pressed.
+
+- **`web/src/agent/stopped-checkpoint.ts`**: `freezeStoppedCheckpoint` logs a
+  synthetic pause at the stopped run's newest row, reuses the old pause's human
+  slot + resume positions, and swaps the session continuation to it. The next
+  resume now replays the stopped turn's committed records and delivers the new
+  message to the same slot. No slot names or tree shapes are assumed; a stop
+  that committed nothing past the pause leaves the old checkpoint untouched.
+- **`web/src/agent/agent-worker.ts`**: on a stopped run, freezes the checkpoint
+  before reporting the stop, so the next turn already sees it.
+- **`scripts/stop-checkpoint-test.ts`** (`npm run test:stop-checkpoint`): a
+  stopped turn's folded message survives a fresh-logger restore and the next
+  turn, alongside that turn's new message and reply; an early stop leaves the
+  original pause intact.
+
+Tests: `npm run test:stop-checkpoint`; `npm run test:web-restore`;
+`npm run test:stop-tools`; `npm run typecheck`.
+
 ## 2026-11-06 — first pairing merges both workspaces, never erases one
 
 Pairing a profile to a non-empty desktop mirror used to remove the browser's

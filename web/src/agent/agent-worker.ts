@@ -51,6 +51,7 @@ import {
   throwIfStopped,
 } from "../stop-error";
 import { withStopTools } from "./stop-tools";
+import { freezeStoppedCheckpoint } from "./stopped-checkpoint";
 import { resolvePatternPath } from "./pattern-path";
 import { isDroppableContinuationError } from "./resume-guard";
 import { loadBrowserModels } from "./models";
@@ -738,14 +739,18 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
       knit(pattern, { ...runtime, memory: { guide } }),
     )) as typeof res;
     if (out.status === "waiting") {
+      // Keep the pause visible to the stop path even before this turn re-pauses:
+      // a stop during the delivery must freeze THIS pause, not an older one (or
+      // none at all on a session's first message).
+      session.continuation = out.continuation!;
       if (task) {
         throwIfStopped(signal);
         out = (await withModelContext(models, () =>
           resume(out.continuation!, { ...runtime, humanInput: task }),
         )) as typeof res;
+        session.continuation = out.status === "waiting" ? out.continuation! : "";
       } else {
         throwIfStopped(signal);
-        session.continuation = out.continuation!;
         runs.delete(opts.id);
         post({
           id: opts.id,
@@ -771,6 +776,9 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
           humanInput: task,
         }),
       )) as typeof res;
+      // A successful resume consumed the old pause and saved a new one; adopt it
+      // now so a stop racing the return cannot report a deleted continuation.
+      session.continuation = res.status === "waiting" ? (res.continuation ?? session.continuation) : "";
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // A pause point that can no longer be rebuilt is a dead checkpoint, not
@@ -916,6 +924,25 @@ self.onmessage = async (ev: MessageEvent) => {
     await handleRun(run, ctrl.signal);
   } catch (err) {
     const stopped = ctrl.signal.aborted || isAgentStopped(err);
+    if (stopped) {
+      // A stop unwinds without pausing, so the session's continuation would
+      // stay at the PREVIOUS pause and the next resume would replay past every
+      // record this turn committed — the user's folded message included. Freeze
+      // where the stop landed so the next resume keeps that state.
+      const session = runs.get(run.id);
+      if (session?.continuation) {
+        try {
+          const frozen = freezeStoppedCheckpoint(session.logger, session.continuation);
+          if (frozen) session.continuation = frozen;
+        } catch (freezeErr) {
+          console.warn(
+            `[stop] could not keep the stopped turn's state: ${
+              freezeErr instanceof Error ? freezeErr.message : String(freezeErr)
+            }`,
+          );
+        }
+      }
+    }
     post({
       id: run.id,
       type: "error",
