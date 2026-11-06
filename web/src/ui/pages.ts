@@ -142,6 +142,61 @@ export function buildSettingsHtml(config: UiConfig): string {
 </div>
 
 <div class="card">
+  <h2 style="margin-top:0">Speech</h2>
+  <p style="margin:4px 0"><small>Which transcriber the mic button uses. Local providers run on the paired desktop. AssemblyAI is called straight from this browser with the key below &mdash; the key stays in this browser and is never sent to the desktop or to seed/relay transfers.</small></p>
+  <div class="grid-2">
+    <div>
+      <label>STT provider</label>
+      <select id="speech-provider">
+        <option value="">Desktop default (.env)</option>
+        <option value="whisper">Whisper (local server)</option>
+        <option value="sherpa">Sherpa (local server)</option>
+        <option value="parakeet">Parakeet (local server)</option>
+        <option value="assemblyai">AssemblyAI (cloud, in-tab)</option>
+        <option value="rime">Rime STT (cloud, via desktop)</option>
+      </select>
+    </div>
+    <div>
+      <label>STT language</label>
+      <input id="speech-language" type="text" placeholder="blank = provider default (rime: en/es)">
+    </div>
+  </div>
+  <label>Cloud STT key <span id="cur-speech-key" style="float:right"></span></label>
+  <input id="speech-key" type="password" placeholder="paste the key for the chosen cloud provider (blank keeps the saved one)">
+  <div class="grid-2" style="margin-top:12px">
+    <div>
+      <label>TTS provider</label>
+      <select id="speech-tts-provider">
+        <option value="">Desktop default (.env)</option>
+        <option value="kitten">KittenTTS (local server)</option>
+        <option value="rime">Rime Mist v3 (cloud, via desktop)</option>
+      </select>
+    </div>
+    <div>
+      <label>TTS voice</label>
+      <input id="speech-tts-voice" type="text" list="speech-tts-voices" placeholder="Bella (kitten) / cove (rime)">
+      <datalist id="speech-tts-voices">
+        <option value="Bella"></option><option value="Jasper"></option>
+        <option value="Luna"></option><option value="Bruno"></option>
+        <option value="Rosie"></option><option value="Hugo"></option>
+        <option value="Kiki"></option><option value="Leo"></option>
+      </datalist>
+    </div>
+  </div>
+  <label style="display:flex; gap:8px; align-items:center; margin-top:8px">
+    <input id="speech-tts-auto" type="checkbox" style="width:auto">
+    Speak new replies automatically
+  </label>
+  <label>Cloud TTS key <span id="cur-tts-key" style="float:right"></span></label>
+  <input id="speech-tts-key" type="password" placeholder="Rime key (blank keeps the saved one)">
+  <div class="actions">
+    <button onclick="saveSpeech()">Save speech settings</button>
+    <button class="secondary" onclick="testSpeech()">Test</button>
+    <span id="speech-status"></span>
+  </div>
+</div>
+
+<div class="card">
   <h2 style="margin-top:0">Models</h2>
   <p style="margin:4px 0"><small>Named model slots the trees reference (<code>Model("strong")</code>, <code>Model("cheap")</code>). Each slot points at any OpenAI-compatible endpoint (Ollama local/cloud, OpenAI, Neuralwatt, OpenRouter, llama.cpp&hellip;) or native Ollama. Pick a provider preset, choose a model, then <b>Test</b>. Saving applies immediately &mdash; no restart. Keys may use <code>\${ENV}</code> to reference the credentials above, or be pasted literally.</small></p>
   <div id="model-slots">(loading...)</div>
@@ -907,8 +962,89 @@ async function saveEnv(e) {
   } catch {}
 }
 
-async function restartBot() {
-  try { await api("/api/restart-bot", { method: "POST" }); toast("bot restarting..."); setTimeout(refreshStatus, 2000); } catch {}
+const SPEECH_STORE = "bob:services";
+function speechConfig() {
+  try { return JSON.parse(localStorage.getItem(SPEECH_STORE) || "{}").stt || {}; }
+  catch (e) { return {}; }
+}
+function speechTtsConfig() {
+  try { return JSON.parse(localStorage.getItem(SPEECH_STORE) || "{}").tts || {}; }
+  catch (e) { return {}; }
+}
+function loadSpeech() {
+  const stt = speechConfig();
+  if ($("speech-provider")) $("speech-provider").value = stt.provider || "";
+  if ($("speech-language")) $("speech-language").value = stt.language || "";
+  if ($("cur-speech-key")) {
+    const saved = stt.provider && stt.keys && stt.keys[stt.provider];
+    $("cur-speech-key").textContent = saved ? "saved" : "";
+  }
+  const tts = speechTtsConfig();
+  if ($("speech-tts-provider")) $("speech-tts-provider").value = tts.provider || "";
+  if ($("speech-tts-voice")) $("speech-tts-voice").value = tts.voice || "";
+  if ($("speech-tts-auto")) $("speech-tts-auto").checked = tts.autoSpeak === true;
+  if ($("cur-tts-key")) {
+    const saved = tts.provider && tts.keys && tts.keys[tts.provider];
+    $("cur-tts-key").textContent = saved ? "saved" : "";
+  }
+}
+function saveSpeech() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SPEECH_STORE) || "{}");
+    const provider = $("speech-provider").value;
+    const stt = Object.assign({}, raw.stt || {});
+    stt.provider = provider;
+    stt.language = $("speech-language").value.trim();
+    const key = $("speech-key").value.trim();
+    if (key && provider) {
+      stt.keys = Object.assign({}, stt.keys || {});
+      stt.keys[provider] = key;
+    }
+    raw.stt = stt;
+    const tts = Object.assign({}, raw.tts || {});
+    tts.provider = $("speech-tts-provider").value;
+    tts.voice = $("speech-tts-voice").value.trim();
+    tts.autoSpeak = $("speech-tts-auto").checked === true;
+    const ttsKey = $("speech-tts-key").value.trim();
+    if (ttsKey && tts.provider) {
+      tts.keys = Object.assign({}, tts.keys || {});
+      tts.keys[tts.provider] = ttsKey;
+    }
+    raw.tts = tts;
+    localStorage.setItem(SPEECH_STORE, JSON.stringify(raw));
+    $("speech-key").value = "";
+    $("speech-tts-key").value = "";
+    loadSpeech();
+    toast("speech settings saved");
+  } catch (e) { toast("could not save speech settings", true); }
+}
+async function testSpeech() {
+  const status = $("speech-status");
+  const provider = $("speech-provider").value;
+  if (provider === "rime") {
+    status.textContent = "Rime keys are verified by the desktop on first use";
+    return;
+  }
+  if (provider !== "assemblyai") {
+    status.textContent = "local providers run on the paired desktop — record a clip to test";
+    return;
+  }
+  const key = $("speech-key").value.trim() || (speechConfig().keys || {}).assemblyai || "";
+  if (!key) { status.textContent = "add a key first"; return; }
+  status.textContent = "testing…";
+  try {
+    const r = await fetch("https://sync.assemblyai.com/v1/transcribe", {
+      method: "POST",
+      headers: { authorization: key, "x-aai-model": "universal-3-5-pro" },
+      body: new FormData(),
+    });
+    if (r.status === 404) { status.textContent = "key rejected"; return; }
+    if (r.ok || r.status === 400 || r.status === 422) { status.textContent = "key accepted"; return; }
+    status.textContent = "HTTP " + r.status;
+  } catch (e) { status.textContent = "unreachable"; }
+}
+
+async function restartBot() {  try { await api("/api/restart-bot", { method: "POST" }); toast("bot restarting..."); setTimeout(refreshStatus, 2000); } catch {}
 }
 
 async function gitCommit() {
@@ -1139,6 +1275,7 @@ refreshStatus();
 refreshPatterns();
 filesBrowse();
 loadModels();
+loadSpeech();
 loadSecrets();
 </script>
 </body>

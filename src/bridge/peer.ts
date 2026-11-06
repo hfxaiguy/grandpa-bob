@@ -15,7 +15,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { RTCPeerConnection, type RTCDataChannel } from "werift";
 import { config } from "../config.js";
-import { transcribeAudioBytes } from "../stt.js";
+import { transcribeWithProvider } from "../stt.js";
+import { synthesizeWithProvider } from "../tts.js";
 import { SyncEngine, type SyncEnvelope, type SyncPeer, type SyncState } from "../../web/src/sync/engine.js";
 import { buildHashmap, type Hashmap } from "../../web/src/sync/hashmap.js";
 import { chunkedPeer } from "../../web/src/sync/chunking.js";
@@ -92,6 +93,9 @@ const OP_TIMEOUT_MS = 10 * 60_000;
 const MAX_CHANGED_REPORT = 200;
 /** A recorded clip, base64 expanded on the wire; generous but still bounded. */
 const MAX_STT_BYTES = 32 * 1024 * 1024;
+/** Longest reply the tab may send for speech synthesis (characters). Rime is
+ *  chunked at 1,000 chars per request; this cap bounds one peer message. */
+const MAX_TTS_CHARS = 12000;
 
 function hmac(key: string, value: string): string {
   return createHmac("sha256", key).update(value).digest("hex");
@@ -688,11 +692,13 @@ export class PeerSession {
       await this.attachProfileLink();
       return;
     }
-    if (op === "ops-run" || op === "stt-run") {
+    if (op === "ops-run" || op === "stt-run" || op === "tts-run") {
       if (!this.authed) {
+        const resultOp =
+          op === "ops-run" ? "ops-result" : op === "stt-run" ? "stt-result" : "tts-result";
         link.send(
           controlEnvelope(channelPeerId(this.profile), {
-            op: op === "ops-run" ? "ops-result" : "stt-result",
+            op: resultOp,
             id: String(control.id ?? ""),
             error: "pairing is not complete",
           }),
@@ -781,6 +787,9 @@ export class PeerSession {
     }
     if (op === "stt-run") {
       void this.runStt(control, link);
+    }
+    if (op === "tts-run") {
+      void this.runTts(control, link);
     }
   }
 
@@ -1024,18 +1033,26 @@ export class PeerSession {
   }
 
   /**
-   * Transcribe a browser recording on the desktop. A phone paired over WebRTC
-   * cannot reach the loopback `/stt` bridge, so voice input travels here like
-   * any other channel op. The same opt-in gate (`BOB_STT=1`) applies.
+   * Transcribe a browser recording on the desktop. Voice input travels here
+   * like any other channel op (the tab holds no local model). The provider is
+   * whichever one the tab chose; absent one, the channel's configured backend
+   * is used. There is no opt-in gate: if the provider is reachable it serves,
+   * otherwise the reply names the provider and the fix.
    */
   private async runStt(control: Record<string, unknown>, link: SyncPeer): Promise<void> {
     const id = String(control.id ?? randomUUID());
     const reply = (body: Record<string, unknown>): void =>
       link.send(controlEnvelope(channelPeerId(this.profile), { op: "stt-result", id, ...body }));
-    if (process.env.BOB_STT !== "1") {
-      reply({ error: "transcription is off — start the channel with BOB_STT=1" });
-      return;
-    }
+    const provider =
+      typeof control.provider === "string" && control.provider.trim()
+        ? control.provider.trim()
+        : config.sttBackend;
+    const apiKey =
+      typeof control.apiKey === "string" && control.apiKey.trim() ? control.apiKey.trim() : undefined;
+    const language =
+      typeof control.language === "string" && control.language.trim()
+        ? control.language.trim()
+        : config.sttLanguage || undefined;
     const encoded = typeof control.audio === "string" ? control.audio : "";
     const bytes = Buffer.from(encoded, "base64");
     if (!bytes.length) {
@@ -1050,15 +1067,59 @@ export class PeerSession {
     const ext = /^\.[a-z0-9]{1,8}$/.test(rawExt) ? rawExt : ".webm";
     try {
       await fs.mkdir(config.tmpDir, { recursive: true });
-      const text = await transcribeAudioBytes(bytes, {
-        ext,
-        backend: config.sttBackend,
+      const text = await transcribeWithProvider(provider, bytes, ext, {
         whisperUrl: config.whisperUrl,
         sherpaUrl: config.sherpaUrl,
         tmpDir: config.tmpDir,
-        language: config.sttLanguage || undefined,
+        language,
+        apiKey,
       });
       reply({ text });
+    } catch (err) {
+      reply({ error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
+   * Synthesize speech for a reply on the desktop. Mirrors `runStt`: the tab
+   * sends text, the desktop calls the local TTS service and returns base64 WAV.
+   */
+  private async runTts(control: Record<string, unknown>, link: SyncPeer): Promise<void> {
+    const id = String(control.id ?? randomUUID());
+    const reply = (body: Record<string, unknown>): void =>
+      link.send(controlEnvelope(channelPeerId(this.profile), { op: "tts-result", id, ...body }));
+    const provider =
+      typeof control.provider === "string" && control.provider.trim()
+        ? control.provider.trim()
+        : config.ttsProvider;
+    const text = typeof control.text === "string" ? control.text.trim() : "";
+    if (!text) {
+      reply({ error: "no text was sent" });
+      return;
+    }
+    if (text.length > MAX_TTS_CHARS) {
+      reply({ error: `text is too long (${text.length} characters, max ${MAX_TTS_CHARS})` });
+      return;
+    }
+    const voice = typeof control.voice === "string" && control.voice.trim() ? control.voice.trim() : undefined;
+    const apiKey =
+      typeof control.apiKey === "string" && control.apiKey.trim() ? control.apiKey.trim() : undefined;
+    const language =
+      typeof control.language === "string" && control.language.trim()
+        ? control.language.trim()
+        : undefined;
+    try {
+      const clip = await synthesizeWithProvider(
+        provider,
+        text,
+        { voice, apiKey, language },
+        { kittenUrl: config.kittenTtsUrl, voice: config.ttsVoice },
+      );
+      if (clip.bytes.length > MAX_STT_BYTES) {
+        reply({ error: `audio is too large (${Math.round(clip.bytes.length / 1024 / 1024)} MB)` });
+        return;
+      }
+      reply({ audio: Buffer.from(clip.bytes).toString("base64"), ext: clip.ext });
     } catch (err) {
       reply({ error: err instanceof Error ? err.message : String(err) });
     }

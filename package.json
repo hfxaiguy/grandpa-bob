@@ -19,6 +19,7 @@
     "make-seed": "npm --prefix web run make-seed",
     "seed:publish": "tsx scripts/publish-seed.ts",
     "seed:ship": "tsx scripts/publish-seed.ts --pack",
+    "tts:up": "python3 scripts/kitten-tts-server.py",
     "start": "node --dns-result-order=ipv4first dist/src/index.js",
     "storage-server": "WORKSPACE_DIR=\"${WORKSPACE_DIR:-$HOME/grandma-workspace}\" node web/scripts/storage-server.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.bridge.json",
@@ -48,6 +49,11 @@
     "test:memory-race": "tsx scripts/memory-race-test.ts",
     "test:telegram-text": "tsx scripts/telegram-text-test.ts",
     "test:telegram-audio": "tsx scripts/telegram-audio-test.ts",
+    "test:stt-dispatch": "tsx scripts/stt-dispatch-test.ts",
+    "test:stt-cloud": "tsx scripts/stt-cloud-test.ts",
+    "test:tts": "tsx scripts/tts-test.ts",
+    "test:storage-cors": "node scripts/storage-cors-test.mjs",
+    "verify:speech": "tsx scripts/speech-verify.ts",
     "test:telegram-bridge": "tsx scripts/telegram-bridge-test.ts",
     "test:emit-value": "tsx scripts/emit-value-test.ts",
     "test:emit-component": "tsx scripts/emit-component-test.ts",
@@ -95,10 +101,12 @@
     "dotenv": "^17.4.2",
     "grammy": "^1.45.1",
     "grandma-kat": "git+https://github.com/hfxaiguy/grandma-kat.git#d74ee80b72032fc7de860e99139a01c925fb944c",
-    "werift": "^0.25.2"
+    "werift": "^0.25.2",
+    "ws": "^8.22.1"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "@types/ws": "^8.18.2",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"

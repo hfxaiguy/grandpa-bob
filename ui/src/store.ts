@@ -6,6 +6,9 @@ import { createStore, produce, reconcile } from "solid-js/store";
 import { getJSON, postJSON, postForm, openEventStream } from "./api";
 import { lastTurnFailure } from "./turn-failure";
 import type { AppInfo, PatternInfo, Provenance, RefTarget, SessionInfo, Slot, Turn } from "./types";
+import { loadSttConfig, loadTtsConfig, isCloudSttProvider, isCloudTtsProvider, sttKeyFor, ttsKeyFor } from "../../web/src/services/config";
+import { isBrowserSttProvider } from "../../web/src/services/registry";
+import { assemblyAiStt } from "../../web/src/services/stt/assemblyai";
 
 /** Events kept per turn in the live store. The full trace lives in the run log
  *  (`read_runs`); the UI only ever shows a tail, and an unbounded array is what
@@ -147,19 +150,6 @@ const STREAM_KEY = "gpb.tiled.stream";
 const BRIDGE_KEY = "bob:telegram-bridge";
 /** Remembered linked chat (per profile) — the backend's offline relay target. */
 const BRIDGE_CONV_KEY = "bob:telegram-bridge-conv";
-
-/** Base URL of the storage bridge (the tab's STT pass-through target). */
-const SERVER_KEY = "bob:storage-server";
-const DEFAULT_SERVER = "http://127.0.0.1:8795";
-function bridgeUrl(): string {
-  try {
-    const raw = localStorage.getItem(SERVER_KEY) ?? "";
-    if (!raw) return DEFAULT_SERVER;
-    return new URL(raw.includes("://") ? raw : `http://${raw}`).origin;
-  } catch {
-    return DEFAULT_SERVER;
-  }
-}
 
 /** Base URL of the telegram channel (the tab's phone surface). */
 const TELEGRAM_KEY = "bob:telegram-channel";
@@ -575,7 +565,13 @@ function audioExt(filename: string): string {
 }
 
 interface DesktopTranscriber {
-  transcribe(audio: Uint8Array, ext: string): Promise<string>;
+  transcribe(
+    audio: Uint8Array,
+    ext: string,
+    provider?: string,
+    apiKey?: string,
+    language?: string,
+  ): Promise<string>;
 }
 
 /** The paired desktop/server connection, when this tab has one. */
@@ -587,67 +583,118 @@ function desktopTranscriber(): DesktopTranscriber | null {
     : null;
 }
 
+interface DesktopSpeaker {
+  synthesize(text: string, voice?: string, apiKey?: string): Promise<{ bytes: Uint8Array; ext: string }>;
+}
+
+function desktopSpeaker(): DesktopSpeaker | null {
+  const server = (globalThis as { __bobServer?: unknown }).__bobServer;
+  if (!server || typeof server !== "object") return null;
+  return typeof (server as { synthesize?: unknown }).synthesize === "function"
+    ? (server as DesktopSpeaker)
+    : null;
+}
+
+/** One clip at a time: pressing speak again stops the previous reply. */
+let currentSpeech: HTMLAudioElement | null = null;
+/** The bubble key currently speaking (null = silent). */
+export const [speechKey, setSpeechKey] = createSignal<string | null>(null);
+
+export function stopSpeech(): void {
+  currentSpeech?.pause();
+  currentSpeech = null;
+  setSpeechKey(null);
+}
+
+/**
+ * Speak a reply with the TTS provider configured in Settings → Speech.
+ * Local TTS (KittenTTS / Rime via the desktop) returns audio over the
+ * authenticated peer channel (`tts-run`) and plays here. Passing the same
+ * `key` again stops playback.
+ */
+export async function speakText(text: string, key?: string): Promise<void> {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  if (key && speechKey() === key) {
+    stopSpeech();
+    return;
+  }
+  const speaker = desktopSpeaker();
+  if (!speaker) throw new Error("pair a desktop to speak replies");
+  const tts = loadTtsConfig();
+  const apiKey = isCloudTtsProvider(tts.provider) ? ttsKeyFor(tts) : undefined;
+  const clip = await speaker.synthesize(trimmed, tts.voice || undefined, apiKey);
+  // Copy into an ArrayBuffer-backed view so the Blob part satisfies the DOM typings.
+  const bytes = new Uint8Array(clip.bytes.byteLength);
+  bytes.set(clip.bytes);
+  const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+  currentSpeech?.pause();
+  const audio = new Audio(url);
+  currentSpeech = audio;
+  if (key) setSpeechKey(key);
+  const clear = (): void => {
+    if (currentSpeech === audio) {
+      currentSpeech = null;
+      setSpeechKey(null);
+    }
+  };
+  audio.addEventListener("ended", () => {
+    URL.revokeObjectURL(url);
+    clear();
+  });
+  try {
+    await audio.play();
+  } catch (err) {
+    // Autoplay policy (often mobile): drop the clip and let the caller decide.
+    URL.revokeObjectURL(url);
+    clear();
+    throw err;
+  }
+}
+
 function heardText(raw: string | undefined): string {
   const text = raw?.trim();
   if (!text) throw new Error("transcription came back empty");
   return text;
 }
 
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-/** A fetch-level failure on a page that is not running on the bridge machine. */
-function atRemotePage(err: unknown): boolean {
-  if (!(err instanceof TypeError) || typeof location === "undefined") return false;
-  try {
-    return !["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname);
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Transcribe a clip on whichever side can hear it. A paired desktop is the
- * cross-device path (a phone cannot reach the bridge's loopback `/stt`); on
- * the desktop itself, the direct pass-through is the fallback. The channel
- * never stores the audio: ffmpeg + whisper-server run beside the bridge.
+ * Transcribe a clip with the provider chosen in Settings → Speech.
+ *
+ * Cloud providers run in this tab and call the service directly with the
+ * browser-held key; local providers ride the authenticated peer channel
+ * (`stt-run`) to the paired desktop. There is no HTTP fallback.
  */
 async function transcribeBlob(blob: Blob, filename: string): Promise<string> {
   const ext = audioExt(filename);
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const stt = loadSttConfig();
+  // Keys are only attached for cloud providers; local ones need no secret.
+  const key = isCloudSttProvider(stt.provider) ? sttKeyFor(stt) : undefined;
+
+  if (isBrowserSttProvider(stt.provider)) {
+    const { text } = await assemblyAiStt.transcribe(
+      { bytes, ext },
+      { apiKey: key, language: stt.language },
+    );
+    return heardText(text);
+  }
+
   const desktop = desktopTranscriber();
-  let desktopError: unknown = null;
-  if (desktop) {
-    try {
-      return heardText(await desktop.transcribe(new Uint8Array(await blob.arrayBuffer()), ext));
-    } catch (err) {
-      desktopError = err;
-    }
+  if (!desktop) {
+    throw new Error(
+      "this device is not paired with a desktop — pair one in Sync… → Pair… to transcribe audio",
+    );
   }
-  try {
-    const url = new URL("/stt", bridgeUrl());
-    url.searchParams.set("ext", ext);
-    const res = await fetch(url, { method: "POST", body: blob });
-    const d = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
-    if (!res.ok) throw new Error(d.error || `transcription failed: HTTP ${res.status}`);
-    return heardText(d.text);
-  } catch (err) {
-    if (desktopError) {
-      throw new Error(`desktop: ${errorText(desktopError)}; bridge: ${errorText(err)}`);
-    }
-    if (atRemotePage(err)) {
-      throw new Error(
-        "this device cannot reach a transcription bridge — pair a desktop in Sync… → Pair… " +
-          "(start it with BOB_STT=1)",
-      );
-    }
-    throw err;
-  }
+  // Local backends ignore the key; Rime (cloud, no browser support) needs it.
+  return heardText(
+    await desktop.transcribe(bytes, ext, stt.provider || undefined, key, stt.language),
+  );
 }
 
 /**
- * Transcribe an audio file through the bridge. The old streaming partials
- * are gone with the admin; `onPartial` simply never fires.
+ * Transcribe an audio file through the paired desktop. The old streaming
+ * partials are gone; `onPartial` simply never fires.
  */
 export async function transcribeFileStream(
   file: File,
@@ -1598,6 +1645,16 @@ export function handleSSE(msg: any): void {
           if (msg.buttons?.length) t.buttons = msg.buttons;
         }),
       );
+      // Auto-speak: trunk replies only, and only when the toggle is on.
+      // Failures (autoplay policy, no pairing) stay silent — this is ambient.
+      const spoken = msg.text?.trim();
+      if (spoken && msg.level !== "machine" && (msg.app ?? "trunk") === "trunk") {
+        if (loadTtsConfig().autoSpeak) {
+          const turn = state.turns.find((x) => x.turnId === msg.turnId);
+          const index = (turn?.emits?.length ?? 1) - 1;
+          void speakText(spoken, `${msg.turnId}:${index}`).catch(() => {});
+        }
+      }
       break;
     }
     case "turn_end": {

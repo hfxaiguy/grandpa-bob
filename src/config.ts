@@ -37,6 +37,14 @@ export const config = {
   sherpaUrl: (process.env.SHERPA_URL ?? "http://127.0.0.1:8178").replace(/\/$/, ""),
   /** Spoken language for STT (e.g. "en", "de", "auto"). Empty = server default ("en"). */
   sttLanguage: process.env.STT_LANGUAGE ?? process.env.WHISPER_LANGUAGE ?? "",
+  /** TTS provider: local KittenTTS, or Rime Mist v3 (cloud, server-side). */
+  ttsProvider: (() => {
+    const p = (process.env.TTS_PROVIDER ?? "kitten").toLowerCase();
+    return p === "rime" ? "rime" : "kitten";
+  })(),
+  kittenTtsUrl: (process.env.KITTEN_TTS_URL ?? "http://127.0.0.1:8185").replace(/\/$/, ""),
+  /** Default KittenTTS voice; the tab can override it per request. */
+  ttsVoice: process.env.KITTEN_TTS_VOICE ?? "Bella",
 };
 
 export type Config = typeof config;

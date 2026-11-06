@@ -51,6 +51,8 @@ import {
   sendFile,
   transcribeAudio,
   transcribeFileStream,
+  speakText,
+  speechKey,
 } from "./store";
 import type { AppInfo, EmitComponent, ProvPiece, ProvWriter, Provenance, RefTarget, Turn, TurnTokens } from "./types";
 import { Markdown } from "./markdown";
@@ -1215,7 +1217,7 @@ function Composer(props: { app: string }) {
     if ((last.inputApp ?? "trunk") !== props.app) return [];
     return last.fallback ?? [];
   });
-  // ── voice input (MediaRecorder → bridge /stt → send) ──
+  // ── voice input (MediaRecorder → paired desktop stt-run → send) ──
   const canMic =
     typeof navigator.mediaDevices?.getUserMedia === "function" &&
     typeof window.MediaRecorder !== "undefined";
@@ -1312,7 +1314,7 @@ function Composer(props: { app: string }) {
       }
       return;
     }
-    // Audio goes to the storage bridge's /stt pass-through (no admin and no
+    // Audio goes to the paired desktop over the peer channel (no admin and no
     // in-tab model); any error is shown in the card below.
     let duration = 0;
     setCard({ name: file.name, status: "uploading…", text: "", state: "run" });
@@ -2073,6 +2075,10 @@ export function Tile(props: { app: AppInfo }) {
                                   b.emitIndex >= 0 &&
                                   !!b.turn.runId &&
                                   b.turn.levels?.[b.emitIndex] !== "machine",
+                                "has-speak":
+                                  b.kind === "bot" &&
+                                  !!b.text.trim() &&
+                                  b.turn.levels?.[b.emitIndex ?? 0] !== "machine",
                               }}
                             >
                               <Show when={b.component} fallback={<RefText text={b.text} />}>
@@ -2083,6 +2089,30 @@ export function Tile(props: { app: AppInfo }) {
                                     text={b.text}
                                   />
                                 )}
+                              </Show>
+                              <Show
+                                when={
+                                  b.kind === "bot" &&
+                                  !!b.text.trim() &&
+                                  b.turn.levels?.[b.emitIndex ?? 0] !== "machine"
+                                }
+                              >
+                                <button
+                                  class="bubble-info bubble-speak"
+                                  title={
+                                    speechKey() === `${b.turn.turnId}:${b.emitIndex ?? 0}`
+                                      ? "stop reading"
+                                      : "read this reply aloud"
+                                  }
+                                  onClick={() => {
+                                    const key = `${b.turn.turnId}:${b.emitIndex ?? 0}`;
+                                    void speakText(b.text, key).catch((err) =>
+                                      toast(err instanceof Error ? err.message : "could not speak", true),
+                                    );
+                                  }}
+                                >
+                                  {speechKey() === `${b.turn.turnId}:${b.emitIndex ?? 0}` ? "⏹" : "🔊"}
+                                </button>
                               </Show>
                               <Show
                                 when={

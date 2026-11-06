@@ -1017,6 +1017,8 @@ body.dragging-tile { user-select: none !important; }
 
 .bubble { position: relative; }
 .bubble.has-info { padding-right: 30px; }
+.bubble.has-speak { padding-right: 56px; }
+.bubble-speak { right: 26px; }
 .bubble-info {
   position: absolute;
   top: 3px;

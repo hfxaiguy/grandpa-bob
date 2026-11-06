@@ -28,7 +28,6 @@ export function setEnvVar(name: string, value: string): void {
 }
 
 const REMOTE_KEY = "bob:remote";
-const SERVER_KEY = "bob:storage-server";
 
 /** Workspace git remote to clone from on startup. */
 export function loadRemote(): string {

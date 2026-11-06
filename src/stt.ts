@@ -3,6 +3,13 @@ import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import type {
+  AudioClip,
+  SttAdapter,
+  SttAdapterContext,
+  Transcript,
+} from "../web/src/services/types.js";
+import { RIME_STT_URL, transcribeRimePcm } from "./stt-rime.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,15 +41,20 @@ export async function transcribeVoice({ fileUrl, ...opts }: SttOptions): Promise
 
 /**
  * Transcribe raw audio bytes (any format ffmpeg understands: .ogg, .webm,
- * .mp4, .wav, ...). Converts to 16kHz mono WAV, then dispatches to the
- * configured backend. Used by the web UI's voice input.
+ * .mp4, .wav, ...) with the configured local backend. This remains the
+ * Telegram entry point; the peer `stt-run` op goes through
+ * `transcribeWithProvider` so it can carry an explicit provider id.
  */
 export async function transcribeAudioBytes(
   input: Buffer,
   { ext = ".ogg", ...opts }: SttBackendOptions & { ext?: string },
 ): Promise<string> {
-  const wav = await convertToWav(input, ext, opts.tmpDir);
-  return transcribeWav(wav, opts);
+  return transcribeWithProvider(opts.backend, input, ext, {
+    whisperUrl: opts.whisperUrl,
+    sherpaUrl: opts.sherpaUrl,
+    tmpDir: opts.tmpDir,
+    language: opts.language,
+  });
 }
 
 /** Convert any ffmpeg-readable audio container to 16kHz mono PCM WAV. */
@@ -71,79 +83,6 @@ export async function transcribeWav(wav: Buffer, { backend, whisperUrl, sherpaUr
     : backend === "parakeet"
       ? await transcribeWithParakeet(wav, sherpaUrl)
       : await transcribeWithWhisper(wav, whisperUrl, language);
-}
-
-/**
- * Streaming transcription of a 16kHz mono PCM WAV. Calls
- * `onPartial(accumulatedText, processedSeconds?)` as the transcript grows:
- *   - whisper : audio is sliced into CHUNK_S segments transcribed in order,
- *               each conditioned on the text so far (whisper-server `prompt`),
- *               so partials land every few seconds even on long files.
- *   - sherpa  : the online websocket server's live partials are forwarded.
- *   - parakeet: offline decoder — a single partial at the end.
- * Returns the final transcript.
- */
-export async function transcribeWavStreaming(
-  wav: Buffer,
-  { backend, whisperUrl, sherpaUrl, language }: SttBackendOptions,
-  onPartial?: (text: string, processedSeconds?: number) => void,
-): Promise<string> {
-  if (backend === "sherpa") {
-    return transcribeWithSherpa(wav, sherpaUrl, onPartial ? (t) => onPartial(t) : undefined);
-  }
-  if (backend === "parakeet") {
-    const text = await transcribeWithParakeet(wav, sherpaUrl);
-    onPartial?.(text, wavDurationSeconds(wav));
-    return text;
-  }
-  return transcribeWhisperStreaming(wav, whisperUrl, language, onPartial);
-}
-
-/** Duration of a 16kHz 16-bit mono PCM WAV in whole seconds (0 if unparseable). */
-export function wavDurationSeconds(wav: Buffer): number {
-  try {
-    const { length } = findWavDataChunk(wav);
-    return Math.round(length / (16000 * 2));
-  } catch {
-    return 0;
-  }
-}
-
-/** Seconds of audio per whisper streaming chunk. */
-const WHISPER_CHUNK_S = 20;
-
-async function transcribeWhisperStreaming(
-  wav: Buffer,
-  whisperUrl: string,
-  language: string | undefined,
-  onPartial?: (text: string, processedSeconds?: number) => void,
-): Promise<string> {
-  const { length: dataLength } = findWavDataChunk(wav);
-  const totalSamples = Math.floor(dataLength / 2);
-  const chunkSamples = WHISPER_CHUNK_S * 16000;
-
-  // Short file: single request, same behavior as the one-shot path.
-  if (totalSamples <= chunkSamples) {
-    const text = await transcribeWithWhisper(wav, whisperUrl, language);
-    onPartial?.(text, Math.round(totalSamples / 16000));
-    return text;
-  }
-
-  let text = "";
-  for (let start = 0; start < totalSamples; start += chunkSamples) {
-    const end = Math.min(start + chunkSamples, totalSamples);
-    const slice = wavSlice(wav, start, end);
-    // NOTE: no `prompt` here — whisper.cpp's prompt feature makes greedy
-    // decoding echo the prior text and emit garbage (0xFF) tokens on chunk
-    // boundaries, corrupting the transcript. Independent chunks + plain
-    // concatenation reads clean even across a mid-word cut.
-    const seg = await whisperInference(slice, whisperUrl, language);
-    if (seg) text = text ? `${text} ${seg}` : seg;
-    onPartial?.(text, Math.round(end / 16000));
-  }
-  const trimmed = text.trim();
-  if (!trimmed) throw new Error("transcription came back empty (silent or unintelligible audio?)");
-  return trimmed;
 }
 
 /** One whisper-server /inference call. Returns "" on empty transcript (no throw). */
@@ -326,31 +265,6 @@ function findWavDataChunk(wav: Buffer): { offset: number; length: number } {
   throw new Error("WAV has no data chunk");
 }
 
-/**
- * Cut samples [startSample, endSample) out of a 16kHz 16-bit mono PCM WAV
- * and wrap them in a fresh minimal WAV header. Used to feed whisper long
- * files in chunks so partials stream back while the file is processed.
- */
-function wavSlice(wav: Buffer, startSample: number, endSample: number): Buffer {
-  const { offset } = findWavDataChunk(wav);
-  const pcm = wav.subarray(offset + startSample * 2, offset + endSample * 2);
-  const header = Buffer.alloc(44);
-  header.write("RIFF", 0, "ascii");
-  header.writeUInt32LE(36 + pcm.length, 4);
-  header.write("WAVE", 8, "ascii");
-  header.write("fmt ", 12, "ascii");
-  header.writeUInt32LE(16, 16); // fmt chunk size
-  header.writeUInt16LE(1, 20); // PCM
-  header.writeUInt16LE(1, 22); // mono
-  header.writeUInt32LE(16000, 24); // sample rate
-  header.writeUInt32LE(16000 * 2, 28); // byte rate
-  header.writeUInt16LE(2, 32); // block align
-  header.writeUInt16LE(16, 34); // bits per sample
-  header.write("data", 36, "ascii");
-  header.writeUInt32LE(pcm.length, 40);
-  return Buffer.concat([header, pcm]);
-}
-
 /** Convert a 16-bit PCM WAV into a Float32Array of normalized samples in [-1, 1]. */
 function wavToFloat32Samples(wav: Buffer): Float32Array {
   const { offset: dataOffset, length: dataLength } = findWavDataChunk(wav);
@@ -362,9 +276,8 @@ function wavToFloat32Samples(wav: Buffer): Float32Array {
   return samples;
 }
 
-/** Quick reachability probe for whichever backend is active. */
-export async function checkStt(backend: SttBackend, whisperUrl: string, sherpaUrl: string): Promise<boolean> {
-  const url = backend === "sherpa" ? sherpaUrl : whisperUrl;
+/** Quick reachability probe for a local STT server URL. */
+async function probeUrl(url: string): Promise<boolean> {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 3000);
@@ -379,5 +292,109 @@ export async function checkStt(backend: SttBackend, whisperUrl: string, sherpaUr
   }
 }
 
-/** Backwards-compat alias for callers still using the old name. */
-export const checkWhisper = checkStt;
+/** Quick reachability probe for whichever backend is active. */
+export async function checkStt(backend: SttBackend, whisperUrl: string, sherpaUrl: string): Promise<boolean> {
+  return probeUrl(backend === "sherpa" ? sherpaUrl : whisperUrl);
+}
+
+/**
+ * The STT providers as adapters. Local backends wrap the existing functions;
+ * Rime is cloud-only but must run here (its upgrade needs an Authorization
+ * header no browser WebSocket can send), with the key passed per request.
+ */
+export function createSttAdapters(ctx: SttAdapterContext): Record<string, SttAdapter> {
+  const transcribeWith =
+    (backend: SttBackend) =>
+    async (clip: AudioClip): Promise<Transcript> => {
+      if (!ctx.tmpDir) throw new Error("no tmpDir configured");
+      const wav = await convertToWav(Buffer.from(clip.bytes), normalizeExt(clip.ext), ctx.tmpDir);
+      return {
+        text: await transcribeWav(wav, {
+          backend,
+          whisperUrl: ctx.whisperUrl ?? "",
+          sherpaUrl: ctx.sherpaUrl ?? "",
+          tmpDir: ctx.tmpDir,
+          language: ctx.language,
+        }),
+      };
+    };
+  const probe =
+    (backend: SttBackend) =>
+    async (): Promise<boolean> => {
+      const url = backend === "whisper" ? ctx.whisperUrl : ctx.sherpaUrl;
+      return url ? probeUrl(url) : false;
+    };
+  const adapter = (id: SttBackend, label: string, endpoint?: string): SttAdapter => ({
+    id,
+    label,
+    endpoint,
+    cloud: false,
+    transcribe: transcribeWith(id),
+    check: probe(id),
+  });
+  const rime: SttAdapter = {
+    id: "rime",
+    label: "Rime STT (cloud)",
+    endpoint: RIME_STT_URL,
+    cloud: true,
+    async transcribe(clip, request) {
+      if (!request.apiKey) throw new Error("no Rime key — add it in Settings → Speech");
+      if (!ctx.tmpDir) throw new Error("no tmpDir configured");
+      // convertToWav yields exactly what Rime wants: 16 kHz mono PCM16.
+      const wav = await convertToWav(Buffer.from(clip.bytes), normalizeExt(clip.ext), ctx.tmpDir);
+      const { offset } = findWavDataChunk(wav);
+      const text = await transcribeRimePcm(wav.subarray(offset), {
+        apiKey: request.apiKey,
+        language: request.language ?? "en",
+      });
+      return { text };
+    },
+    check: async (request) => Boolean(request.apiKey),
+  };
+  return {
+    whisper: adapter("whisper", "Whisper (local server)", ctx.whisperUrl),
+    sherpa: adapter("sherpa", "Sherpa (local server)", ctx.sherpaUrl),
+    parakeet: adapter("parakeet", "Parakeet (local server)", ctx.sherpaUrl),
+    rime,
+  };
+}
+
+/**
+ * Dispatch a clip to a named provider. Errors always name the provider, so the
+ * tab can show an actionable message instead of a bare fetch failure.
+ */
+export function createSttDispatcher(
+  adapters: Record<string, SttAdapter>,
+): (provider: string, clip: AudioClip, ctx?: SttAdapterContext) => Promise<Transcript> {
+  const ids = Object.keys(adapters);
+  return async (provider, clip, ctx = {}) => {
+    const adapter = adapters[provider];
+    if (!adapter) throw new Error(`unknown stt provider "${provider}" — available: ${ids.join(", ")}`);
+    try {
+      return await adapter.transcribe(clip, ctx);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(`stt provider "${provider}" failed: ${detail}`);
+    }
+  };
+}
+
+/** Transcribe bytes with an explicitly chosen provider. */
+export async function transcribeWithProvider(
+  provider: string,
+  input: Buffer,
+  ext: string,
+  ctx: SttAdapterContext,
+): Promise<string> {
+  const dispatch = createSttDispatcher(createSttAdapters(ctx));
+  const { text } = await dispatch(provider, { bytes: input, ext: normalizeExt(ext) }, ctx);
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error(`stt provider "${provider}" came back empty (silent or unintelligible audio?)`);
+  return trimmed;
+}
+
+/** Clamp a container hint to a safe ffmpeg extension. */
+function normalizeExt(ext: string): string {
+  const raw = String(ext ?? "").trim().toLowerCase();
+  return /^\.[a-z0-9]{1,8}$/.test(raw) ? raw : ".webm";
+}

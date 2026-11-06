@@ -3,7 +3,7 @@
  *
  * One loopback process hosts everything that is not the browser app:
  *   :8080  the built app (web/dist) — static, no admin API
- *   :8795  storage bridge (desktop folders, /fs, /git, /sql, opt-in /stt)
+ *   :8795  storage bridge (desktop folders, /fs, /git, /sql)
  *          + telegram mailbox/bindings API (shared port, disjoint routes)
  *
  * The Telegram bot is optional: with no TELEGRAM_BOT_TOKEN the process still
@@ -357,7 +357,7 @@ async function main(): Promise<void> {
     : null;
 
   // ── everything on one channel port: peer mailbox/admin, telegram routes,
-  //    then the storage bridge (STT/health for the app) ─────────────────────
+  //    then the storage bridge's health route ────────────────────────────────
   const server = http.createServer((req, res) => {
     let url: URL;
     try {
@@ -375,8 +375,8 @@ async function main(): Promise<void> {
     }
     // The product path carries files/ops over the authenticated peer channel.
     // The legacy HTTP bridge surface stays available only to the standalone
-    // debug CLI; here it serves health + the opt-in STT pass-through.
-    if (pathname === "/health" || pathname === "/stt" || req.method === "OPTIONS") {
+    // debug CLI; here it serves health only.
+    if (pathname === "/health" || req.method === "OPTIONS") {
       bridge.handleStorageRequest(req, res);
       return;
     }

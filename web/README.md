@@ -18,8 +18,8 @@ Companion channels — one process, one port (`npm run bob`, loopback only):
 | Channel | Route | What it does |
 |---|---|---|
 | Telegram | `:8795` `/api/*` | grammY long-poll; parks text + channel-side voice transcripts in a file mailbox (`~/.bobkat/telegram/`); the tab claims and answers them |
-| Peer mailbox | `:8795` `/api/v1/sync/*`, `/admin/*` | BobSwap-shaped pairing channels + loopback admin API for `npm run pair`; STT/health stay |
-| STT | `:8795` `/stt` (`BOB_STT=1`) | raw audio bytes → ffmpeg → whisper-server → transcript (composer on the desktop; a phone sends its clip to the paired desktop over the peer channel, paired through the BobSwap relay when the loopback mailbox is unreachable) |
+| Peer mailbox | `:8795` `/api/v1/sync/*`, `/admin/*` | BobSwap-shaped pairing channels + loopback admin API for `npm run pair`; health stays |
+| STT | over the paired peer channel (`stt-run`) | the tab sends the clip to the paired desktop, which decodes it (ffmpeg) and runs the chosen local backend; no HTTP route and no opt-in flag |
 | Whisper | `npm run whisper:up` (`:8178`) | the transcription backend both paths call |
 
 The same modules keep their standalone CLIs (`npm run storage-server`,
@@ -86,7 +86,7 @@ notes and hand-offs visible without mixing them into the normal reply stream.
 | isomorphic-git over a real folder (`web/src/platform/git-handle.ts`) | done — `test:fsaccess` |
 | SQLite over the real `.db` files (`initSqlite(handle, {writeBack})`) | done — read-only by default, `SQL writes` toggle |
 | Served at `:8080` by the admin server (chat = front page) | done — falls back to `ui/dist` when `web/dist` is missing |
-| Voice input (mic button) | **restored** — MediaRecorder posts the clip to a paired desktop over the peer channel, or to the local bridge's `/stt` (`BOB_STT=1`); no in-tab model and no admin server |
+| Voice input (mic button) | **restored** — MediaRecorder posts the clip to a paired desktop over the peer channel (`stt-run`); no in-tab model, no HTTP route, no opt-in flag |
 
 ## Emit components — app UI in the chat (2026-11-01)
 
@@ -456,7 +456,7 @@ browsers** — a code, a DTLS verification phrase, then the same `SyncEngine`.
   first time.
 - `/fs`, `/git`, `/sql` and `/roots` are **not mounted** by the product
   process. The standalone `storage-server.mjs` CLI keeps them for tests/debug;
-  `/health` and the opt-in `/stt` remain on the channel server.
+  only `/health` remains on the channel server (STT rides the peer channel).
 
 `npm run smoke` needs a Chromium/Chrome binary (override with `CHROME_BIN`) and
 the admin running. It exercises OPFS writes/rename, tree discovery,

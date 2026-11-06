@@ -10,22 +10,15 @@
 // OPFS and a paired desktop/server peer carries mirror + ops over the
 // authenticated DTLS channel (`npm run bob`). This server is kept for debugging,
 // the standalone CLI and the desktop-profile test; loopback-only, no auth.
-//
-// Opt-in STT pass-through: start with BOB_STT=1 (WHISPER_URL, default
-// http://127.0.0.1:8178) to expose POST /stt — raw audio bytes in, transcript
-// out. The tab can then use the desktop's whisper instead of downloading an
-// in-tab model; voice notes parked by the Telegram channel are transcribed
-// there directly, not through this route.
+// Speech-to-text lives in `src/stt.ts` and is reached over the peer channel
+// (`stt-run`) — this bridge has no STT route.
 import http from "node:http";
-import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
-const execFileAsync = promisify(execFile);
 // The default root can be replaced by the combined entry (`npm run bob`) or
 // by the standalone CLI (`node storage-server.mjs [root]`).
 let ROOT = path.resolve(process.env.WORKSPACE_DIR ?? process.cwd());
@@ -70,15 +63,20 @@ function activeRoot(req) {
   return rootFor(name || "default");
 }
 
-/** STT pass-through: off unless explicitly enabled. */
-const STT_ENABLED = process.env.BOB_STT === "1";
-const WHISPER_URL = (process.env.WHISPER_URL ?? "http://127.0.0.1:8178").replace(/\/$/, "");
+/** Only the app's own loopback origins may use this bridge. Requests without
+ *  an Origin header (curl, CLI, tests) are allowed but get no CORS headers. */
+const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 
-const cors = {
-  "access-control-allow-origin": "*",
-  "access-control-allow-headers": "content-type, x-bob-root",
-  "access-control-allow-methods": "GET, POST, OPTIONS",
-};
+function corsFor(req) {
+  const origin = String(req.headers.origin ?? "");
+  if (!origin || !LOCAL_ORIGIN.test(origin)) return {};
+  return {
+    "access-control-allow-origin": origin,
+    "access-control-allow-headers": "content-type, x-bob-root",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    vary: "Origin",
+  };
+}
 
 function resolveIn(root, rel) {
   // Treat incoming paths as workspace-relative even when they start with "/".
@@ -86,79 +84,6 @@ function resolveIn(root, rel) {
   const abs = path.resolve(root, rel2);
   if (abs !== root && !abs.startsWith(root + path.sep)) throw new Error(`path escapes workspace: ${rel}`);
   return abs;
-}
-
-// ── STT pass-through (BOB_STT=1) ─────────────────────────────────────────
-
-/** POST raw audio bytes to the whisper-server; returns its `text`. */
-async function whisperInference(wavPath, language) {
-  const fields = [
-    ["response_format", "json"],
-    ["temperature", "0"],
-  ];
-  if (language && language !== "auto") fields.push(["language", language]);
-  const boundary = `bob-stt-${Math.random().toString(36).slice(2)}`;
-  const parts = [];
-  for (const [name, value] of fields) {
-    parts.push(
-      Buffer.from(
-        `--${boundary}\r\ncontent-disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
-      ),
-    );
-  }
-  const wav = await fs.readFile(wavPath);
-  parts.push(
-    Buffer.from(
-      `--${boundary}\r\ncontent-disposition: form-data; name="file"; filename="audio.wav"\r\ncontent-type: audio/wav\r\n\r\n`,
-    ),
-    wav,
-    Buffer.from(`\r\n--${boundary}--\r\n`),
-  );
-  const body = Buffer.concat(parts);
-  const res = await fetch(`${WHISPER_URL}/inference`, {
-    method: "POST",
-    headers: {
-      "content-type": `multipart/form-data; boundary=${boundary}`,
-      "content-length": String(body.length),
-    },
-    body,
-  });
-  if (!res.ok) throw new Error(`whisper-server ${res.status}`);
-  const data = await res.json();
-  return String(data.text ?? "").trim();
-}
-
-/** POST /stt: raw audio body → ffmpeg → 16 kHz WAV → whisper-server. */
-async function handleStt(req, res, send, query) {
-  if (!STT_ENABLED) {
-    send(501, { error: "stt not enabled — start the bridge with BOB_STT=1" });
-    return;
-  }
-  const ext = (query.get("ext") ?? ".webm").replace(/[^.a-z0-9]/gi, "").slice(0, 8) || ".webm";
-  const language = query.get("language") ?? "";
-  // Distinct stems: a .wav upload would otherwise collide input==output and
-  // ffmpeg would sit at its "Overwrite? [y/N]" prompt forever (no stdin).
-  const id = `bob-stt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const tmpIn = path.join(os.tmpdir(), `${id}-in${ext}`);
-  const tmpOut = path.join(os.tmpdir(), `${id}-out.wav`);
-  try {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    await fs.writeFile(tmpIn, Buffer.concat(chunks));
-    await execFileAsync("ffmpeg", [
-      "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
-      "-i", tmpIn,
-      "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
-      tmpOut,
-    ]);
-    const text = await whisperInference(tmpOut, language);
-    send(200, { text });
-  } catch (err) {
-    send(400, { error: err instanceof Error ? err.message : String(err) });
-  } finally {
-    await fs.rm(tmpIn, { force: true }).catch(() => {});
-    await fs.rm(tmpOut, { force: true }).catch(() => {});
-  }
 }
 
 function openDb(root, p, opts) {
@@ -317,6 +242,15 @@ const routes = {
 
 /** The bridge request handler; mountable on the combined channel server. */
 export function handleStorageRequest(req, res) {
+  const origin = String(req.headers.origin ?? "");
+  // A foreign browser origin is refused outright: loopback CORS must not let a
+  // random website drive-by writes on the debug bridge.
+  if (origin && !LOCAL_ORIGIN.test(origin)) {
+    res.writeHead(403, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "origin not allowed" }));
+    return;
+  }
+  const cors = corsFor(req);
   if (req.method === "OPTIONS") {
     res.writeHead(204, cors);
     res.end();
@@ -327,12 +261,6 @@ export function handleStorageRequest(req, res) {
     res.writeHead(status, { ...cors, "content-type": "application/json" });
     res.end(JSON.stringify(body));
   };
-  if (req.method === "POST" && pathname === "/stt") {
-    // Raw audio pass-through: the body is bytes, not JSON — handled before
-    // the JSON routes below.
-    void handleStt(req, res, send, new URLSearchParams(query));
-    return;
-  }
   let data = "";
   req.on("data", (c) => (data += c));
   req.on("end", async () => {

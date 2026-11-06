@@ -7,8 +7,8 @@ _BOB = **B**etter **O**rganizational **B**ot_
 > the **telegram channel** (grammY long-poll; messages are *parked* in a
 > file-backed mailbox and answered by your browser tab — Node never runs the
 > agent), the **peer mailbox** (`:8795` — desktop/server pairing, mirror and
-> allowlisted ops; standalone `storage-server.mjs` is debug-only), plus opt-in
-> STT with `BOB_STT=1`),
+> allowlisted ops; standalone `storage-server.mjs` is debug-only), plus
+> speech-to-text over the paired peer channel (`stt-run`),
 > and **BobSwap** (seed shelf). The shared core lives in
 > `web/src` now; `web/` imports nothing outside `web/` + `ui/`
 > (`npm run test:standalone` is the gate).
@@ -81,8 +81,8 @@ every change it makes is **git-committed automatically**.
   channels: one process (`npm run bob`)
   :8795  peer mailbox     ·  telegram mailbox API  sync channel (peer-to-peer)
    · folders (profiles)    · grammY long-poll      BroadcastChannel (same origin)
-   · /stt (BOB_STT=1)      · park & forward mailbox WebRTC DataChannel (cross-device;
-   · loopback only         · no agent               BobSwap REST or manual-paste
+   · loopback only         · park & forward mailbox WebRTC DataChannel (cross-device;
+                           · no agent               BobSwap REST or manual-paste
                                                     signaling; 6-word verify)
 ```
 
@@ -354,13 +354,14 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    While the tab is paired, it streams its run log to
    `~/.bobkat/peers/<profile>/logs/grandma-kat.db`; read it with
    `npm run peer:log -- --profile <name>` (latest errors by default, `--all`
-   for every kind, `--stats`/`--follow` for the rest). Start the process with
-   `BOB_STT=1` to expose the `/stt` pass-through for
-   in-tab voice transcription.
-5. **Voice (optional)**: browser recordings are transcribed by a paired
-   desktop/server over the sync channel, or by the local bridge on the desktop
-   itself (`BOB_STT=1`); Telegram voice notes are transcribed by the channel.
-   All paths use whisper-server:
+   for every kind, `--stats`/`--follow` for the rest).
+5. **Voice (optional)**: browser recordings are transcribed by the paired
+   desktop/server over the sync channel (`stt-run`), with the provider chosen
+   in Settings → Speech (local whisper/sherpa/parakeet, AssemblyAI called
+   straight from the tab, or Rime STT through the desktop); Telegram voice
+   notes are transcribed by the channel. Replies can be read aloud with the
+   TTS choice (`npm run tts:up` serves local KittenTTS, or Rime Mist v3 runs on
+   the desktop with a key from Settings). Local STT providers use whisper-server:
    ```sh
    npm run whisper:up   # 127.0.0.1:8178
    ```

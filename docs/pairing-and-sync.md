@@ -263,8 +263,9 @@ channel flow used between two browsers:
    result returns; divergent paths keep both copies.
 
 The product process does not mount `/fs`, `/git`, `/sql` or `/roots`; the
-standalone `storage-server` CLI keeps them for tests/debug. Only `/health` and
-the opt-in `/stt` remain on the channel server.
+standalone `storage-server` CLI keeps them for tests/debug. Only `/health`
+remains on the channel server; speech-to-text rides the peer channel
+(`stt-run`).
 
 ## 7. Troubleshooting
 

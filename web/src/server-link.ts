@@ -57,10 +57,18 @@ export interface ServerConnection {
   /** Run an allowlisted executable on the desktop/server. */
   run(binary: string, args: string[], timeoutMs?: number): Promise<ServerOpResult>;
   /**
-   * Transcribe a recorded clip on the desktop/server. The phone cannot reach
-   * the loopback `/stt` bridge, so this rides the authenticated peer channel.
+   * Transcribe a recorded clip on the desktop/server. Voice input always
+   * rides the authenticated peer channel (`stt-run`); there is no HTTP STT
+   * route. `provider` names a local backend; absent one the desktop uses its
+   * configured default.
    */
-  transcribe(audio: Uint8Array, ext: string): Promise<string>;
+  transcribe(audio: Uint8Array, ext: string, provider?: string, apiKey?: string, language?: string): Promise<string>;
+  /**
+   * Synthesize speech on the desktop/server over the peer channel (`tts-run`).
+   * `voice` overrides the desktop's configured voice; absent one the desktop
+   * uses its default.
+   */
+  synthesize(text: string, voice?: string, apiKey?: string): Promise<{ bytes: Uint8Array; ext: string }>;
   /**
    * Send one control frame (the peer log stream multiplexes over this; see
    * web/src/peer-log.ts). Frames are chunked by the transport.
@@ -358,6 +366,13 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
 function finishHandshake(
   opts: HandshakeOptions,
   info: ServerLinkInfo,
@@ -366,6 +381,10 @@ function finishHandshake(
   const { opened } = opts;
   const pendingOps = new Map<string, (result: ServerOpResult) => void>();
   const pendingStt = new Map<string, (result: { text?: string; error?: string }) => void>();
+  const pendingTts = new Map<
+    string,
+    (result: { audio?: string; ext?: string; error?: string }) => void
+  >();
   const controlSubs = new Set<(control: Record<string, unknown>) => void>();
   let readySent = false;
   const sendReady = (): void => {
@@ -396,6 +415,19 @@ function finishHandshake(
         pendingStt.delete(id);
         resolve({
           text: typeof control.text === "string" ? control.text : undefined,
+          error: typeof control.error === "string" ? control.error : undefined,
+        });
+        return;
+      }
+    }
+    if (control.op === "tts-result") {
+      const id = String(control.id ?? "");
+      const resolve = pendingTts.get(id);
+      if (resolve) {
+        pendingTts.delete(id);
+        resolve({
+          audio: typeof control.audio === "string" ? control.audio : undefined,
+          ext: typeof control.ext === "string" ? control.ext : undefined,
           error: typeof control.error === "string" ? control.error : undefined,
         });
         return;
@@ -441,7 +473,7 @@ function finishHandshake(
       opened.send({ op: "ops-run", id, binary, args, timeoutMs });
       return result;
     },
-    transcribe(audio, ext) {
+    transcribe(audio, ext, provider, apiKey, language) {
       const id = crypto.randomUUID();
       const result = new Promise<string>((resolve, reject) => {
         pendingStt.set(id, (answer) => {
@@ -453,7 +485,30 @@ function finishHandshake(
           reject(new Error("the desktop did not answer the transcription"));
         }, 5 * 60_000);
       });
-      opened.send({ op: "stt-run", id, audio: bytesToBase64(audio), ext });
+      opened.send({
+        op: "stt-run",
+        id,
+        audio: bytesToBase64(audio),
+        ext,
+        ...(provider ? { provider } : {}),
+        ...(apiKey ? { apiKey } : {}),
+        ...(language ? { language } : {}),
+      });
+      return result;
+    },
+    synthesize(text, voice, apiKey) {
+      const id = crypto.randomUUID();
+      const result = new Promise<{ bytes: Uint8Array; ext: string }>((resolve, reject) => {
+        pendingTts.set(id, (answer) => {
+          if (answer.error) reject(new Error(answer.error));
+          else resolve({ bytes: base64ToBytes(answer.audio ?? ""), ext: answer.ext || ".wav" });
+        });
+        setTimeout(() => {
+          if (!pendingTts.delete(id)) return;
+          reject(new Error("the desktop did not answer the speech request"));
+        }, 2 * 60_000);
+      });
+      opened.send({ op: "tts-run", id, text, ...(voice ? { voice } : {}), ...(apiKey ? { apiKey } : {}) });
       return result;
     },
     close: () => opened.close(),
