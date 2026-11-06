@@ -98,6 +98,10 @@ Settings page on the same origin:
 - Rime rejected key → `Rime STT key rejected` (401 on the WS upgrade);
   `Rime rejected the key` for TTS (401/403).
 - Rime TTS long replies are chunked at 1,000 characters — no user-facing error.
+- Rime TTS retries a chunk up to 3 times when Rime closes the audio stream
+  mid-body (`terminated` / `other side closed`) or sheds load (429/5xx); if all
+  attempts fail the toast says `Rime TTS failed after 3 attempts … — press the
+  speaker to try again`. A rejected key is never retried.
 - Rime language outside `en`/`es` → explicit error before connecting.
 - Unknown provider → `unknown stt provider "x" — available: …`.
 - Any adapter failure → `stt provider "x" failed: …` / `tts provider "x" failed: …`.

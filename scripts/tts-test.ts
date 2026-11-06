@@ -10,6 +10,7 @@ import {
   chunkText,
   createTtsAdapters,
   createTtsDispatcher,
+  isTransientRimeError,
   synthesizeWithProvider,
 } from "../src/tts.js";
 
@@ -172,13 +173,80 @@ await assert.rejects(
 );
 
 // Rime auth failures are mapped, not dumped.
+let deniedCalls = 0;
 const denied = createTtsDispatcher(
-  createTtsAdapters(rt, async () => new Response("", { status: 401 })),
+  createTtsAdapters(
+    rt,
+    async () => {
+      deniedCalls += 1;
+      return new Response("", { status: 401 });
+    },
+    { sleep: async () => {} },
+  ),
 );
 await assert.rejects(
   () => denied("rime", "hi", { apiKey: "bad" }),
   /tts provider "rime" failed: Rime rejected the key/,
 );
+assert.equal(deniedCalls, 1, "a rejected key is not retried");
+
+// A Rime stream cut mid-audio (`TypeError: terminated` from undici) is retried
+// on a fresh connection instead of failing the whole reply.
+let flakyCalls = 0;
+const flaky = createTtsDispatcher(
+  createTtsAdapters(
+    rt,
+    async () => {
+      flakyCalls += 1;
+      if (flakyCalls === 1) throw new TypeError("terminated");
+      return new Response(sampleWav, { status: 200, headers: { "content-type": "audio/wav" } });
+    },
+    { sleep: async () => {} },
+  ),
+);
+const flakyClip = await flaky("rime", "retry me", { apiKey: "k" });
+assert.equal(flakyCalls, 2);
+assert.deepEqual(Array.from(flakyClip.bytes), Array.from(sampleWav));
+
+// A 500/429 is shed load, also worth another attempt.
+let shedCalls = 0;
+const shed = createTtsDispatcher(
+  createTtsAdapters(
+    rt,
+    async () => {
+      shedCalls += 1;
+      if (shedCalls === 1) return new Response("overloaded", { status: 503 });
+      return new Response(sampleWav, { status: 200 });
+    },
+    { sleep: async () => {} },
+  ),
+);
+await shed("rime", "hi", { apiKey: "k" });
+assert.equal(shedCalls, 2);
+
+// Exhausted retries say what failed and what to do, not just "terminated".
+let deadCalls = 0;
+const dead = createTtsDispatcher(
+  createTtsAdapters(
+    rt,
+    async () => {
+      deadCalls += 1;
+      throw new TypeError("terminated");
+    },
+    { sleep: async () => {}, rimeAttempts: 3 },
+  ),
+);
+await assert.rejects(
+  () => dead("rime", "hi", { apiKey: "k" }),
+  /tts provider "rime" failed: Rime TTS failed after 3 attempts: terminated — press the speaker to try again/,
+);
+assert.equal(deadCalls, 3);
+assert.equal(isTransientRimeError(new TypeError("terminated")), true);
+assert.equal(
+  isTransientRimeError(Object.assign(new TypeError("fetch failed"), { cause: { code: "UND_ERR_SOCKET" } })),
+  true,
+);
+assert.equal(isTransientRimeError(new Error("Rime rejected the key")), false);
 
 // Empty audio is an error, not a silent success.
 const empty = createTtsDispatcher(

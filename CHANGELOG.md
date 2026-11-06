@@ -2,6 +2,26 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-06 — a dropped Rime audio stream is retried, not shown as "terminated"
+
+Pressing 🔊 with Rime Mist v3 occasionally failed the whole reply with
+`tts provider "rime" failed: terminated`. That is Node's `fetch` reporting the
+response body cut off mid-stream (`UND_ERR_SOCKET` / "other side closed"), not a
+bad key or text: Rime closes some audio streams early, and the same chunk
+succeeds on a fresh connection.
+
+- **`src/tts.ts`**: each Rime chunk now retries up to 3 attempts with a short
+  backoff when the stream drops (`terminated`, `other side closed`,
+  `UND_ERR_SOCKET`, resets) or the server sheds load (429/5xx). 401/403 and
+  other 4xx stay single-shot, so a bad key still fails immediately. Exhausted
+  retries say `Rime TTS failed after 3 attempts: … — press the speaker to try
+  again` instead of a bare transport string.
+- **`scripts/tts-test.ts`**: a `TypeError: terminated` then success, a 503 then
+  success, an exhausted retry, and the rule that a rejected key is not retried.
+
+Tests: `npm run test:tts`; `npm run typecheck`; `npm run test:stt-cloud`;
+`npm run test:stt-dispatch`.
+
 ## 2026-11-06 — a failed model call gets one host-level retry
 
 grandma-kat retries the transient failures it knows about, but a provider can
