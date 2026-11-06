@@ -2,6 +2,23 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-06 — the Chrome launcher opens the hosted app by default
+
+`npm run chrome` used to require the local admin and refused to proceed unless
+`http://127.0.0.1:8080` answered. That made it useless when BOB is being used
+from the hosted deployment, even though the CDP automation itself is local. It
+now opens `https://bobkat.hfxaiguy.com` by default, while `BOB_APP_LOCAL=1`
+keeps the local-admin path (`ADMIN_PORT` still sets its port) and
+`BOB_APP_URL=…` overrides either choice.
+
+- **`web/scripts/chrome.mjs`**: hosted default, `BOB_APP_LOCAL=1` for the local
+  admin, and only the local app is health-checked (a slow hosted app no longer
+  blocks Chrome from starting).
+- **`web/README.md`**: documents the default and the local/explicit overrides.
+
+Tests: `node --check web/scripts/chrome.mjs`; dry runs with `BOB_NO_CDP=1
+BOB_NO_OPEN=1` for the hosted default, `BOB_APP_LOCAL=1`, and `BOB_APP_URL`.
+
 ## 2026-11-04 — an empty profile no longer swallows Telegram messages
 
 A desktop-mirrored profile can exist before its workspace arrives (the first

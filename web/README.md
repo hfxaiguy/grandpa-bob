@@ -361,18 +361,21 @@ script does both: it starts Chrome with a debug port and
 `--remote-allow-origins` (and no startup window — the automation window appears
 when a tool first opens a page), then opens the app in **FireDragon** (or the
 first installed FireDragon/Firefox, or `BOB_BROWSER_BIN`) with the browser-level
-WebSocket URL in `?cdp=…` (persisted in localStorage).
+WebSocket URL in `?cdp=…` (persisted in localStorage). The app is the hosted
+`https://bobkat.hfxaiguy.com` by default; set `BOB_APP_LOCAL=1` to load the
+local admin on `ADMIN_PORT` instead.
 
 FireDragon is Firefox-based and has no CDP endpoint, so it is only the display
 browser — the automation Chrome stays in the background. The four tools drive
 Chrome, not FireDragon.
 
 ```sh
-npm run chrome                                  # FireDragon + background Chrome
+npm run chrome                                  # hosted app + background Chrome
+BOB_APP_LOCAL=1 npm run chrome                  # local admin (http://127.0.0.1:8080)
 BOB_BROWSER_BIN=/usr/bin/firefox npm run chrome # choose the display browser
 BOB_NO_CDP=1 npm run chrome                     # no Chrome; browser_* tools off
 BOB_NO_OPEN=1 npm run chrome                    # print the URL and ?cdp= parameter only
-BOB_APP_URL=http://127.0.0.1:8080 npm run chrome  # explicit app URL (e.g. standalone)
+BOB_APP_URL=http://127.0.0.1:8080 npm run chrome  # explicit app URL
 ```
 
 It reuses a Chrome already listening on the port, prints the URL and the

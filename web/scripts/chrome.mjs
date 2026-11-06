@@ -27,7 +27,8 @@
  *   BROWSER_HEADLESS=1          run the automation Chrome without a window
  *   BROWSER_CHROME_ARGS="…"     extra Chrome flags
  *   BROWSER_LAUNCH_TIMEOUT_MS=20000
- *   BOB_APP_URL=…               the app to open (default: the admin on ADMIN_PORT)
+ *   BOB_APP_URL=…               explicit app URL (default: bobkat.hfxaiguy.com)
+ *   BOB_APP_LOCAL=1             open the local admin on ADMIN_PORT instead
  *   BOB_CDP_ALLOW_ORIGINS=*     origins allowed to open the CDP socket
  *   BOB_NO_CDP=1                do not launch/require Chrome; app opens tool-less
  *   BOB_NO_OPEN=1               print the URL instead of opening a browser
@@ -45,8 +46,11 @@ const PROFILE_DIR =
   process.env.BROWSER_PROFILE_DIR || path.join(os.homedir(), ".grandma-browser", "chrome-profile");
 const STATE_PATH = path.join(STATE_DIR, "chrome.json");
 const ADMIN_PORT = Number(process.env.ADMIN_PORT || 8080);
-/** The admin is the only way bob-web is served now (no standalone dev server). */
-const APP_CANDIDATES = [`http://127.0.0.1:${ADMIN_PORT}`];
+/** Hosted deployment used unless BOB_APP_URL or BOB_APP_LOCAL says otherwise. */
+const HOSTED_APP_URL = "https://bobkat.hfxaiguy.com";
+/** The admin is the only way bob-web is served locally (no standalone dev server). */
+const LOCAL_APP_CANDIDATES = [`http://127.0.0.1:${ADMIN_PORT}`];
+const USE_LOCAL_APP = process.env.BOB_APP_LOCAL === "1";
 const ALLOW_ORIGINS = process.env.BOB_CDP_ALLOW_ORIGINS || "*";
 const HEADLESS = process.env.BROWSER_HEADLESS === "1";
 const EXTRA_ARGS = process.env.BROWSER_CHROME_ARGS || "";
@@ -95,10 +99,16 @@ async function version() {
   }
 }
 
-/** The app to open: BOB_APP_URL, or the first candidate that answers. */
+/**
+ * The app to open: BOB_APP_URL when set, the local admin with BOB_APP_LOCAL=1,
+ * or the hosted deployment by default. Only the local admin is probed — the
+ * hosted app is opened as-is so a slow or briefly unavailable server does not
+ * stop Chrome from starting.
+ */
 async function findApp() {
-  const candidates = process.env.BOB_APP_URL ? [process.env.BOB_APP_URL] : APP_CANDIDATES;
-  for (const base of candidates) {
+  if (process.env.BOB_APP_URL) return process.env.BOB_APP_URL;
+  if (!USE_LOCAL_APP) return HOSTED_APP_URL;
+  for (const base of LOCAL_APP_CANDIDATES) {
     try {
       const res = await fetch(base, { signal: AbortSignal.timeout(1200) });
       if (res.ok) return base;
@@ -213,8 +223,9 @@ function openUrl(url) {
 const app = await findApp();
 if (!app) {
   console.error(
-    `no bob app answered at ${APP_CANDIDATES.join(", ")} — start the admin ` +
-      "(`npm run dev`), the standalone server (`npm run web:standalone`), or set BOB_APP_URL.",
+    `BOB_APP_LOCAL=1 but no local bob app answered at ${LOCAL_APP_CANDIDATES.join(", ")} — ` +
+      "start the admin (`npm run dev`), the standalone server (`npm run web:standalone`), " +
+      "or set BOB_APP_URL.",
   );
   process.exit(1);
 }
