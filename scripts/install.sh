@@ -137,10 +137,14 @@ if [ ! -f "$HOME_DIR/models/__MODEL_DIR_NAME__/tokens.txt" ]; then
   tar -xjf "$STAGE/__MODEL_TARBALL_NAME__" -C "$HOME_DIR/models"
 fi
 
-# ---------- workspace patterns ----------
+# ---------- workspace patterns (legacy) ----------
+# The browser tab owns the workspace (OPFS); this folder is kept only for the
+# retired LAN git-daemon sync below.
 mkdir -p "$WORKSPACE/patterns"
 
-# ---------- workspace sync ----------
+# ---------- workspace sync (legacy LAN git-daemon) ----------
+# Retired for the app (pair tabs/profiles instead). Left here for hand-managed
+# phone installs that still pull from the desktop's bare repo.
 # Add desktop as a git remote for bidirectional workspace sync.
 # The desktop runs git-daemon on port 9418 serving a bare repo.
 DESKTOP_IP="__DESKTOP_IP__"

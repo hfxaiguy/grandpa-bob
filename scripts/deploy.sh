@@ -93,8 +93,6 @@ OLLAMA_API_KEY=replace-me
 STT_BACKEND=parakeet
 SHERPA_URL=ws://127.0.0.1:8178
 STT_LANGUAGE=en
-WORKSPACE_DIR=/data/data/com.termux/files/home/grandma-workspace
-COMMS_DB_PATH=/data/data/com.termux/files/home/grandma-workspace/comms.db
 ENV
 adb push /tmp/gbot-env "$STAGE_DIR/.env.template" >/dev/null
 rm /tmp/gbot-env

@@ -1,5 +1,5 @@
 [Unit]
-Description=Git daemon for grandma-workspace sync
+Description=Git daemon for legacy grandma-workspace sync
 After=network-online.target
 
 [Service]

@@ -2,6 +2,35 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-06 — stop defaulting to `~/grandma-workspace`
+
+`WORKSPACE_DIR` was the pre-`.bobkat` single-workspace switch, but the project
+`.env` still set it (plus `COMMS_DATA_DIR`) to `~/grandma-workspace`. `npm run
+bob` fed that into `configureStorageBridge`, so the retired folder kept being
+created and written. Workspaces now live in the tab's OPFS, with paired desktop
+mirrors under `~/.bobkat/folders/<profile>`; the bridge's own root is only a
+fallback for the standalone debug CLI.
+
+- **`.env.example`**: dropped `WORKSPACE_DIR` and the `~/grandma-workspace`
+  `SQLITE_LOCK_PATH` example; documents OPFS + profile mirrors instead.
+- **`package.json`**, **`web/package.json`**: `storage-server` no longer injects
+  `WORKSPACE_DIR=~/grandma-workspace`.
+- **`scripts/spec-lint.ts`**, **`scripts/browser-tools-test.ts`**: default to the
+  seed profile (`$WORKSPACE_DIR` still overrides).
+- **`scripts/deploy.sh`**: the phone `.env` template no longer sets
+  `WORKSPACE_DIR` / `COMMS_DB_PATH`.
+- **`scripts/install.sh`**, **`systemd/git-daemon.service`**: the LAN git-daemon
+  sync is marked legacy.
+- **`README.md`**: workspace, git-integration and safety sections point at OPFS
+  and `~/.bobkat/folders/<profile>`.
+
+Existing installs keep working (an explicit `WORKSPACE_DIR` is still honoured).
+To stop the old folder being touched, delete those two lines from the active
+`.env` (`~/.bobkat/.env` or the project file).
+
+Tests: `npm run typecheck`; `npm run test:spec-lint`; `npm run
+test:standalone`; `npm run test:browser-tools`; `npm run lint:specs`.
+
 ## 2026-11-06 — the Chrome launcher opens the hosted app by default
 
 `npm run chrome` used to require the local admin and refused to proceed unless

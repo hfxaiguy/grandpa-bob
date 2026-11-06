@@ -7,17 +7,18 @@
  * tool names/schemas/descriptions come from the app, and calls run over a
  * browser-level session — with a fake WebSocket.
  *
- * Needs a workspace containing the browser app:
- *   WORKSPACE_DIR=~/grandma-workspace npm run test:browser-tools
+ * Needs a workspace containing the browser app (defaults to the seed profile;
+ * override with WORKSPACE_DIR):
+ *   WORKSPACE_DIR=/path/to/workspace npm run test:browser-tools
  *
  * Run: `npm run test:browser-tools`.
  */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { browserCdpTools } from "../web/src/agent/browser-cdp.ts";
 import { createNodePlatform } from "../src/platform/node.js";
+import { statePath } from "../src/state-dir.js";
 
 type Listener = (ev: unknown) => void;
 interface SentMessage {
@@ -80,7 +81,7 @@ class FakeSocket {
 }
 
 const workspace =
-  process.env.WORKSPACE_DIR ?? path.join(os.homedir(), "grandma-workspace");
+  process.env.WORKSPACE_DIR ?? statePath("folders", "seed");
 const verbsPath = path.join(workspace, "app/browser/src/verbs.js");
 
 /** Poll until `check` passes (cleanup is fired and forgotten). */

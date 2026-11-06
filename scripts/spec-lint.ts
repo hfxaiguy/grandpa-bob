@@ -9,16 +9,16 @@
  * a `HUMAN:` pause (or the legacy `>>`) with no immediately-preceding machine
  * note has nothing to be routed against.
  *
- *   npm run lint:specs                 # $WORKSPACE_DIR or ~/grandma-workspace
+ *   npm run lint:specs                 # $WORKSPACE_DIR or ~/.bobkat/folders/seed
  *   npm run lint:specs -- /path/to/ws  # explicit workspace
  *
  * This is workspace tooling, not runtime code: it lives here rather than in
  * the workspace's `lib/` so it is not packed into the browser seed.
  */
 import { readdir, readFile } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { statePath } from "../src/state-dir.js";
 
 export interface SpecViolation {
   line: number;
@@ -66,9 +66,9 @@ export function lintSpec(text: string): SpecViolation[] {
   return violations;
 }
 
-/** Default workspace: the same override the bot uses, else ~/grandma-workspace. */
+/** Default workspace: `$WORKSPACE_DIR`, else the seed profile under `~/.bobkat`. */
 export function defaultWorkspace(): string {
-  return process.env.WORKSPACE_DIR || path.join(os.homedir(), "grandma-workspace");
+  return process.env.WORKSPACE_DIR || statePath("folders", "seed");
 }
 
 /** The tree's notation block: leading `//` comments from the `##` header down. */

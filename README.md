@@ -189,9 +189,9 @@ The pattern file is a single `.mjs` file that contains the full tree
 (root + branches + helpers). No imports needed — the Tree builder API
 is passed as function arguments.
 
-The **workspace** (agent sandbox + git repo) lives OUTSIDE the project by default
-(`~/grandma-workspace`, see `WORKSPACE_DIR`) so its git history is fully
-independent of the harness.
+The **workspace** lives in the browser tab (OPFS). A paired desktop/server
+profile mirrors a copy into `~/.bobkat/folders/<profile>`, so the workspace's
+git history stays independent of the harness.
 
 **Trees are also tools.** Every workspace tree — `patterns/<name>.prod.mjs` or
 `app/<name>/tree.prod.mjs` — is registered as a callable *tree tool*. A pattern
@@ -512,8 +512,8 @@ telegram** posts the transcript to the linked chat and pins it.
 
 ## Git integration (summary)
 
-`WORKSPACE_DIR` is a git repository (auto-initialized on first start), kept outside
-the project directory so its history is completely separate from the harness's own.
+Each profile's workspace is a git repository (auto-initialized on first start),
+kept in the tab's OPFS so its history is completely separate from the harness's own.
 Every `write_file` / `edit_file` / `copy_file` / `delete_file` is immediately committed.
 See the FAQ below for exactly how that works.
 
@@ -569,8 +569,9 @@ result and can tell you.
 *global* git config — so no repo-local identity is set and commits are yours. To
 distinguish bot commits:
 ```sh
-git -C ~/grandma-workspace config user.name grandpa-bob-bot
-git -C ~/grandma-workspace config user.email grandpa-bob-bot@localhost
+# the seed profile's desktop mirror (bot commits themselves live in OPFS)
+git -C ~/.bobkat/folders/seed config user.name grandpa-bob-bot
+git -C ~/.bobkat/folders/seed config user.email grandpa-bob-bot@localhost
 ```
 
 **What happens if I delete the workspace directory?**
@@ -852,7 +853,7 @@ a registered tree (e.g. a cheap-model condenser).
 ## Safety notes
 
 - Only Telegram user IDs in `ALLOWED_USER_IDS` can talk to the bot; others are ignored.
-- File tools cannot escape `WORKSPACE_DIR` (`..` and absolute paths are rejected).
+- File tools cannot escape the active profile's workspace root (`..` and absolute paths are rejected).
 - `run_command` uses no shell (no pipes/redirection), only runs allowlisted
   binaries, and refuses destructive/remote git subcommands.
 - `sql_query` is read-only (SELECT/WITH/EXPLAIN/PRAGMA, engine-opened read-only);
