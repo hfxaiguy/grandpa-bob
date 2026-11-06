@@ -241,14 +241,16 @@ export function App() {
               <div class="err-title">{err().title}</div>
               <div class="err-text">{err().text}</div>
             </div>
-            <Show when={canRetry()}>
-              <button class="err-retry" onClick={() => void retryLast()}>
-                ↻ retry
+            <div class="err-actions">
+              <Show when={canRetry()}>
+                <button class="err-retry" onClick={() => void retryLast()}>
+                  ↻ retry
+                </button>
+              </Show>
+              <button class="err-dismiss" onClick={() => dismissError()}>
+                dismiss
               </button>
-            </Show>
-            <button class="err-dismiss" onClick={() => dismissError()}>
-              dismiss
-            </button>
+            </div>
           </div>
         )}
       </Show>

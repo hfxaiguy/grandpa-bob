@@ -966,6 +966,7 @@ body.dragging-tile { user-select: none !important; }
 .err-text { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .err-retry { background: var(--err); border-color: var(--err); color: #1a0d0f; font-weight: 700; }
 .err-dismiss { background: transparent; border-color: var(--err); color: #ffd7d7; }
+.err-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 @keyframes err-pulse {
   0%, 100% { box-shadow: 0 6px 24px rgba(248, 113, 113, 0.25); }
   50% { box-shadow: 0 6px 34px rgba(248, 113, 113, 0.65); }
@@ -1188,6 +1189,19 @@ body.dragging-tile { user-select: none !important; }
   .toolbar button, .toolbar .link-btn { padding: 6px 10px; }
   /* Build/version diagnostics move into the session drawer on a phone. */
   .build-stamp { display: none; }
+  /* The failure banner wraps on a phone: keep the whole message readable and
+     drop the actions under the text instead of ellipsizing it. */
+  .error-banner {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    column-gap: 10px;
+    row-gap: 8px;
+  }
+  .err-icon { grid-column: 1; grid-row: 1; font-size: 24px; }
+  .err-body { grid-column: 2; grid-row: 1; }
+  .err-actions { grid-column: 2; grid-row: 2; justify-self: start; }
+  .err-text { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
   /* The folded settings list is the phone's primary control strip: give each
      row a comfortable touch target. */
   .menu .menu-row { padding: 8px 10px; }
