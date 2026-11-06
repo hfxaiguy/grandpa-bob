@@ -34,8 +34,9 @@ Rime keys. The rest needs a real key or a running model:
 - [ ] **Keys round-trip** — save an AssemblyAI key, switch to Rime, save a
       second key, switch back: both must still be present (`stt.keys` /
       `tts.keys`).
-- [ ] **Auto-speak + mobile** — enable auto-speak on the desktop; on a phone,
-      confirm the first play needs a press (autoplay policy) and ⏹ stops it.
+- [ ] **Auto-speak + mobile** — enable auto-speak on the desktop (try both
+      **Trunk only** and **All apps**); on a phone, confirm the first play needs
+      a press (autoplay policy) and ⏹ stops it.
 
 Expected on a machine with whisper running but nothing else configured:
 `verify:speech` reports Whisper ✓ and the rest as skips (not failures).

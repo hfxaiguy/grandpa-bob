@@ -1,25 +1,19 @@
-// The settings page — the exact Node admin HTML, rendered verbatim by both the
-// Node server and the browser target, so they share one UI. The chat surface is
-// the tiled SolidJS app in `ui/` (served at `/`), not a server-rendered page.
+// The in-page admin views. Settings covers browser-global configuration
+// (credentials, speech, models, admin status). Files covers the active
+// workspace (file browser, tree patterns, app secrets, git sync). Both are
+// rendered by the browser target and hosted in a same-origin iframe.
 
 export interface UiConfig {
   port: number;
 }
 
-export function buildSettingsHtml(config: UiConfig): string {
-  const PORT = config.port;
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>grandpa-bob settings</title>
-<style>
+const PAGE_CSS = `
   :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --accent:#3b82f6; --green:#10b981; --red:#ef4444; }
   * { box-sizing: border-box; }
   body { font: 14px/1.5 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); margin: 0; padding: 16px; max-width: 900px; margin: 0 auto; }
   .topnav { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
-  .topnav a { color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 600; margin-left: auto; }
+  .topnav a { color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 600; }
+  .topnav .nav { display: flex; gap: 12px; margin-left: auto; }
   h1 { font-size: 20px; margin: 0; }
   h2 { font-size: 16px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
   .card { background: var(--card); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
@@ -49,249 +43,20 @@ export function buildSettingsHtml(config: UiConfig): string {
   a { color: var(--accent); }
   small { color: var(--muted); }
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .radio-row { display: flex; gap: 18px; flex-wrap: wrap; }
+  label.radio { display: inline-flex; gap: 6px; align-items: center; margin: 4px 0 0; color: var(--fg); font-size: 13px; cursor: pointer; }
+  label.radio input { width: auto; margin: 0; }
   @media (max-width: 600px) { .grid-2 { grid-template-columns: 1fr; } }
-</style>
-</head>
-<body>
-<div class="topnav">
-  <h1>grandpa-bob settings</h1>
-  <a href="/">&larr; chat</a>
-</div>
+`;
 
-<div class="card">
-  <div class="row">
-    <span id="service-dots" class="row" style="gap:14px" data-srv></span>
-    <span class="status" id="server-mode"><span class="dot on"></span> admin (this)</span>
-    <span style="margin-left:auto"><small id="uptime"></small></span>
-  </div>
-  <div class="row" style="margin-top:8px">
-    <label class="status" data-srv title="The webui automatically continues whichever conversation is live on Telegram. Telegram never picks up web chats.">
-      <input type="checkbox" id="follow-chk" style="margin:0 6px 0 0"> webui follows telegram
-    </label>
-    <small style="color:var(--muted)">one-way: telegram never follows the webui</small>
-  </div>
-  <div id="server-note" style="display:none; margin-top:8px; color:#f59e0b; font-size:12px"></div>
-  <div class="actions">
-    <button id="restart-btn" data-srv onclick="restartBot()">Restart bot</button>
-    <button class="secondary" onclick="refreshAll()">Refresh</button>
-  </div>
-</div>
-
-<div class="card">
-  <h2 style="margin-top:0">App secrets</h2>
-  <p style="margin:4px 0"><small>Files an app requested in <code>app/&lt;name&gt;/secrets.json</code>. Uploaded bytes live in <code>logs/secrets.db</code> &mdash; local, gitignored, invisible to the file browser and to the bot's file tools. An app reads only its own secrets.</small></p>
-  <div id="secrets-list">(loading...)</div>
-  <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-    <input id="secrets-import-file" type="file" accept=".db,application/octet-stream" style="max-width:260px">
-    <button id="secrets-import-btn">import secrets.db</button>
-    <small style="color:var(--muted)">load a desktop <code>secrets.db</code> (its <code>app_secrets</code> rows) into this platform</small>
-  </div>
-</div>
-
-<div class="card">
-  <h2 style="margin-top:0">Workspace sync</h2>
-  <p style="margin:4px 0"><small>Push/pull the workspace to/from the desktop's git-daemon (port 9418). The bot auto-commits file changes; use these to sync with the desktop.</small></p>
-  <label>Local branch → Remote branch</label>
-  <div class="row">
-    <input id="sync-local" type="text" value="main" placeholder="main" style="width:120px">
-    <span style="color:var(--muted)">→</span>
-    <input id="sync-remote" type="text" value="main" placeholder="main" style="width:120px">
-  </div>
-  <div id="sync-status" style="margin:8px 0; font:12px ui-monospace,monospace; color:var(--muted)">(not synced yet)</div>
-  <div class="actions">
-    <button onclick="gitCommit()">Commit workspace</button>
-    <button onclick="gitPull()">Pull from desktop</button>
-    <button onclick="gitPush()">Push to desktop</button>
-  </div>
-</div>
-
-<div class="card">
-  <h2 style="margin-top:0">Credentials &amp; .env</h2>
-  <form id="envForm" onsubmit="saveEnv(event)">
-    <div class="grid-2">
-      <div>
-        <label>Telegram bot token <span id="cur-token" style="float:right"></span></label>
-        <input id="f-token" type="password" placeholder="123456:ABC-DEF...">
-      </div>
-      <div>
-        <label>Your Telegram user ID <span id="cur-uid" style="float:right"></span></label>
-        <input id="f-uid" type="text" inputmode="numeric" placeholder="123456789">
-      </div>
-    </div>
-    <label>Hugging Face API key <span id="cur-hf" style="float:right"></span></label>
-    <input id="f-hf" type="password" placeholder="hf_...">
-    <label>Ollama API key <span id="cur-ollama" style="float:right"></span></label>
-    <input id="f-ollama" type="password" placeholder="ollama-api-key...">
-    <label>Neuralwatt API key <span id="cur-neuralwatt" style="float:right"></span></label>
-    <input id="f-neuralwatt" type="password" placeholder="sk-...">
-    <label>Exa search API key <span id="cur-exo" style="float:right"></span></label>
-    <input id="f-exo" type="password" placeholder="exa-... (used by exa_search)">
-    <small>Shortcuts for the most common keys — every other key in <code>.env</code> is editable below.</small>
-    <div class="actions">
-      <button type="submit">Save credentials</button>
-    </div>
-  </form>
-  <div style="margin:16px 0; border-top:1px solid var(--border,#334155)"></div>
-  <h3 style="margin:0 0 8px; font-size:14px">All .env keys</h3>
-  <p style="margin:0 0 8px"><small>Values visible. Edit a value, rename a key, add or remove keys. Changes apply after a bot restart.</small></p>
-  <div id="env-keys">(loading...)</div>
-  <div class="actions">
-    <button class="secondary" onclick="addEnvKey()">+ Add key</button>
-    <button onclick="saveAllEnv()">Save all keys</button>
-  </div>
-</div>
-
-<div class="card">
-  <h2 style="margin-top:0">Speech</h2>
-  <p style="margin:4px 0"><small>Which transcriber the mic button uses. Local providers run on the paired desktop. AssemblyAI is called straight from this browser with the key below &mdash; the key stays in this browser and is never sent to the desktop or to seed/relay transfers.</small></p>
-  <div class="grid-2">
-    <div>
-      <label>STT provider</label>
-      <select id="speech-provider">
-        <option value="">Desktop default (.env)</option>
-        <option value="whisper">Whisper (local server)</option>
-        <option value="sherpa">Sherpa (local server)</option>
-        <option value="parakeet">Parakeet (local server)</option>
-        <option value="assemblyai">AssemblyAI (cloud, in-tab)</option>
-        <option value="rime">Rime STT (cloud, via desktop)</option>
-      </select>
-    </div>
-    <div>
-      <label>STT language</label>
-      <input id="speech-language" type="text" placeholder="blank = provider default (rime: en/es)">
-    </div>
-  </div>
-  <label>Cloud STT key <span id="cur-speech-key" style="float:right"></span></label>
-  <input id="speech-key" type="password" placeholder="paste the key for the chosen cloud provider (blank keeps the saved one)">
-  <label style="display:flex; gap:8px; align-items:center; margin-top:12px">
-    <input id="speech-tts-enabled" type="checkbox" style="width:auto">
-    Enable text-to-speech (🔊 buttons and auto-speak)
-  </label>
-  <div class="grid-2" style="margin-top:8px">
-    <div>
-      <label>TTS provider</label>
-      <select id="speech-tts-provider">
-        <option value="">Desktop default (.env)</option>
-        <option value="kitten">KittenTTS (local server)</option>
-        <option value="rime">Rime Mist v3 (cloud, via desktop)</option>
-      </select>
-    </div>
-    <div>
-      <label>TTS voice</label>
-      <input id="speech-tts-voice" type="text" list="speech-tts-voices" placeholder="Bella (kitten) / cove (rime)">
-      <datalist id="speech-tts-voices">
-        <option value="Bella"></option><option value="Jasper"></option>
-        <option value="Luna"></option><option value="Bruno"></option>
-        <option value="Rosie"></option><option value="Hugo"></option>
-        <option value="Kiki"></option><option value="Leo"></option>
-      </datalist>
-    </div>
-  </div>
-  <label style="display:flex; gap:8px; align-items:center; margin-top:8px">
-    <input id="speech-tts-auto" type="checkbox" style="width:auto">
-    Speak new replies automatically
-  </label>
-  <label>Cloud TTS key <span id="cur-tts-key" style="float:right"></span></label>
-  <input id="speech-tts-key" type="password" placeholder="Rime key (blank keeps the saved one)">
-  <div class="actions">
-    <button onclick="saveSpeech()">Save speech settings</button>
-    <button class="secondary" onclick="testSpeech()">Test</button>
-    <span id="speech-status"></span>
-  </div>
-</div>
-
-<div class="card">
-  <h2 style="margin-top:0">Models</h2>
-  <p style="margin:4px 0"><small>Named model slots the trees reference (<code>Model("strong")</code>, <code>Model("cheap")</code>). Each slot points at any OpenAI-compatible endpoint (Ollama local/cloud, OpenAI, Neuralwatt, OpenRouter, llama.cpp&hellip;) or native Ollama. Pick a provider preset, choose a model, then <b>Test</b>. Saving applies immediately &mdash; no restart. Keys may use <code>\${ENV}</code> to reference the credentials above, or be pasted literally.</small></p>
-  <div id="model-slots">(loading...)</div>
-  <datalist id="models-datalist"></datalist>
-  <div class="actions">
-    <button class="secondary" onclick="addModelSlot()">+ Add model</button>
-    <button onclick="saveModels()">Save models</button>
-    <button class="secondary" onclick="claimFreeKey()" title="Claim BobSwap's free temporary key and point the v4/v4.1 slots at its proxy">Claim free key</button>
-    <button class="secondary" onclick="toggleRawModels()">Raw JSON</button>
-    <span id="models-status"></span>
-  </div>
-  <div id="models-raw-wrap" style="display:none; margin-top:10px">
-    <textarea id="models-json" rows="9" style="width:100%;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace" placeholder='{"strong":{"baseURL":"https://api.neuralwatt.com/v1","apiKey":"\${NEURALWATT_API_KEY}","model":"glm-5.3"}}'></textarea>
-    <p style="margin:4px 0"><small>Raw registry JSON &mdash; the exact file that is saved. Edits here are honored on save; otherwise the form above builds it.</small></p>
-  </div>
-</div>
-
-<div class="card">
-  <h2 style="margin-top:0">Logs</h2>
-  <div class="row" style="margin-bottom:8px">
-    <button class="secondary log-btn" data-srv onclick="loadLog('bot')">bot.log</button>
-    <button class="secondary log-btn" data-srv onclick="loadLog('sherpa')">sherpa.log</button>
-    <span style="margin-left:auto"><small>last 60 lines</small></span>
-  </div>
-  <pre id="log">(click a log button)</pre>
-</div>
-
-<div class="card">
-  <h2 style="margin-top:0">Tree patterns</h2>
-  <p style="margin:4px 0"><small>grandma-kat trees (<code>patterns/&lt;name&gt;.prod.mjs</code>) in <code>workspace/patterns/</code>. The agent re-reads the active tree each turn — edit it to change behavior without restarting. The agent can also modify its own patterns using file tools. <b>Which one runs</b> is selected from the dropdown on the <a href="/" style="color:var(--accent)">chat page</a> (persisted as <code>TREE_PATTERN</code> in <code>.env</code>).</small></p>
-  <div id="pattern-list">(loading...)</div>
-  <div class="actions">
-    <button class="secondary" onclick="refreshPatterns()">Refresh</button>
-    <button onclick="showNewPattern()">New pattern</button>
-  </div>
-  <div id="pattern-editor" style="display:none; margin-top:12px">
-    <label>Pattern name (no spaces, e.g. "my-pattern")</label>
-    <input id="p-name" type="text" placeholder="my-pattern">
-    <label>Pattern code (.mjs — export default async function)</label>
-    <textarea id="p-code" style="width:100%; min-height:200px; background:#0b1224; color:#cbd5e1; border:1px solid #334155; border-radius:6px; padding:12px; font:12px ui-monospace,monospace; resize:vertical"></textarea>
-    <div class="actions">
-      <button onclick="savePattern()">Save pattern</button>
-      <button class="secondary" onclick="hideNewPattern()">Cancel</button>
-    </div>
-  </div>
-</div>
-
-<div class="card">
-  <h2 style="margin-top:0">Files</h2>
-  <p style="margin:4px 0"><small>Browse, upload, and download files in the workspace.</small></p>
-  <div id="file-nav" class="row" style="margin-bottom:8px; flex-wrap:wrap">
-    <button class="secondary" onclick="filesBrowse()">↻ Refresh</button>
-    <span id="file-path" style="margin-left:auto; font-size:12px; color:var(--muted)">/</span>
-  </div>
-  <div id="file-list" style="max-height:300px; overflow:auto; border:1px solid #334155; border-radius:6px; padding:8px; background:#0b1224; font:12px ui-monospace,monospace">(loading...)</div>
-  <div class="actions" style="margin-top:8px">
-    <input id="file-upload-input" type="file" style="display:none" onchange="uploadFile(this)" multiple />
-    <button onclick="document.getElementById('file-upload-input').click()">Upload file</button>
-  </div>
-</div>
-
-<div class="card">
-  <h2 style="margin-top:0">Access</h2>
-  <p style="margin:4px 0"><small>This UI runs on the phone at <code>http://0.0.0.0:${PORT}</code>.</small></p>
-  <p style="margin:4px 0"><small>If you're on the same Wi-Fi, open <code>http://&lt;phone-ip&gt;:${PORT}</code> from your laptop.</small></p>
-  <p style="margin:4px 0"><small>To expose to the internet, run an SSH reverse tunnel or use Termux's <code>pkg install cloudflared</code>.</small></p>
-</div>
-
-<div id="toast" class="toast"></div>
-
-<script>
+const COMMON_SCRIPT = `
 const $ = (id) => document.getElementById(id);
-let startedAt = Date.now();
-// Wall-clock start of the bot process, derived from server-reported uptime.
-// Null until the first status response; falls back to the page clock.
-let botUptimeBase = null;
-let envRows = []; // { key, orig, value, removed } — orig = key as loaded from .env
-let currentDir = "";
 
 function toast(msg, isErr, ms) {
   const t = $("toast");
   t.textContent = msg;
   t.className = "toast show" + (isErr ? " err" : "");
   setTimeout(() => t.className = "toast" + (isErr ? " err" : ""), ms || (isErr ? 6000 : 3500));
-}
-
-function syncResult(r, done, failed) {
-  const ok = r.ok !== false;
-  $("sync-status").textContent = (ok ? "✓ " + done : "✗ " + failed) + (r.output ? "\\n" + r.output : "");
-  $("sync-status").style.color = ok ? "var(--green)" : "var(--red)";
-  toast(ok ? done : failed, !ok, ok ? 3500 : 8000);
 }
 
 async function api(path, opts) {
@@ -307,7 +72,9 @@ async function api(path, opts) {
 function checkUiVersion(v) {
   if (v && window.__UI_VERSION__ && v !== window.__UI_VERSION__) location.reload();
 }
+`;
 
+const SETTINGS_SCRIPT = `
 // A little server glyph on every control that only works when this page is
 // talking to the admin (BOB_WEB=1): service health, Telegram follow, restart,
 // bot logs. Disabled controls keep the glyph — it is the reason they are off.
@@ -328,10 +95,10 @@ function markServerFeatures() {
   });
 }
 
-// The settings page runs in two hosts: the admin server (real .env, secrets,
-// logs, restart) and the browser target, where the page is shimmed onto the
-// in-browser backend. Ask which host this is, once, and keep server-only
-// controls visible but disabled when no admin is behind the page.
+// Settings runs in two hosts: the admin server (real .env, logs, restart) and
+// the browser target, where the page is shimmed onto the in-browser backend.
+// Ask which host this is, once, and keep server-only controls visible but
+// disabled when no admin is behind the page.
 let serverAdmin = true;
 async function loadCapabilities() {
   try {
@@ -358,6 +125,8 @@ async function loadCapabilities() {
   if (follow) off(follow);
   document.querySelectorAll(".log-btn").forEach(off);
 }
+
+let envRows = []; // { key, orig, value, removed } — orig = key as loaded from .env
 
 async function refreshStatus() {
   const s = await api("/api/status");
@@ -495,210 +264,6 @@ async function saveAllEnv() {
     renderEnvKeys();
     await refreshStatus();
   } catch {}
-}
-
-// ---- app secrets -----------------------------------------------------
-// A dotted field key, the shape the vars endpoint accepts ("auth.token").
-function validFieldKey(key) {
-  return /^[A-Za-z0-9_.-]+$/.test(key) && !key.startsWith(".") && !key.endsWith(".") && !key.includes("..");
-}
-
-async function loadSecrets() {
-  const box = $("secrets-list");
-  if (!box) return;
-  try {
-    const d = await api("/api/secrets");
-    box.innerHTML = "";
-    if (!d.secrets || !d.secrets.length) {
-      box.textContent = "(no app has requested secret files yet)";
-      return;
-    }
-    for (const s of d.secrets) {
-      const row = document.createElement("div");
-      row.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--border,#334155)";
-      const info = document.createElement("span");
-      info.style.cssText = "flex:1 1 300px;font-size:13px";
-      const head = document.createElement("span");
-      const appB = document.createElement("b");
-      appB.textContent = s.app;
-      head.append(appB, document.createTextNode(" / " + s.name + " "));
-      const desc = document.createElement("small");
-      desc.style.color = "var(--muted)";
-      desc.textContent = s.description || "";
-      const br = document.createElement("br");
-      const status = document.createElement("small");
-      status.style.color = s.present ? "var(--green,#10b981)" : "var(--red,#ef4444)";
-      const isJson = String(s.contentType || "").indexOf("json") >= 0 || (s.fields && Object.keys(s.fields).length > 0);
-      status.textContent = s.present
-        ? "\u2713 " + new Date(s.updatedAt).toLocaleString() + " \u00b7 " + s.size + " B"
-        : (isJson ? "missing \u2014 enter the values below" : "missing \u2014 upload it below");
-      info.append(head, desc, br, status);
-
-      const pick = document.createElement("input");
-      pick.type = "file";
-      pick.style.maxWidth = "220px";
-      const up = document.createElement("button");
-      up.textContent = s.present ? "replace" : "upload";
-      up.onclick = async () => {
-        if (!pick.files || !pick.files[0]) { toast("pick a file first", true); return; }
-        const fd = new FormData();
-        fd.append("file", pick.files[0]);
-        try {
-          const r = await fetch("/api/secrets?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), { method: "POST", body: fd });
-          const d2 = await r.json().catch(() => ({}));
-          if (!r.ok) { toast(d2.error || "upload failed", true); return; }
-          toast("stored " + s.app + "/" + s.name);
-          loadSecrets();
-        } catch (e) { toast("upload failed: " + e.message, true); }
-      };
-
-      if (isJson) {
-        // Key/value editor for JSON secrets. Each row saves just its own field
-        // (dotted keys expand to nested: auth.token -> { auth: { token } });
-        // the endpoint merges, so the fields you did not touch stay put.
-        const editor = document.createElement("div");
-        editor.style.cssText = "flex:1 1 100%;display:flex;flex-direction:column;gap:6px";
-        const rowsBox = document.createElement("div");
-        rowsBox.style.cssText = "display:flex;flex-direction:column;gap:4px";
-        const saveField = async (key, value) => {
-          if (!key) { toast("enter a key first", true); return; }
-          if (!validFieldKey(key)) { toast("invalid key: " + key, true); return; }
-          if (value === "") { toast("enter a value (delete the secret to remove it)", true); return; }
-          try {
-            const r = await fetch("/api/secrets/vars?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ key, value }),
-            });
-            const d2 = await r.json().catch(() => ({}));
-            if (!r.ok) { toast(d2.error || "save failed", true); return; }
-            toast("saved " + key + " for " + s.name);
-            status.textContent = "\u2713 saved";
-            status.style.color = "var(--green,#10b981)";
-          } catch (e) { toast("save failed: " + e.message, true); }
-        };
-        const addRow = (key, hint) => {
-          const r = document.createElement("div");
-          r.style.cssText = "display:flex;gap:6px;align-items:center";
-          const k = document.createElement("input");
-          k.placeholder = "key (e.g. auth.token)";
-          k.value = key || "";
-          k.style.flex = "0 0 200px";
-          const v = document.createElement("input");
-          v.placeholder = hint || "value";
-          v.style.flex = "1 1 auto";
-          const sv = document.createElement("button");
-          sv.className = "secondary";
-          sv.textContent = "save";
-          sv.title = "save just this field; the others are left alone";
-          sv.onclick = () => saveField(k.value.trim(), v.value);
-          v.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveField(k.value.trim(), v.value); } });
-          const rm = document.createElement("button");
-          rm.className = "secondary";
-          rm.textContent = "\u00d7";
-          rm.onclick = () => r.remove();
-          r.append(k, v, sv, rm);
-          rowsBox.appendChild(r);
-        };
-        const fieldKeys = s.fields ? Object.keys(s.fields) : [];
-        if (fieldKeys.length) fieldKeys.forEach((k) => addRow(k, s.fields[k] || ""));
-        else addRow("", "");
-        const actions = document.createElement("div");
-        actions.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;align-items:center";
-        const add = document.createElement("button");
-        add.className = "secondary";
-        add.textContent = "+ add var";
-        add.onclick = () => addRow("", "");
-        const save = document.createElement("button");
-        save.textContent = "Save all";
-        save.title = "save every filled field; the fields you leave blank are not touched";
-        save.onclick = async () => {
-          const set = {};
-          let bad = "";
-          rowsBox.querySelectorAll("div").forEach((r) => {
-            const inputs = r.querySelectorAll("input");
-            const key = inputs[0].value.trim();
-            const val = inputs[1].value;
-            if (!key) return;
-            if (!validFieldKey(key)) { bad = key; return; }
-            if (val === "") return;
-            set[key] = val;
-          });
-          if (bad) { toast("invalid key: " + bad, true); return; }
-          if (!Object.keys(set).length) { toast("enter at least one value", true); return; }
-          try {
-            const r = await fetch("/api/secrets/vars?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ set }),
-            });
-            const d2 = await r.json().catch(() => ({}));
-            if (!r.ok) { toast(d2.error || "save failed", true); return; }
-            toast("saved vars for " + s.app + "/" + s.name);
-            loadSecrets();
-          } catch (e) { toast("save failed: " + e.message, true); }
-        };
-        actions.append(add, save);
-        editor.append(rowsBox, actions);
-        const fallback = document.createElement("details");
-        const sum = document.createElement("summary");
-        sum.textContent = "or upload a file instead";
-        sum.style.cssText = "cursor:pointer;font-size:12px;color:var(--muted)";
-        fallback.append(sum, pick, up);
-        row.append(info, editor, fallback);
-      } else {
-        row.append(info, pick, up);
-      }
-      if (s.present) {
-        const del = document.createElement("button");
-        del.className = "secondary";
-        del.textContent = "delete";
-        del.onclick = async () => {
-          if (!confirm("Delete stored secret " + s.app + "/" + s.name + "?")) return;
-          try {
-            await api("/api/secrets?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), { method: "DELETE" });
-            toast("deleted " + s.name);
-            loadSecrets();
-          } catch { /* api() toasted */ }
-        };
-        row.appendChild(del);
-      }
-      box.appendChild(row);
-    }
-  } catch {
-    box.textContent = "(failed to load secrets)";
-  }
-}
-
-// Import a desktop secrets.db (its app_secrets table) into this platform's
-// store — the browser keeps secrets in localStorage, so it can't read the
-// file directly; the backend opens it and copies the rows.
-const secretsImportFile = $("secrets-import-file");
-const secretsImportBtn = $("secrets-import-btn");
-if (secretsImportBtn && secretsImportFile) {
-  secretsImportBtn.onclick = async () => {
-    const file = secretsImportFile.files && secretsImportFile.files[0];
-    if (!file) { toast("pick a secrets.db file first", true); return; }
-    try {
-      const buf = new Uint8Array(await file.arrayBuffer());
-      let bin = "";
-      const chunk = 0x8000;
-      for (let i = 0; i < buf.length; i += chunk) {
-        bin += String.fromCharCode.apply(null, buf.subarray(i, i + chunk));
-      }
-      const r = await fetch("/api/secrets/import", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ base64: btoa(bin) }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok || d.error || d.ok === false) { toast(d.error || "import failed", true); return; }
-      toast("imported " + (d.imported || 0) + " secret(s)");
-      loadSecrets();
-    } catch (e) {
-      toast("import failed: " + e.message, true);
-    }
-  };
 }
 
 // ---- structured model registry editor --------------------------------
@@ -987,7 +552,11 @@ function loadSpeech() {
   if ($("speech-tts-provider")) $("speech-tts-provider").value = tts.provider || "";
   if ($("speech-tts-voice")) $("speech-tts-voice").value = tts.voice || "";
   if ($("speech-tts-enabled")) $("speech-tts-enabled").checked = tts.enabled !== false;
-  if ($("speech-tts-auto")) $("speech-tts-auto").checked = tts.autoSpeak === true;
+  // true is the pre-scope spelling of "trunk only".
+  const autoScope = tts.autoSpeak === "all" ? "all" : tts.autoSpeak === "trunk" || tts.autoSpeak === true ? "trunk" : "off";
+  for (const radio of document.querySelectorAll('input[name="speech-tts-auto"]')) {
+    radio.checked = radio.value === autoScope;
+  }
   if ($("cur-tts-key")) {
     const saved = tts.provider && tts.keys && tts.keys[tts.provider];
     $("cur-tts-key").textContent = saved ? "saved" : "";
@@ -1011,7 +580,10 @@ function saveSpeech() {
     tts.voice = $("speech-tts-voice").value.trim();
     if ($("speech-tts-enabled").checked) delete tts.enabled;
     else tts.enabled = false;
-    tts.autoSpeak = $("speech-tts-auto").checked === true;
+    const autoRadio = document.querySelector('input[name="speech-tts-auto"]:checked');
+    const autoScope = autoRadio ? autoRadio.value : "off";
+    if (autoScope === "off") delete tts.autoSpeak;
+    else tts.autoSpeak = autoScope;
     const ttsKey = $("speech-tts-key").value.trim();
     if (ttsKey && tts.provider) {
       tts.keys = Object.assign({}, tts.keys || {});
@@ -1054,6 +626,267 @@ async function testSpeech() {
 async function restartBot() {  try { await api("/api/restart-bot", { method: "POST" }); toast("bot restarting..."); setTimeout(refreshStatus, 2000); } catch {}
 }
 
+async function loadLog(name) {
+  try {
+    const r = await api("/api/log?file=" + name);
+    $("log").textContent = r.content || "(empty)";
+  } catch {}
+}
+
+let startedAt = Date.now();
+// Wall-clock start of the bot process, derived from server-reported uptime.
+// Null until the first status response; falls back to the page clock.
+let botUptimeBase = null;
+
+setInterval(() => {
+  const base = botUptimeBase || startedAt;
+  const sec = Math.floor((Date.now() - base) / 1000);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  $("uptime").textContent = \`uptime: \${h ? h + "h " : ""}\${m}m \${s}s\`;
+}, 1000);
+
+setInterval(() => {
+  // Don't hammer the probes while the tab is hidden or an env edit is open.
+  if (document.hidden) return;
+  refreshStatus().catch(() => {});
+}, 10000);
+
+// Follow toggle: reflect server state, persist changes.
+async function syncFollowChk() {
+  try {
+    const d = await (await fetch("/api/session")).json();
+    $("follow-chk").checked = !!d.follow;
+  } catch { /* keep current */ }
+}
+$("follow-chk").onchange = async (e) => {
+  try {
+    await api("/api/session", { method: "POST", body: JSON.stringify({ follow: e.target.checked }) });
+    toast(e.target.checked ? "webui follows telegram from now on" : "stopped following telegram");
+  } catch {
+    e.target.checked = !e.target.checked;
+  }
+};
+syncFollowChk();
+
+markServerFeatures();
+loadCapabilities();
+refreshStatus();
+loadModels();
+loadSpeech();
+`;
+
+const FILES_SCRIPT = `
+function syncResult(r, done, failed) {
+  const ok = r.ok !== false;
+  $("sync-status").textContent = (ok ? "✓ " + done : "✗ " + failed) + (r.output ? "\\n" + r.output : "");
+  $("sync-status").style.color = ok ? "var(--green)" : "var(--red)";
+  toast(ok ? done : failed, !ok, ok ? 3500 : 8000);
+}
+
+// ---- app secrets -----------------------------------------------------
+// A dotted field key, the shape the vars endpoint accepts ("auth.token").
+function validFieldKey(key) {
+  return /^[A-Za-z0-9_.-]+$/.test(key) && !key.startsWith(".") && !key.endsWith(".") && !key.includes("..");
+}
+
+async function loadSecrets() {
+  const box = $("secrets-list");
+  if (!box) return;
+  try {
+    const d = await api("/api/secrets");
+    box.innerHTML = "";
+    if (!d.secrets || !d.secrets.length) {
+      box.textContent = "(no app has requested secret files yet)";
+      return;
+    }
+    for (const s of d.secrets) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--border,#334155)";
+      const info = document.createElement("span");
+      info.style.cssText = "flex:1 1 300px;font-size:13px";
+      const head = document.createElement("span");
+      const appB = document.createElement("b");
+      appB.textContent = s.app;
+      head.append(appB, document.createTextNode(" / " + s.name + " "));
+      const desc = document.createElement("small");
+      desc.style.color = "var(--muted)";
+      desc.textContent = s.description || "";
+      const br = document.createElement("br");
+      const status = document.createElement("small");
+      status.style.color = s.present ? "var(--green,#10b981)" : "var(--red,#ef4444)";
+      const isJson = String(s.contentType || "").indexOf("json") >= 0 || (s.fields && Object.keys(s.fields).length > 0);
+      status.textContent = s.present
+        ? "\\u2713 " + new Date(s.updatedAt).toLocaleString() + " \\u00b7 " + s.size + " B"
+        : (isJson ? "missing \\u2014 enter the values below" : "missing \\u2014 upload it below");
+      info.append(head, desc, br, status);
+
+      const pick = document.createElement("input");
+      pick.type = "file";
+      pick.style.maxWidth = "220px";
+      const up = document.createElement("button");
+      up.textContent = s.present ? "replace" : "upload";
+      up.onclick = async () => {
+        if (!pick.files || !pick.files[0]) { toast("pick a file first", true); return; }
+        const fd = new FormData();
+        fd.append("file", pick.files[0]);
+        try {
+          const r = await fetch("/api/secrets?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), { method: "POST", body: fd });
+          const d2 = await r.json().catch(() => ({}));
+          if (!r.ok) { toast(d2.error || "upload failed", true); return; }
+          toast("stored " + s.app + "/" + s.name);
+          loadSecrets();
+        } catch (e) { toast("upload failed: " + e.message, true); }
+      };
+
+      if (isJson) {
+        // Key/value editor for JSON secrets. Each row saves just its own field
+        // (dotted keys expand to nested: auth.token -> { auth: { token } });
+        // the endpoint merges, so the fields you did not touch stay put.
+        const editor = document.createElement("div");
+        editor.style.cssText = "flex:1 1 100%;display:flex;flex-direction:column;gap:6px";
+        const rowsBox = document.createElement("div");
+        rowsBox.style.cssText = "display:flex;flex-direction:column;gap:4px";
+        const saveField = async (key, value) => {
+          if (!key) { toast("enter a key first", true); return; }
+          if (!validFieldKey(key)) { toast("invalid key: " + key, true); return; }
+          if (value === "") { toast("enter a value (delete the secret to remove it)", true); return; }
+          try {
+            const r = await fetch("/api/secrets/vars?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ key, value }),
+            });
+            const d2 = await r.json().catch(() => ({}));
+            if (!r.ok) { toast(d2.error || "save failed", true); return; }
+            toast("saved " + key + " for " + s.name);
+            status.textContent = "\\u2713 saved";
+            status.style.color = "var(--green,#10b981)";
+          } catch (e) { toast("save failed: " + e.message, true); }
+        };
+        const addRow = (key, hint) => {
+          const r = document.createElement("div");
+          r.style.cssText = "display:flex;gap:6px;align-items:center";
+          const k = document.createElement("input");
+          k.placeholder = "key (e.g. auth.token)";
+          k.value = key || "";
+          k.style.flex = "0 0 200px";
+          const v = document.createElement("input");
+          v.placeholder = hint || "value";
+          v.style.flex = "1 1 auto";
+          const sv = document.createElement("button");
+          sv.className = "secondary";
+          sv.textContent = "save";
+          sv.title = "save just this field; the others are left alone";
+          sv.onclick = () => saveField(k.value.trim(), v.value);
+          v.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveField(k.value.trim(), v.value); } });
+          const rm = document.createElement("button");
+          rm.className = "secondary";
+          rm.textContent = "\\u00d7";
+          rm.onclick = () => r.remove();
+          r.append(k, v, sv, rm);
+          rowsBox.appendChild(r);
+        };
+        const fieldKeys = s.fields ? Object.keys(s.fields) : [];
+        if (fieldKeys.length) fieldKeys.forEach((k) => addRow(k, s.fields[k] || ""));
+        else addRow("", "");
+        const actions = document.createElement("div");
+        actions.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;align-items:center";
+        const add = document.createElement("button");
+        add.className = "secondary";
+        add.textContent = "+ add var";
+        add.onclick = () => addRow("", "");
+        const save = document.createElement("button");
+        save.textContent = "Save all";
+        save.title = "save every filled field; the fields you leave blank are not touched";
+        save.onclick = async () => {
+          const set = {};
+          let bad = "";
+          rowsBox.querySelectorAll("div").forEach((r) => {
+            const inputs = r.querySelectorAll("input");
+            const key = inputs[0].value.trim();
+            const val = inputs[1].value;
+            if (!key) return;
+            if (!validFieldKey(key)) { bad = key; return; }
+            if (val === "") return;
+            set[key] = val;
+          });
+          if (bad) { toast("invalid key: " + bad, true); return; }
+          if (!Object.keys(set).length) { toast("enter at least one value", true); return; }
+          try {
+            const r = await fetch("/api/secrets/vars?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ set }),
+            });
+            const d2 = await r.json().catch(() => ({}));
+            if (!r.ok) { toast(d2.error || "save failed", true); return; }
+            toast("saved vars for " + s.app + "/" + s.name);
+            loadSecrets();
+          } catch (e) { toast("save failed: " + e.message, true); }
+        };
+        actions.append(add, save);
+        editor.append(rowsBox, actions);
+        const fallback = document.createElement("details");
+        const sum = document.createElement("summary");
+        sum.textContent = "or upload a file instead";
+        sum.style.cssText = "cursor:pointer;font-size:12px;color:var(--muted)";
+        fallback.append(sum, pick, up);
+        row.append(info, editor, fallback);
+      } else {
+        row.append(info, pick, up);
+      }
+      if (s.present) {
+        const del = document.createElement("button");
+        del.className = "secondary";
+        del.textContent = "delete";
+        del.onclick = async () => {
+          if (!confirm("Delete stored secret " + s.app + "/" + s.name + "?")) return;
+          try {
+            await api("/api/secrets?app=" + encodeURIComponent(s.app) + "&name=" + encodeURIComponent(s.name), { method: "DELETE" });
+            toast("deleted " + s.name);
+            loadSecrets();
+          } catch { /* api() toasted */ }
+        };
+        row.appendChild(del);
+      }
+      box.appendChild(row);
+    }
+  } catch {
+    box.textContent = "(failed to load secrets)";
+  }
+}
+
+// Import a desktop secrets.db (its app_secrets table) into this platform's
+// store — the browser keeps secrets in localStorage, so it can't read the
+// file directly; the backend opens it and copies the rows.
+const secretsImportFile = $("secrets-import-file");
+const secretsImportBtn = $("secrets-import-btn");
+if (secretsImportBtn && secretsImportFile) {
+  secretsImportBtn.onclick = async () => {
+    const file = secretsImportFile.files && secretsImportFile.files[0];
+    if (!file) { toast("pick a secrets.db file first", true); return; }
+    try {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      let bin = "";
+      const chunk = 0x8000;
+      for (let i = 0; i < buf.length; i += chunk) {
+        bin += String.fromCharCode.apply(null, buf.subarray(i, i + chunk));
+      }
+      const r = await fetch("/api/secrets/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ base64: btoa(bin) }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || d.error || d.ok === false) { toast(d.error || "import failed", true); return; }
+      toast("imported " + (d.imported || 0) + " secret(s)");
+      loadSecrets();
+    } catch (e) {
+      toast("import failed: " + e.message, true);
+    }
+  };
+}
+
 async function gitCommit() {
   const msg = (prompt('Commit message (blank = "manual commit from admin UI"):') || "").trim();
   $("sync-status").textContent = "committing...";
@@ -1087,13 +920,6 @@ async function gitPush() {
     const r = await api("/api/sync/push", { method: "POST", body: JSON.stringify({ local, remote }) });
     syncResult(r, "pushed " + local + " → " + remote, "push failed: " + local + " → " + remote);
   } catch (e) { $("sync-status").textContent = "error: " + e.message; $("sync-status").style.color = "var(--red)"; toast("push failed", true, 8000); }
-}
-
-async function loadLog(name) {
-  try {
-    const r = await api("/api/log?file=" + name);
-    $("log").textContent = r.content || "(empty)";
-  } catch {}
 }
 
 async function refreshPatterns() {
@@ -1181,6 +1007,8 @@ async function deletePattern(name) {
 }
 
 // ----- file browser -----
+let currentDir = "";
+
 async function filesBrowse(dir) {
   if (dir !== undefined) currentDir = dir;
   try {
@@ -1246,46 +1074,278 @@ async function uploadFile(input) {
   filesBrowse();
 }
 
-setInterval(() => {
-  const base = botUptimeBase || startedAt;
-  const sec = Math.floor((Date.now() - base) / 1000);
-  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
-  $("uptime").textContent = \`uptime: \${h ? h + "h " : ""}\${m}m \${s}s\`;
-}, 1000);
-
-setInterval(() => {
-  // Don't hammer the probes while the tab is hidden or an env edit is open.
-  if (document.hidden) return;
-  refreshStatus().catch(() => {});
-}, 10000);
-
-// Follow toggle: reflect server state, persist changes.
-async function syncFollowChk() {
-  try {
-    const d = await (await fetch("/api/session")).json();
-    $("follow-chk").checked = !!d.follow;
-  } catch { /* keep current */ }
-}
-$("follow-chk").onchange = async (e) => {
-  try {
-    await api("/api/session", { method: "POST", body: JSON.stringify({ follow: e.target.checked }) });
-    toast(e.target.checked ? "webui follows telegram from now on" : "stopped following telegram");
-  } catch {
-    e.target.checked = !e.target.checked;
-  }
-};
-syncFollowChk();
-
-markServerFeatures();
-loadCapabilities();
-refreshStatus();
 refreshPatterns();
 filesBrowse();
-loadModels();
-loadSpeech();
 loadSecrets();
+`;
+
+function pageShell(
+  title: string,
+  heading: string,
+  nav: string,
+  body: string,
+  script: string,
+): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title}</title>
+<style>${PAGE_CSS}</style>
+</head>
+<body>
+<div class="topnav">
+  <h1>${heading}</h1>
+  <span class="nav">${nav}</span>
+</div>
+
+${body}
+
+<div id="toast" class="toast"></div>
+
+<script>
+${script}
 </script>
 </body>
 </html>
 `;
+}
+
+/** Browser-global settings: status, credentials, speech, models, logs. */
+export function buildSettingsHtml(config: UiConfig): string {
+  const PORT = config.port;
+  const body = `
+<div class="card">
+  <div class="row">
+    <span id="service-dots" class="row" style="gap:14px" data-srv></span>
+    <span class="status" id="server-mode"><span class="dot on"></span> admin (this)</span>
+    <span style="margin-left:auto"><small id="uptime"></small></span>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <label class="status" data-srv title="The webui automatically continues whichever conversation is live on Telegram. Telegram never picks up web chats.">
+      <input type="checkbox" id="follow-chk" style="margin:0 6px 0 0"> webui follows telegram
+    </label>
+    <small style="color:var(--muted)">one-way: telegram never follows the webui</small>
+  </div>
+  <div id="server-note" style="display:none; margin-top:8px; color:#f59e0b; font-size:12px"></div>
+  <div class="actions">
+    <button id="restart-btn" data-srv onclick="restartBot()">Restart bot</button>
+    <button class="secondary" onclick="refreshAll()">Refresh</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Credentials &amp; .env</h2>
+  <form id="envForm" onsubmit="saveEnv(event)">
+    <div class="grid-2">
+      <div>
+        <label>Telegram bot token <span id="cur-token" style="float:right"></span></label>
+        <input id="f-token" type="password" placeholder="123456:ABC-DEF...">
+      </div>
+      <div>
+        <label>Your Telegram user ID <span id="cur-uid" style="float:right"></span></label>
+        <input id="f-uid" type="text" inputmode="numeric" placeholder="123456789">
+      </div>
+    </div>
+    <label>Hugging Face API key <span id="cur-hf" style="float:right"></span></label>
+    <input id="f-hf" type="password" placeholder="hf_...">
+    <label>Ollama API key <span id="cur-ollama" style="float:right"></span></label>
+    <input id="f-ollama" type="password" placeholder="ollama-api-key...">
+    <label>Neuralwatt API key <span id="cur-neuralwatt" style="float:right"></span></label>
+    <input id="f-neuralwatt" type="password" placeholder="sk-...">
+    <label>Exa search API key <span id="cur-exo" style="float:right"></span></label>
+    <input id="f-exo" type="password" placeholder="exa-... (used by exa_search)">
+    <small>Shortcuts for the most common keys — every other key in <code>.env</code> is editable below.</small>
+    <div class="actions">
+      <button type="submit">Save credentials</button>
+    </div>
+  </form>
+  <div style="margin:16px 0; border-top:1px solid var(--border,#334155)"></div>
+  <h3 style="margin:0 0 8px; font-size:14px">All .env keys</h3>
+  <p style="margin:0 0 8px"><small>Values visible. Edit a value, rename a key, add or remove keys. Changes apply after a bot restart.</small></p>
+  <div id="env-keys">(loading...)</div>
+  <div class="actions">
+    <button class="secondary" onclick="addEnvKey()">+ Add key</button>
+    <button onclick="saveAllEnv()">Save all keys</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Speech</h2>
+  <p style="margin:4px 0"><small>Which transcriber the mic button uses. Local providers run on the paired desktop. AssemblyAI is called straight from this browser with the key below &mdash; the key stays in this browser and is never sent to the desktop or to seed/relay transfers.</small></p>
+  <div class="grid-2">
+    <div>
+      <label>STT provider</label>
+      <select id="speech-provider">
+        <option value="">Desktop default (.env)</option>
+        <option value="whisper">Whisper (local server)</option>
+        <option value="sherpa">Sherpa (local server)</option>
+        <option value="parakeet">Parakeet (local server)</option>
+        <option value="assemblyai">AssemblyAI (cloud, in-tab)</option>
+        <option value="rime">Rime STT (cloud, via desktop)</option>
+      </select>
+    </div>
+    <div>
+      <label>STT language</label>
+      <input id="speech-language" type="text" placeholder="blank = provider default (rime: en/es)">
+    </div>
+  </div>
+  <label>Cloud STT key <span id="cur-speech-key" style="float:right"></span></label>
+  <input id="speech-key" type="password" placeholder="paste the key for the chosen cloud provider (blank keeps the saved one)">
+  <label style="display:flex; gap:8px; align-items:center; margin-top:12px">
+    <input id="speech-tts-enabled" type="checkbox" style="width:auto">
+    Enable text-to-speech (🔊 buttons and auto-speak)
+  </label>
+  <div class="grid-2" style="margin-top:8px">
+    <div>
+      <label>TTS provider</label>
+      <select id="speech-tts-provider">
+        <option value="">Desktop default (.env)</option>
+        <option value="kitten">KittenTTS (local server)</option>
+        <option value="rime">Rime Mist v3 (cloud, via desktop)</option>
+      </select>
+    </div>
+    <div>
+      <label>TTS voice</label>
+      <input id="speech-tts-voice" type="text" list="speech-tts-voices" placeholder="Bella (kitten) / cove (rime)">
+      <datalist id="speech-tts-voices">
+        <option value="Bella"></option><option value="Jasper"></option>
+        <option value="Luna"></option><option value="Bruno"></option>
+        <option value="Rosie"></option><option value="Hugo"></option>
+        <option value="Kiki"></option><option value="Leo"></option>
+      </datalist>
+    </div>
+  </div>
+  <label style="margin-top:12px">Speak new replies automatically</label>
+  <div class="radio-row" role="radiogroup" aria-label="Speak new replies automatically">
+    <label class="radio"><input type="radio" name="speech-tts-auto" value="off"> Off</label>
+    <label class="radio"><input type="radio" name="speech-tts-auto" value="trunk"> Trunk only</label>
+    <label class="radio"><input type="radio" name="speech-tts-auto" value="all"> All apps</label>
+  </div>
+  <label>Cloud TTS key <span id="cur-tts-key" style="float:right"></span></label>
+  <input id="speech-tts-key" type="password" placeholder="Rime key (blank keeps the saved one)">
+  <div class="actions">
+    <button onclick="saveSpeech()">Save speech settings</button>
+    <button class="secondary" onclick="testSpeech()">Test</button>
+    <span id="speech-status"></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Models</h2>
+  <p style="margin:4px 0"><small>Named model slots the trees reference (<code>Model("strong")</code>, <code>Model("cheap")</code>). Each slot points at any OpenAI-compatible endpoint (Ollama local/cloud, OpenAI, Neuralwatt, OpenRouter, llama.cpp&hellip;) or native Ollama. Pick a provider preset, choose a model, then <b>Test</b>. Saving applies immediately &mdash; no restart. Keys may use <code>\${ENV}</code> to reference the credentials above, or be pasted literally.</small></p>
+  <div id="model-slots">(loading...)</div>
+  <datalist id="models-datalist"></datalist>
+  <div class="actions">
+    <button class="secondary" onclick="addModelSlot()">+ Add model</button>
+    <button onclick="saveModels()">Save models</button>
+    <button class="secondary" onclick="claimFreeKey()" title="Claim BobSwap's free temporary key and point the v4/v4.1 slots at its proxy">Claim free key</button>
+    <button class="secondary" onclick="toggleRawModels()">Raw JSON</button>
+    <span id="models-status"></span>
+  </div>
+  <div id="models-raw-wrap" style="display:none; margin-top:10px">
+    <textarea id="models-json" rows="9" style="width:100%;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace" placeholder='{"strong":{"baseURL":"https://api.neuralwatt.com/v1","apiKey":"\${NEURALWATT_API_KEY}","model":"glm-5.3"}}'></textarea>
+    <p style="margin:4px 0"><small>Raw registry JSON &mdash; the exact file that is saved. Edits here are honored on save; otherwise the form above builds it.</small></p>
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Logs</h2>
+  <div class="row" style="margin-bottom:8px">
+    <button class="secondary log-btn" data-srv onclick="loadLog('bot')">bot.log</button>
+    <button class="secondary log-btn" data-srv onclick="loadLog('sherpa')">sherpa.log</button>
+    <span style="margin-left:auto"><small>last 60 lines</small></span>
+  </div>
+  <pre id="log">(click a log button)</pre>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Access</h2>
+  <p style="margin:4px 0"><small>This UI runs on the phone at <code>http://0.0.0.0:${PORT}</code>.</small></p>
+  <p style="margin:4px 0"><small>If you're on the same Wi-Fi, open <code>http://&lt;phone-ip&gt;:${PORT}</code> from your laptop.</small></p>
+  <p style="margin:4px 0"><small>To expose to the internet, run an SSH reverse tunnel or use Termux's <code>pkg install cloudflared</code>.</small></p>
+</div>
+`;
+  return pageShell(
+    "grandpa-bob settings",
+    "grandpa-bob settings",
+    `<a href="/files">files</a><a href="/">&larr; chat</a>`,
+    body,
+    COMMON_SCRIPT + SETTINGS_SCRIPT,
+  );
+}
+
+/** Active-workspace view: files, patterns, secrets and git sync. */
+export function buildFilesHtml(config: UiConfig): string {
+  const body = `
+<div class="card">
+  <h2 style="margin-top:0">Files</h2>
+  <p style="margin:4px 0"><small>Browse, upload, and download files in the workspace.</small></p>
+  <div id="file-nav" class="row" style="margin-bottom:8px; flex-wrap:wrap">
+    <button class="secondary" onclick="filesBrowse()">↻ Refresh</button>
+    <span id="file-path" style="margin-left:auto; font-size:12px; color:var(--muted)">/</span>
+  </div>
+  <div id="file-list" style="max-height:300px; overflow:auto; border:1px solid #334155; border-radius:6px; padding:8px; background:#0b1224; font:12px ui-monospace,monospace">(loading...)</div>
+  <div class="actions" style="margin-top:8px">
+    <input id="file-upload-input" type="file" style="display:none" onchange="uploadFile(this)" multiple />
+    <button onclick="document.getElementById('file-upload-input').click()">Upload file</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Tree patterns</h2>
+  <p style="margin:4px 0"><small>grandma-kat trees (<code>patterns/&lt;name&gt;.prod.mjs</code>) in <code>workspace/patterns/</code>. The agent re-reads the active tree each turn — edit it to change behavior without restarting. The agent can also modify its own patterns using file tools. <b>Which one runs</b> is selected from the dropdown on the <a href="/" style="color:var(--accent)">chat page</a> (persisted as <code>TREE_PATTERN</code> in <code>.env</code>).</small></p>
+  <div id="pattern-list">(loading...)</div>
+  <div class="actions">
+    <button class="secondary" onclick="refreshPatterns()">Refresh</button>
+    <button onclick="showNewPattern()">New pattern</button>
+  </div>
+  <div id="pattern-editor" style="display:none; margin-top:12px">
+    <label>Pattern name (no spaces, e.g. "my-pattern")</label>
+    <input id="p-name" type="text" placeholder="my-pattern">
+    <label>Pattern code (.mjs — export default async function)</label>
+    <textarea id="p-code" style="width:100%; min-height:200px; background:#0b1224; color:#cbd5e1; border:1px solid #334155; border-radius:6px; padding:12px; font:12px ui-monospace,monospace; resize:vertical"></textarea>
+    <div class="actions">
+      <button onclick="savePattern()">Save pattern</button>
+      <button class="secondary" onclick="hideNewPattern()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">App secrets</h2>
+  <p style="margin:4px 0"><small>Files an app requested in <code>app/&lt;name&gt;/secrets.json</code>. Uploaded bytes live in <code>logs/secrets.db</code> &mdash; local, gitignored, invisible to the file browser and to the bot's file tools. An app reads only its own secrets.</small></p>
+  <div id="secrets-list">(loading...)</div>
+  <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <input id="secrets-import-file" type="file" accept=".db,application/octet-stream" style="max-width:260px">
+    <button id="secrets-import-btn">import secrets.db</button>
+    <small style="color:var(--muted)">load a desktop <code>secrets.db</code> (its <code>app_secrets</code> rows) into this platform</small>
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Workspace sync</h2>
+  <p style="margin:4px 0"><small>Push/pull the workspace to/from the desktop's git-daemon (port 9418). The bot auto-commits file changes; use these to sync with the desktop.</small></p>
+  <label>Local branch → Remote branch</label>
+  <div class="row">
+    <input id="sync-local" type="text" value="main" placeholder="main" style="width:120px">
+    <span style="color:var(--muted)">→</span>
+    <input id="sync-remote" type="text" value="main" placeholder="main" style="width:120px">
+  </div>
+  <div id="sync-status" style="margin:8px 0; font:12px ui-monospace,monospace; color:var(--muted)">(not synced yet)</div>
+  <div class="actions">
+    <button onclick="gitCommit()">Commit workspace</button>
+    <button onclick="gitPull()">Pull from desktop</button>
+    <button onclick="gitPush()">Push to desktop</button>
+  </div>
+</div>
+`;
+  return pageShell(
+    "grandpa-bob files",
+    "grandpa-bob files",
+    `<a href="/settings">settings</a><a href="/">&larr; chat</a>`,
+    body,
+    COMMON_SCRIPT + FILES_SCRIPT,
+  );
 }

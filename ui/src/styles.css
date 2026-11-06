@@ -988,7 +988,7 @@ body.dragging-tile { user-select: none !important; }
 .menu { position: absolute; right: 0; top: 110%; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 6px; z-index: 30; min-width: 180px; max-height: 60vh; overflow: auto; }
 .menu-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; cursor: pointer; }
 .menu-row:hover { background: var(--panel); border-radius: 5px; }
-/* Rows that are actions (session, settings page) look like the checkbox rows
+/* Rows that are actions (session, files page) look like the checkbox rows
    instead of inheriting the global button/anchor chrome. */
 .menu .menu-action {
   width: 100%;

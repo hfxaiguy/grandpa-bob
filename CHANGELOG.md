@@ -2,6 +2,31 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-06 — settings/files split + auto-speak scope
+
+Settings and the workspace file browser are two pages again, and auto-speak can
+cover every app, not just the trunk.
+
+- **Auto-speak scope**: Settings → Speech replaces the checkbox with a radio
+  group — **Off**, **Trunk only**, **All apps**. Stored as
+  `tts.autoSpeak: "trunk" | "all"` (absent = off); a config saved by the old
+  checkbox (`true`) reads as trunk-only. Machine-level emits are always skipped.
+- **`web/src/services/config.ts`**: `AutoSpeakScope` + normalization.
+- **`ui/src/store.ts`**: the SSE auto-speak path checks the selected scope and
+  speaks app emits when it is `all`.
+- **Settings vs Files**: `web/src/ui/pages.ts` splits the admin HTML into
+  `buildSettingsHtml` (credentials, speech, models, logs) and `buildFilesHtml`
+  (files, patterns, secrets, git sync), sharing `PAGE_CSS` / `COMMON_SCRIPT`.
+  Each links to the other and back to chat.
+- **`web/src/ui-host.ts`**: hosts either page in the iframe, intercepts
+  `/settings`, `/files` and `/`, and wires the new shell **Settings** button.
+  The chat UI's menu entry is now **files** (`bob:show-files`).
+- **`web/index.html`**, **`ui/src/app.tsx`**, **`ui/src/mount.tsx`**,
+  **`ui/src/styles.css`**, **`README.md`**: labels, button and comments follow
+  the split.
+- **Tests**: `test:tts` covers the scope round-trip and the `true` → trunk
+  migration.
+
 ## 2026-11-06 — relay renewal + TTS polish
 
 BobSwap now renews sync channels, so a relay-paired phone reconnects after the

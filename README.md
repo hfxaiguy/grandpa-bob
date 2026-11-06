@@ -181,7 +181,7 @@ file tools, enabling self-modification.
 
 To change the agent's behavior:
 
-1. Edit `workspace/patterns/agent.mjs` (via the settings page, a text editor, or
+1. Edit `workspace/patterns/agent.mjs` (via the files page, a text editor, or
    the agent itself).
 2. The next conversation turn uses the updated pattern.
 
@@ -717,7 +717,7 @@ declares it in `app/<name>/secrets.json`:
    "contentType": "application/json" }]
 ```
 
-The settings page grows an **App secrets** section listing every declared
+The files page grows an **App secrets** section listing every declared
 file as missing or uploaded, with upload / replace / delete buttons. Bytes
 are stored **outside the workspace** — `~/.bobkat/secrets.db`, override
 with the `SECRETS_DB` env var — in a 0700 directory as a 0600 sqlite file.

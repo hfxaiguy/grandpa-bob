@@ -55,8 +55,8 @@ function TilesMenu() {
 }
 
 /**
- * The phone toolbar folds upload, tiles and stream/machine (plus the settings
- * page link) into one list, so those controls keep their behavior without
+ * The phone toolbar folds upload, tiles and stream/machine (plus the workspace
+ * files page link) into one list, so those controls keep their behavior without
  * making the wrapped toolbar several rows taller. Desktop keeps the direct
  * buttons; the shell toolbar hosts the phone's Session button beside Sync….
  */
@@ -93,7 +93,7 @@ function SettingsMenu(props: { events: number; onSession: () => void }) {
         classList={{ active: open() }}
         aria-haspopup="menu"
         aria-expanded={open()}
-        title="upload, tiles, stream, machine notes and settings"
+        title="upload, tiles, stream, machine notes and files"
         onClick={() => setOpen(!open())}
       >
         settings ▾
@@ -132,10 +132,10 @@ function SettingsMenu(props: { events: number; onSession: () => void }) {
             role="menuitem"
             onClick={() => {
               setOpen(false);
-              window.dispatchEvent(new Event("bob:show-settings"));
+              window.dispatchEvent(new Event("bob:show-files"));
             }}
           >
-            settings page
+            files page
           </button>
           <div class="menu-section">tiles</div>
           <TileToggles />
@@ -219,9 +219,9 @@ export function App() {
               <button
                 type="button"
                 class="link-btn"
-                onClick={() => window.dispatchEvent(new Event("bob:show-settings"))}
+                onClick={() => window.dispatchEvent(new Event("bob:show-files"))}
               >
-                settings
+                files
               </button>
             </>
           }

@@ -16,14 +16,20 @@ export interface SttServiceConfig {
   keys?: Record<string, string>;
 }
 
+/** Which replies auto-speak reads aloud. Absent = never. */
+export type AutoSpeakScope = "trunk" | "all";
+
 export interface TtsServiceConfig {
   /** "" = let the desktop use its configured provider (`TTS_PROVIDER`). */
   provider: string;
   voice?: string;
   /** false hides the 🔊 buttons and stops auto-speak; default is on. */
   enabled?: boolean;
-  /** Speak each new trunk reply automatically. */
-  autoSpeak?: boolean;
+  /**
+   * Read new replies aloud: `trunk` for the conversation trunk only, `all` for
+   * every app's emits. Absent = off.
+   */
+  autoSpeak?: AutoSpeakScope;
   /** Provider id → API key. Keys stay in this browser. */
   keys?: Record<string, string>;
 }
@@ -78,7 +84,10 @@ function normalizeTts(raw: unknown): TtsServiceConfig {
   const out: TtsServiceConfig = { provider };
   if (typeof tts.voice === "string" && tts.voice.trim()) out.voice = tts.voice.trim();
   if (tts.enabled === false) out.enabled = false;
-  if (tts.autoSpeak === true) out.autoSpeak = true;
+  // `true` is the pre-scope spelling of "trunk only"; keep that choice.
+  const auto = (raw as { autoSpeak?: unknown } | null)?.autoSpeak;
+  if (auto === "all") out.autoSpeak = "all";
+  else if (auto === "trunk" || auto === true) out.autoSpeak = "trunk";
   if (tts.keys && typeof tts.keys === "object") {
     const keys: Record<string, string> = {};
     for (const [id, value] of Object.entries(tts.keys)) {

@@ -3,12 +3,13 @@
  *
  * The chat UI (`ui/`, SolidJS) mounts directly in this window with the
  * transport shim installed, so its `/api/*` calls hit the in-browser backend.
- * The settings page is the shared server-rendered HTML, hosted in a
- * same-origin iframe (with the shim). Settings is an in-page view only: the
- * chat UI dispatches `bob:show-settings`, the iframe's "chat" link swaps back,
- * and the address bar always stays at "/".
+ * Settings and Files are shared server-rendered HTML pages, hosted in a
+ * same-origin iframe (with the shim). Both are in-page views only: the chat UI
+ * dispatches `bob:show-settings` / `bob:show-files`, the shell toolbar has a
+ * global Settings button, the iframes' links swap views, and the address bar
+ * always stays at "/".
  */
-import { buildSettingsHtml } from "./ui/pages";
+import { buildFilesHtml, buildSettingsHtml } from "./ui/pages";
 import { installShim, SHIM_SCRIPT } from "./server/shim";
 import { mountApp } from "../../ui/src/mount";
 import type { LocalBackend } from "./server/local-backend";
@@ -40,14 +41,16 @@ export function hostUi(
     disposeChat = mountApp(el);
   };
 
-  const showSettings = (): void => {
+  // Host one of the shared HTML views in the iframe. Links between views and
+  // back to chat are handled here, so the iframe never navigates the tab.
+  const showPage = (html: string): void => {
     disposeChat?.();
     disposeChat = undefined;
     sessionButton?.setAttribute("hidden", "");
     const iframe = document.createElement("iframe");
     iframe.id = "bob-ui";
     iframe.style.cssText = "border:0;width:100%;height:100%;display:block;background:transparent";
-    iframe.srcdoc = buildSettingsHtml({ port: opts.port }).replace("</head>", `<script>${SHIM_SCRIPT}</script></head>`);
+    iframe.srcdoc = html.replace("</head>", `<script>${SHIM_SCRIPT}</script></head>`);
     container.replaceChildren(iframe);
     iframe.addEventListener("load", () => {
       const doc = iframe.contentDocument;
@@ -81,6 +84,16 @@ export function hostUi(
           if (raw === "/") {
             event.preventDefault();
             showChat();
+            return;
+          }
+          if (raw === "/settings") {
+            event.preventDefault();
+            showSettings();
+            return;
+          }
+          if (raw === "/files") {
+            event.preventDefault();
+            showFiles();
           }
         },
         true,
@@ -88,9 +101,17 @@ export function hostUi(
     });
   };
 
-  // Settings is an in-page view: the chat UI asks for it with an event. No URL
-  // change and no server route exist for it.
+  const showSettings = (): void => showPage(buildSettingsHtml({ port: opts.port }));
+  const showFiles = (): void => showPage(buildFilesHtml({ port: opts.port }));
+
+  // Settings is global, so it also lives in the shell toolbar at the very top
+  // of the browser window — not only inside the chat surface.
+  document.getElementById("settings-menu")?.addEventListener("click", showSettings);
+
+  // Both views are in-page only: the chat UI and the shell ask for them with
+  // events. No URL change and no server route exist for either.
   window.addEventListener("bob:show-settings", showSettings);
+  window.addEventListener("bob:show-files", showFiles);
 
   showChat();
 }

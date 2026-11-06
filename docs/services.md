@@ -54,8 +54,10 @@ attached per `tts-run` request; Node never persists it.
 Synthesis is cached in memory per provider+voice+language+text (48 MB FIFO), so
 replaying the same reply costs nothing. The 🔊 button shows **…** while the
 clip is synthesized (pressing again cancels), **⏹** while it plays, and pressing
-it again stops. **Auto-speak** (Settings → Speech) reads each new trunk reply
-aloud; browsers that block autoplay will simply ignore it until a manual press.
+it again stops. **Auto-speak** (Settings → Speech) has three scopes: **Off**,
+**Trunk only**, or **All apps** — the last reads the emits of every app, not
+just the conversation trunk; machine-level emits are always skipped. Browsers
+that block autoplay will simply ignore it until a manual press.
 The same card has a global **Enable text-to-speech** switch: off hides the 🔊
 buttons entirely and doubles as the per-browser mute.
 
@@ -114,7 +116,8 @@ Settings page on the same origin:
 - **Enable text-to-speech** — the global switch: off hides every 🔊 button and
   stops auto-speak; on is the default.
 - TTS provider, voice (KittenTTS voices are suggested in a datalist), cloud TTS
-  key, and **Speak new replies automatically** — saved with the same button.
+  key, and **Speak new replies automatically** — a radio group: Off, Trunk only,
+  All apps. Saved with the same button.
 - The chosen provider and voice travel with every `tts-run`, so switching takes
   effect on the next 🔊 press (the desktop's `.env` is only the default).
 - The 🔊 button shows **…** while the clip is synthesized (press again to

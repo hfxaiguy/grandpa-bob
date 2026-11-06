@@ -1740,11 +1740,14 @@ export function handleSSE(msg: any): void {
           if (msg.buttons?.length) t.buttons = msg.buttons;
         }),
       );
-      // Auto-speak: trunk replies only, and only when the toggle is on.
+      // Auto-speak follows Settings → Speech: off, trunk only, or every app.
       // Failures (autoplay policy, no pairing) stay silent — this is ambient.
+      const tts = loadTtsConfig();
+      const scope = tts.autoSpeak;
+      const app = msg.app ?? "trunk";
       const spoken = msg.text?.trim();
-      if (spoken && msg.level !== "machine" && (msg.app ?? "trunk") === "trunk") {
-        if (ttsEnabled() && loadTtsConfig().autoSpeak) {
+      if (spoken && msg.level !== "machine" && scope && (scope === "all" || app === "trunk")) {
+        if (ttsEnabled()) {
           const turn = state.turns.find((x) => x.turnId === msg.turnId);
           const index = (turn?.emits?.length ?? 1) - 1;
           void speakText(spoken, `${msg.turnId}:${index}`).catch(() => {});

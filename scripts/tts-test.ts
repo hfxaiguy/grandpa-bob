@@ -53,6 +53,18 @@ saveTtsConfig({ enabled: false }, store);
 assert.equal(loadTtsConfig(store).enabled, false);
 saveTtsConfig({ enabled: true }, store);
 assert.equal(loadTtsConfig(store).enabled, undefined); // on is the default, not stored
+// Auto-speak is a scope, not a boolean. Absent = off.
+saveTtsConfig({ autoSpeak: "all" }, store);
+assert.equal(loadTtsConfig(store).autoSpeak, "all");
+saveTtsConfig({ autoSpeak: "trunk" }, store);
+assert.equal(loadTtsConfig(store).autoSpeak, "trunk");
+saveTtsConfig({ autoSpeak: undefined }, store);
+assert.equal(loadTtsConfig(store).autoSpeak, undefined);
+// A config written before scopes existed used `true` for trunk-only.
+store.setItem("bob:services", JSON.stringify({ tts: { autoSpeak: true } }));
+assert.equal(loadTtsConfig(store).autoSpeak, "trunk");
+saveTtsConfig({ autoSpeak: undefined }, store);
+assert.equal(loadTtsConfig(store).autoSpeak, undefined);
 saveTtsConfig({ provider: "rime", voice: "cove", keys: { rime: "  key " } }, store);
 assert.deepEqual(loadTtsConfig(store), {
   provider: "rime",

@@ -24,9 +24,9 @@ function setFavicon(href: string) {
 export function mountApp(el: HTMLElement): () => void {
   setFavicon(logoMark);
   const dispose = render(() => <App />, el);
-  // A dispose here is a real teardown (the browser target swaps chat ↔ settings
-  // in place, no page load). Drop the live subscription too, so the next mount
-  // opens exactly one — otherwise every event would be appended twice.
+  // A dispose here is a real teardown (the browser target swaps chat ↔
+  // settings/files in place, no page load). Drop the live subscription too, so
+  // the next mount opens exactly one — otherwise every event is appended twice.
   return () => {
     closeLiveStream();
     dispose();
