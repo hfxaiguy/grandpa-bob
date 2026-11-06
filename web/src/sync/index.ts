@@ -581,7 +581,13 @@ class MultiProfileSync implements SyncHandle {
   requestPreview(peerId: string, profileId: string): Promise<ProfilePreview | null> {
     const session = this.sessions.get(peerId);
     if (!session?.link.isReady()) return Promise.resolve(null);
-    return session.link.requestPreview(profileId);
+    // Asking for a preview is an explicit local allow. Send it first so the
+    // peer never answers "not available" because the consent frame raced the
+    // request (or because the dialog called Preview without ticking the box).
+    const id = profileId.toLowerCase();
+    const peer = this.store.peers[peerId];
+    if (peer && peer.localAllow[id] !== true) this.setProfileConsent(peerId, id, true);
+    return session.link.requestPreview(id);
   }
 
   refreshProfiles(): void {

@@ -83,6 +83,13 @@ export interface SyncPeer {
   connected(): boolean;
   /** REPLACES the current message handler. */
   onMessage(cb: (envelope: SyncEnvelope) => void): void;
+  /**
+   * Optional control-frame subscription for transports that split control from
+   * data (see `controlPeer`). Links that multiplex profile controls over the
+   * same stream register here instead of receiving controls through
+   * `onMessage`. Returns an unsubscribe.
+   */
+  onControl?(cb: (control: Record<string, unknown>, envelope: SyncEnvelope) => void): () => void;
   /** The wire dropped or was closed. */
   onClosed(cb: () => void): void;
   close(): void;

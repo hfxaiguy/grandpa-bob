@@ -2,6 +2,33 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-06 — desktop profile catalogs reach the browser link
+
+The desktop/server pairing wrapped its transport in `controlPeer`, which routed
+control frames only to the handshake/ops handler. `ProfileLink` therefore never
+saw `profile-catalog`/`profile-consent`, so the desktop never learned the
+browser's device id or consent: remote-only profiles appeared in the browser but
+Preview answered "not available", and no per-profile engine attached. The
+browser's `ProfileLink` now subscribes to the transport's control plane when it
+has one, and the bridge buffers profile controls that arrive while it is still
+constructing its link. Preview also sends the local allow first, so pressing
+Preview without ticking the box no longer looks like a peer veto.
+
+- **`web/src/sync/engine.ts`**, **`control-peer.ts`**, **`profile-link.ts`**:
+  optional multi-consumer control subscription; `ProfileLink` uses it on the
+  desktop path while raw peers keep the single `onMessage` stream.
+- **`src/bridge/peer.ts`**: buffer and replay early profile controls after
+  `attachProfileLink`; clear the buffer on disconnect.
+- **`web/src/profile-ui.ts`**, **`web/src/sync/index.ts`**: Preview implies
+  local consent and reports an offline peer distinctly.
+- Tests: `test:profile-link` covers the `controlPeer` path and the
+  consent-before-preview ordering.
+
+Tests: `npm run test:profile-link`; `npm run test:profile-sync`;
+`npm run test:sync`; `npm run test:desktop-profile`; `npm run typecheck`;
+`npm --prefix web run typecheck`; `npm run build:bridge`;
+`npm --prefix web run build`.
+
 ## 2026-11-06 — a dropped Rime audio stream is retried, not shown as "terminated"
 
 Pressing 🔊 with Rime Mist v3 occasionally failed the whole reply with

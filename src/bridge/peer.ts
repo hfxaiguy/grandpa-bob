@@ -305,6 +305,13 @@ export class PeerSession {
   /** Primary profile's engine (ops/log/status keep using this handle). */
   private engine: SyncEngine | null = null;
   private profileLink: ProfileLink | null = null;
+  /**
+   * Catalog/consent frames that arrived between the browser's `ready` and the
+   * ProfileLink construction. Without this buffer the first catalog is lost:
+   * the raw control handler only knows the profile ops after `attachProfileLink`
+   * finishes, and the browser sends its catalog immediately after `ready`.
+   */
+  private pendingProfileControls: Record<string, unknown>[] = [];
   private runtimes = new Map<string, BridgeRuntime>();
   private attached = new Map<string, SyncPeer>();
   private remoteCatalog: ProfileCatalogEntry[] = [];
@@ -533,6 +540,7 @@ export class PeerSession {
     this.emit("link-closed", { paired: this.paired });
     this.link = null;
     this.authed = false;
+    this.pendingProfileControls = [];
     const relay = this.transport.kind === "relay" && this.paired;
     if (relay) this.reconnecting = true;
     // Drop the old catalog/file link without disposing the session; a relay
@@ -624,6 +632,16 @@ export class PeerSession {
       op,
       ...(op === "hello" ? { profile: String(control.profile ?? "") } : {}),
     });
+    // The browser sends its catalog/consent immediately after `ready`. The
+    // ProfileLink is built asynchronously from that `ready`, so these frames
+    // can arrive first and would otherwise be dropped by the raw handler.
+    if (
+      !this.profileLink &&
+      (op === "profile-catalog" || op === "profile-consent" || op === "profile-preview")
+    ) {
+      if (this.pendingProfileControls.length < 16) this.pendingProfileControls.push(control);
+      return;
+    }
     const expectedProfile = this.profile;
     if (op === "hello") {
       const got = String(control.profile ?? "");
@@ -836,6 +854,12 @@ export class PeerSession {
     });
     this.profileLink = link;
     link.start();
+    // Replay anything that arrived while the link was being constructed. The
+    // browser's catalog is what names its device id; without it consent and
+    // preview requests have no peer to apply to.
+    for (const control of this.pendingProfileControls.splice(0)) {
+      link.receiveControl(control);
+    }
   }
 
   private async onRemoteCatalog(

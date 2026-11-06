@@ -13,13 +13,16 @@ export type ControlHandler = (
 
 export function controlPeer(inner: SyncPeer, onControl: ControlHandler): SyncPeer {
   let engineHandler: ((envelope: SyncEnvelope) => void) | null = null;
-  let controlHandler: ControlHandler | null = onControl;
+  // A transport can have more than one control consumer: the handshake/ops
+  // layer and the ProfileLink multiplexer both need catalog/consent frames.
+  const controlHandlers = new Set<ControlHandler>();
+  controlHandlers.add(onControl);
   // The handshake and the engine attach happen in separate ticks; a hashmap
   // that arrives between `ready` and `engine.attach()` must not be dropped.
   const buffered: SyncEnvelope[] = [];
   inner.onMessage((envelope) => {
     if (envelope.kind === "control") {
-      controlHandler?.(envelope.control ?? {}, envelope);
+      for (const handler of controlHandlers) handler(envelope.control ?? {}, envelope);
       return;
     }
     if (engineHandler) engineHandler(envelope);
@@ -32,6 +35,10 @@ export function controlPeer(inner: SyncPeer, onControl: ControlHandler): SyncPee
     onMessage(cb) {
       engineHandler = cb;
       for (const envelope of buffered.splice(0)) cb(envelope);
+    },
+    onControl(cb) {
+      controlHandlers.add(cb);
+      return () => controlHandlers.delete(cb);
     },
     onClosed: (cb) => inner.onClosed(cb),
     close: () => inner.close(),

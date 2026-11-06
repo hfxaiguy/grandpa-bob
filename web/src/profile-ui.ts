@@ -415,7 +415,16 @@ function renderPeerRows(row: ProfileRow, store: PeerSyncStore): HTMLElement {
     });
 
     if (row.remoteOnly && entry.present) {
-      const preview = actionButton("Preview…", () => void previewRemoteProfile(row, peer));
+      const preview = actionButton("Preview…", () => {
+        // Preview is the explicit local consent. A user who presses it without
+        // first ticking the box must not be told the *peer* denied the request:
+        // send this side's allow first, then ask for metadata.
+        if (!box.checked) {
+          box.checked = true;
+          ui.setProfileConsent?.(peer.peerId, row.id, true);
+        }
+        void previewRemoteProfile(row, peer);
+      });
       line.append(" ", preview);
     }
     if (row.local && entry.present) {
@@ -439,7 +448,9 @@ async function previewRemoteProfile(row: ProfileRow, peer: PeerProfileCatalog): 
   const preview = await ui.requestPreview(peer.peerId, row.id);
   if (!preview) {
     ui.flash(
-      `${peer.deviceName} has not allowed "${row.name}" yet — check it on that device too`,
+      peer.online === false
+        ? `${peer.deviceName} is offline — reconnect in Sync… → Live sync, then try Preview again`
+        : `${peer.deviceName} has not allowed "${row.name}" yet — check it on that device too`,
       9000,
     );
     return;

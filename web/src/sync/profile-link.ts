@@ -61,6 +61,7 @@ export class ProfileLink {
   private pendingPreview = new Map<string, PendingPreview>();
   private buffered: Array<{ profile: string; envelope: SyncEnvelope }> = [];
   private phraseTimer: ReturnType<typeof setTimeout> | null = null;
+  private unsubscribeControl: (() => void) | null = null;
 
   constructor(inner: SyncPeer, options: ProfileLinkOptions) {
     this.inner = inner;
@@ -68,6 +69,10 @@ export class ProfileLink {
     this.peerId = options.peerId;
     this.catalog = normalizeCatalog(options.catalog);
     this.consent = { ...options.consent };
+    // A transport with a separate control plane (the desktop/server
+    // ServerConnection wraps one) delivers controls here; a raw WebRTC peer
+    // delivers everything through onMessage.
+    this.unsubscribeControl = inner.onControl?.((control) => this.onControl(control)) ?? null;
     inner.onMessage((envelope) => this.receive(envelope));
     inner.onClosed(() => this.close());
   }
@@ -121,6 +126,16 @@ export class ProfileLink {
 
   isReady(): boolean {
     return this.ready;
+  }
+
+  /**
+   * Feed a control frame that arrived before the link was constructed. The
+   * desktop peer creates its ProfileLink after the browser's `ready` frame; the
+   * browser's catalog/consent can arrive in that window and must not be lost.
+   */
+  receiveControl(control: Record<string, unknown>): void {
+    if (this.closed) return;
+    this.onControl(control);
   }
 
   /**
@@ -218,6 +233,8 @@ export class ProfileLink {
     if (this.closed) return;
     this.closed = true;
     this.ready = false;
+    this.unsubscribeControl?.();
+    this.unsubscribeControl = null;
     if (this.phraseTimer) {
       clearTimeout(this.phraseTimer);
       this.phraseTimer = null;
