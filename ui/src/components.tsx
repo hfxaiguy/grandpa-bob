@@ -53,6 +53,8 @@ import {
   transcribeFileStream,
   speakText,
   speechKey,
+  speechBusy,
+  ttsEnabled,
 } from "./store";
 import type { AppInfo, EmitComponent, ProvPiece, ProvWriter, Provenance, RefTarget, Turn, TurnTokens } from "./types";
 import { Markdown } from "./markdown";
@@ -2076,6 +2078,7 @@ export function Tile(props: { app: AppInfo }) {
                                   !!b.turn.runId &&
                                   b.turn.levels?.[b.emitIndex] !== "machine",
                                 "has-speak":
+                                  ttsEnabled() &&
                                   b.kind === "bot" &&
                                   !!b.text.trim() &&
                                   b.turn.levels?.[b.emitIndex ?? 0] !== "machine",
@@ -2092,6 +2095,7 @@ export function Tile(props: { app: AppInfo }) {
                               </Show>
                               <Show
                                 when={
+                                  ttsEnabled() &&
                                   b.kind === "bot" &&
                                   !!b.text.trim() &&
                                   b.turn.levels?.[b.emitIndex ?? 0] !== "machine"
@@ -2099,10 +2103,15 @@ export function Tile(props: { app: AppInfo }) {
                               >
                                 <button
                                   class="bubble-info bubble-speak"
+                                  classList={{
+                                    busy: speechBusy() === `${b.turn.turnId}:${b.emitIndex ?? 0}`,
+                                  }}
                                   title={
-                                    speechKey() === `${b.turn.turnId}:${b.emitIndex ?? 0}`
-                                      ? "stop reading"
-                                      : "read this reply aloud"
+                                    speechBusy() === `${b.turn.turnId}:${b.emitIndex ?? 0}`
+                                      ? "preparing speech… (click to cancel)"
+                                      : speechKey() === `${b.turn.turnId}:${b.emitIndex ?? 0}`
+                                        ? "stop reading"
+                                        : "read this reply aloud"
                                   }
                                   onClick={() => {
                                     const key = `${b.turn.turnId}:${b.emitIndex ?? 0}`;
@@ -2111,7 +2120,11 @@ export function Tile(props: { app: AppInfo }) {
                                     );
                                   }}
                                 >
-                                  {speechKey() === `${b.turn.turnId}:${b.emitIndex ?? 0}` ? "⏹" : "🔊"}
+                                  {speechBusy() === `${b.turn.turnId}:${b.emitIndex ?? 0}`
+                                    ? "…"
+                                    : speechKey() === `${b.turn.turnId}:${b.emitIndex ?? 0}`
+                                      ? "⏹"
+                                      : "🔊"}
                                 </button>
                               </Show>
                               <Show

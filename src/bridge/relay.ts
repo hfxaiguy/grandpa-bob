@@ -30,6 +30,8 @@ export interface RelayChannel {
   roleToken: string;
   role: "offerer" | "answerer" | "joiner";
   iceServers: unknown[];
+  /** ISO-8601 expiry returned by create/join/renew (when the service reports it). */
+  expiresAt?: string;
 }
 
 interface RelaySignal {
@@ -73,6 +75,8 @@ export interface PeerTransport {
 const REQUEST_TIMEOUT_MS = 20_000;
 const POLL_MS = 1_500;
 const OPEN_TIMEOUT_MS = 60_000;
+/** Renew well inside the relay's default 30-minute channel lifetime. */
+const RENEW_EVERY_MS = 10 * 60_000;
 
 function relayBase(raw: string): string {
   const value = String(raw ?? "").trim().replace(/\/+$/, "");
@@ -108,14 +112,19 @@ async function relayFetch(
     });
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown> & { error?: string };
     if (!res.ok) {
+      const fail = (message: string): never => {
+        const error = new Error(message) as Error & { status?: number };
+        error.status = res.status;
+        throw error;
+      };
       if (res.status === 404 || res.status === 410) {
-        throw new Error("the relay pairing channel is gone or expired — run `npm run pair -- --relay` again");
+        fail("the relay pairing channel is gone or expired — run `npm run pair -- --relay` again");
       }
       if (res.status === 429) {
         const retry = res.headers.get("retry-after");
-        throw new Error(`the relay is rate limiting signaling${retry ? ` — retry in ${retry}s` : ""}`);
+        fail(`the relay is rate limiting signaling${retry ? ` — retry in ${retry}s` : ""}`);
       }
-      throw new Error(data.error || `relay signaling failed: HTTP ${res.status}`);
+      fail(data.error || `relay signaling failed: HTTP ${res.status}`);
     }
     return data;
   } catch (err) {
@@ -159,6 +168,7 @@ export async function createRelayChannel(
     role_token?: string;
     role?: string;
     ice_servers?: unknown;
+    expires_at?: string;
     error?: string;
   };
   if (!res.ok) {
@@ -187,7 +197,22 @@ export async function createRelayChannel(
     roleToken: data.role_token,
     role: "offerer",
     iceServers: Array.isArray(data.ice_servers) ? data.ice_servers : [],
+    expiresAt: typeof data.expires_at === "string" ? data.expires_at : undefined,
   };
+}
+
+/**
+ * Extend a live relay channel. BobSwap's renewal route is optional: an
+ * older deployment answers 404, which callers treat as "not supported" and
+ * fall back to the fixed 30-minute lifetime.
+ */
+export async function renewRelayChannel(channel: RelayChannel): Promise<string | undefined> {
+  const data = await relayFetch(
+    channel,
+    `/api/v1/sync/channels/${encodeURIComponent(channel.id)}/renew`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+  return typeof data.expires_at === "string" ? data.expires_at : undefined;
 }
 
 async function relaySignal(
@@ -469,10 +494,43 @@ export class RelayTransport implements PeerTransport {
   private cursor = 0;
   private reconnectWait: Promise<ReconnectedPeer> | null = null;
   private handled = new Set<string>();
+  /** Renewal cadence: well inside the relay's 30-minute default lifetime. */
+  private renewTimer: ReturnType<typeof setTimeout> | null = null;
+  private renewUnsupported = false;
 
   constructor(private readonly channel: RelayChannel) {
     this.id = channel.id;
     this.profile = channel.profile;
+    this.scheduleRenewal();
+  }
+
+  /** Ask the relay to extend the channel; the service may not support it yet. */
+  private scheduleRenewal(): void {
+    if (this.closed || this.renewUnsupported || this.renewTimer) return;
+    this.renewTimer = setTimeout(() => {
+      this.renewTimer = null;
+      void this.renewNow();
+    }, RENEW_EVERY_MS);
+    this.renewTimer.unref?.();
+  }
+
+  private async renewNow(): Promise<void> {
+    if (this.closed || this.renewUnsupported) return;
+    try {
+      const expiresAt = await renewRelayChannel(this.channel);
+      if (expiresAt) this.channel.expiresAt = expiresAt;
+      this.onEvent?.("renewed", { expiresAt: expiresAt ?? null });
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status === 404 || status === 410) {
+        // Deployment without the renew route (or a dead channel): keep the
+        // old fixed-lifetime behaviour, quietly.
+        this.renewUnsupported = true;
+        return;
+      }
+      // Transient (network/429): try again next tick.
+    }
+    this.scheduleRenewal();
   }
 
   open(iceServers: unknown[], onEvent?: PeerEvent): Promise<OpenedPeer> {
@@ -535,6 +593,10 @@ export class RelayTransport implements PeerTransport {
 
   close(): void {
     this.closed = true;
+    if (this.renewTimer) {
+      clearTimeout(this.renewTimer);
+      this.renewTimer = null;
+    }
     this.opened?.close();
     this.opened = null;
   }

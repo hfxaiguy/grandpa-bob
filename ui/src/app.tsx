@@ -126,9 +126,17 @@ function SettingsMenu(props: { events: number; onSession: () => void }) {
               session
             </button>
           </Show>
-          <a class="menu-row menu-action" role="menuitem" href="/settings" onClick={() => setOpen(false)}>
+          <button
+            type="button"
+            class="menu-row menu-action"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              window.dispatchEvent(new Event("bob:show-settings"));
+            }}
+          >
             settings page
-          </a>
+          </button>
           <div class="menu-section">tiles</div>
           <TileToggles />
         </div>
@@ -208,9 +216,13 @@ export function App() {
           fallback={
             <>
               <button onClick={() => setShowSession(true)}>session</button>
-              <a class="link-btn" href="/settings">
+              <button
+                type="button"
+                class="link-btn"
+                onClick={() => window.dispatchEvent(new Event("bob:show-settings"))}
+              >
                 settings
-              </a>
+              </button>
             </>
           }
         >

@@ -26,9 +26,11 @@ Rime keys. The rest needs a real key or a running model:
       over `wss://stt.api.rime.ai/ws`; try an `es` request.
 - [ ] **Rime Mist v3 TTS** — key + voice (e.g. `cove`), press 🔊; confirm WAV
       playback and that a long reply is chunked into one joined clip.
-- [ ] **KittenTTS** — `pip install kittenml`, `npm run tts:up`; `/health`
-      reports `loaded:false` until the first request; press 🔊 and confirm
-      playback.
+- [ ] **KittenTTS** — `npm run tts:up -- --install` (provisions
+      `~/.bobkat/tts-venv` when `kittenml` is missing), then `npm run tts:up`;
+      `/health` reports `loaded:false` until the first request; press 🔊 and
+      confirm playback. The button shows … while it synthesizes and ⏹ while it
+      plays.
 - [ ] **Keys round-trip** — save an AssemblyAI key, switch to Rime, save a
       second key, switch back: both must still be present (`stt.keys` /
       `tts.keys`).
@@ -83,7 +85,41 @@ per request; never stored or logged. No new HTTP surface.
 
 ---
 
-## 4. Voice catalog picker (optional)
+## 4. Relay channel renewal — done (service + client, 2026-11-06)
+
+BobSwap published renewal. Live verification against
+`https://bobswap.hfxaiguy.com` on 2026-11-06:
+
+```
+create                   201  expires_at returned
+join                     200  expires_at = now + 1800s (default)
+renew (offerer)          200  new expires_at
+renew (joiner, ttl=7200) 200  expires_at = now + 7200s (TTL honored)
+renew (foreign token)    403  invalid role token
+```
+
+Contract (from the updated `/docs/agents`): either paired role may renew while
+the channel is unexpired, no peer action and no code; `expires_at` is set to
+`now + ttl_seconds` (default 1800); **no absolute cap** — repeated renewals keep
+the pairing alive; the operator maximum TTL is 86400 s by default (adjustable
+60–604800 s); revoke with `DELETE`; renewal before pairing is `409`; expired or
+deleted is `410`/`404`.
+
+**Client — done:**
+- `RelayTransport` renews every 10 minutes while the channel exists and stores
+  the new `expires_at`.
+- `404`/`410` marks renewal unsupported and falls back to the fixed lifetime.
+- The browser no longer refuses to resume on a stale stored expiry.
+- `npm run test:relay-renew` covers parsing, the role token, and the fallback.
+
+**Only remaining check:** pair a phone over relay, leave it closed for more than
+30 minutes while the desktop keeps running, then reopen the tab — it should
+resume without a new code. (The desktop's renewal is what keeps the channel
+alive; if the desktop process is down, no signaling is possible either way.)
+
+---
+
+## 5. Voice catalog picker (optional)
 
 The Settings card uses a datalist with KittenTTS's eight voices; Rime voices
 must be typed. Populate both from their catalogs instead:
@@ -103,6 +139,9 @@ CORS). **Estimate:** ~0.5 day.
 - **Cache scope**: the 48 MB TTS cache is per Node process and not persisted.
 - **Rime TTS**: 1,000 chars/request is handled by chunking; 78 voices, four
   languages, $0.03/min on Flex (free tier: $50/mo credit).
+- **Relay lifetime**: renewed every 10 minutes while the desktop runs (live
+  since 2026-11-06), up to the operator maximum TTL (default 24 h); without the
+  renew route, BobSwap's fixed 30-minute lifetime applies (see § 4).
 - **KittenTTS**: code Apache-2.0, **weights licensed separately** — check the
   model card before shipping; `pip install kittenml` also pulls PyTorch.
 - **No CI**: tests are npm scripts (`test:stt-dispatch`, `test:stt-cloud`,

@@ -4,20 +4,19 @@
  * The chat UI (`ui/`, SolidJS) mounts directly in this window with the
  * transport shim installed, so its `/api/*` calls hit the in-browser backend.
  * The settings page is the shared server-rendered HTML, hosted in a
- * same-origin iframe (with the shim). Links between "/" and "/settings" swap
- * the two instead of navigating away.
+ * same-origin iframe (with the shim). Settings is an in-page view only: the
+ * chat UI dispatches `bob:show-settings`, the iframe's "chat" link swaps back,
+ * and the address bar always stays at "/".
  */
 import { buildSettingsHtml } from "./ui/pages";
 import { installShim, SHIM_SCRIPT } from "./server/shim";
 import { mountApp } from "../../ui/src/mount";
 import type { LocalBackend } from "./server/local-backend";
 
-export type UiPage = "chat" | "settings";
-
 export function hostUi(
   backend: LocalBackend,
   container: HTMLElement,
-  opts: { page: UiPage; port: number; sttLabel?: string },
+  opts: { port: number },
 ): void {
   (window as unknown as { __bobBackend?: LocalBackend }).__bobBackend = backend;
   (window as unknown as { __bobBackendReady?: Promise<void> }).__bobBackendReady = backend.ready;
@@ -79,9 +78,9 @@ export function hostUi(
               .catch(() => {});
             return;
           }
-          if (raw === "/" || raw === "/settings") {
+          if (raw === "/") {
             event.preventDefault();
-            if (raw === "/") showChat();
+            showChat();
           }
         },
         true,
@@ -89,20 +88,9 @@ export function hostUi(
     });
   };
 
-  // The chat UI links to /settings; intercept that click at the container.
-  container.addEventListener(
-    "click",
-    (event) => {
-      const anchor = (event.target as HTMLElement | null)?.closest?.("a") as HTMLAnchorElement | null;
-      if (!anchor) return;
-      if ((anchor.getAttribute("href") || "") === "/settings") {
-        event.preventDefault();
-        showSettings();
-      }
-    },
-    true,
-  );
+  // Settings is an in-page view: the chat UI asks for it with an event. No URL
+  // change and no server route exist for it.
+  window.addEventListener("bob:show-settings", showSettings);
 
-  if (opts.page === "settings") showSettings();
-  else showChat();
+  showChat();
 }

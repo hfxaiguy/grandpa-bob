@@ -235,10 +235,15 @@ channel flow used between two browsers:
    read-scope BobSwap key) and enter the relay URL in the tab. The relay carries
    only SDP/ICE; the datachannel still carries files, ops and voice. A reload,
    profile switch or short drop reopens the same relay channel with a
-   nonce-tagged reconnect, so it needs no new code while the channel is alive
-   (30 minutes after the join). Once it expires, run `npm run pair -- --relay`
-   again. Direct mailbox pairings keep the automatic client-key reconnect
-   below.
+   nonce-tagged reconnect, so it needs no new code while the channel is alive.
+   The desktop renews the channel every 10 minutes with
+   `POST /api/v1/sync/channels/{id}/renew` (live since 2026-11-06; either role
+   may call it, no peer action and no code). Repeated renewals keep the pairing
+   alive without an absolute cap; the operator's maximum TTL (default 24 h) is
+   the hard bound, and `DELETE`/inactivity ends it. Without the renew route,
+   BobSwap's fixed 30-minute lifetime applies and `npm run pair -- --relay` is
+   needed again. Direct mailbox pairings keep the automatic client-key
+   reconnect below.
 2. In the tab, **Sync… → Pair… → Pair with a code**, select **My desktop /
    server**, and enter the code — no channel id. The dialog shows the active
    profile and, once the channel opens, the mirror + exec capabilities the
@@ -266,6 +271,47 @@ The product process does not mount `/fs`, `/git`, `/sql` or `/roots`; the
 standalone `storage-server` CLI keeps them for tests/debug. Only `/health`
 remains on the channel server; speech-to-text rides the peer channel
 (`stt-run`).
+
+### Permanent phone pairing: a reachable mailbox beats the relay
+
+BobSwap fixes a sync channel's expiry at **30 minutes after the join**, and its
+contract says signal writes and heartbeats do not renew it. So a relay pairing
+is a session, not a durable pairing: reloads reconnect within those 30 minutes
+(nonce-tagged resume), then a new code is required.
+
+A phone that should stay paired across reloads and backgrounding should use the
+**direct mailbox**, reachable over HTTPS. Tailscale is the least-exposure way to
+do that:
+
+```sh
+# On the desktop: publish the mailbox over the tailnet with a real certificate.
+tailscale serve --bg --https=443 http://127.0.0.1:8795
+# -> https://<machine>.<tailnet>.ts.net
+
+npm run pair            # NOT --relay: the code lives on the local mailbox
+```
+
+On the phone: **Sync… → Pair… → My desktop / server**, enter
+`https://<machine>.<tailnet>.ts.net` as the mailbox URL plus the code. After
+this pairing, reconnects use the pinned **client key** to create a fresh channel
+on every load (`POST /api/v1/sync/channels` with `Authorization: Bearer`), so no
+code or desktop action is needed again.
+
+Requirements and notes:
+
+- The phone must be on the tailnet. The page origin must be allowed in
+  `BOB_APP_ORIGINS` (defaults already include
+  `https://bobkat.hfxaiguy.com`); add other origins there.
+- The page is HTTPS, so the mailbox must be HTTPS too — Tailscale Serve provides
+  the certificate. A plain `http://` tailnet URL is blocked as mixed content.
+- Exposure is tailnet-only, not public. The mailbox admin API stays CLI-only
+  (a browser request with an `Origin` header gets `403`), and joins are limited
+  to 3 attempts per IP per minute.
+- A Cloudflare Tunnel works too but exposes the mailbox publicly; prefer the
+  tailnet unless you add an access layer in front.
+
+Keep the relay for what it is good at: a one-off pairing with someone else's
+device, where neither side wants to open a mailbox.
 
 ## 7. Troubleshooting
 

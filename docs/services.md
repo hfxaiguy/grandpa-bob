@@ -37,6 +37,13 @@ is the CPU-friendly `KittenML/kitten-tts-nano-0.8-int8`; swap it with
 `KITTEN_TTS_MODEL`. The desktop returns base64 WAV over a `tts-run` control op
 and the tab plays it.
 
+`npm run tts:up` starts it with an interpreter that can import `kittenml`:
+`KITTEN_PYTHON` if set, else `python3` when it already works, else a venv at
+`~/.bobkat/tts-venv` (created by `npm run tts:up -- --install` with `uv`,
+pinned to Python 3.12 — newer Pythons often have no onnxruntime wheels).
+kittenml pulls PyTorch, so that install is a multi-GB download. The first
+synthesis downloads the model.
+
 `rime` posts to `https://mist.api.rime.ai/` with `Accept: audio/wav` and a
 bearer key, returning WAV. Its limits: **1,000 characters per request**, one
 voice from Rime's catalog (`speaker`), and languages that depend on the voice
@@ -45,9 +52,12 @@ resulting WAVs are joined into one clip. The key is stored in the browser and
 attached per `tts-run` request; Node never persists it.
 
 Synthesis is cached in memory per provider+voice+language+text (48 MB FIFO), so
-replaying the same reply costs nothing. The 🔊 button toggles: pressing it again
-stops the clip. **Auto-speak** (Settings → Speech) reads each new trunk reply
+replaying the same reply costs nothing. The 🔊 button shows **…** while the
+clip is synthesized (pressing again cancels), **⏹** while it plays, and pressing
+it again stops. **Auto-speak** (Settings → Speech) reads each new trunk reply
 aloud; browsers that block autoplay will simply ignore it until a manual press.
+The same card has a global **Enable text-to-speech** switch: off hides the 🔊
+buttons entirely and doubles as the per-browser mute.
 
 KittenTTS code is Apache-2.0; the model weights are licensed separately — check
 the model card before shipping. `pip install kittenml` also pulls PyTorch even
@@ -90,12 +100,25 @@ Settings page on the same origin:
 - Unknown provider → `unknown stt provider "x" — available: …`.
 - Any adapter failure → `stt provider "x" failed: …` / `tts provider "x" failed: …`.
 - Unpaired tab + non-browser provider → "pair a desktop …".
+- KittenTTS not running → `cannot reach the KittenTTS server at http://127.0.0.1:8185 … — start it with npm run tts:up`, or pick Rime Mist v3.
+- `the browser blocked playback` → the click no longer owns the user gesture;
+  focus the tab and press 🔊 again.
+- `the desktop link is offline` → pairing is stored but the live WebRTC link is
+  not up (channel restarted, another tab holds the host lease, or a relay
+  session ended). Voice calls `__bobConnect` once to resume it; if that fails,
+  reconnect in Sync… → Pair…, reload the tab, or take over in the other tab.
 
 ## Settings → Speech
 
 - STT provider, language, cloud key (stored per provider), Save, Test.
+- **Enable text-to-speech** — the global switch: off hides every 🔊 button and
+  stops auto-speak; on is the default.
 - TTS provider, voice (KittenTTS voices are suggested in a datalist), cloud TTS
   key, and **Speak new replies automatically** — saved with the same button.
+- The chosen provider and voice travel with every `tts-run`, so switching takes
+  effect on the next 🔊 press (the desktop's `.env` is only the default).
+- The 🔊 button shows **…** while the clip is synthesized (press again to
+  cancel), then **⏹** while it plays; errors surface as a toast.
 - **Test** probes AssemblyAI with a body-less POST: `404` = key rejected,
   `400`/`422`/2xx = key accepted. Rime keys are verified by the desktop on
   first use; local providers are tested by recording.
@@ -114,7 +137,8 @@ Settings page on the same origin:
 - `src/bridge/peer.ts` — `stt-run` / `tts-run` ops
 - `ui/src/store.ts` — `transcribeBlob` routing + `speakText`
 - `web/src/ui/pages.ts` — the Settings → Speech card
-- `scripts/kitten-tts-server.py` — the local TTS service (`npm run tts:up`)
+- `scripts/kitten-tts-server.py` — the local TTS service; `scripts/tts-up.mjs`
+  picks an interpreter with `kittenml` (venv at `~/.bobkat/tts-venv` via `uv`)
 
 ## Tests
 

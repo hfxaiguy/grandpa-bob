@@ -49,6 +49,10 @@ const store = new MemoryStorage();
 assert.deepEqual(loadTtsConfig(store), { provider: "" });
 saveTtsConfig({ provider: "kitten", voice: " Luna " }, store);
 assert.deepEqual(loadTtsConfig(store), { provider: "kitten", voice: "Luna" });
+saveTtsConfig({ enabled: false }, store);
+assert.equal(loadTtsConfig(store).enabled, false);
+saveTtsConfig({ enabled: true }, store);
+assert.equal(loadTtsConfig(store).enabled, undefined); // on is the default, not stored
 saveTtsConfig({ provider: "rime", voice: "cove", keys: { rime: "  key " } }, store);
 assert.deepEqual(loadTtsConfig(store), {
   provider: "rime",
@@ -131,6 +135,17 @@ const first = await synthesizeWithProvider("kitten", "cache me", {}, rtCached, c
 const second = await synthesizeWithProvider("kitten", "cache me", {}, rtCached, countingFetch);
 assert.equal(cacheFetches, 1);
 assert.deepEqual(Array.from(first.bytes), Array.from(second.bytes));
+
+// A down server is named with the address and the fix, not "fetch failed".
+const downDispatcher = createTtsDispatcher(
+  createTtsAdapters(rt, async () => {
+    throw new Error("fetch failed");
+  }),
+);
+await assert.rejects(
+  () => downDispatcher("kitten", "hi"),
+  /cannot reach the KittenTTS server at http:\/\/kitten.local .*npm run tts:up/,
+);
 
 // Unknown provider names the available ids.
 await assert.rejects(() => dispatch("nope", "hi"), /unknown tts provider "nope" — available: kitten, rime/);

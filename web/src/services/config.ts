@@ -20,6 +20,8 @@ export interface TtsServiceConfig {
   /** "" = let the desktop use its configured provider (`TTS_PROVIDER`). */
   provider: string;
   voice?: string;
+  /** false hides the 🔊 buttons and stops auto-speak; default is on. */
+  enabled?: boolean;
   /** Speak each new trunk reply automatically. */
   autoSpeak?: boolean;
   /** Provider id → API key. Keys stay in this browser. */
@@ -75,6 +77,7 @@ function normalizeTts(raw: unknown): TtsServiceConfig {
       : "";
   const out: TtsServiceConfig = { provider };
   if (typeof tts.voice === "string" && tts.voice.trim()) out.voice = tts.voice.trim();
+  if (tts.enabled === false) out.enabled = false;
   if (tts.autoSpeak === true) out.autoSpeak = true;
   if (tts.keys && typeof tts.keys === "object") {
     const keys: Record<string, string> = {};

@@ -163,7 +163,11 @@ export function buildSettingsHtml(config: UiConfig): string {
   </div>
   <label>Cloud STT key <span id="cur-speech-key" style="float:right"></span></label>
   <input id="speech-key" type="password" placeholder="paste the key for the chosen cloud provider (blank keeps the saved one)">
-  <div class="grid-2" style="margin-top:12px">
+  <label style="display:flex; gap:8px; align-items:center; margin-top:12px">
+    <input id="speech-tts-enabled" type="checkbox" style="width:auto">
+    Enable text-to-speech (🔊 buttons and auto-speak)
+  </label>
+  <div class="grid-2" style="margin-top:8px">
     <div>
       <label>TTS provider</label>
       <select id="speech-tts-provider">
@@ -982,6 +986,7 @@ function loadSpeech() {
   const tts = speechTtsConfig();
   if ($("speech-tts-provider")) $("speech-tts-provider").value = tts.provider || "";
   if ($("speech-tts-voice")) $("speech-tts-voice").value = tts.voice || "";
+  if ($("speech-tts-enabled")) $("speech-tts-enabled").checked = tts.enabled !== false;
   if ($("speech-tts-auto")) $("speech-tts-auto").checked = tts.autoSpeak === true;
   if ($("cur-tts-key")) {
     const saved = tts.provider && tts.keys && tts.keys[tts.provider];
@@ -1004,6 +1009,8 @@ function saveSpeech() {
     const tts = Object.assign({}, raw.tts || {});
     tts.provider = $("speech-tts-provider").value;
     tts.voice = $("speech-tts-voice").value.trim();
+    if ($("speech-tts-enabled").checked) delete tts.enabled;
+    else tts.enabled = false;
     tts.autoSpeak = $("speech-tts-auto").checked === true;
     const ttsKey = $("speech-tts-key").value.trim();
     if (ttsKey && tts.provider) {

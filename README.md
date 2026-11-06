@@ -351,6 +351,17 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    so a reload, profile switch or short network drop resumes without a new
    code while the channel is alive (30 minutes after the join). After that,
    run `npm run pair -- --relay` again.
+   Relay channels are renewed every 10 minutes by the desktop via
+   `POST /api/v1/sync/channels/{id}/renew` (live since 2026-11-06; either role,
+   no peer action, no code). Repeated renewals keep the pairing alive up to the
+   operator's maximum TTL (default 24 h, adjustable 60 s–7 days); without the
+   route the fixed 30-minute lifetime applies. For a permanent pairing without
+   depending on the relay, publish the mailbox over HTTPS and pair to that
+   instead: `tailscale serve --bg --https=443 http://127.0.0.1:8795`, then
+   `npm run pair` (no `--relay`) and enter
+   `https://<machine>.<tailnet>.ts.net` in the phone's **My desktop / server**
+   dialog. Reconnects then use the pinned client key — no further codes. See
+   `docs/pairing-and-sync.md` § “Permanent phone pairing”.
    While the tab is paired, it streams its run log to
    `~/.bobkat/peers/<profile>/logs/grandma-kat.db`; read it with
    `npm run peer:log -- --profile <name>` (latest errors by default, `--all`

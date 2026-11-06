@@ -730,8 +730,9 @@ export function wireSyncUi(getSync: SyncGetter): void {
         await bindDesktopMirror(profile, connection.info.mirror);
         progressDone();
         if (connection.info.relay) {
-          // BobSwap channels are single-session signaling: reloading would
-          // throw this datachannel away and there is nothing to resume.
+          // The desktop renews the relay channel every 10 minutes, so a reload
+          // reconnects with a nonce-tagged resume as long as it runs. Adopt
+          // the live connection now so this pairing does not need a reload.
           const globals = window as unknown as {
             __bobServer?: unknown;
             __bobAdoptServer?: (connection: ServerConnection) => void;
@@ -740,7 +741,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
           else globals.__bobServer = connection;
           setStatus(
             `paired over the relay for this tab session · fingerprint ${connection.info.fingerprint} — ` +
-              "keep this tab open; after a reload run `npm run pair -- --relay` again",
+              "reloads reconnect while the desktop keeps the channel renewed (no new code); if the desktop stops, a new code is needed",
           );
           updateLiveStatus();
           return;

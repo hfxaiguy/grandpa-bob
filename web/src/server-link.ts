@@ -65,10 +65,15 @@ export interface ServerConnection {
   transcribe(audio: Uint8Array, ext: string, provider?: string, apiKey?: string, language?: string): Promise<string>;
   /**
    * Synthesize speech on the desktop/server over the peer channel (`tts-run`).
-   * `voice` overrides the desktop's configured voice; absent one the desktop
-   * uses its default.
+   * `provider` is the id chosen in Settings → Speech; absent one the desktop
+   * uses its configured default. `voice` overrides its configured voice.
    */
-  synthesize(text: string, voice?: string, apiKey?: string): Promise<{ bytes: Uint8Array; ext: string }>;
+  synthesize(
+    text: string,
+    voice?: string,
+    apiKey?: string,
+    provider?: string,
+  ): Promise<{ bytes: Uint8Array; ext: string }>;
   /**
    * Send one control frame (the peer log stream multiplexes over this; see
    * web/src/peer-log.ts). Frames are chunked by the transport.
@@ -496,7 +501,7 @@ function finishHandshake(
       });
       return result;
     },
-    synthesize(text, voice, apiKey) {
+    synthesize(text, voice, apiKey, provider) {
       const id = crypto.randomUUID();
       const result = new Promise<{ bytes: Uint8Array; ext: string }>((resolve, reject) => {
         pendingTts.set(id, (answer) => {
@@ -508,7 +513,14 @@ function finishHandshake(
           reject(new Error("the desktop did not answer the speech request"));
         }, 2 * 60_000);
       });
-      opened.send({ op: "tts-run", id, text, ...(voice ? { voice } : {}), ...(apiKey ? { apiKey } : {}) });
+      opened.send({
+        op: "tts-run",
+        id,
+        text,
+        ...(provider ? { provider } : {}),
+        ...(voice ? { voice } : {}),
+        ...(apiKey ? { apiKey } : {}),
+      });
       return result;
     },
     close: () => opened.close(),

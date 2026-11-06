@@ -109,8 +109,10 @@ async function handleStatic(req, res) {
     return send(res, 200, file, headers);
   }
 
-  // SPA routes (/settings) fall back to index.html. Missing assets stay 404 so
-  // a bad bundle reference is visible instead of masquerading as the app.
+  // SPA paths (a stray bookmark, for example) fall back to index.html; the app
+// normalizes the address to "/" and settings stays an in-page view. Missing
+// assets stay 404 so a bad bundle reference is visible instead of masquerading
+// as the app.
   const wantsHtml =
     !path.extname(rel) || (req.headers.accept ?? "").includes("text/html");
   if (wantsHtml) {

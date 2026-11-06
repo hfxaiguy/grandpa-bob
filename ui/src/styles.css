@@ -1016,9 +1016,10 @@ body.dragging-tile { user-select: none !important; }
 /* ── message provenance ("what was this written from") ─────────────── */
 
 .bubble { position: relative; }
-.bubble.has-info { padding-right: 30px; }
-.bubble.has-speak { padding-right: 56px; }
-.bubble-speak { right: 26px; }
+.bubble.has-info,
+.bubble.has-speak { padding-right: 30px; }
+/* Both icons: ⓘ at the right edge, 🔊 one slot left. */
+.bubble.has-info.has-speak { padding-right: 56px; }
 .bubble-info {
   position: absolute;
   top: 3px;
@@ -1032,7 +1033,14 @@ body.dragging-tile { user-select: none !important; }
   opacity: 0.55;
   cursor: pointer;
 }
+/* Higher specificity on purpose: `.bubble-info` sets `right` and a plain
+   `.bubble-speak` rule would lose by source order, stacking 🔊 on top of ⓘ —
+   the later sibling then took every click meant for the speaker. */
+.bubble.has-info.has-speak > .bubble-speak { right: 26px; }
 .bubble-info:hover { opacity: 1; color: var(--accent); }
+/* Preparing a clip, or cancelling one: keep the icon bright enough to show
+   the press landed. */
+.bubble-info.bubble-speak.busy { opacity: 1; color: var(--accent); }
 
 .prov-card { width: min(840px, 94vw); }
 .prov-body { overflow: auto; padding: 10px 12px 14px; }

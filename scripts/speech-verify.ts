@@ -64,9 +64,21 @@ try {
 
 try {
   await execFileAsync("python3", ["-c", "import kittenml"]);
-  add("kittenml package", "ok", "installed");
+  add("kittenml package", "ok", "installed (python3)");
 } catch {
-  add("kittenml package", "skip", "not installed — `pip install kittenml`");
+  // `npm run tts:up` provisions its own interpreter when python3 is too new.
+  const state = process.env.BOB_STATE_DIR?.trim() || `${process.env.HOME}/.bobkat`;
+  const venv = `${state}/tts-venv/bin/python`;
+  try {
+    await execFileAsync(venv, ["-c", "import kittenml"]);
+    add("kittenml package", "ok", `installed (${venv})`);
+  } catch {
+    add(
+      "kittenml package",
+      "skip",
+      "not installed — `npm run tts:up -- --install` provisions ~/.bobkat/tts-venv with uv",
+    );
+  }
 }
 
 // Cloud STT: AssemblyAI (CORS check happens in the browser; this probes the key).

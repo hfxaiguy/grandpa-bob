@@ -426,3 +426,9 @@ Nothing in this plan. Pick up the open items in
 - **2026-11-06** — plan complete and archived under `roadmap/complete/`. The
   pending checklist and the three follow-ups moved to
   `roadmap/cleanup/service-adapters-leftovers.md`.
+- **2026-11-06** — post-completion: a global **Enable text-to-speech** switch
+  (Settings → Speech) hides the 🔊 buttons and stops auto-speak; stored as
+  `tts.enabled:false` (on is the default).
+- **2026-11-06** — settings stays an in-page view: the chat dispatches
+  `bob:show-settings`, the `/settings` links were removed, and a stray URL
+  normalizes to `/` on load. There is no settings route.

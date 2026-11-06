@@ -12,6 +12,7 @@
  */
 import type { Platform } from "../platform/types";
 import { resolveTreeEntry } from "../tree-files";
+import { listTreeSources } from "../tree-sources";
 
 export const DEFAULT_PATTERN_PATH = "patterns/trunk.prod.mjs";
 
@@ -38,8 +39,18 @@ export async function resolvePatternPath(platform: Platform, pattern?: string | 
   const entry = await resolveTreeEntry(platform.workspaceRoot, raw).catch(() => null);
   if (entry) return entry.file;
 
+  // The UI defaults to "trunk" when it finds no trees, so this is also the
+  // message a blank or un-synced profile reaches. Say what is actually wrong.
+  const trees = await listTreeSources(platform.workspaceRoot).catch(() => []);
+  if (!trees.length) {
+    throw new Error(
+      "this profile's workspace has no trees yet — import a workspace or seed, " +
+        "pull the desktop mirror, or reload with ?reseed=1 (expected patterns/trunk.prod.mjs)",
+    );
+  }
   throw new Error(
     `unknown tree '${raw}': no patterns/${raw}.prod.mjs or app/${raw}/tree.prod.mjs ` +
-      `(a dotted name maps to its nested folder, e.g. a.b → app/a/app/b/tree.prod.mjs)`,
+      `(a dotted name maps to its nested folder, e.g. a.b → app/a/app/b/tree.prod.mjs). ` +
+      `Available trees: ${trees.map((tree) => tree.name).join(", ")}`,
   );
 }

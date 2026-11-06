@@ -584,7 +584,12 @@ function desktopTranscriber(): DesktopTranscriber | null {
 }
 
 interface DesktopSpeaker {
-  synthesize(text: string, voice?: string, apiKey?: string): Promise<{ bytes: Uint8Array; ext: string }>;
+  synthesize(
+    text: string,
+    voice?: string,
+    apiKey?: string,
+    provider?: string,
+  ): Promise<{ bytes: Uint8Array; ext: string }>;
 }
 
 function desktopSpeaker(): DesktopSpeaker | null {
@@ -595,60 +600,154 @@ function desktopSpeaker(): DesktopSpeaker | null {
     : null;
 }
 
+/**
+ * A live desktop handle, or a reconnected one. The pairing survives a channel
+ * restart in localStorage, but the peer handle is only set once resume
+ * succeeds — so try the one reconnect the web app exposes before giving up.
+ */
+async function liveDesktopPeer<T>(get: () => T | null): Promise<T | null> {
+  const existing = get();
+  if (existing) return existing;
+  const connect = (globalThis as { __bobConnect?: () => Promise<boolean> }).__bobConnect;
+  if (typeof connect !== "function") return null;
+  try {
+    await connect();
+  } catch {
+    /* stays offline; the caller reports it */
+  }
+  return get();
+}
+
+/** Distinguish "never paired" from "paired but the link is down". */
+function desktopOfflineError(purpose: "transcribe audio" | "speak replies"): Error {
+  let paired = false;
+  try {
+    paired = Object.keys(localStorage).some((key) => key.startsWith("bob:server:"));
+  } catch {
+    /* private mode: treat as unpaired */
+  }
+  let remote = false;
+  try {
+    remote = !["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname);
+  } catch {
+    /* no location (tests) */
+  }
+  if (paired) {
+    return new Error(
+      remote
+        ? "the relay link is offline — relay sessions are single-session. On the desktop run `npm run pair -- --relay` for a new code, then pair again here; keep this tab open"
+        : "the desktop link is offline — the channel may have restarted. Reconnect in Sync… → Pair… or reload the tab; if another tab is hosting this workspace, take over there first",
+    );
+  }
+  return new Error(
+    remote
+      ? "this browser is not paired — on a remote page use Sync… → Pair… → BobSwap relay with a code from `npm run pair -- --relay` on the desktop (the loopback mailbox is unreachable from this network)"
+      : `this device is not paired with a desktop — pair one in Sync… → Pair… to ${purpose}`,
+  );
+}
+
 /** One clip at a time: pressing speak again stops the previous reply. */
 let currentSpeech: HTMLAudioElement | null = null;
+/** Object URL behind `currentSpeech`; revoked when it ends or is stopped. */
+let currentSpeechUrl: string | null = null;
+/** Bumped on every press so a slow synthesis cannot start after a newer one. */
+let speechToken = 0;
 /** The bubble key currently speaking (null = silent). */
 export const [speechKey, setSpeechKey] = createSignal<string | null>(null);
+/** The bubble key whose clip is still being synthesized (null = idle). */
+export const [speechBusy, setSpeechBusy] = createSignal<string | null>(null);
+/** Global TTS switch (Settings → Speech). Read once per app load. */
+export const [ttsEnabled] = createSignal(loadTtsConfig().enabled !== false);
+
+function releaseClip(): void {
+  if (!currentSpeechUrl) return;
+  URL.revokeObjectURL(currentSpeechUrl);
+  currentSpeechUrl = null;
+}
 
 export function stopSpeech(): void {
   currentSpeech?.pause();
   currentSpeech = null;
+  releaseClip();
   setSpeechKey(null);
 }
+
+/**
+ * A zero-length WAV. Playing it inside the click handler unlocks programmatic
+ * playback for later: iOS/Safari refuses `play()` once the gesture is over,
+ * and synthesis always is (it crosses the peer channel).
+ */
+const SILENT_WAV =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAIA+AAABAAgAZGF0YQAAAAA=";
 
 /**
  * Speak a reply with the TTS provider configured in Settings → Speech.
  * Local TTS (KittenTTS / Rime via the desktop) returns audio over the
  * authenticated peer channel (`tts-run`) and plays here. Passing the same
- * `key` again stops playback.
+ * `key` again stops playback; pressing it while the clip is still being
+ * prepared cancels the request.
  */
 export async function speakText(text: string, key?: string): Promise<void> {
+  if (!ttsEnabled()) {
+    throw new Error("text-to-speech is off — enable it in Settings → Speech");
+  }
   const trimmed = text.trim();
   if (!trimmed) return;
-  if (key && speechKey() === key) {
+  // A press on the clip that is playing stops it. A key left over from an
+  // earlier clip (its `ended` never fired) must not swallow the click.
+  if (key && speechKey() === key && currentSpeech) {
     stopSpeech();
     return;
   }
-  const speaker = desktopSpeaker();
-  if (!speaker) throw new Error("pair a desktop to speak replies");
-  const tts = loadTtsConfig();
-  const apiKey = isCloudTtsProvider(tts.provider) ? ttsKeyFor(tts) : undefined;
-  const clip = await speaker.synthesize(trimmed, tts.voice || undefined, apiKey);
-  // Copy into an ArrayBuffer-backed view so the Blob part satisfies the DOM typings.
-  const bytes = new Uint8Array(clip.bytes.byteLength);
-  bytes.set(clip.bytes);
-  const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
-  currentSpeech?.pause();
-  const audio = new Audio(url);
-  currentSpeech = audio;
-  if (key) setSpeechKey(key);
-  const clear = (): void => {
-    if (currentSpeech === audio) {
-      currentSpeech = null;
-      setSpeechKey(null);
-    }
-  };
-  audio.addEventListener("ended", () => {
-    URL.revokeObjectURL(url);
-    clear();
-  });
+  // Still preparing this bubble: the press cancels the pending request.
+  if (key && speechBusy() === key) {
+    speechToken += 1;
+    setSpeechBusy(null);
+    return;
+  }
+  const token = ++speechToken;
+  if (currentSpeech) stopSpeech();
+  // Unlock playback while we are still inside the click gesture.
+  const audio = new Audio(SILENT_WAV);
+  void audio.play().catch(() => undefined);
+  if (key) setSpeechBusy(key);
   try {
-    await audio.play();
-  } catch (err) {
-    // Autoplay policy (often mobile): drop the clip and let the caller decide.
-    URL.revokeObjectURL(url);
-    clear();
-    throw err;
+    const speaker = await liveDesktopPeer(desktopSpeaker);
+    if (!speaker) throw desktopOfflineError("speak replies");
+    const tts = loadTtsConfig();
+    const apiKey = isCloudTtsProvider(tts.provider) ? ttsKeyFor(tts) : undefined;
+    const clip = await speaker.synthesize(
+      trimmed,
+      tts.voice || undefined,
+      apiKey,
+      tts.provider || undefined,
+    );
+    if (token !== speechToken) return;
+    // Copy into an ArrayBuffer-backed view so the Blob part satisfies the DOM typings.
+    const bytes = new Uint8Array(clip.bytes.byteLength);
+    bytes.set(clip.bytes);
+    const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+    currentSpeech = audio;
+    currentSpeechUrl = url;
+    if (key) setSpeechKey(key);
+    const clear = (): void => {
+      if (currentSpeech !== audio) return;
+      currentSpeech = null;
+      releaseClip();
+      setSpeechKey(null);
+    };
+    audio.addEventListener("ended", clear);
+    audio.src = url;
+    try {
+      await audio.play();
+    } catch {
+      clear();
+      throw new Error(
+        "the browser blocked playback — tap the speaker again once the page is focused",
+      );
+    }
+  } finally {
+    if (key && speechBusy() === key) setSpeechBusy(null);
   }
 }
 
@@ -680,12 +779,8 @@ async function transcribeBlob(blob: Blob, filename: string): Promise<string> {
     return heardText(text);
   }
 
-  const desktop = desktopTranscriber();
-  if (!desktop) {
-    throw new Error(
-      "this device is not paired with a desktop — pair one in Sync… → Pair… to transcribe audio",
-    );
-  }
+  const desktop = await liveDesktopPeer(desktopTranscriber);
+  if (!desktop) throw desktopOfflineError("transcribe audio");
   // Local backends ignore the key; Rime (cloud, no browser support) needs it.
   return heardText(
     await desktop.transcribe(bytes, ext, stt.provider || undefined, key, stt.language),
@@ -1649,7 +1744,7 @@ export function handleSSE(msg: any): void {
       // Failures (autoplay policy, no pairing) stay silent — this is ambient.
       const spoken = msg.text?.trim();
       if (spoken && msg.level !== "machine" && (msg.app ?? "trunk") === "trunk") {
-        if (loadTtsConfig().autoSpeak) {
+        if (ttsEnabled() && loadTtsConfig().autoSpeak) {
           const turn = state.turns.find((x) => x.turnId === msg.turnId);
           const index = (turn?.emits?.length ?? 1) - 1;
           void speakText(spoken, `${msg.turnId}:${index}`).catch(() => {});

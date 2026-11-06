@@ -113,17 +113,26 @@ async function synthesizeKitten(
   fetchImpl: FetchLike,
 ): Promise<AudioClip> {
   const base = ctx.endpoint ?? rt.kittenUrl;
-  const res = await fetchImpl(`${base}/v1/audio/speech`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model: "kitten-tts",
-      input: text,
-      voice: ctx.voice ?? rt.voice,
-      response_format: "wav",
-      stream: false,
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetchImpl(`${base}/v1/audio/speech`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "kitten-tts",
+        input: text,
+        voice: ctx.voice ?? rt.voice,
+        response_format: "wav",
+        stream: false,
+      }),
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `cannot reach the KittenTTS server at ${base} (${detail}) — start it with ` +
+        "`npm run tts:up`, or pick Rime Mist v3 in Settings → Speech",
+    );
+  }
   if (!res.ok) {
     const detail = (await res.text().catch(() => "")).slice(0, 300);
     throw new Error(`KittenTTS failed: HTTP ${res.status}${detail ? ` — ${detail}` : ""}`);

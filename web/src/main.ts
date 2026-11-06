@@ -306,18 +306,9 @@ async function connectServerPeer(): Promise<boolean> {
   const folder = mirrorFolder() ?? "";
   if (!info || !syncHandle || serverConnecting || serverConnection) return false;
   if (lease?.status() !== "primary") return false;
-  if (info.relay && info.relayChannel?.expiresAt) {
-    const expires = Date.parse(info.relayChannel.expiresAt);
-    if (Number.isFinite(expires) && Date.now() >= expires) {
-      renderMirrorStatus({
-        phase: "offline",
-        detail: "relay channel expired — run npm run pair -- --relay",
-        folder,
-        lastSyncAt: null,
-      });
-      return false;
-    }
-  }
+  // The stored relay expiry can be stale: the desktop renews the channel while
+  // it waits for a reconnect. Let the resume attempt decide instead of
+  // refusing locally — a dead channel reports 404/410 with a re-pair hint.
   serverConnecting = true;
   try {
     const connection = await resumeServer({
@@ -1617,7 +1608,12 @@ async function main(): Promise<void> {
     __bobServer?: unknown;
     __bobOpsProbe?: unknown;
     __bobAdoptServer?: unknown;
+    __bobConnect?: () => Promise<boolean>;
   };
+  // Voice input calls this when its peer handle is missing: the pairing may
+  // still be resumable (channel restart, tab reload) even though the live
+  // connection is gone.
+  globals.__bobConnect = () => connectServerPeer();
   if (serverConnection) {
     globals.__bobServer = serverConnection;
     globals.__bobOpsProbe = (command: string, args: string[]) => agent.probeOps(command, args);
@@ -1696,7 +1692,10 @@ async function main(): Promise<void> {
   // keeps moving instead of resetting when it mounts and restores the session.
   (window as unknown as { __bobBootFloor?: number }).__bobBootFloor = CHAT_BOOT_FLOOR;
   bootProgress("loading the chat…", CHAT_BOOT_FLOOR);
-  hostUi(backend, appEl, { page: "chat", port: 8080 });
+  // Settings is an in-page view; normalize any stray path (an old /settings
+  // bookmark) back to "/" so there is no separate page URL.
+  if (location.pathname !== "/") history.replaceState({}, "", "/");
+  hostUi(backend, appEl, { port: 8080 });
   wireWorkspaceTransfer();
   wireProfileUi({
     activeProfile: () => activeProfile,

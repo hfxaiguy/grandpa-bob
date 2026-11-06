@@ -2,6 +2,27 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-06 — relay renewal + TTS polish
+
+BobSwap now renews sync channels, so a relay-paired phone reconnects after the
+30-minute window without a new pairing code.
+
+- **`src/bridge/relay.ts`**: renews the channel every 10 minutes via
+  `POST /api/v1/sync/channels/{id}/renew`, records `expires_at`, and treats
+  404/410 as "not supported" (fixed-lifetime fallback).
+- **`web/src/main.ts`**: resume no longer refuses on a stale stored expiry; a
+  dead channel reports 404/410 instead. `__bobConnect` lets voice retry the
+  link once before failing.
+- **TTS**: Rime Mist v3 runs desktop-side (no CORS) with per-provider keys;
+  long replies are chunked (Rime at 1,000 chars), WAVs joined, and synthesis is
+  cached (48 MB). TTS can be disabled, auto-speak, and voice suggestions.
+- **`npm run tts:up`**: KittenTTS served by `scripts/tts-up.mjs` /
+  `scripts/kitten-tts-server.py`.
+- **Tests**: `test:relay-renew`; `verify:speech` reports servers, `kittenml`,
+  and exported cloud keys.
+- **Docs/roadmap**: renewal and permanent phone pairing documented; the plan
+  is archived under `roadmap/complete/`, open items under `roadmap/cleanup/`.
+
 ## 2026-11-06 — stop defaulting to `~/grandma-workspace`
 
 `WORKSPACE_DIR` was the pre-`.bobkat` single-workspace switch, but the project
