@@ -2,6 +2,31 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-06 — a failed model call gets one host-level retry
+
+grandma-kat retries the transient failures it knows about, but a provider can
+still shed load with a status it does not classify (Cloudflare 520/522/524, 529)
+or fail again after its retry budget is spent. That surfaced as a failed turn
+even though another attempt could have succeeded. Every model entry is now
+wrapped so a transient failure gets one more attempt with a short backoff.
+
+- **`web/src/agent/model-retry.ts`**: `isRetryableModelError` covers timeouts,
+  truncated/transport failures, 408/409/425/429 and the whole 5xx family. A
+  stop/cancel, 402 quota wall, auth rejection (401/403) and malformed request
+  stay single-shot. `retryModelCall` backs off 750ms before its retry
+  (attempts and sleep are injectable for tests); `withModelRetry` wraps every
+  call through grandma-kat's `callLlm`, so mocks, transforms and protocol
+  handling are unchanged.
+- **`web/src/agent/agent-worker.ts`**: the per-turn registry (including model
+  overrides and the no-models mock) is wrapped once at run time.
+- **`scripts/model-retry-test.ts`** (`npm run test:model-retry`): status
+  classification, backoff, exhaustion, quota/auth non-retry, and a mock
+  handler that fails once with 529 then succeeds.
+
+Tests: `npm run test:model-retry`; `npm run test:models`;
+`npm run test:turn-failure`; `npm run typecheck`; `npm --prefix web run
+typecheck`; `npm run build:web`.
+
 ## 2026-11-06 — Stop keeps the stopped turn's committed conversation
 
 Pressing **Stop** mid-turn used to drop the user's last message from the

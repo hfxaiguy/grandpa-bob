@@ -101,3 +101,18 @@ declare module "grandma-kat" {
   const _default: { knit: typeof knit; resume: typeof resume };
   export default _default;
 }
+
+declare module "grandma-kat/llm" {
+  export interface LlmCallResult {
+    content: string;
+    reasoning?: string | null;
+    tool_calls?: unknown[] | null;
+    raw?: unknown;
+    usage?: { input?: number; output?: number };
+  }
+  export function callLlm(
+    model: unknown,
+    messages: unknown[],
+    options?: { tools?: unknown; temperature?: number },
+  ): Promise<LlmCallResult>;
+}

@@ -37,10 +37,37 @@ export type ModelThinking = {
   options?: Record<string, unknown>;
 };
 
+/** The response shape a model call (or an in-page mock handler) returns. */
+export type ModelCallResult = {
+  content: string;
+  reasoning?: string | null;
+  tool_calls?: unknown[] | null;
+  raw?: unknown;
+  usage?: { input?: number; output?: number };
+};
+
+/** Options grandma-kat passes to an in-page `handler`. */
+export type ModelCallOptions = {
+  tools?: unknown;
+  temperature?: number;
+  model?: string;
+};
+
+/**
+ * An in-page caller (a test mock, or the host's retrying wrapper). A model
+ * entry with `handler` never touches the network.
+ */
+export type ModelHandler = (
+  messages: unknown[],
+  options: ModelCallOptions,
+) => Promise<ModelCallResult>;
+
 export type ModelEntry = {
   baseURL: string;
   apiKey: string;
   model: string;
+  /** In-page caller; bypasses `baseURL`/protocol handling. */
+  handler?: ModelHandler;
   transform?: ModelTransform;
   /**
    * "ollama" uses Ollama's native /api/chat endpoint; undefined (default) uses

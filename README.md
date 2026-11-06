@@ -664,8 +664,11 @@ web UI as fallback buttons on the failed tile. Choosing one retargets the role
 that failed (`strong`/`cheap`) to the chosen slot — persisted for the
 conversation, exactly like `/model` — and re-runs the killed turn on it. A plain
 5xx or timeout is *not* treated as a quota wall; grandma-kat retries those with
-backoff. Only the model call itself is retried — the turn is re-delivered from
-its last `.human()` checkpoint, so no work before the failure is repeated.
+backoff, and the browser host gives a transient failure that survives that
+budget one more attempt. Only the model call itself is retried — the turn is
+re-delivered from its last `.human()` checkpoint, so no work before the failure
+is repeated. A stop, a quota wall, a rejected key and a malformed request are
+never retried automatically.
 A timeout that survives those retries, and a model call that fails inside an
 app subtree (where the engine folds it into a tool result), both keep the
 **↻ retry** action: on the global banner and, for an app call, on its inline

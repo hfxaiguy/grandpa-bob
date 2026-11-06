@@ -55,6 +55,7 @@ import { freezeStoppedCheckpoint } from "./stopped-checkpoint";
 import { resolvePatternPath } from "./pattern-path";
 import { isDroppableContinuationError } from "./resume-guard";
 import { loadBrowserModels } from "./models";
+import { withModelRetry } from "./model-retry";
 import { parseModels, type ModelRegistry } from "../model-config";
 import { watchCommits } from "../sync/commit-watch";
 
@@ -657,10 +658,22 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
     }
     return loadBrowserModels(platform, opts.env ?? {});
   })();
-  const models =
+  // The engine retries the transient failures it knows about; this host-level
+  // wrapper gives a call one more chance when a provider sheds load or the
+  // retry budget is spent, so a failed model call can still recover.
+  const models = withModelRetry(
     Object.keys(registry).length > 0
       ? applyModelOverrides(registry, opts.modelOverrides)
-      : { default: { model: "mock", handler: async () => ({ content: `mock: ${task}` }) } };
+      : {
+          default: {
+            baseURL: "",
+            apiKey: "",
+            model: "mock",
+            handler: async () => ({ content: `mock: ${task}` }),
+          },
+        },
+    { signal },
+  );
 
   const onEmit = (value: unknown): void => post({ id: opts.id, type: "emit", value });
   const toolsMap: Record<string, unknown> = {

@@ -74,6 +74,7 @@
     "test:pattern-path": "tsx scripts/pattern-path-test.ts",
     "test:platform": "tsx scripts/platform-fs-test.ts",
     "test:models": "tsx scripts/model-config-test.ts",
+    "test:model-retry": "tsx scripts/model-retry-test.ts",
     "test:ai-claim": "tsx scripts/ai-claim-test.ts",
     "test:sqlite": "tsx scripts/sqlite-tools-test.ts",
     "test:db-sync": "tsx scripts/db-sync-test.ts",
