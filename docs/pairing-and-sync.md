@@ -141,11 +141,15 @@ connection's **DTLS certificate fingerprints**:
 ### What happens after the handshake
 
 The engines exchange replica id + Lamport clock, then reconcile **pull-only**:
-both sides compute the same winner per path (highest origin Lamport, ties to
-the smaller replica id). The loser's bytes are preserved as
-`<path>.conflict-<timestamp>` and not synced. Deletions travel as tombstones.
-A side that was closed journals its changes and catches up on the next
-connection — nothing needs to be re-paired if the pair is still open.
+files that exist on only one side are copied to the other, so both replicas
+keep a copy. For a same-path conflict both sides compute the same winner:
+a journaled edit (highest origin Lamport) is authoritative; when neither side
+has journaled the path, the newer file mtime wins. The loser's bytes are
+preserved as `<path>.conflict-<timestamp>` and not synced. Deletions travel as
+tombstones. A side that was closed journals its changes and catches up on the
+next connection — nothing needs to be re-paired if the pair is still open.
+First pairing with a non-empty mirror is therefore a merge, never a wholesale
+replace of either workspace.
 
 The engine journals every file-tool commit, including commits the agent worker
 makes on its own `Platform`, and schedules a round after a quiet moment. If a

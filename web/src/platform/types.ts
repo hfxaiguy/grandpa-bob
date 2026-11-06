@@ -26,6 +26,16 @@ export interface FileSystem {
   mkdir(path: string, opts: { recursive: boolean }): Promise<void>;
   readdir(path: string, opts: { withFileTypes: true }): Promise<DirEntry[]>;
   stat(path: string): Promise<{ isFile(): boolean; isDirectory(): boolean }>;
+  /**
+   * Size and wall-clock mtime, when the adapter can report them. Sync uses the
+   * mtime as a freshness tie-break for files neither replica has edited.
+   */
+  statDetail?(path: string): Promise<{
+    isFile: boolean;
+    isDirectory: boolean;
+    size: number;
+    mtimeMs: number;
+  }>;
   rm(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
   /**

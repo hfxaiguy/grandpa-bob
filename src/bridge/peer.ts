@@ -471,8 +471,10 @@ export class PeerSession {
           proofProfile: this.proofProfile,
         };
         await savePeer(record);
-        // If the folder already holds a workspace, the first pairing replaces
-        // the tab's copy instead of pushing a stale seed over it.
+        // A non-empty folder is merged with the tab's workspace: both sides
+        // keep their files, and a same-path conflict keeps the fresher copy
+        // (the older bytes become a `.conflict-*` file). `bootstrap` is just
+        // the file count used for the browser's progress message.
         const folder = this.capabilities.mirrorPath ?? defaultMirrorDir(this.capabilities.mirror ?? this.profile);
         await fs.mkdir(folder, { recursive: true });
         const existing = await buildHashmap(createNodePlatform(folder, this.capabilities.exec), folder);

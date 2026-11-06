@@ -65,6 +65,15 @@ export const nodeFs: FileSystem = {
     const st = await fs.stat(path);
     return { isFile: () => st.isFile(), isDirectory: () => st.isDirectory() };
   },
+  statDetail: async (path) => {
+    const st = await fs.stat(path);
+    return {
+      isFile: st.isFile(),
+      isDirectory: st.isDirectory(),
+      size: st.size,
+      mtimeMs: st.mtimeMs,
+    };
+  },
   rm: (path) => fs.rm(path).then(() => undefined),
   rename: (from, to) => fs.rename(from, to).then(() => undefined),
   copyFile: (from, to) => fs.copyFile(from, to).then(() => undefined),

@@ -51,7 +51,12 @@ export function excluded(rel: string): boolean {
   return EXCLUDED.some((re) => re.test(rel));
 }
 
-export type HashEntry = { hash: string; bytes: number };
+/**
+ * One syncable file. `mtime` is the wall-clock freshness used when neither
+ * replica has a journaled edit for the path (see SyncEngine.conflictWinner).
+ * It is 0 when the adapter cannot report a timestamp.
+ */
+export type HashEntry = { hash: string; bytes: number; mtime: number };
 export type Hashmap = Record<string, HashEntry>;
 
 /** Walk the workspace and hash every file (binary-safe). */
@@ -76,7 +81,12 @@ export async function buildHashmap(platform: Platform, root: string): Promise<Ha
             .then((t) => new TextEncoder().encode(t))
             .catch(() => undefined));
         if (!content) continue;
-        map[childRel] = { hash: hashBytes(platform, content), bytes: content.length };
+        const detail = await platform.fs.statDetail?.(childAbs).catch(() => null);
+        map[childRel] = {
+          hash: hashBytes(platform, content),
+          bytes: content.length,
+          mtime: detail?.mtimeMs ?? 0,
+        };
       }
     }
   }

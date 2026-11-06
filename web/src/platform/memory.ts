@@ -9,6 +9,8 @@ import { sha256hex } from "./sha256.js";
 interface Node {
   type: "file" | "dir";
   data?: string | Uint8Array;
+  /** Wall-clock write time; sync's freshness tie-break. */
+  mtime: number;
 }
 
 export function createMemoryFs(): FileSystem {
@@ -23,7 +25,7 @@ export function createMemoryFs(): FileSystem {
     if (nodes.get(abs)?.type === "file") throw new Error(`not a directory: ${abs}`);
     if (!nodes.has(abs)) {
       ensureDir(parent(abs));
-      nodes.set(abs, { type: "dir" });
+      nodes.set(abs, { type: "dir", mtime: Date.now() });
     }
   };
 
@@ -45,7 +47,7 @@ export function createMemoryFs(): FileSystem {
     async writeFile(p, data) {
       const abs = normalize(p);
       ensureDir(parent(abs));
-      nodes.set(abs, { type: "file", data });
+      nodes.set(abs, { type: "file", data, mtime: Date.now() });
     },
     async mkdir(p) {
       ensureDir(p);
@@ -73,6 +75,16 @@ export function createMemoryFs(): FileSystem {
       return {
         isFile: () => node.type === "file",
         isDirectory: () => node.type === "dir",
+      };
+    },
+    async statDetail(p) {
+      const node = nodes.get(normalize(p));
+      if (!node) throw new Error(`not found: ${p}`);
+      return {
+        isFile: node.type === "file",
+        isDirectory: node.type === "dir",
+        size: typeof node.data === "string" ? node.data.length : node.data?.length ?? 0,
+        mtimeMs: node.mtime,
       };
     },
     async rm(p) {
@@ -108,7 +120,7 @@ export function createMemoryFs(): FileSystem {
       if (node.type !== "file") throw new Error(`not a file: ${from}`);
       ensureDir(parent(dst));
       const data = typeof node.data === "string" ? node.data : node.data?.slice();
-      nodes.set(dst, { type: "file", data });
+      nodes.set(dst, { type: "file", data, mtime: node.mtime });
     },
   };
 }

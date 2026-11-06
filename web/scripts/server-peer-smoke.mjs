@@ -233,7 +233,9 @@ try {
   );
 
   if (process.env.BOOTSTRAP === "1") {
-    // A non-empty desktop folder replaces the tab's seeded workspace.
+    // A non-empty desktop folder merges with the tab's seeded workspace: the
+    // desktop-only file arrives here, and the seeded files stay (both copies
+    // are kept rather than replacing one side).
     await waitFor(
       `(async () => {
         const root = await navigator.storage.getDirectory();
@@ -243,7 +245,7 @@ try {
         const file = await workspace.getFileHandle("desktop-only.txt");
         return (await (await file.getFile()).text()) === "from the desktop";
       })()`,
-      "bootstrap copied the desktop workspace",
+      "the desktop workspace was merged in",
       60_000,
     );
     const seeded = await evaluate(`(async () => {
@@ -253,10 +255,11 @@ try {
       const workspace = await dir.getDirectoryHandle("workspace");
       return workspace.getFileHandle("models.json").then(() => true, () => false);
     })()`);
-    assert(!seeded, "the old seeded workspace was replaced");
+    assert(seeded, "the tab's seeded workspace was kept");
     const files = await readdir(path.join(STATE, "folders/default"));
-    assert(!files.includes("app"), "the tab did not push its seed over the desktop copy");
-    console.log("bootstrap: desktop copy replaced the workspace");
+    assert(files.includes("app"), "the tab's seed files were merged into the desktop copy");
+    assert(files.includes("desktop-only.txt"), "the desktop copy kept its own file");
+    console.log("bootstrap: the desktop copy and the tab workspace merged");
   } else {
     // OPFS → mirror: the seeded workspace arrives in the folder.
     const seeded = await waitFile(path.join(STATE, "folders/default/models.json"), 60_000);

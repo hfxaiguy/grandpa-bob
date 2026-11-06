@@ -423,7 +423,7 @@
         <label class="inline"><input type="radio" name="pair-source" id="pair-source-desktop" value="desktop" /> My desktop / server</label>
       </div>
       <p id="pair-hint-relay" class="muted">Browser-to-browser only: both tabs must show the same verification phrase. Relay: <span id="pair-relay-url">—</span> (change via <strong>BobSwap…</strong>). <span id="pair-relay-key-note" hidden>Creating a code needs a BobSwap key; joining does not.</span> For <code>npm run pair</code>, choose <strong>My desktop / server</strong> instead.</p>
-      <p id="pair-hint-desktop" class="muted" hidden>Run <code>npm run pair</code> in the desktop terminal, then enter its code. For <code>npm run pair -- --relay</code>, also open <strong>Advanced</strong> and set the mailbox URL to the relay URL. The console approves the mirror + exec. If the desktop folder already has a workspace, it replaces this profile's files on first pairing.</p>
+      <p id="pair-hint-desktop" class="muted" hidden>Run <code>npm run pair</code> in the desktop terminal, then enter its code. For <code>npm run pair -- --relay</code>, also open <strong>Advanced</strong> and set the mailbox URL to the relay URL. The console approves the mirror + exec. If the desktop folder already has a workspace, its files are merged with this profile: both sides keep a copy, the fresher version wins a same-path conflict, and the older bytes are kept as a <code>.conflict-*</code> file.</p>
       <div class="grid">
         <label>Pairing code<input id="pair-code" placeholder="XXXX-XXXX" autocomplete="off" inputmode="text" autocapitalize="off" spellcheck="false" /></label>
       </div>

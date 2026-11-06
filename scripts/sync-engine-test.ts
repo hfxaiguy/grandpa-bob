@@ -11,7 +11,7 @@
 //
 // Run: `npm run test:sync`.
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -125,6 +125,95 @@ try {
   await waitFor(async () => (await fileIs(platformA, "todo.md", "from B\n")) && (await fileIs(platformB, "notes.md", "from A\n")), "round 1 convergence");
   assert.equal(await readFile(abs(platformA, "todo.md"), "utf8"), "from B\n", "A pulled B's file");
   assert.equal(await readFile(abs(platformB, "notes.md"), "utf8"), "from A\n", "B pulled A's file");
+
+  // ── first contact merges instead of replacing ─────────────────────────
+  // Pairing no longer deletes the browser workspace. Files that exist on one
+  // side are copied to the other (both keep a copy); a same-path conflict
+  // keeps the fresher copy and preserves the older bytes as a conflict file.
+  await platformA.fs.writeFile(abs(platformA, "only-a.txt"), "only A\n");
+  await platformB.fs.writeFile(abs(platformB, "only-b.txt"), "only B\n");
+  await platformA.fs.writeFile(abs(platformA, "fresher.txt"), "older A\n");
+  await utimes(
+    abs(platformA, "fresher.txt"),
+    new Date("2026-01-01T00:00:00Z"),
+    new Date("2026-01-01T00:00:00Z"),
+  );
+  await platformB.fs.writeFile(abs(platformB, "fresher.txt"), "newer B\n");
+  await utimes(
+    abs(platformB, "fresher.txt"),
+    new Date("2026-02-01T00:00:00Z"),
+    new Date("2026-02-01T00:00:00Z"),
+  );
+  await engineA.reconcile();
+  await engineB.reconcile();
+  await waitFor(
+    async () =>
+      (await fileIs(platformA, "only-b.txt", "only B\n")) &&
+      (await fileIs(platformB, "only-a.txt", "only A\n")) &&
+      (await fileIs(platformA, "fresher.txt", "newer B\n")) &&
+      (await fileIs(platformB, "fresher.txt", "newer B\n")),
+    "first-contact merge",
+  );
+  assert.equal(
+    await readFile(abs(platformA, "fresher.txt"), "utf8"),
+    "newer B\n",
+    "the fresher copy wins on the stale side",
+  );
+  assert.equal(
+    await readFile(abs(platformB, "fresher.txt"), "utf8"),
+    "newer B\n",
+    "the fresher side keeps its own copy",
+  );
+  const aConflicts = (
+    await platformA.fs.readdir(platformA.workspaceRoot, { withFileTypes: true })
+  )
+    .map((entry) => entry.name)
+    .filter((name) => name.startsWith("fresher.txt.conflict-"));
+  assert.equal(aConflicts.length, 1, `A keeps the older copy: ${aConflicts.join(",")}`);
+  assert.equal(
+    await readFile(abs(platformA, aConflicts[0]), "utf8"),
+    "older A\n",
+    "the conflict file holds the losing bytes",
+  );
+
+  // A journaled edit is authoritative even when its mtime is older: a seed
+  // import stamps every file "now", so mtime alone would clobber real edits.
+  wireA.counterpart = null;
+  wireB.counterpart = null;
+  await platformA.fs.writeFile(abs(platformA, "journaled.txt"), "A edited\n");
+  await utimes(
+    abs(platformA, "journaled.txt"),
+    new Date("2026-01-01T00:00:00Z"),
+    new Date("2026-01-01T00:00:00Z"),
+  );
+  await engineA.noteMutation(["journaled.txt"]);
+  await platformB.fs.writeFile(abs(platformB, "journaled.txt"), "B newer mtime\n");
+  await utimes(
+    abs(platformB, "journaled.txt"),
+    new Date("2026-02-01T00:00:00Z"),
+    new Date("2026-02-01T00:00:00Z"),
+  );
+  wireA.counterpart = wireB;
+  wireB.counterpart = wireA;
+  await engineA.reconcile();
+  await engineB.reconcile();
+  await waitFor(
+    async () =>
+      (await fileIs(platformA, "journaled.txt", "A edited\n")) &&
+      (await fileIs(platformB, "journaled.txt", "A edited\n")),
+    "a journaled edit beats an unjournaled newer mtime",
+  );
+  const bConflicts = (
+    await platformB.fs.readdir(platformB.workspaceRoot, { withFileTypes: true })
+  )
+    .map((entry) => entry.name)
+    .filter((name) => name.startsWith("journaled.txt.conflict-"));
+  assert.equal(bConflicts.length, 1, `B keeps its losing copy: ${bConflicts.join(",")}`);
+  assert.equal(
+    await readFile(abs(platformB, bConflicts[0]), "utf8"),
+    "B newer mtime\n",
+    "the losing unjournaled copy is preserved",
+  );
 
   // ── shared ancestor, then divergent edits: lamport order decides ──────
   await platformA.fs.writeFile(abs(platformA, "shared.txt"), "base\n");
@@ -275,7 +364,7 @@ try {
     kind: "hashmap",
     from: oldPeer,
     hashmap: {
-      "contacts.db": { hash: platformA.crypto.sha256hex(aDbB64), bytes: aDbBytes.length },
+      "contacts.db": { hash: platformA.crypto.sha256hex(aDbB64), bytes: aDbBytes.length, mtime: 0 },
     },
     lamports: { "contacts.db": 9000 },
     deletes: {},

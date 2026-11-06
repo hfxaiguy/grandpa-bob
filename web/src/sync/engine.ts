@@ -32,7 +32,7 @@
  * mirror folder deliberately holds a copy.
  */
 import type { Platform } from "../platform/types";
-import { buildHashmap, excluded, type Hashmap } from "./hashmap";
+import { buildHashmap, excluded, type HashEntry, type Hashmap } from "./hashmap";
 import { Journal, type SyncOp } from "./journal";
 
 /** One wire message. Write ops carry the file content base64-encoded. */
@@ -439,11 +439,34 @@ export class SyncEngine {
     return { hashmap, lamports, deletes: Object.fromEntries(journal.deletions()) };
   }
 
-  /** The wire decision for a conflicting path: "mine" or "theirs". Both
-   *  sides compute the same answer (lamports + deterministic id tie-break). */
-  private conflictWinner(path: string, theirLamport: number, theirId: string): "mine" | "theirs" {
-    const mine = this.journal?.lamportFor(path) ?? 0;
-    if (theirLamport !== mine) return theirLamport > mine ? "theirs" : "mine";
+  /**
+   * The wire decision for a conflicting path: "mine" or "theirs".
+   *
+   * A journaled edit is authoritative: its lamport records the causal order,
+   * so a slower wall clock (or a fresh seed import that stamps every file
+   * "now") cannot overwrite it. When neither replica has journaled the path,
+   * the file mtime is the only freshness signal: the newer file wins. A map
+   * from an older peer carries no mtime, so that pair falls back to the
+   * deterministic replica-id tie-break and both sides still agree.
+   */
+  private conflictWinner(
+    path: string,
+    mine: HashEntry,
+    theirs: HashEntry,
+    theirLamport: number,
+    theirId: string,
+  ): "mine" | "theirs" {
+    const myLamport = this.journal?.lamportFor(path) ?? 0;
+    if (
+      myLamport === 0 &&
+      theirLamport === 0 &&
+      mine.mtime > 0 &&
+      theirs.mtime > 0
+    ) {
+      if (mine.mtime !== theirs.mtime) return theirs.mtime > mine.mtime ? "theirs" : "mine";
+    } else if (theirLamport !== myLamport) {
+      return theirLamport > myLamport ? "theirs" : "mine";
+    }
     return this.id < theirId ? "mine" : "theirs";
   }
 
@@ -494,7 +517,6 @@ export class SyncEngine {
       const t = theirs[path];
       if (m && t && m.hash === t.hash) continue; // identical
       const theirLamport = theirLamports[path] ?? 0;
-      const theirsWins = this.conflictWinner(path, theirLamport, theirId) === "theirs";
       if (m && !t) {
         // Mine only: my tombstone stands (they pull it). A write they lack
         // is theirs to pull.
@@ -505,7 +527,9 @@ export class SyncEngine {
         pull.push(path);
       } else if (m && t) {
         conflicts.push(path);
-        if (theirsWins) pull.push(path);
+        if (this.conflictWinner(path, m, t, theirLamport, theirId) === "theirs") {
+          pull.push(path);
+        }
         // "mine": they pull it on their side (same deterministic decision)
       }
     }

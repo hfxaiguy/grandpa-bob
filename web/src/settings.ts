@@ -130,6 +130,7 @@ export function normalizeStorageServer(raw: string): string {
 }
 
 /** URL of the local storage bridge (scripts/storage-server.mjs). */
+const SERVER_KEY = "bob:storage-server";
 export function loadStorageServer(): string {
   try {
     return normalizeStorageServer(localStorage.getItem(SERVER_KEY) ?? "");

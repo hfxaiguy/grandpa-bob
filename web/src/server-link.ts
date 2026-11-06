@@ -102,18 +102,6 @@ const LINK_KEY = (profile: string): string => `bob:server:${profile}`;
  */
 const DEVICE_LINK_KEY = "bob:server:device";
 
-/** First pairing with a non-empty server folder replaces the tab's copy. */
-async function clearProfileWorkspace(profile: string): Promise<void> {
-  try {
-    const root = await navigator.storage.getDirectory();
-    const profiles = await root.getDirectoryHandle("profiles");
-    const dir = await profiles.getDirectoryHandle(profile);
-    await dir.removeEntry("workspace", { recursive: true });
-  } catch {
-    /* empty/new profile: nothing to replace */
-  }
-}
-
 export function loadServerLink(profile: string): ServerLinkInfo | null {
   try {
     const raw = localStorage.getItem(LINK_KEY(profile)) ?? localStorage.getItem(DEVICE_LINK_KEY);
@@ -591,8 +579,13 @@ function negotiate(
       void (async () => {
         const existing = Number(control.bootstrap ?? 0);
         if (existing > 0) {
-          opts.onStatus(`replacing this workspace with the desktop copy (${existing} files)…`);
-          await clearProfileWorkspace(opts.profile);
+          // First pairing with a non-empty desktop folder is a merge, not a
+          // replace. The sync engine copies files that exist on only one side
+          // in both directions; for a same-path conflict it keeps the fresher
+          // copy and preserves the older bytes as a `<name>.conflict-<ts>`
+          // file. Never delete the whole workspace here: an interrupted pull
+          // would leave the profile with no tree to run.
+          opts.onStatus(`merging ${existing} files from the desktop copy…`);
         }
         done({
           url: opts.url,

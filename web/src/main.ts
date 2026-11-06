@@ -616,9 +616,13 @@ async function prepareBrowserWorkspace(): Promise<void> {
     return;
   }
   bootProgress("seeding the workspace…", 30);
-  if (mirrorFolder()) {
+  if (mirrorFolder() && !params.has("reseed")) {
     // A mirror-bound profile takes its first content from the desktop folder;
-    // overlaying the bundled snapshot would race (and win over) that pull.
+    // overlaying the bundled snapshot would race the pull. `?reseed=1` is the
+    // explicit recovery path: it seeds the tab so the profile can run even
+    // while the desktop is offline. The next sync merges the two copies (the
+    // journaled desktop edits win, and the losing bytes become conflicts), so
+    // the seed cannot replace the mirror wholesale.
     seedStamp = await readSeedStamp(platform.path.join(root, ".seeded"));
     seedSha = await readSeedSha();
   } else {

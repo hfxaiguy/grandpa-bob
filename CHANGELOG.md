@@ -2,6 +2,35 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-06 — first pairing merges both workspaces, never erases one
+
+Pairing a profile to a non-empty desktop mirror used to remove the browser's
+`workspace` directory and rely on the first sync to pull everything back. An
+interrupted pull (relay drop, reload, a phrase not confirmed) left the profile
+with no trees, so every turn failed with `unknown tree 'trunk'` — the workspace
+looked erased because it was. Pairing is now a merge:
+
+- **`web/src/server-link.ts`**: `clearProfileWorkspace` is gone. A non-empty
+  desktop copy reports “merging N files…” and the browser keeps its workspace.
+- **`web/src/main.ts`**: `?reseed=1` now seeds a mirror-bound profile too, so an
+  empty profile can run while the desktop is offline; the next sync merges the
+  two copies instead of replacing either one.
+- **`web/src/sync/engine.ts`**: files that exist on only one side are copied to
+  the other, so both replicas keep a copy. For a same-path conflict, a
+  journaled edit (its lamport records causal order) wins; when neither side
+  has journaled the path, the newer file mtime wins. The losing bytes are
+  preserved as `<name>.conflict-<ts>`, never discarded.
+- **`web/src/sync/hashmap.ts`**, **`web/src/platform/types.ts`**,
+  **`src/platform/node.ts`**, **`web/src/platform/memory.ts`**: sync map entries
+  carry the file mtime, and every platform can report it.
+- **`scripts/sync-engine-test.ts`**: first-contact merge coverage (union of
+  files, fresher mtime wins, losing copy preserved) plus the rule that a
+  journaled edit beats a newer import mtime.
+- **`web/src/settings.ts`**: restored the missing `SERVER_KEY` constant, so the
+  saved storage-bridge URL is read again and the web typecheck passes.
+
+Tests: `npm run test:sync`; `npm run typecheck`.
+
 ## 2026-11-06 — settings/files split + auto-speak scope
 
 Settings and the workspace file browser are two pages again, and auto-speak can
