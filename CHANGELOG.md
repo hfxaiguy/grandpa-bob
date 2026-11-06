@@ -41,6 +41,9 @@ BobSwap now renews sync channels, so a relay-paired phone reconnects after the
 - **TTS**: Rime Mist v3 runs desktop-side (no CORS) with per-provider keys;
   long replies are chunked (Rime at 1,000 chars), WAVs joined, and synthesis is
   cached (48 MB). TTS can be disabled, auto-speak, and voice suggestions.
+- **Chat speech button**: the 🔊 on a reply no longer opens the ⓘ "written
+  from" modal. Both icons were absolutely positioned at the same `right`, and
+  the later ⓘ sibling took every click; the speaker now sits one slot left.
 - **`npm run tts:up`**: KittenTTS served by `scripts/tts-up.mjs` /
   `scripts/kitten-tts-server.py`.
 - **Tests**: `test:relay-renew`; `verify:speech` reports servers, `kittenml`,
