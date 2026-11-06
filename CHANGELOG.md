@@ -14,9 +14,12 @@ wrapped so a transient failure gets one more attempt with a short backoff.
   truncated/transport failures, 408/409/425/429 and the whole 5xx family. A
   stop/cancel, 402 quota wall, auth rejection (401/403) and malformed request
   stay single-shot. `retryModelCall` backs off 750ms before its retry
-  (attempts and sleep are injectable for tests); `withModelRetry` wraps every
-  call through grandma-kat's `callLlm`, so mocks, transforms and protocol
-  handling are unchanged.
+  (attempts and sleep are injectable for tests) and a stop during the backoff
+  cancels the wait; `withModelRetry` wraps every call through grandma-kat's
+  `callLlm`, so mocks, transforms and protocol handling are unchanged.
+- **`web/src/model-config.ts`**, **`web/src/grandma-kat.d.ts`**: model entries
+  can declare an in-page `handler`, and `grandma-kat/llm`'s `callLlm` gets
+  types for the wrapper.
 - **`web/src/agent/agent-worker.ts`**: the per-turn registry (including model
   overrides and the no-models mock) is wrapped once at run time.
 - **`scripts/model-retry-test.ts`** (`npm run test:model-retry`): status
