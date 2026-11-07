@@ -9,6 +9,12 @@ import type { AppInfo, PatternInfo, Provenance, RefTarget, SessionInfo, Slot, Tu
 import { loadSttConfig, loadTtsConfig, isCloudSttProvider, isCloudTtsProvider, sttKeyFor, ttsKeyFor } from "../../web/src/services/config";
 import { isBrowserSttProvider } from "../../web/src/services/registry";
 import { assemblyAiStt } from "../../web/src/services/stt/assemblyai";
+import {
+  desktopSpeechError,
+  desktopSpeaker,
+  desktopTranscriber,
+  liveDesktopPeer,
+} from "./speech-link";
 
 /** Events kept per turn in the live store. The full trace lives in the run log
  *  (`read_runs`); the UI only ever shows a tail, and an unbounded array is what
@@ -564,88 +570,6 @@ function audioExt(filename: string): string {
   return match ? `.${match[1].toLowerCase()}` : ".webm";
 }
 
-interface DesktopTranscriber {
-  transcribe(
-    audio: Uint8Array,
-    ext: string,
-    provider?: string,
-    apiKey?: string,
-    language?: string,
-  ): Promise<string>;
-}
-
-/** The paired desktop/server connection, when this tab has one. */
-function desktopTranscriber(): DesktopTranscriber | null {
-  const server = (globalThis as { __bobServer?: unknown }).__bobServer;
-  if (!server || typeof server !== "object") return null;
-  return typeof (server as { transcribe?: unknown }).transcribe === "function"
-    ? (server as DesktopTranscriber)
-    : null;
-}
-
-interface DesktopSpeaker {
-  synthesize(
-    text: string,
-    voice?: string,
-    apiKey?: string,
-    provider?: string,
-  ): Promise<{ bytes: Uint8Array; ext: string }>;
-}
-
-function desktopSpeaker(): DesktopSpeaker | null {
-  const server = (globalThis as { __bobServer?: unknown }).__bobServer;
-  if (!server || typeof server !== "object") return null;
-  return typeof (server as { synthesize?: unknown }).synthesize === "function"
-    ? (server as DesktopSpeaker)
-    : null;
-}
-
-/**
- * A live desktop handle, or a reconnected one. The pairing survives a channel
- * restart in localStorage, but the peer handle is only set once resume
- * succeeds — so try the one reconnect the web app exposes before giving up.
- */
-async function liveDesktopPeer<T>(get: () => T | null): Promise<T | null> {
-  const existing = get();
-  if (existing) return existing;
-  const connect = (globalThis as { __bobConnect?: () => Promise<boolean> }).__bobConnect;
-  if (typeof connect !== "function") return null;
-  try {
-    await connect();
-  } catch {
-    /* stays offline; the caller reports it */
-  }
-  return get();
-}
-
-/** Distinguish "never paired" from "paired but the link is down". */
-function desktopOfflineError(purpose: "transcribe audio" | "speak replies"): Error {
-  let paired = false;
-  try {
-    paired = Object.keys(localStorage).some((key) => key.startsWith("bob:server:"));
-  } catch {
-    /* private mode: treat as unpaired */
-  }
-  let remote = false;
-  try {
-    remote = !["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname);
-  } catch {
-    /* no location (tests) */
-  }
-  if (paired) {
-    return new Error(
-      remote
-        ? "the relay link is offline — relay sessions are single-session. On the desktop run `npm run pair -- --relay` for a new code, then pair again here; keep this tab open"
-        : "the desktop link is offline — the channel may have restarted. Reconnect in Sync… → Pair… or reload the tab; if another tab is hosting this workspace, take over there first",
-    );
-  }
-  return new Error(
-    remote
-      ? "this browser is not paired — on a remote page use Sync… → Pair… → BobSwap relay with a code from `npm run pair -- --relay` on the desktop (the loopback mailbox is unreachable from this network)"
-      : `this device is not paired with a desktop — pair one in Sync… → Pair… to ${purpose}`,
-  );
-}
-
 /** One clip at a time: pressing speak again stops the previous reply. */
 let currentSpeech: HTMLAudioElement | null = null;
 /** Object URL behind `currentSpeech`; revoked when it ends or is stopped. */
@@ -713,7 +637,7 @@ export async function speakText(text: string, key?: string): Promise<void> {
   if (key) setSpeechBusy(key);
   try {
     const speaker = await liveDesktopPeer(desktopSpeaker);
-    if (!speaker) throw desktopOfflineError("speak replies");
+    if (!speaker) throw desktopSpeechError("speak replies");
     const tts = loadTtsConfig();
     const apiKey = isCloudTtsProvider(tts.provider) ? ttsKeyFor(tts) : undefined;
     const clip = await speaker.synthesize(
@@ -780,7 +704,7 @@ async function transcribeBlob(blob: Blob, filename: string): Promise<string> {
   }
 
   const desktop = await liveDesktopPeer(desktopTranscriber);
-  if (!desktop) throw desktopOfflineError("transcribe audio");
+  if (!desktop) throw desktopSpeechError("transcribe audio");
   // Local backends ignore the key; Rime (cloud, no browser support) needs it.
   return heardText(
     await desktop.transcribe(bytes, ext, stt.provider || undefined, key, stt.language),

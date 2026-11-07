@@ -254,6 +254,41 @@ let logShipper: PeerLogShipper | null = null;
 let detachLogStream: (() => void) | null = null;
 
 /**
+ * The chat UI resolves voice/TTS through this getter. It reads the live module
+ * state, so a stale `window.__bobServer` that a closed connection deleted (or
+ * one that a re-publish raced past) cannot make a working link look offline.
+ */
+(window as unknown as { __bobGetServer?: () => ServerConnection | null }).__bobGetServer =
+  () => serverConnection;
+
+/**
+ * Expose a live desktop/server peer to the chat UI immediately. Voice and ops
+ * only need the authenticated channel; the first workspace round can take a
+ * while, and must not leave the link looking offline in the meantime.
+ */
+function publishServerConnection(connection: ServerConnection): void {
+  serverConnection = connection;
+  const globals = window as unknown as {
+    __bobServer?: unknown;
+    __bobOpsProbe?: unknown;
+  };
+  globals.__bobServer = connection;
+  const agent = archiveAgent;
+  if (agent) {
+    globals.__bobOpsProbe = (command: string, args: string[]) => agent.probeOps(command, args);
+  }
+}
+
+/** Drop the published peer only while it is still the current connection. */
+function unpublishServerConnection(connection: ServerConnection): void {
+  if (serverConnection !== connection) return;
+  serverConnection = null;
+  const globals = window as unknown as { __bobServer?: unknown; __bobOpsProbe?: unknown };
+  if (globals.__bobServer === connection) delete globals.__bobServer;
+  delete globals.__bobOpsProbe;
+}
+
+/**
  * Attach the run-log stream to a live desktop connection. The agent worker is
  * created after the boot-time reconnect, so this is called again once the
  * worker exists; attaching twice replaces the previous stream.
@@ -296,7 +331,7 @@ function attachLogStream(connection: ServerConnection): void {
 /**
  * Reconnect to the profile's paired desktop/server. Used at boot (before
  * indexing) and by a retry timer when the server was offline or the channel
- * dropped. Resolves true when the engine round completed.
+ * dropped. Resolves true once the authenticated peer is live.
  */
 async function connectServerPeer(): Promise<boolean> {
   const info = loadServerLink(activeProfile);
@@ -304,8 +339,18 @@ async function connectServerPeer(): Promise<boolean> {
   // binding to run the mirror chip; background profiles attach through the
   // same link after the catalog arrives.
   const folder = mirrorFolder() ?? "";
-  if (!info || !syncHandle || serverConnecting || serverConnection) return false;
+  if (!info || !syncHandle) return false;
   if (lease?.status() !== "primary") return false;
+  // A live peer can already be in place while the UI handle was dropped (a
+  // transient close deletes it). Re-publish instead of refusing the retry.
+  if (serverConnection) {
+    if (serverConnection.peer.connected()) {
+      publishServerConnection(serverConnection);
+      return true;
+    }
+    unpublishServerConnection(serverConnection);
+  }
+  if (serverConnecting) return false;
   // The stored relay expiry can be stale: the desktop renews the channel while
   // it waits for a reconnect. Let the resume attempt decide instead of
   // refusing locally — a dead channel reports 404/410 with a re-pair hint.
@@ -318,37 +363,61 @@ async function connectServerPeer(): Promise<boolean> {
       onStatus: (text) => flashStatus(`desktop: ${text}`, 4000),
       onSas: (phrase) => console.log(`[peer] verification phrase ${phrase}`),
     });
-    serverConnection = connection;
-    syncHandle.attachDevice(connection.peer, {
-      kind: "desktop",
-      deviceId: connection.info.deviceId,
-      deviceName: connection.info.mirror || "desktop",
-      requirePhrase: false,
-    });
-    attachLogStream(connection);
-    archiveAgent?.setOpsConfig({
-      enabled: connection.info.exec.length > 0,
-      allow: connection.info.exec,
-    });
     connection.peer.onClosed(() => {
       if (serverConnection !== connection) return;
-      serverConnection = null;
       // Drop the shared handle too: the composer would otherwise send voice
       // clips to a dead channel and wait for its timeout.
-      const globals = window as unknown as { __bobServer?: unknown; __bobOpsProbe?: unknown };
-      if (globals.__bobServer === connection) delete globals.__bobServer;
-      if (globals.__bobOpsProbe) delete globals.__bobOpsProbe;
-      renderMirrorStatus({ phase: "offline", detail: "disconnected", folder, lastSyncAt: null });
+      unpublishServerConnection(connection);
+      renderMirrorStatus({
+        phase: "offline",
+        detail: connection.info.relay
+          ? "relay session ended — run npm run pair -- --relay"
+          : "disconnected",
+        folder,
+        lastSyncAt: null,
+      });
       archiveAgent?.setOpsConfig({ enabled: false, allow: [] });
     });
-    renderMirrorStatus({
-      phase: "idle",
-      detail: "connected",
-      folder,
-      lastSyncAt: new Date().toISOString(),
-    });
-    await syncHandle.syncNow().catch(() => undefined);
-    (window as unknown as { __bobServer?: unknown }).__bobServer = connection;
+    // Publish before the first workspace round: voice/TTS and ops only need
+    // the authenticated channel. A slow OPFS reconcile must not make a live
+    // link look offline (the phone case).
+    publishServerConnection(connection);
+    try {
+      syncHandle.attachDevice(connection.peer, {
+        kind: "desktop",
+        deviceId: connection.info.deviceId,
+        deviceName: connection.info.mirror || "desktop",
+        requirePhrase: false,
+      });
+      attachLogStream(connection);
+      archiveAgent?.setOpsConfig({
+        enabled: connection.info.exec.length > 0,
+        allow: connection.info.exec,
+      });
+      renderMirrorStatus({
+        phase: "idle",
+        detail: "connected",
+        folder,
+        lastSyncAt: new Date().toISOString(),
+      });
+      // The peer is already live; bound the optional bookkeeping so a wedged
+      // OPFS round cannot leave `serverConnecting` true forever and block every
+      // later reconnect.
+      await Promise.race([
+        syncHandle.syncNow().catch(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, 60_000)),
+      ]);
+    } catch (err) {
+      // Keep the live peer: voice and desktop ops still work. A later reconnect
+      // retries the workspace attachment.
+      console.warn("desktop link setup failed:", err);
+      renderMirrorStatus({
+        phase: "error",
+        detail: `setup failed: ${errorText(err)}`,
+        folder,
+        lastSyncAt: null,
+      });
+    }
     return true;
   } catch (err) {
     renderMirrorStatus({
@@ -1609,8 +1678,6 @@ async function main(): Promise<void> {
     allow: serverConnection?.info.exec ?? linked?.exec ?? [],
   });
   const globals = window as unknown as {
-    __bobServer?: unknown;
-    __bobOpsProbe?: unknown;
     __bobAdoptServer?: unknown;
     __bobConnect?: () => Promise<boolean>;
   };
@@ -1618,10 +1685,7 @@ async function main(): Promise<void> {
   // still be resumable (channel restart, tab reload) even though the live
   // connection is gone.
   globals.__bobConnect = () => connectServerPeer();
-  if (serverConnection) {
-    globals.__bobServer = serverConnection;
-    globals.__bobOpsProbe = (command: string, args: string[]) => agent.probeOps(command, args);
-  }
+  if (serverConnection) publishServerConnection(serverConnection);
   // A relay pairing normally keeps its datachannel instead of reloading (the
   // relay is single-session signaling). Adopt that live connection into the
   // same slots the boot-time reconnect uses, so ops, the log stream and the
@@ -1632,26 +1696,11 @@ async function main(): Promise<void> {
     void loadRegistry().then((registry) => {
       profileRegistry = registry;
     });
-    serverConnection = connection;
-    globals.__bobServer = connection;
-    globals.__bobOpsProbe = (command: string, args: string[]) => agent.probeOps(command, args);
-    attachLogStream(connection);
-    agent.setOpsConfig({
-      enabled: connection.info.exec.length > 0,
-      allow: connection.info.exec,
-    });
+    publishServerConnection(connection);
     const bound = mirrorFolder() ?? connection.info.mirror;
-    renderMirrorStatus({
-      phase: "idle",
-      detail: connection.info.relay ? "connected over relay" : "connected",
-      folder: bound,
-      lastSyncAt: new Date().toISOString(),
-    });
     connection.peer.onClosed(() => {
       if (serverConnection !== connection) return;
-      serverConnection = null;
-      delete globals.__bobServer;
-      delete globals.__bobOpsProbe;
+      unpublishServerConnection(connection);
       agent.setOpsConfig({ enabled: false, allow: [] });
       renderMirrorStatus({
         phase: "offline",
@@ -1661,6 +1710,17 @@ async function main(): Promise<void> {
         folder: bound,
         lastSyncAt: null,
       });
+    });
+    attachLogStream(connection);
+    agent.setOpsConfig({
+      enabled: connection.info.exec.length > 0,
+      allow: connection.info.exec,
+    });
+    renderMirrorStatus({
+      phase: "idle",
+      detail: connection.info.relay ? "connected over relay" : "connected",
+      folder: bound,
+      lastSyncAt: new Date().toISOString(),
     });
   };
   // A paired server may have been offline at boot; keep trying while this tab

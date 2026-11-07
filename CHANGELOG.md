@@ -2,6 +2,35 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — the phone's speaker sees the live desktop link
+
+Pressing 🔊 on a phone kept reporting **"the relay link is offline"** while
+the desktop mirror was plainly syncing. The boot/retry reconnect published
+`window.__bobServer` only after its first workspace round, so a live peer that
+was still reconciling — or one whose global a transient close had dropped —
+looked absent to voice. A direct mailbox pairing on a remote page also called
+itself a relay link just because the page was not on localhost.
+
+- **`web/src/main.ts`**: `__bobGetServer` exposes the web app's live connection;
+  `publishServerConnection` publishes a resumed peer before the first
+  attach/sync round; an already-live peer is re-published instead of refusing
+  the retry; the first sync is bounded so a wedged OPFS call cannot leave
+  `serverConnecting` true forever. The offline chip keeps the relay hint on a
+  relay link.
+- **`ui/src/speech-link.ts`**: voice/TTS handle resolution moved out of the
+  store; the web app's live getter wins over a stale `window.__bobServer`, and
+  a connected desktop without the speech surface says so instead of claiming
+  the link is offline. The offline error reads the stored link and only names
+  the relay when the pairing actually used it.
+- **`ui/src/store.ts`**: uses the shared speech handle for the mic and speaker.
+- **`scripts/speech-link-test.ts`** (`npm run test:speech-link`): a stale global
+  with a live getter, reconnect publishing, skip-on-live, and direct-vs-relay
+  error wording.
+
+Tests: `npm run test:speech-link`; `npm run test:tts`; `npm run test:standalone`;
+`npm --prefix ui run typecheck`; `npm --prefix web run typecheck`;
+`npm run test:ui`.
+
 ## 2026-11-06 — desktop profile catalogs reach the browser link
 
 The desktop/server pairing wrapped its transport in `controlPeer`, which routed

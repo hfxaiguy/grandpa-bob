@@ -53,6 +53,7 @@
     "test:stt-dispatch": "tsx scripts/stt-dispatch-test.ts",
     "test:stt-cloud": "tsx scripts/stt-cloud-test.ts",
     "test:tts": "tsx scripts/tts-test.ts",
+    "test:speech-link": "tsx scripts/speech-link-test.ts",
     "test:storage-cors": "node scripts/storage-cors-test.mjs",
     "test:relay-renew": "tsx scripts/relay-renew-test.ts",
     "verify:speech": "tsx scripts/speech-verify.ts",

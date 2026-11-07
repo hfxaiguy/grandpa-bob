@@ -109,10 +109,13 @@ Settings page on the same origin:
 - KittenTTS not running → `cannot reach the KittenTTS server at http://127.0.0.1:8185 … — start it with npm run tts:up`, or pick Rime Mist v3.
 - `the browser blocked playback` → the click no longer owns the user gesture;
   focus the tab and press 🔊 again.
-- `the desktop link is offline` → pairing is stored but the live WebRTC link is
-  not up (channel restarted, another tab holds the host lease, or a relay
-  session ended). Voice calls `__bobConnect` once to resume it; if that fails,
-  reconnect in Sync… → Pair…, reload the tab, or take over in the other tab.
+- `the desktop link is offline` / `the relay-paired desktop is offline` →
+  pairing is stored but the live WebRTC link is not up (channel restarted,
+  another tab holds the host lease, or a relay session ended). The chat UI
+  reads the web app's live connection (including `__bobGetServer`, which
+  survives a dropped `__bobServer` global) and calls `__bobConnect` once to
+  resume it; if that fails, reconnect in Sync… → Pair…, reload the tab, or
+  take over in the other tab.
 
 ## Settings → Speech
 
