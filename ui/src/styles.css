@@ -816,6 +816,59 @@ body.dragging-tile { user-select: none !important; }
 .empty { color: var(--muted); font-size: 12px; padding: 4px 0; }
 
 .composer { border-top: 1px solid var(--border); padding: 8px; background: var(--card); }
+/* Messages typed while the current turn is still running. They sit above the
+   input, in submission order, with a way to drop one before it starts. */
+.queued-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.queued-head {
+  color: var(--warn);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  user-select: none;
+}
+.queued-hint {
+  color: var(--muted);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.queued-msg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: 7px;
+  background: var(--panel);
+  font-size: 12.5px;
+}
+.queued-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #cbd5e1;
+}
+.queued-cancel {
+  flex: none;
+  padding: 0 5px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.queued-cancel:hover, .queued-cancel:focus-visible { color: var(--err); border-color: transparent; }
+button.queue-btn { border-color: #7a4a1e; color: var(--warn); background: #2a2112; }
+button.queue-btn:hover { border-color: var(--warn); }
 .composer-row { display: flex; gap: 6px; align-items: flex-end; }
 .composer-row textarea { flex: 1 1 0; min-width: 0; resize: none; overflow-y: auto; min-height: 34px; max-height: 200px; }
 .buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }

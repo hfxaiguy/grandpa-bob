@@ -1223,6 +1223,7 @@ export function buildSettingsHtml(config: UiConfig): string {
     <label class="radio"><input type="radio" name="speech-tts-auto" value="trunk"> Trunk only</label>
     <label class="radio"><input type="radio" name="speech-tts-auto" value="all"> All apps</label>
   </div>
+  <p style="margin:4px 0"><small>Trunk only reads the trunk conversation, including app replies in a turn you started from the trunk. All apps also reads turns you started inside an app. Machine notes are never spoken.</small></p>
   <label>Cloud TTS key <span id="cur-tts-key" style="float:right"></span></label>
   <input id="speech-tts-key" type="password" placeholder="Rime key (blank keeps the saved one)">
   <div class="actions">

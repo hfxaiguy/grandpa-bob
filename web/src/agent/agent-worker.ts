@@ -6,6 +6,7 @@
  * — like the real trunk — can pause and resume across chat messages.
  */
 import { Tree, name, Call, Return, Tools, knit, resume, inspectMemoryTool } from "grandma-kat";
+import "../shims/process";
 import { createBrowserPlatform, initSqlite } from "../platform/browser";
 import { setSqliteOpfsPrefix } from "../platform/sqlite-wasm";
 import { parseOpfsPrefix, setOpfsRootSegments } from "../platform/opfs-root";
@@ -575,8 +576,21 @@ async function buildAppTools(
   return { tools, guides };
 }
 
+/**
+ * Workspace app modules read `process.env` at call time (for example
+ * app/email's config). A worker has no real process, so publish the
+ * Settings → Credentials & .env map before this run loads or resumes a tree.
+ * A per-run install also picks up edits saved in Settings without a reload.
+ */
+function installProcessEnv(env: Record<string, string> | undefined): void {
+  const proc = globalThis as unknown as { process?: { env: Record<string, string | undefined> } };
+  if (!proc.process) return;
+  proc.process.env = { ...(env ?? {}) };
+}
+
 async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   throwIfStopped(signal);
+  installProcessEnv(opts.env);
   const task = opts.task ?? "";
   const platform = await getPlatform();
   // One store for app code and the SQL tools below: they must share the same

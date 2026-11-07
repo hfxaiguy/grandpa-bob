@@ -5,7 +5,7 @@ import { createSignal } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
 import { getJSON, postJSON, postForm, openEventStream } from "./api";
 import { lastTurnFailure } from "./turn-failure";
-import type { AppInfo, PatternInfo, Provenance, RefTarget, SessionInfo, Slot, Turn } from "./types";
+import type { AppInfo, PatternInfo, Provenance, QueuedTurn, RefTarget, SessionInfo, Slot, Turn } from "./types";
 import { loadSttConfig, loadTtsConfig, isCloudSttProvider, isCloudTtsProvider, sttKeyFor, ttsKeyFor } from "../../web/src/services/config";
 import { isBrowserSttProvider } from "../../web/src/services/registry";
 import { assemblyAiStt } from "../../web/src/services/stt/assemblyai";
@@ -76,6 +76,9 @@ export interface UiState {
   mockOnly: boolean;
   turns: Turn[];
   awaiting: string | null;
+  /** Messages typed while a turn was running; the server runs them in order
+   *  once it settles. Empty on a session with nothing waiting. */
+  queued: QueuedTurn[];
   memory: Record<string, Record<string, unknown>>;
   /** The conversation `memory` was fetched for. The panel names it, so a
    *  resumed conversation reads as resumed instead of as a value that
@@ -299,6 +302,7 @@ export const [state, setState] = createStore<UiState>({
   mockOnly: false,
   turns: [],
   awaiting: null,
+  queued: [],
   memory: {},
   memorySession: null,
   sessionResumed: false,
@@ -447,6 +451,7 @@ export async function refreshSession(
     awaiting: string | null;
     sessions: SessionInfo[];
     turns: Turn[] | null;
+    queued?: QueuedTurn[] | null;
   }>("/api/session");
   const previous = state.active;
   setState({
@@ -456,6 +461,7 @@ export async function refreshSession(
     awaiting: d.awaiting ?? null,
     sessions: d.sessions || [],
     turns: d.turns || [],
+    queued: d.queued || [],
     // History on open = a resumed conversation, not a fresh chat. The memory
     // panel says so, so restored values read as restored.
     sessionResumed: (d.turns?.length ?? 0) > 0,
@@ -481,10 +487,15 @@ export async function refreshSession(
 /** Reload just the active session's turns (after a turn ends / on follow). */
 export async function refreshTurns(): Promise<void> {
   try {
-    const d = await getJSON<{ turns: Turn[]; session: string | null; awaiting: string | null }>("/api/turns");
+    const d = await getJSON<{
+      turns: Turn[];
+      session: string | null;
+      awaiting: string | null;
+      queued?: QueuedTurn[] | null;
+    }>("/api/turns");
     if (d.session !== state.active) return;
     const turns = capEvents(d.turns || []);
-    setState({ turns, awaiting: d.awaiting ?? null });
+    setState({ turns, awaiting: d.awaiting ?? null, queued: d.queued || [] });
     syncLastError(turns);
   } catch (e) {
     console.warn("turns:", e);
@@ -500,14 +511,44 @@ function syncLastError(turns: Turn[]): void {
 
 // ── actions ─────────────────────────────────────────────────────────────
 
+/** Add one waiting message without duplicating the server's SSE frame. */
+function addQueued(item: QueuedTurn): void {
+  setState("queued", (list) => (list.some((q) => q.turnId === item.turnId) ? list : [...list, item]));
+}
+
+function removeQueued(turnId: string): void {
+  setState("queued", (list) => list.filter((q) => q.turnId !== turnId));
+}
+
 export async function send(text: string): Promise<void> {
   const t = text.trim();
   if (!t) return;
   try {
-    await postJSON("/api/chat", { text: t });
-    setState("awaiting", null); // a turn is now running; hide the input
+    const d = await postJSON<{ turnId?: string; queued?: boolean; position?: number }>("/api/chat", {
+      text: t,
+    });
+    if (d.queued && d.turnId) {
+      // The composer accepts messages mid-turn; the server starts this one
+      // when the current turn settles.
+      addQueued({ turnId: d.turnId, text: t, enqueuedAt: Date.now() });
+      toast(d.position && d.position > 1 ? `queued · ${d.position} in queue` : "queued");
+    } else {
+      setState("awaiting", null); // a turn is now running; hide the input
+    }
   } catch (e) {
     toast(e instanceof Error ? e.message : "send failed", true);
+  }
+}
+
+/** Drop a message that has not started yet. Once it has, the server answers
+ *  404 and the running turn's `turn_start` removes it from the list anyway. */
+export async function cancelQueued(turnId: string): Promise<void> {
+  try {
+    await postJSON("/api/chat/queue/cancel", { turnId });
+    removeQueued(turnId);
+  } catch (e) {
+    toast(e instanceof Error ? e.message : "could not cancel queued message", true);
+    await refreshTurns();
   }
 }
 
@@ -1574,8 +1615,30 @@ export function closeLiveStream(): void {
 /** Exported for tests: the live stream routes every frame here. */
 export function handleSSE(msg: any): void {
   switch (msg?.type) {
+    case "turn_queued": {
+      if (msg.session !== state.active || typeof msg.turnId !== "string") return;
+      addQueued({
+        turnId: msg.turnId,
+        text: typeof msg.text === "string" ? msg.text : "",
+        enqueuedAt: typeof msg.enqueuedAt === "number" ? msg.enqueuedAt : Date.now(),
+      });
+      break;
+    }
+    case "turn_dequeued":
+    case "turn_queue_cancelled": {
+      if (msg.session !== state.active || typeof msg.turnId !== "string") return;
+      removeQueued(msg.turnId);
+      break;
+    }
+    case "turn_queue_cleared": {
+      if (msg.session !== state.active) return;
+      setState("queued", []);
+      break;
+    }
     case "turn_start": {
       if (msg.session !== state.active) return;
+      // A queued message starts here; the turn bubble replaces its chip.
+      if (typeof msg.turnId === "string") removeQueued(msg.turnId);
       if (state.turns.some((t) => t.turnId === msg.turnId)) return;
       // The app the human just spoke to is the most recently active one.
       touchActivity(msg.inputApp, msg.ts);
@@ -1665,14 +1728,19 @@ export function handleSSE(msg: any): void {
         }),
       );
       // Auto-speak follows Settings → Speech: off, trunk only, or every app.
+      // "Trunk only" means the trunk conversation: the trunk's own emits plus
+      // the bubbles an app writes during a turn the person started in the
+      // trunk — those appear in the trunk's app-call cards. A turn started
+      // inside an app belongs to that app's chat, so only "all" reads it.
       // Failures (autoplay policy, no pairing) stay silent — this is ambient.
       const tts = loadTtsConfig();
       const scope = tts.autoSpeak;
       const app = msg.app ?? "trunk";
       const spoken = msg.text?.trim();
-      if (spoken && msg.level !== "machine" && scope && (scope === "all" || app === "trunk")) {
+      const turn = state.turns.find((x) => x.turnId === msg.turnId);
+      const fromTrunk = app === "trunk" || (turn?.inputApp ?? "trunk") === "trunk";
+      if (spoken && msg.level !== "machine" && scope && (scope === "all" || fromTrunk)) {
         if (ttsEnabled()) {
-          const turn = state.turns.find((x) => x.turnId === msg.turnId);
           const index = (turn?.emits?.length ?? 1) - 1;
           void speakText(spoken, `${msg.turnId}:${index}`).catch(() => {});
         }

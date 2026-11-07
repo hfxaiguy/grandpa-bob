@@ -89,6 +89,14 @@ export interface SessionInfo {
   awaiting?: string | null;
 }
 
+/** A message typed while the session's current turn was still running. The
+ *  server sends it to the tree when that turn settles, one at a time. */
+export interface QueuedTurn {
+  turnId: string;
+  text: string;
+  enqueuedAt?: number;
+}
+
 export interface Slot {
   name: string;
   model: string;

@@ -2,6 +2,49 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — queue a message while a turn runs
+
+The composer disappeared while a turn was running, so a second thought had
+nothing to type into. It now stays on the tile the running turn was sent to:
+**Send** becomes **Queue**, and the message sits above the composer with a
+cancel button until the server starts it. Queued messages run one at a time as
+each turn settles, queue changes are broadcast, and stop or session delete
+drops the queue. The queue is page state (a reload drops it); the Telegram
+bridge keeps its own durable mailbox.
+
+- **`web/src/server/local-backend.ts`**: per-session turn queues and one drain
+  loop; `/api/chat` returns `{ turnId, queued, position }`, a new
+  `/api/chat/queue/cancel`, and `queued` on `/api/session` and `/api/turns`.
+- **`ui/src/store.ts`**, **`types.ts`**: `queued` state and the
+  `turn_queued`/`turn_dequeued`/`turn_queue_cancelled`/`turn_queue_cleared`
+  frames.
+- **`ui/src/components.tsx`**, **`styles.css`**: the queue list with a
+  per-message cancel button and the Queue/Send button.
+- **`web/src/agent/agent-worker.ts`**: publish Settings → Credentials/.env into
+  the worker's `process.env` so workspace app modules read current values.
+- **`scripts/chat-queue-test.ts`** (`npm run test:chat-queue`): immediate
+  start, ordered drain, cancel and stop clearing the queue.
+
+Tests: `npm run test:chat-queue`; `npm run test:autospeak`; `npm run typecheck`.
+
+## 2026-11-07 — trunk-only auto-speak includes app replies
+
+With **Trunk only** selected, a reply stayed silent whenever the trunk handed
+the turn to an app: the app writes the bubbles (they render inside the trunk's
+app-call card), but the ambient voice only matched emits tagged `trunk`. Trunk
+only now speaks the trunk conversation — its own emits plus app emits in a turn
+the person started from the trunk. A turn started inside an app keeps its chat
+silent until the scope is **All apps**; machine-level notes are still skipped.
+
+- **`ui/src/store.ts`**: the SSE auto-speak filter also matches a turn whose
+  `inputApp` is the trunk.
+- **`scripts/autospeak-test.ts`** (`npm run test:autospeak`): direct trunk
+  emit, trunk-started app reply, machine skip, app-started turn, all-apps, off,
+  and the legacy `autoSpeak: true` spelling.
+- **`docs/services.md`**, **`web/src/ui/pages.ts`**: scope wording follows.
+
+Tests: `npm run test:autospeak`; `npm run test:tts`; `npm run typecheck`.
+
 ## 2026-11-07 — reply to a suspended app from its call card
 
 A paused app could only be answered after opening its tile: the trunk's inline

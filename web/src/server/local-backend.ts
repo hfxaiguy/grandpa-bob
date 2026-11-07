@@ -83,6 +83,23 @@ export interface BackendOptions {
   telegramProfile?: () => string;
 }
 
+/**
+ * One message waiting for the session's current turn to finish. The queue is
+ * in-page state (a reload drops it): it is a hand-off between turns of the
+ * same conversation, not a durable mailbox like Telegram's.
+ */
+interface QueuedTurn {
+  turnId: string;
+  text: string;
+  enqueuedAt: number;
+  /** The Telegram bridge awaits this turn's record to relay its reply. */
+  fromBridge?: boolean;
+  /** A `turn_queued` frame was broadcast, so the UI knows to drop it when it
+   *  starts (the turn that starts immediately was never announced as queued). */
+  announced?: boolean;
+  settle?: (record: TurnRecord | null) => void;
+}
+
 interface TurnRecord {
   turnId: string;
   input: string;
@@ -152,6 +169,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   const liveTurns = new Map<string, TurnRecord[]>();
   /** The run currently executing in the worker, by session key. */
   const activeRuns = new Map<string, { turnId: string; runId: number }>();
+  /** Messages waiting behind the running turn, per session key. */
+  const turnQueues = new Map<string, QueuedTurn[]>();
+  /** The one drain loop allowed per session between runs. */
+  const draining = new Set<string>();
   /**
    * A run that stops emitting events for this long is wedged (dead worker,
    * an engine deadlock), not merely thinking: every LLM call has its own
@@ -160,8 +181,6 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   const configuredStaleMs = Number(opts.env.BOB_RUN_STALE_MS);
   const runStaleMs =
     Number.isFinite(configuredStaleMs) && configuredStaleMs > 0 ? configuredStaleMs : DEFAULT_STALE_MS;
-  /** Resolvers waiting for the active run on a session to finish. */
-  const idleWaiters = new Map<string, Array<() => void>>();
   const subscribers = new Set<(msg: EventMessage) => void>();
   let activePattern = opts.initialPattern || "trunk";
   let modelsJson = opts.modelsJson ?? "";
@@ -686,11 +705,6 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         buttons: [], emits: [], awaiting: null, tokens: record.tokens ?? null, ts: record.endedAt,
       });
       if (relay) relayToPhone(relay, `Something went wrong: ${record.error}`);
-      const waiters = idleWaiters.get(key);
-      if (waiters?.length) {
-        idleWaiters.delete(key);
-        for (const wake of waiters) wake();
-      }
       persistTurn(key, record, active?.runId ?? 0).catch((err) => {
         console.warn("run watchdog: could not persist the stuck turn", err);
       });
@@ -765,23 +779,110 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     } finally {
       watchdog.finish(key, turnId);
       if (activeRuns.get(key)?.turnId === turnId) activeRuns.delete(key);
-      const waiters = idleWaiters.get(key);
-      if (waiters?.length) {
-        idleWaiters.delete(key);
-        for (const wake of waiters) wake();
-      }
     }
     return record;
   }
 
-  /** Resolve once the session has no running turn. */
-  function whenIdle(key: string): Promise<void> {
-    if (!activeRuns.has(key)) return Promise.resolve();
-    return new Promise((resolve) => {
-      const list = idleWaiters.get(key) ?? [];
-      list.push(resolve);
-      idleWaiters.set(key, list);
+  /** The public shape of a session's pending messages (no resolvers). */
+  function queuedFor(key: string): Array<Pick<QueuedTurn, "turnId" | "text" | "enqueuedAt">> {
+    return (turnQueues.get(key) ?? []).map(({ turnId, text, enqueuedAt }) => ({
+      turnId,
+      text,
+      enqueuedAt,
+    }));
+  }
+
+  /** Drop every pending message for a session (stop, delete). */
+  function clearQueue(key: string): number {
+    const queued = turnQueues.get(key) ?? [];
+    if (!queued.length) return 0;
+    turnQueues.delete(key);
+    for (const item of queued) item.settle?.(null);
+    broadcast({
+      type: "turn_queue_cleared",
+      session: key,
+      turnIds: queued.map((item) => item.turnId),
+      ts: Date.now(),
     });
+    return queued.length;
+  }
+
+  /**
+   * Accept one message for a session. An idle session starts it at once;
+   * otherwise it joins the queue and the drain loop below starts it after the
+   * current turn settles, so a session never runs two turns at once.
+   */
+  function submitTurn(
+    key: string,
+    text: string,
+    o?: { fromBridge?: boolean },
+  ): { turnId: string; queued: boolean; position: number; done: Promise<TurnRecord | null> } {
+    const turnId = crypto.randomUUID();
+    let settle!: (record: TurnRecord | null) => void;
+    const done = new Promise<TurnRecord | null>((resolve) => {
+      settle = resolve;
+    });
+    const wasBusy = activeRuns.has(key) || draining.has(key);
+    const item: QueuedTurn = {
+      turnId,
+      text,
+      enqueuedAt: Date.now(),
+      fromBridge: o?.fromBridge,
+      announced: wasBusy,
+      settle,
+    };
+    const queue = turnQueues.get(key) ?? [];
+    queue.push(item);
+    turnQueues.set(key, queue);
+    if (wasBusy) {
+      broadcast({
+        type: "turn_queued",
+        session: key,
+        turnId,
+        text,
+        enqueuedAt: item.enqueuedAt,
+        position: queue.length,
+        ts: Date.now(),
+      });
+    }
+    if (!draining.has(key)) void drainQueue(key);
+    return { turnId, queued: wasBusy, position: wasBusy ? queue.length : 0, done };
+  }
+
+  /** Run the session's pending messages one at a time, in submission order. */
+  async function drainQueue(key: string): Promise<void> {
+    if (draining.has(key)) return;
+    draining.add(key);
+    try {
+      for (;;) {
+        const queue = turnQueues.get(key);
+        const item = queue?.[0];
+        if (!queue || !item) break;
+        queue.shift();
+        if (!queue.length) turnQueues.delete(key);
+        if (item.announced) {
+          broadcast({ type: "turn_dequeued", session: key, turnId: item.turnId, ts: Date.now() });
+        }
+        let record: TurnRecord | null = null;
+        try {
+          record = await runTurn(item.turnId, item.text, key, { fromBridge: item.fromBridge });
+        } catch (err) {
+          // runTurn settles its own failures; only a setup failure (the worker
+          // is gone) reaches here. Let the caller see it instead of repeating
+          // it to the remaining queue in a tight loop.
+          console.warn("chat queue: turn could not start", err);
+        } finally {
+          item.settle?.(record);
+        }
+        if (!record) {
+          // The session cannot run anything right now: keep the remaining
+          // messages queued for the next send rather than dropping them.
+          break;
+        }
+      }
+    } finally {
+      draining.delete(key);
+    }
   }
 
   /** The streamed run-log row for a ref seq (newest turn wins on a rewind). */
@@ -859,6 +960,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
           awaiting: await awaitingFor(key),
           sessions: await sessionList(),
           turns: await turnsFor(key),
+          queued: queuedFor(key),
         },
       };
     }
@@ -932,6 +1034,8 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         liveTurns.delete(sel.delete);
         sessionModels.delete(sel.delete);
         memory.clear(sel.delete);
+        // A deleted conversation must not keep running messages queued for it.
+        clearQueue(sel.delete);
         // Deleting the bridged chat ends the bridge: the phone would
         // otherwise keep writing into a conversation that no longer exists.
         if (lstore.read(BRIDGE_SESSION_KEY) === sel.delete) {
@@ -965,7 +1069,15 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     }
     if (pathname === "/api/turns" && method === "GET") {
       const key = await ensureSession();
-      return { status: 200, body: { turns: await turnsFor(key), session: key, awaiting: await awaitingFor(key) } };
+      return {
+        status: 200,
+        body: {
+          turns: await turnsFor(key),
+          session: key,
+          awaiting: await awaitingFor(key),
+          queued: queuedFor(key),
+        },
+      };
     }
     if (pathname === "/api/provenance" && method === "GET") {
       // "What was this reply written from?" — a read-only walk over the run
@@ -1063,15 +1175,29 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       const key = await ensureSession();
       const active = activeRuns.get(key);
       if (active) agent.stop(active.runId);
-      return { status: 200, body: { ok: true, stopped: Boolean(active) } };
+      // Stop means stop: the current run AND everything waiting behind it.
+      const cleared = clearQueue(key);
+      return { status: 200, body: { ok: true, stopped: Boolean(active), cleared } };
+    }
+    if (pathname === "/api/chat/queue/cancel" && method === "POST") {
+      const key = await ensureSession();
+      const turnId = String((parseBody(body) as { turnId?: unknown }).turnId ?? "");
+      const queue = turnQueues.get(key) ?? [];
+      const at = queue.findIndex((item) => item.turnId === turnId);
+      if (at < 0) return { status: 404, body: { error: "that message is not queued" } };
+      const [removed] = queue.splice(at, 1);
+      if (!queue.length) turnQueues.delete(key);
+      removed.settle?.(null);
+      broadcast({ type: "turn_queue_cancelled", session: key, turnId, ts: Date.now() });
+      return { status: 200, body: { ok: true, turnId, position: at } };
     }
     if (pathname === "/api/chat" && method === "POST") {
       const guard = await opts.beforeTurn?.().catch(() => null) ?? null;
       if (guard) return { status: 503, body: { error: guard } };
       const text = (parseBody(body) as { text?: string }).text ?? "";
-      const turnId = crypto.randomUUID();
-      void runTurn(turnId, text);
-      return { status: 200, body: { turnId, queued: false } };
+      const key = await ensureSession();
+      const { turnId, queued, position } = submitTurn(key, text);
+      return { status: 200, body: { turnId, queued, position } };
     }
     if (pathname === "/api/chat/upload" && method === "POST") {
       const guard = await opts.beforeTurn?.().catch(() => null) ?? null;
@@ -1089,9 +1215,9 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       const text =
         `[Attached file: ${rel} (${file.type || "application/octet-stream"}, ${bytes.length} bytes)]` +
         (caption ? `\n\n${caption}` : "");
-      const turnId = crypto.randomUUID();
-      void runTurn(turnId, text);
-      return { status: 200, body: { ok: true, turnId } };
+      const key = await ensureSession();
+      const { turnId, queued, position } = submitTurn(key, text);
+      return { status: 200, body: { ok: true, turnId, queued, position } };
     }
     if (pathname === "/api/clear" && method === "POST") {
       // Same rule as "new chat": reuse an unused private chat, otherwise mint.
@@ -1795,13 +1921,15 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     // Pinned when the bridge was switched on: switching browser chats does
     // not silently re-target the phone thread.
     const key = lstore.read(BRIDGE_SESSION_KEY) || (await ensureSession());
-    await whenIdle(key);
     // `fromBridge`: this turn's input came from the phone and its answer is
-    // relayed below — runTurn must not mirror it a second time.
-    const record = await runTurn(crypto.randomUUID(), msg.text, key, { fromBridge: true });
+    // relayed below — runTurn must not mirror it a second time. Going through
+    // the queue keeps phone messages behind anything the tab already queued
+    // instead of starting a second run on the same session.
+    const record = await submitTurn(key, msg.text, { fromBridge: true }).done;
     rememberBridgeConv(msg.conv, epoch);
-    const text =
-      record.status === "error"
+    const text = !record
+      ? "Something went wrong: the turn could not start."
+      : record.status === "error"
         ? `Something went wrong: ${record.error ?? "error"}`
         : record.output || "(no reply)";
     const sent = await channelPost("/api/relay", {

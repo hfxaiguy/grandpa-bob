@@ -13,6 +13,7 @@ import { componentDoc, type ComponentTheme } from "./emit-component";
 import {
   state,
   send,
+  cancelQueued,
   retryTurn,
   selectSession,
   newSession,
@@ -1200,6 +1201,8 @@ function Composer(props: { app: string }) {
   const [text, setText] = createSignal("");
   let ta: HTMLTextAreaElement | undefined;
   let fileInput: HTMLInputElement | undefined;
+  /** A turn is running in this conversation: Enter queues instead of racing it. */
+  const running = createMemo(() => state.turns.some((t) => t.status === "running"));
   // Grow the textarea with its content (up to a cap); reset when emptied.
   const autosize = () => {
     if (!ta) return;
@@ -1372,6 +1375,30 @@ function Composer(props: { app: string }) {
   };
   return (
     <div class="composer">
+      <Show when={state.queued.length}>
+        <div class="queued-list" aria-label={`${state.queued.length} queued message${state.queued.length === 1 ? "" : "s"}`}>
+          <div class="queued-head">
+            {state.queued.length} queued
+            <span class="queued-hint">· starts when the current reply finishes</span>
+          </div>
+          <For each={state.queued}>
+            {(q) => (
+              <div class="queued-msg">
+                <span class="queued-text">{q.text}</span>
+                <button
+                  type="button"
+                  class="queued-cancel"
+                  title="remove this queued message"
+                  aria-label="remove queued message"
+                  onClick={() => void cancelQueued(q.turnId)}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
       <Show when={card()}>
         {(c) => (
           <div class="file-card" classList={{ done: c().state === "done", err: c().state === "err" }}>
@@ -1437,7 +1464,13 @@ function Composer(props: { app: string }) {
         <textarea
           ref={(el) => (ta = el)}
           rows="1"
-          placeholder={props.app === "trunk" ? "reply…" : `reply to ${props.app}…`}
+          placeholder={
+            running()
+              ? "queue a message…"
+              : props.app === "trunk"
+                ? "reply…"
+                : `reply to ${props.app}…`
+          }
           value={text()}
           onInput={(e) => setText(e.currentTarget.value)}
           onKeyDown={(e) => {
@@ -1447,7 +1480,9 @@ function Composer(props: { app: string }) {
             }
           }}
         />
-        <button onClick={submit}>Send</button>
+        <button onClick={submit} classList={{ "queue-btn": running() }}>
+          {running() ? "Queue" : "Send"}
+        </button>
       </div>
     </div>
   );
@@ -1818,14 +1853,16 @@ export function Tile(props: { app: AppInfo }) {
 
   // One composer in the whole UI: the tile whose tree the session is parked on
   // (the current Human). A fresh session has no pause yet, so the composer
-  // starts on the trunk (matching the server's `inputApp ?? "trunk"`); while a
-  // turn runs the store nulls `awaiting`, so nothing is shown — a message sent
-  // mid-run would land on the trunk anyway. A failed turn keeps a retry
-  // composer on the app it was headed to.
+  // starts on the trunk (matching the server's `inputApp ?? "trunk"`). While a
+  // turn runs it stays on the tile that turn was sent to, so the person can
+  // type the next message; the server queues it and starts it when the current
+  // turn settles. A failed turn keeps a retry composer on the app it was
+  // headed to.
   const retryApp = createMemo(() => erroredApp());
   const parkedApp = createMemo(() => {
     if (state.awaiting != null) return state.awaiting;
-    if (state.turns.some((t) => t.status === "running")) return null;
+    const running = state.turns.find((t) => t.status === "running");
+    if (running) return running.inputApp ?? "trunk";
     return "trunk";
   });
   const showInput = () => parkedApp() === name() || retryApp() === name();
