@@ -25,6 +25,42 @@ The email app is the first consumer: `app/email/env.json` declares the three
 
 Tests: `npm run typecheck`; `npm run test:standalone`; `npm run build:web`.
 
+## 2026-11-07 — a reload can no longer strand a relay pairing
+
+Refreshing a tab that was paired to the desktop over BobSwap could leave the
+pair **connected in the store but dead in the UI**: the desktop had already
+answered one reconnect generation, so the tab's next request queued behind an
+offer nobody would answer. The watcher then advanced its feed cursor past that
+newer request, the browser held `serverConnecting` for its five-minute
+negotiation timeout, and the 20-second retry timer could not start a new
+generation. In practice the pairing looked lost until another reload.
+
+- **`src/bridge/relay.ts`**: an outstanding reconnect offer now fails the
+  moment the browser announces a newer nonce (a reconnect request is a
+  generation marker, not candidates), so the watcher answers the newest attempt
+  immediately. The watcher's cursor advances one entry at a time and never past
+  a request it has not answered, so a nonce that arrives in the same poll is
+  not skipped. The offer keeps its 60-second deadline for a genuinely idle
+  generation.
+- **`web/src/sync/transport-webrtc.ts`**: a resume records the relay `seq` of
+  its reconnect request, so stale `error`/`bye` rows from an earlier generation
+  are ignored, and it gives the peer 30 seconds for the SDP instead of asking
+  indefinitely.
+- **`web/src/server-link.ts`**: a resume now fails in 30 seconds (not five
+  minutes) when the control handshake stalls, which hands the attempt back to
+  the retry timer.
+- **`web/src/main.ts`**: the 20-second retry timer is installed right after the
+  boot-time resume attempt, not at the end of boot, so a failed refresh retry
+  runs while the workspace is still indexing.
+- **`scripts/relay-reconnect-test.ts`** (`npm run test:relay-reconnect`): a
+  fake relay queues a second nonce while the first offer is outstanding and
+  asserts the desktop offers the newest one; it times out on the old behavior.
+
+Tests: `npm run test:relay-reconnect`; `npm run test:relay-resilience`;
+`npm run test:relay-renew`; `npm run test:e2e-desktop-workspace`;
+`npm run test:e2e-desktop-refresh`; `npm run typecheck`;
+`npm --prefix web run typecheck`; `npm --prefix web run build`.
+
 ## 2026-11-07 — surface why auto-speak is silent
 
 **Trunk only** stays literal: it reads emits the trunk itself wrote, never an

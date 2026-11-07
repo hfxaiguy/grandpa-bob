@@ -75,6 +75,19 @@ export interface PeerTransport {
 const REQUEST_TIMEOUT_MS = 20_000;
 const POLL_MS = 1_500;
 const OPEN_TIMEOUT_MS = 60_000;
+
+/**
+ * A fresh reconnect generation arrived while an older one was still waiting
+ * for its answer. The old offer cannot succeed: the tab has already moved on
+ * to a new nonce. Failing it lets the watcher answer the newest request
+ * immediately instead of blocking every retry behind a 60-second timeout.
+ */
+class SupersededReconnectError extends Error {
+  constructor(nonce: string) {
+    super(`the reconnect offer for ${nonce} was superseded by a newer attempt`);
+    this.name = "SupersededReconnectError";
+  }
+}
 /** Renew well inside the relay's default 30-minute channel lifetime. */
 const RENEW_EVERY_MS = 10 * 60_000;
 /** After a transient renewal failure, try again well before the TTL runs out. */
@@ -419,6 +432,17 @@ export function offerRelayChannel(
           typeof message === "string" && message ? message : "the browser closed the pairing channel",
         );
       }
+      // A reconnect request is a generation marker, never candidates. Another
+      // nonce means the tab gave up on this offer's generation and is waiting
+      // for a fresh one; answering the old generation can only time out.
+      if (
+        nonce &&
+        entry.type === "candidates" &&
+        typeof entry.payload.reconnect === "string" &&
+        entry.payload.reconnect !== nonce
+      ) {
+        throw new SupersededReconnectError(nonce);
+      }
       if (nonce && entry.payload.nonce !== nonce) return;
       if (entry.type === "candidates") {
         const list = entry.payload.candidates;
@@ -457,6 +481,10 @@ export function offerRelayChannel(
         // A dead channel is final; a transient relay/network error is not.
         // Keep polling until the open deadline instead of failing the offer,
         // so one rate-limit burst does not abort the handshake.
+        if (err instanceof SupersededReconnectError) {
+          fail(err);
+          return;
+        }
         if (isTerminalRelayError(err)) {
           fail(err instanceof Error ? err : new Error(String(err)));
           return;
@@ -609,7 +637,6 @@ export class RelayTransport implements PeerTransport {
         continue;
       }
       failures = 0;
-      this.cursor = feed.cursor;
       for (const entry of feed.entries) {
         if (entry.from === "offerer") continue;
         const nonce = entry.payload.reconnect;
@@ -619,9 +646,15 @@ export class RelayTransport implements PeerTransport {
           !nonce ||
           this.handled.has(nonce)
         ) {
+          // Consume what this loop looked at, but never entries after a
+          // reconnect request we are about to answer: a newer nonce that
+          // arrived in the same poll must stay visible to the next loop, or a
+          // retry is silently skipped.
+          if (typeof entry.seq === "number") this.cursor = Math.max(this.cursor, entry.seq);
           continue;
         }
         this.handled.add(nonce);
+        if (typeof entry.seq === "number") this.cursor = Math.max(this.cursor, entry.seq);
         const profile =
           typeof entry.payload.profile === "string" ? entry.payload.profile : undefined;
         let opened: OpenedPeer;

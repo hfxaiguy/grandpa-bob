@@ -264,6 +264,11 @@ channel flow used between two browsers:
    only SDP/ICE; the datachannel still carries files, ops and voice. A reload,
    profile switch or short drop reopens the same relay channel with a
    nonce-tagged reconnect, so it needs no new code while the channel is alive.
+   Each reload starts a new nonce: if the desktop is still answering an earlier
+   one it abandons that offer and answers the newest attempt, and a tab resume
+   that gets no answer gives up after 30 seconds so the 20-second retry can
+   start a fresh generation. Retrying never needs a new code while the channel
+   is alive.
    The desktop renews the channel every 10 minutes with
    `POST /api/v1/sync/channels/{id}/renew` (live since 2026-11-06; either role
    may call it, no peer action and no code). Repeated renewals keep the pairing

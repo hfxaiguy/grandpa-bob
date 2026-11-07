@@ -195,6 +195,14 @@ export class ManualSignaling implements SignalingProvider {
 
 export class BobSwapSignaling implements SignalingProvider {
   private stopped = false;
+  /** Relay seq of this resume's reconnect request (0 while pairing). */
+  private resumeSeq = 0;
+  /**
+   * A reconnect waits this long for the desktop's offer. The desktop may still
+   * be finishing an older generation; failing here lets the tab retry with a
+   * fresh nonce instead of holding `serverConnecting` forever.
+   */
+  private static readonly RESUME_SDP_TIMEOUT_MS = 30_000;
 
   constructor(
     private service: { baseUrl: string; readKey?: string },
@@ -305,12 +313,24 @@ export class BobSwapSignaling implements SignalingProvider {
     kind: "offer" | "answer",
   ): Promise<{ sdp: string; cursor: number }> {
     let cursor = 0;
+    const deadline = this.resume
+      ? Date.now() + BobSwapSignaling.RESUME_SDP_TIMEOUT_MS
+      : 0;
     for (;;) {
+      if (deadline && Date.now() > deadline) {
+        throw new Error(
+          "the desktop did not answer the reconnect in time — retrying",
+        );
+      }
       const { entries, cursor: next } = await this.feed(cursor);
       let hit: { sdp: string } | null = null;
       for (const m of entries) {
         if (this.isOwn(m.from)) continue;
         if (m.type === "error" || m.type === "bye") {
+          // A resume replays the channel from the start, so an error left by an
+          // earlier generation must not fail this one. Anything written after
+          // our reconnect request is current.
+          if (this.resume && this.resumeSeq > 0 && m.seq <= this.resumeSeq) continue;
           const message = (m.payload as { message?: unknown }).message;
           throw new Error(
             typeof message === "string" && message ? message : "the peer closed the pairing session",
@@ -402,10 +422,12 @@ export class BobSwapSignaling implements SignalingProvider {
     } else {
       if (this.resume) {
         this.onStatus?.("requesting a relay reconnect…");
-        await this.signal({
+        const sent = await this.signal({
           type: "candidates",
           payload: { reconnect: this.resume.nonce, profile: this.resume.profile },
         });
+        const seq = Number((sent as { seq?: unknown }).seq);
+        if (Number.isFinite(seq) && seq > 0) this.resumeSeq = seq;
       }
       this.onStatus?.("waiting for the peer's offer…");
       const remote = await this.awaitPeerSdp("offer");

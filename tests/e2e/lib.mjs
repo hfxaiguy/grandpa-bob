@@ -8,8 +8,10 @@
 // Two Chromes are used by the profile-handoff test, each with its own
 // user-data-dir, because OPFS and localStorage are per browser profile.
 import { execFileSync, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -546,3 +548,200 @@ export async function waitDirEntry(dir, name, timeout = 60_000) {
 export function assert(condition, message) {
   if (!condition) throw new Error(`assertion failed: ${message}`);
 }
+
+/**
+ * A local stand-in for BobSwap's sync-channel service.
+ *
+ * It implements the slice of the documented contract a desktop relay pairing
+ * uses: account-key create, code-only join, peer-only signal feed, renewal,
+ * peers, heartbeat and delete. Only SDP/ICE pass through it, exactly like the
+ * real relay, so the WebRTC datachannel still carries the workspace.
+ *
+ * The relay-pairing path is the one a reload must survive, and a local service
+ * keeps that regression test deterministic and offline.
+ */
+export async function startMockRelay() {
+  /** @type {Map<string, {id: string, code: string, tokens: {offerer: string, answerer: string}, joined: boolean, expiresAt: number, seq: number, messages: Array<{seq: number, from: string, type: string, payload: unknown, created_at: string}>, lastSeen: Record<string, string>}>} */
+  const channels = new Map();
+  /** @type {Map<string, string>} */
+  const codes = new Map();
+  /** @type {string[]} */
+  const requests = [];
+  const debug = process.env.E2E_RELAY_DEBUG === "1";
+
+  const cors = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,PUT,POST,DELETE,OPTIONS",
+    "access-control-allow-headers": "authorization, content-type",
+  };
+  const send = (res, status, body) => {
+    res.writeHead(status, { "content-type": "application/json", ...cors });
+    res.end(JSON.stringify(body));
+  };
+  const readBody = async (req) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    if (!raw) return {};
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  };
+  const newCode = () => {
+    const digits = String(Number.parseInt(randomBytes(4).toString("hex"), 16) % 100_000_000).padStart(8, "0");
+    return `${digits.slice(0, 4)}-${digits.slice(4)}`;
+  };
+  const token = (prefix) => `${prefix}_${randomBytes(24).toString("hex")}`;
+  const sideFor = (channel, req) => {
+    const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+    if (bearer && bearer === channel.tokens.offerer) return "offerer";
+    if (bearer && bearer === channel.tokens.answerer) return "answerer";
+    return null;
+  };
+  const liveChannel = (channel) => channel && Date.now() < channel.expiresAt;
+
+  const server = http.createServer((req, res) => {
+    void (async () => {
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, cors);
+        res.end();
+        return;
+      }
+      const url = new URL(req.url ?? "/", "http://relay");
+      const body = await readBody(req);
+      const line = `${req.method} ${url.pathname}${url.search} auth=${req.headers.authorization ? "yes" : "-"}`;
+      requests.push(line);
+      if (requests.length > 500) requests.shift();
+      if (debug) console.log(`[mock-relay] ${line}`);
+
+      // POST /api/v1/sync/channels — the desktop creates the pairing channel.
+      if (url.pathname === "/api/v1/sync/channels" && req.method === "POST") {
+        if (!String(req.headers.authorization ?? "").trim()) {
+          return send(res, 401, { error: "key required" });
+        }
+        const id = `sc_${randomBytes(16).toString("hex")}`;
+        const code = newCode();
+        const channel = {
+          id,
+          code,
+          tokens: { offerer: token("sct"), answerer: token("sct") },
+          joined: false,
+          expiresAt: Date.now() + 30 * 60_000,
+          seq: 1,
+          messages: [],
+          lastSeen: {},
+        };
+        channels.set(id, channel);
+        codes.set(code.replace(/[^0-9]/g, ""), id);
+        return send(res, 201, {
+          channel_id: id,
+          pairing_code: code,
+          role_token: channel.tokens.offerer,
+          role: "offerer",
+          created_at: new Date().toISOString(),
+          expires_at: new Date(channel.expiresAt).toISOString(),
+          ice_servers: [],
+        });
+      }
+
+      // POST /api/v1/sync/channels/join — the browser spends the code.
+      if (url.pathname === "/api/v1/sync/channels/join" && req.method === "POST") {
+        const code = String(body.code ?? "").replace(/[^0-9]/g, "");
+        const id = codes.get(code);
+        const channel = id ? channels.get(id) : undefined;
+        if (!channel || channel.joined || !liveChannel(channel)) {
+          return send(res, 403, { error: "invalid pairing code" });
+        }
+        channel.joined = true;
+        codes.delete(code);
+        return send(res, 200, {
+          channel_id: channel.id,
+          role_token: channel.tokens.answerer,
+          role: "joiner",
+          expires_at: new Date(channel.expiresAt).toISOString(),
+          ice_servers: [],
+        });
+      }
+
+      const signal = /^\/api\/v1\/sync\/channels\/([^/]+)\/signal$/.exec(url.pathname);
+      const action = /^\/api\/v1\/sync\/channels\/([^/]+)(?:\/(renew|heartbeat|peers))?$/.exec(url.pathname);
+      const id = signal?.[1] ?? action?.[1];
+      const channel = id ? channels.get(id) : undefined;
+      if (!channel) return send(res, 404, { error: "unknown channel" });
+      if (!liveChannel(channel)) {
+        channels.delete(channel.id);
+        return send(res, 410, { error: "channel expired" });
+      }
+      const side = sideFor(channel, req);
+      if (!side) return send(res, 403, { error: "invalid role token" });
+      channel.lastSeen[side] = new Date().toISOString();
+
+      if (signal && req.method === "GET") {
+        const after = Number(url.searchParams.get("after") ?? "0") || 0;
+        // The real service returns only the peer's messages; seq order, with
+        // the cursor for the caller's next poll.
+        return send(res, 200, {
+          messages: channel.messages.filter((m) => m.seq > after && m.from !== side),
+          cursor: channel.seq - 1,
+        });
+      }
+      if (signal && req.method === "PUT") {
+        const type = String(body.type ?? "");
+        if (!type) return send(res, 400, { error: "signal type required" });
+        const message = {
+          seq: channel.seq++,
+          from: side,
+          type,
+          payload: body.payload && typeof body.payload === "object" ? body.payload : {},
+          created_at: new Date().toISOString(),
+        };
+        channel.messages.push(message);
+        return send(res, 201, { seq: message.seq, cursor: channel.seq - 1 });
+      }
+      if (action?.[2] === "renew" && req.method === "POST") {
+        channel.expiresAt = Date.now() + 30 * 60_000;
+        return send(res, 200, {
+          channel_id: channel.id,
+          expires_at: new Date(channel.expiresAt).toISOString(),
+        });
+      }
+      if (action?.[2] === "heartbeat" && req.method === "POST") {
+        res.writeHead(204, cors);
+        res.end();
+        return;
+      }
+      if (action?.[2] === "peers" && req.method === "GET") {
+        return send(res, 200, {
+          peers: {
+            ...(channel.lastSeen.offerer ? { offerer: { last_seen_at: channel.lastSeen.offerer } } : {}),
+            ...(channel.lastSeen.answerer ? { answerer: { last_seen_at: channel.lastSeen.answerer } } : {}),
+          },
+        });
+      }
+      if (!action?.[2] && req.method === "DELETE") {
+        channels.delete(channel.id);
+        codes.delete(channel.code.replace(/[^0-9]/g, ""));
+        res.writeHead(204, cors);
+        res.end();
+        return;
+      }
+      return send(res, 404, { error: "not found" });
+    })().catch((err) => send(res, 500, { error: err instanceof Error ? err.message : String(err) }));
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const { port } = server.address();
+  return {
+    url: `http://127.0.0.1:${port}`,
+    /** Recent request lines (no role tokens) for failure diagnostics. */
+    requests,
+    close() {
+      server.close();
+    },
+  };
+}
+

@@ -1654,6 +1654,18 @@ async function main(): Promise<void> {
   } else {
     renderMirrorStatus({ phase: "unlinked", detail: "no desktop server paired", folder: "", lastSyncAt: null });
   }
+  // Keep retrying a paired desktop while this tab hosts the workspace. Installed
+  // right after the boot attempt: a resume that fails (or times out) must not
+  // wait for the rest of boot — indexing a large profile can take minutes, and
+  // until then the pairing would look lost. The manual pair dialog remains the
+  // recovery path.
+  serverRetryTimer = setInterval(() => {
+    void connectServerPeer();
+  }, 20_000);
+  window.addEventListener("pagehide", () => {
+    if (serverRetryTimer) clearInterval(serverRetryTimer);
+    serverRetryTimer = null;
+  });
   wireSyncUi(() => activeSync());
 
   // A secondary tab can be promoted (the host closed, or the operator pressed
@@ -1798,15 +1810,6 @@ async function main(): Promise<void> {
       lastSyncAt: new Date().toISOString(),
     });
   };
-  // A paired server may have been offline at boot; keep trying while this tab
-  // hosts the workspace. The manual pair dialog is still the recovery path.
-  serverRetryTimer = setInterval(() => {
-    void connectServerPeer();
-  }, 20_000);
-  window.addEventListener("pagehide", () => {
-    if (serverRetryTimer) clearInterval(serverRetryTimer);
-    serverRetryTimer = null;
-  });
 
   // When the admin serves this page, use ITS models.json (and /api/llm proxy)
   // so the browser, the chat UI and Telegram all share one model config.

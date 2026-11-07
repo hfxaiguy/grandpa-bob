@@ -544,9 +544,18 @@ function negotiate(
   let settled = false;
   let serverNonce = "";
   let clientNonce = "";
-  const timer = setTimeout(() => {
-    fail(new Error("the server did not finish pairing in time"));
-  }, 5 * 60_000);
+  const timer = setTimeout(
+    () => {
+      fail(
+        new Error(
+          opts.mode === "resume"
+            ? "the desktop did not finish reconnecting in time — retrying"
+            : "the server did not finish pairing in time",
+        ),
+      );
+    },
+    opts.mode === "resume" ? 30_000 : 5 * 60_000,
+  );
 
   /** Reject once, and close the channel so a failed attempt stops consuming it. */
   const fail = (err: Error): void => {
