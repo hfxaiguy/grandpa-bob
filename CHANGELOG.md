@@ -2,6 +2,30 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — live browser e2e for the paired desktop
+
+Two real-browser checks now exercise the cross-device flows end to end: a real
+`npm run bob` process, Chromium, OPFS, WebRTC and the app's own Sync…/Profiles
+dialogs. Nothing is mocked except the desktop folder contents each scenario
+asks for.
+
+- **`tests/e2e/desktop-workspace.mjs`** (`npm run test:e2e-desktop-workspace`):
+  seeds a workspace in the desktop mirror, pairs a fresh tab to it, verifies the
+  files arrive in browser OPFS, creates a pattern through the app, presses
+  **Sync now**, and verifies it lands back in the mirror.
+- **`tests/e2e/profile-handoff.mjs`** (`npm run test:e2e-profile-handoff`):
+  browser A creates a profile and mirrors it to the desktop; A closes; browser B
+  pairs to the same desktop, previews the remote-only profile, adopts its id and
+  pulls its files. Two isolated Chromium profiles model the two browsers.
+- **`tests/e2e/lib.mjs`**: shared process/CDP/pairing/OPFS helpers, including
+  the console SAS approval, the pairing dialog flow and the post-pairing reload
+  barrier.
+- **`package.json`**, **`web/package.json`**: `test:e2e-live` runs both checks.
+  **`README.md`** / **`web/README.md`** document the prerequisites
+  (`npm run build:web`, Chromium or `CHROME_BIN`).
+
+Tests: `npm run test:e2e-live`.
+
 ## 2026-11-07 — Sync shows every paired device
 
 The Sync dialog's **Live sync** section now has a **Paired devices** list. It

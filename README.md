@@ -433,7 +433,8 @@ Useful checks: `npm run typecheck` (three packages), `npm run test:standalone`
 (the self-containment gate), `npm run test:sync`, `npm run smoke` (offline
 tool/git tests), and the browser smokes in `web/scripts/` (`browser-smoke`,
 `profile-smoke`, `lease-smoke`, `seed-update-smoke` — each needs
-`npm run web:standalone` running).
+`npm run web:standalone` running). The live cross-device flows have their own
+real-browser e2e checks: `npm run test:e2e-live` (after `npm run build:web`).
 
 ## Telegram usage
 

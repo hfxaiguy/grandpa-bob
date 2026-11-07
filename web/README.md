@@ -478,6 +478,21 @@ spawns the combined process, drives the real pair dialog, matches the SAS,
 approves the mirror and exec capabilities, verifies mirror push/pull, runs an
 allowlisted shell op with convergence, and reloads to test silent reconnect.
 
+Two live browser e2e checks cover the cross-device profile handoff (both spawn
+the real combined process, use headless Chromium and drive the app's own
+dialogs; run `npm run build:web` first):
+
+- `npm run test:e2e-desktop-workspace` — a workspace exists only in the
+  desktop mirror; a fresh tab pairs to it, receives the workspace, creates a
+  pattern through the app, and the desktop mirror receives it back.
+- `npm run test:e2e-profile-handoff` — browser A creates a profile and syncs it
+  to the desktop; browser A closes; browser B pairs to the same desktop,
+  previews the remote-only profile, adopts its id, pulls the files and
+  switches to it. Two isolated Chromium profiles model the two browsers.
+
+`npm run test:e2e-live` runs both. The shared CDP/process plumbing lives in
+`tests/e2e/lib.mjs`; `CHROME_BIN` overrides the browser binary.
+
 The pairing phrase (short authentication string) has its own check that needs
 no app build or server: `npm run smoke:pairing` starts a throwaway Vite dev
 server, completes a real two-peer WebRTC offer/answer in headless Chromium, and
