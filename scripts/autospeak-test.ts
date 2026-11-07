@@ -1,11 +1,14 @@
 /**
  * Unit test: auto-speak scope.
  *
- * Regression: with **Trunk only** the ambient voice stayed silent whenever the
- * trunk handed the turn to an app. The app's reply is still the trunk
- * conversation's reply — it renders inside the trunk's app-call card — but the
- * filter only matched emits tagged `trunk`, so a person typing in the trunk
- * heard nothing while talking through an app.
+ * Trunk only is literal: it reads emits the trunk itself wrote. An app's
+ * bubbles belong to the app's tile, even when the trunk called that app during
+ * the turn. "All apps" is the scope that reads those.
+ *
+ * Regression: when a direct trunk reply is not spoken, the ambient voice used
+ * to fail silently (an unpaired desktop, an offline link, an autoplay policy).
+ * The first distinct failure is now surfaced as a toast so the person can tell
+ * why the setting seems to do nothing.
  *
  * No browser audio: `Audio`, `URL.createObjectURL`, and the paired desktop's
  * `synthesize` are stubbed; the test counts synthesis requests.
@@ -42,8 +45,10 @@ storage.setItem(
 Object.defineProperty(globalThis, "localStorage", { value: storage, configurable: true });
 
 const synthesized: string[] = [];
+let synthError: string | null = null;
 (globalThis as any).__bobServer = {
   synthesize: async (text: string) => {
+    if (synthError) throw new Error(synthError);
     synthesized.push(text);
     return { bytes: new Uint8Array([1, 2]), ext: ".wav" };
   },
@@ -64,9 +69,9 @@ class FakeAudio {
 (globalThis as any).URL.createObjectURL = () => "blob:test";
 (globalThis as any).URL.revokeObjectURL = () => {};
 
-const { handleSSE, setState } = await import("../ui/src/store.ts");
+const { handleSSE, setState, state } = await import("../ui/src/store.ts");
 
-setState({ active: "web:t", turns: [], apps: [], ready: true });
+setState({ active: "web:t", turns: [], apps: [], ready: true, toast: "" });
 
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 10));
 
@@ -98,16 +103,12 @@ emit("t1", "direct trunk reply", "trunk");
 await settle();
 assert.deepEqual(synthesized, ["direct trunk reply"]);
 
-// ── trunk only: an app's reply in a trunk-started turn (the regression) ───
+// ── trunk only: an app's bubble is that app's, even in a trunk turn ───────
 synthesized.length = 0;
 start("t2", "trunk");
 emit("t2", "reply written by the called app", "substack");
 await settle();
-assert.deepEqual(
-  synthesized,
-  ["reply written by the called app"],
-  "an app's bubble in the trunk's turn is the trunk conversation",
-);
+assert.deepEqual(synthesized, [], "trunk only never reads app bubbles");
 
 // ── trunk only: machine-level notes stay silent ───────────────────────────
 synthesized.length = 0;
@@ -116,14 +117,14 @@ emit("t3", "[app] handed back", "trunk", "machine");
 await settle();
 assert.deepEqual(synthesized, [], "machine notes are narration, not replies");
 
-// ── trunk only: a turn started inside an app is that app's chat ───────────
+// ── trunk only: a turn started inside an app is not the trunk's chat ──────
 synthesized.length = 0;
 start("t4", "substack");
 emit("t4", "app-only reply", "substack");
 await settle();
 assert.deepEqual(synthesized, [], "an app-started turn is not the trunk conversation");
 
-// ...but a trunk emit in that turn is still visible in the trunk chat.
+// ...but the trunk's own emit in that turn is still a trunk reply.
 synthesized.length = 0;
 start("t5", "substack");
 emit("t5", "trunk aside", "trunk");
@@ -153,8 +154,63 @@ storage.setItem(
 );
 synthesized.length = 0;
 start("t8", "trunk");
-emit("t8", "legacy config reply", "substack");
+emit("t8", "legacy trunk reply", "trunk");
 await settle();
-assert.deepEqual(synthesized, ["legacy config reply"]);
+assert.deepEqual(synthesized, ["legacy trunk reply"]);
+
+synthesized.length = 0;
+start("t9", "trunk");
+emit("t9", "legacy app raw", "substack");
+await settle();
+assert.deepEqual(synthesized, [], "legacy true is trunk only, not all apps");
+
+// ── the global enable switch applies without a page reload ────────────────
+storage.setItem(
+  "bob:services",
+  JSON.stringify({
+    tts: { provider: "rime", autoSpeak: "trunk", enabled: false, keys: { rime: "test-key" } },
+  }),
+);
+synthesized.length = 0;
+start("t9b", "trunk");
+emit("t9b", "muted reply", "trunk");
+await settle();
+assert.deepEqual(synthesized, [], "the enable switch stops auto-speak immediately");
+
+storage.setItem(
+  "bob:services",
+  JSON.stringify({ tts: { provider: "rime", autoSpeak: "trunk", keys: { rime: "test-key" } } }),
+);
+
+// ── a silent failure is surfaced once, not mistaken for the setting ───────
+synthError = "this device is not paired with a desktop";
+setState({ toast: "" });
+start("t10", "trunk");
+emit("t10", "unheard reply", "trunk");
+await settle();
+assert.match(state.toast, /auto-speak failed: this device is not paired/);
+assert.equal(state.toastErr, true);
+
+// The same failure across the next bubbles is not repeated.
+setState({ toast: "" });
+start("t11", "trunk");
+emit("t11", "another unheard reply", "trunk");
+await settle();
+assert.equal(state.toast, "", "one toast per distinct failure");
+
+// A success clears the dedupe, so a later recurrence is reported again.
+synthError = null;
+synthesized.length = 0;
+start("t12", "trunk");
+emit("t12", "spoken again", "trunk");
+await settle();
+assert.deepEqual(synthesized, ["spoken again"]);
+
+synthError = "the browser blocked playback";
+setState({ toast: "" });
+start("t13", "trunk");
+emit("t13", "blocked reply", "trunk");
+await settle();
+assert.match(state.toast, /auto-speak failed: the browser blocked playback/);
 
 console.log("autospeak: ok");

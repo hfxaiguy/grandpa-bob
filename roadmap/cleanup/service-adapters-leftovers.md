@@ -135,8 +135,8 @@ CORS). **Estimate:** ~0.5 day.
 
 ## Known limitations (context, not work)
 
-- **Mobile autoplay**: auto-speak is silently skipped until a user gesture; the
-  manual 🔊 always works.
+- **Mobile autoplay**: auto-speak is blocked until a user gesture (the first
+  distinct failure now shows a toast); the manual 🔊 always works.
 - **Cache scope**: the 48 MB TTS cache is per Node process and not persisted.
 - **Rime TTS**: 1,000 chars/request is handled by chunking; 78 voices, four
   languages, $0.03/min on Flex (free tier: $50/mo credit).

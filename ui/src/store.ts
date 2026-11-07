@@ -627,8 +627,24 @@ let speechToken = 0;
 export const [speechKey, setSpeechKey] = createSignal<string | null>(null);
 /** The bubble key whose clip is still being synthesized (null = idle). */
 export const [speechBusy, setSpeechBusy] = createSignal<string | null>(null);
-/** Global TTS switch (Settings → Speech). Read once per app load. */
-export const [ttsEnabled] = createSignal(loadTtsConfig().enabled !== false);
+/** Global TTS switch (Settings → Speech) for the 💬/🔊 UI. Re-read when the
+ *  chat remounts (Settings is an in-place iframe, not a page load); the voice
+ *  paths below read the saved config directly so a change applies at once. */
+export const [ttsEnabled, setTtsEnabled] = createSignal(loadTtsConfig().enabled !== false);
+export function refreshTtsEnabled(): void {
+  setTtsEnabled(loadTtsConfig().enabled !== false);
+}
+
+/** The last ambient-voice failure already surfaced. Dedupes one broken link
+ *  or autoplay policy across the bubbles of a turn; a success clears it. */
+let lastAutoSpeakError: string | null = null;
+function reportAutoSpeakFailure(err: unknown): void {
+  const detail = err instanceof Error ? err.message : String(err);
+  if (detail === lastAutoSpeakError) return;
+  lastAutoSpeakError = detail;
+  console.warn("auto-speak:", detail);
+  toast(`auto-speak failed: ${detail}`, true);
+}
 
 function releaseClip(): void {
   if (!currentSpeechUrl) return;
@@ -659,7 +675,9 @@ const SILENT_WAV =
  * prepared cancels the request.
  */
 export async function speakText(text: string, key?: string): Promise<void> {
-  if (!ttsEnabled()) {
+  // Read the saved switch, not the mount-time signal: Settings saves live, and
+  // a stale `false` would make auto-speak look broken until a page reload.
+  if (loadTtsConfig().enabled === false) {
     throw new Error("text-to-speech is off — enable it in Settings → Speech");
   }
   const trimmed = text.trim();
@@ -1734,22 +1752,31 @@ export function handleSSE(msg: any): void {
         }),
       );
       // Auto-speak follows Settings → Speech: off, trunk only, or every app.
-      // "Trunk only" means the trunk conversation: the trunk's own emits plus
-      // the bubbles an app writes during a turn the person started in the
-      // trunk — those appear in the trunk's app-call cards. A turn started
-      // inside an app belongs to that app's chat, so only "all" reads it.
-      // Failures (autoplay policy, no pairing) stay silent — this is ambient.
+      // Trunk only reads emits the trunk itself wrote; an app's bubbles belong
+      // to the app's tile, even when the trunk called that app in this turn.
+      // The saved config is read here (not the mount-time signal) so a scope or
+      // enable change applies without a reload. A failure is reported once
+      // (see reportAutoSpeakFailure): a silent pairing/autoplay problem must
+      // not look like "the setting does nothing".
       const tts = loadTtsConfig();
       const scope = tts.autoSpeak;
       const app = msg.app ?? "trunk";
       const spoken = msg.text?.trim();
-      const turn = state.turns.find((x) => x.turnId === msg.turnId);
-      const fromTrunk = app === "trunk" || (turn?.inputApp ?? "trunk") === "trunk";
-      if (spoken && msg.level !== "machine" && scope && (scope === "all" || fromTrunk)) {
-        if (ttsEnabled()) {
-          const index = (turn?.emits?.length ?? 1) - 1;
-          void speakText(spoken, `${msg.turnId}:${index}`).catch(() => {});
-        }
+      if (
+        spoken &&
+        msg.level !== "machine" &&
+        scope &&
+        tts.enabled !== false &&
+        (scope === "all" || app === "trunk")
+      ) {
+        const turn = state.turns.find((x) => x.turnId === msg.turnId);
+        const index = (turn?.emits?.length ?? 1) - 1;
+        void speakText(spoken, `${msg.turnId}:${index}`).then(
+          () => {
+            lastAutoSpeakError = null;
+          },
+          reportAutoSpeakFailure,
+        );
       }
       break;
     }

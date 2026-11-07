@@ -2,6 +2,33 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — surface why auto-speak is silent
+
+**Trunk only** stays literal: it reads emits the trunk itself wrote, never an
+app's bubbles (those belong to the app's tile, even when the trunk called that
+app in the same turn). **All apps** is the scope for app replies.
+
+The ambient voice used to swallow every failure, so an unpaired desktop, an
+offline relay, or an autoplay block looked exactly like "the setting does
+nothing". The first distinct failure is now logged to the console and shown as
+one error toast; repeated bubbles with the same failure stay quiet, and a
+successful clip clears the memory so a later recurrence is reported again.
+
+- **`ui/src/store.ts`**: `reportAutoSpeakFailure` for the SSE auto-speak path;
+  the scope check remains `app === "trunk"` (plus `all`). Auto-speak and
+  `speakText` read the saved enable flag directly (a stale mount-time signal
+  could keep voice off until a reload).
+- **`ui/src/mount.tsx`**: returning from Settings re-reads the TTS switch, so
+  the 🔊 buttons appear/disappear without a page reload.
+- **`scripts/autospeak-test.ts`** (`npm run test:autospeak`): literal trunk
+  matching, machine skip, app-started turn, all-apps, off, the legacy
+  `autoSpeak: true` spelling, the live enable switch, and the failure toast /
+  dedupe / reset.
+- **`docs/services.md`**, **`web/src/ui/pages.ts`**: scope wording is back to
+  trunk's own emits; the docs note the failure toast.
+
+Tests: `npm run test:autospeak`; `npm run test:tts`; `npm run typecheck`.
+
 ## 2026-11-07 — paired-device rows show live sync status
 
 The Sync dialog's **Paired devices** list only had a persisted
@@ -46,24 +73,6 @@ durable mailbox.
   start, ordered drain, cancel and stop clearing the queue.
 
 Tests: `npm run test:chat-queue`; `npm run test:autospeak`; `npm run typecheck`.
-
-## 2026-11-07 — trunk-only auto-speak includes app replies
-
-With **Trunk only** selected, a reply stayed silent whenever the trunk handed
-the turn to an app: the app writes the bubbles (they render inside the trunk's
-app-call card), but the ambient voice only matched emits tagged `trunk`. Trunk
-only now speaks the trunk conversation — its own emits plus app emits in a turn
-the person started from the trunk. A turn started inside an app keeps its chat
-silent until the scope is **All apps**; machine-level notes are still skipped.
-
-- **`ui/src/store.ts`**: the SSE auto-speak filter also matches a turn whose
-  `inputApp` is the trunk.
-- **`scripts/autospeak-test.ts`** (`npm run test:autospeak`): direct trunk
-  emit, trunk-started app reply, machine skip, app-started turn, all-apps, off,
-  and the legacy `autoSpeak: true` spelling.
-- **`docs/services.md`**, **`web/src/ui/pages.ts`**: scope wording follows.
-
-Tests: `npm run test:autospeak`; `npm run test:tts`; `npm run typecheck`.
 
 ## 2026-11-07 — reply to a suspended app from its call card
 
