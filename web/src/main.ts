@@ -1885,6 +1885,7 @@ async function main(): Promise<void> {
     },
     peers: () => syncHandle?.peers() ?? loadPeerStore(),
     onPeersChanged: (cb) => syncHandle?.onPeersChanged(cb) ?? (() => undefined),
+    syncDiagnostics: () => syncHandle?.diagnostics() ?? null,
     setProfileConsent: (peerId, profileId, allow) =>
       syncHandle?.setProfileConsent(peerId, profileId, allow),
     unlinkProfile: (peerId, profileId) => syncHandle?.unlinkProfile(peerId, profileId),

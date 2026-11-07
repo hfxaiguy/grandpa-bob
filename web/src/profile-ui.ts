@@ -51,9 +51,11 @@ import {
 } from "./workspace-transfer";
 import { clearServerLink } from "./server-link";
 import type { MirrorStatus } from "./peer-status";
+import type { SyncDiagnostics, SyncLinkDiagnostics } from "./sync";
 import {
   buildProfileRows,
   pairedDevices,
+  type PairedDeviceRow,
   type PeerProfileCatalog,
   type PeerSyncStore,
   type ProfilePreview,
@@ -83,6 +85,8 @@ export interface ProfileUiHooks {
   /** Paired peers + per-profile consent (multi-profile sync). */
   peers?(): PeerSyncStore;
   onPeersChanged?(cb: () => void): () => void;
+  /** Live sync snapshot for the paired-device status badges. */
+  syncDiagnostics?(): SyncDiagnostics | null;
   setProfileConsent?(peerId: string, profileId: string, allow: boolean): void;
   unlinkProfile?(peerId: string, profileId: string): void;
   removeProfile?(profileId: string): void;
@@ -1327,30 +1331,132 @@ function lastSeenLabel(iso: string): string {
   return new Date(when).toLocaleDateString();
 }
 
+interface PairedDeviceStatus {
+  label: string;
+  title: string;
+  phase: "online" | "syncing" | "handshake" | "error" | "offline";
+}
+
+/**
+ * Per-device status for the Sync dialog: the live link wins over the persisted
+ * `online` flag, and a ready link reports what the engine is doing. Without a
+ * manager (a read-only tab) the badge falls back to the peer store.
+ */
+function pairedDeviceStatus(
+  device: PairedDeviceRow,
+  link: SyncLinkDiagnostics | undefined,
+  live: SyncDiagnostics | null,
+): PairedDeviceStatus {
+  const lastSeen = Date.parse(device.lastSeen);
+  const lastSeenKnown = Number.isFinite(lastSeen);
+  const lastSeenTitle = lastSeenKnown ? new Date(lastSeen).toLocaleString() : "";
+  const offline: PairedDeviceStatus = device.online
+    ? { label: "connected", title: "last known state (this tab is not the workspace host)", phase: "online" }
+    : {
+        label: lastSeenKnown ? `last seen ${lastSeenLabel(device.lastSeen)}` : "offline",
+        title: lastSeenTitle || "never connected",
+        phase: "offline",
+      };
+  if (!live) return offline;
+  if (!link) {
+    return {
+      label: lastSeenKnown ? `last seen ${lastSeenLabel(device.lastSeen)}` : "offline",
+      title: lastSeenTitle || "no live link",
+      phase: "offline",
+    };
+  }
+  if (!link.ready) {
+    return {
+      label: "handshake…",
+      title: "data channel open; the phrase/approval gate is not complete",
+      phase: "handshake",
+    };
+  }
+  if (!link.profiles.length) {
+    return {
+      label: "connected · no profiles",
+      title: "link is live but no profile is shared yet",
+      phase: "online",
+    };
+  }
+  const state = live.state;
+  if (state.status === "error") {
+    return { label: "sync error", title: state.detail || "sync error", phase: "error" };
+  }
+  if (state.status === "syncing" || state.status === "verifying") {
+    return { label: "syncing…", title: state.detail || "a sync round is running", phase: "syncing" };
+  }
+  if (state.status === "synced") {
+    return {
+      label: "synced",
+      title: state.lastSyncAt ? `last sync ${new Date(state.lastSyncAt).toLocaleString()}` : "in sync",
+      phase: "online",
+    };
+  }
+  if (state.status === "connecting") {
+    return { label: "connecting…", title: "establishing the sync round", phase: "handshake" };
+  }
+  return {
+    label: "connected",
+    title: state.lastSyncAt ? `last sync ${new Date(state.lastSyncAt).toLocaleString()}` : "live link",
+    phase: "online",
+  };
+}
+
+let pairedDeviceSignature = "";
+
 /**
  * Paint every device in the device-wide peer store. The Profiles dialog shows
  * peers per profile; this list answers "which devices is this browser paired
- * with?" even when a device shares no profile or is currently offline.
+ * with, and what are they doing?" even when a device shares no profile or is
+ * currently offline.
  */
 function renderPairedDevices(): void {
   const ui = getHooks();
   const list = el<HTMLUListElement>("paired-device-list");
   const empty = el<HTMLElement>("paired-device-empty");
   if (!list || !empty) return;
+  const selfName = ui.deviceName?.() || ui.defaultDeviceName?.() || "this browser";
   const self = el<HTMLElement>("paired-device-self");
-  if (self) {
-    self.textContent = ui.deviceName?.() || ui.defaultDeviceName?.() || "this browser";
-  }
+  if (self) self.textContent = selfName;
   const devices = pairedDevices(ui.peers?.() ?? { version: 1, peers: {} });
+  const live = ui.syncDiagnostics?.() ?? null;
+  const liveLinks = new Map(
+    (live?.links ?? []).map((link) => [link.deviceId.toLowerCase(), link]),
+  );
+  const statuses = devices.map((device) =>
+    pairedDeviceStatus(device, liveLinks.get(device.peerId.toLowerCase()), live),
+  );
+  const connected = statuses.filter((status) => status.phase !== "offline").length;
+
+  // The dialog is repainted on a timer while open (the engine state can change
+  // without a peer-store update); skip the DOM churn when nothing changed.
+  const signature = JSON.stringify({
+    selfName,
+    devices: devices.map((device, index) => ({
+      id: device.peerId,
+      name: device.deviceName,
+      status: statuses[index],
+      profiles: device.profiles.map((profile) => [profile.id, profile.name]),
+    })),
+  });
+  if (signature === pairedDeviceSignature) return;
+  pairedDeviceSignature = signature;
+
   const count = el<HTMLElement>("paired-device-count");
-  if (count) count.textContent = devices.length ? `(${devices.length})` : "";
+  if (count) {
+    count.textContent = devices.length
+      ? `(${devices.length} paired${connected ? ` · ${connected} connected` : ""})`
+      : "";
+  }
   empty.hidden = devices.length > 0;
   list.hidden = devices.length === 0;
   list.replaceChildren(
-    ...devices.map((device) => {
+    ...devices.map((device, index) => {
+      const status = statuses[index];
       const item = document.createElement("li");
       item.className = "paired-device";
-      item.dataset.online = String(device.online);
+      item.dataset.online = String(status.phase !== "offline");
       item.title = `device id: ${device.peerId}`;
 
       const name = document.createElement("strong");
@@ -1359,16 +1465,9 @@ function renderPairedDevices(): void {
 
       const state = document.createElement("span");
       state.className = "badge";
-      const lastSeen = Date.parse(device.lastSeen);
-      const lastSeenKnown = Number.isFinite(lastSeen);
-      state.textContent = device.online
-        ? "connected"
-        : lastSeenKnown
-          ? `last seen ${lastSeenLabel(device.lastSeen)}`
-          : "offline";
-      if (!device.online && lastSeenKnown) {
-        state.title = new Date(lastSeen).toLocaleString();
-      }
+      state.dataset.phase = status.phase;
+      state.textContent = status.label;
+      state.title = status.title;
 
       const id = document.createElement("span");
       id.className = "paired-device-id";
@@ -1395,6 +1494,26 @@ function renderPairedDevices(): void {
 function wireSyncDialog(): void {
   const dialog = el<HTMLDialogElement>("sync-dialog");
   if (!dialog) return;
+
+  // Repaint the device badges while the dialog is open: the engine moves
+  // between connecting/syncing/idle without changing the peer store.
+  let pairedStatusTimer: number | null = null;
+  const stopPairedStatus = (): void => {
+    if (pairedStatusTimer === null) return;
+    window.clearInterval(pairedStatusTimer);
+    pairedStatusTimer = null;
+  };
+  const startPairedStatus = (): void => {
+    renderPairedDevices();
+    if (pairedStatusTimer !== null) return;
+    pairedStatusTimer = window.setInterval(renderPairedDevices, 1_000);
+  };
+  dialog.addEventListener("toggle", () => {
+    if (dialog.open) startPairedStatus();
+    else stopPairedStatus();
+  });
+  window.addEventListener("pagehide", stopPairedStatus);
+
   el<HTMLButtonElement>("sync-menu")?.addEventListener("click", () => {
     renderPairedDevices();
     dialog.showModal();

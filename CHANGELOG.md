@@ -2,6 +2,25 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — paired-device rows show live sync status
+
+The Sync dialog's **Paired devices** list only had a persisted
+connected/offline flag, so a link waiting for the phrase, a running round and
+a sync error looked alike once the peer store was written. Each row now uses
+the live link snapshot: **handshake…**, **connected** (or **connected · no
+profiles**), **syncing…**, **synced**, **sync error**, or **offline** with the
+last-seen age. The heading counts connected devices, and the list refreshes
+while the dialog is open; a read-only tab still falls back to the persisted
+peer store.
+
+- **`web/src/sync/index.ts`**: `SyncDiagnostics` carries the active engine
+  `state`, so the badge and the diagnostics block read one snapshot.
+- **`web/src/profile-ui.ts`**, **`web/src/main.ts`**: per-device status from
+  the live device links, with a repaint timer while the Sync dialog is open.
+- **`web/index.html`**: badge colours for syncing/handshake/error/offline.
+- Tests: `npm run test:profile-sync`; `npm --prefix web run typecheck`;
+  `npm --prefix web run build`.
+
 ## 2026-11-07 — queue a message while a turn runs
 
 The composer disappeared while a turn was running, so a second thought had

@@ -483,8 +483,9 @@ unchecking either side detaches that profile immediately. Profiles are visible
 as **remote only** until they are previewed and explicitly pulled. The
 **Paired devices** section of **Sync… → Live sync** lists every device this
 browser has paired with — connected first, then by last contact, with the
-profile names each device advertises — including peers that share no profile
-with this browser. Name this browser under **Profiles → This browser**; paired
+profile names each device advertises and a live status badge (handshake,
+connected, syncing, synced, error, or offline with the last-seen age) —
+including peers that share no profile with this browser. Name this browser under **Profiles → This browser**; paired
 devices see that label. A browser can **pair with a desktop/server** over the
 same WebRTC flow; the bridge mirrors
 each allowed profile to its own folder (`~/.bobkat/folders/<name>` by default)

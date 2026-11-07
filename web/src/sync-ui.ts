@@ -170,7 +170,7 @@ function renderDiagnostics(sync: SyncHandle | null): void {
     }
     return;
   }
-  const state = sync.state();
+  const state = diag.state;
   const engine = diag.engine;
   wrap.hidden = false;
 

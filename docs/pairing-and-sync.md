@@ -88,8 +88,11 @@ the no-service fallback.
 Below the live-sync row, **Paired devices** lists every device this browser has
 paired with, from the device-wide peer store: connected devices first, then
 offline ones by last contact, with the profile names each device advertises.
-A device appears even when it shares no profile with this browser, so the list
-is the complete pairing record rather than a view of the active profile.
+Each row carries a live badge — **handshake…**, **connected** (or **connected ·
+no profiles**), **syncing…**, **synced**, **sync error**, or **offline** with
+the last-seen age — refreshed while the dialog is open. A device appears even
+when it shares no profile with this browser, so the list is the complete
+pairing record rather than a view of the active profile.
 **Profiles → This browser** names this device; peers see that label in the
 list and in their per-profile peer rows.
 

@@ -181,6 +181,8 @@ export interface SyncDiagnostics {
   profile: string;
   deviceId: string;
   deviceName: string;
+  /** The active profile's engine state at snapshot time. */
+  state: SyncState;
   engine: SyncEngineDiagnostics;
   /** The same-origin BroadcastChannel is attached (always for the active profile). */
   broadcast: boolean;
@@ -353,6 +355,7 @@ class MultiProfileSync implements SyncHandle {
       profile: this.activeProfile,
       deviceId: this.deviceId,
       deviceName: this.selfName,
+      state: this.current,
       engine: this.engine.diagnostics(),
       broadcast: runtime?.broadcast?.connected() === true,
       links,
