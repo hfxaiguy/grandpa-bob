@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — workspace apps can declare env presets
+
+Settings → Credentials & .env now renders an **App settings** section for every
+`app/<name>/env.json` in the workspace. The manifest supplies the env key,
+label, description, placeholder and whether the input is masked; BOB only
+renders the declarations, so app-specific keys are no longer hardcoded in the
+host.
+
+- **`web/src/server/app-env.ts`**: read and dedupe declarations from
+  `app/*/env.json` (a bare array or `{ "env": [ … ] }`), validating env-key
+  names and skipping malformed entries.
+- **`web/src/server/local-backend.ts`**: `/api/status` returns the declarations
+  as `appEnv`.
+- **`web/src/ui/pages.ts`**: the credentials form renders one field per
+  declaration, shows the exact env key name and current state, and saves the
+  values through the existing `/api/env` store.
+- **`README.md`**: document the manifest next to `secrets.json`.
+
+The email app is the first consumer: `app/email/env.json` declares the three
+`FORWARD_EMAIL_*` keys.
+
+Tests: `npm run typecheck`; `npm run test:standalone`; `npm run build:web`.
+
 ## 2026-11-07 — surface why auto-speak is silent
 
 **Trunk only** stays literal: it reads emits the trunk itself wrote, never an

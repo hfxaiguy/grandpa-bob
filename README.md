@@ -742,6 +742,23 @@ ctx)`: `ctx.secret(name)`, `ctx.secretText(name)`, `ctx.requireSecret(name)`
 (throws a message pointing at the upload page when absent) and
 `ctx.listSecrets()`. Names are opaque keys, never paths.
 
+An app can also declare named settings for the **Settings → Credentials &
+.env** form in `app/<name>/env.json`:
+
+```json
+[{ "name": "FORWARD_EMAIL_API_KEY",
+   "label": "Forward Email API key",
+   "description": "The account key used to send.",
+   "secret": true,
+   "placeholder": "account API key" }]
+```
+
+BOB renders one preset field per entry (label, description, placeholder,
+masked input for `secret: true`) and saves it through the normal env store.
+The key names and labels come from the workspace; BOB only learns “render this
+key”. A bare array or `{ "env": [ … ] }` is accepted, and duplicate keys are
+deduped (the first declaration wins).
+
 ### Telegram & topics
 
 **So… are there sessions?**

@@ -128,6 +128,70 @@ async function loadCapabilities() {
 
 let envRows = []; // { key, orig, value, removed } — orig = key as loaded from .env
 
+// Preset fields declared by workspace apps (app/<name>/env.json). BOB renders
+// them generically; the key names and labels come from the workspace.
+let appEnvSignature = "";
+
+function renderAppEnvFields(fields, env) {
+  const box = $("app-env-fields");
+  if (!box) return;
+  const list = Array.isArray(fields) ? fields : [];
+  const sig = JSON.stringify(list.map(function (f) {
+    return [f.name, f.label, f.secret, f.description, f.placeholder];
+  }));
+  if (sig !== appEnvSignature) {
+    appEnvSignature = sig;
+    box.textContent = "";
+    if (list.length) {
+      const head = document.createElement("h3");
+      head.textContent = "App settings";
+      head.style.cssText = "margin:18px 0 4px;font-size:14px";
+      box.appendChild(head);
+      const note = document.createElement("p");
+      note.style.margin = "0 0 8px";
+      const small = document.createElement("small");
+      small.textContent = "Declared by workspace apps (app/<name>/env.json).";
+      note.appendChild(small);
+      box.appendChild(note);
+      list.forEach(function (f) {
+        const label = document.createElement("label");
+        label.textContent = f.label || f.name;
+        const keyName = document.createElement("code");
+        keyName.textContent = f.name;
+        keyName.style.cssText = "margin-left:8px;font-size:11px;color:var(--muted);font-weight:400";
+        label.appendChild(keyName);
+        const current = document.createElement("span");
+        current.className = "app-env-current";
+        current.setAttribute("data-env-key", f.name);
+        current.style.float = "right";
+        label.appendChild(current);
+        box.appendChild(label);
+        const input = document.createElement("input");
+        input.type = f.secret ? "password" : "text";
+        input.setAttribute("data-env-key", f.name);
+        input.placeholder = f.placeholder || f.name;
+        input.autocomplete = "off";
+        input.spellcheck = false;
+        box.appendChild(input);
+        if (f.description) {
+          const desc = document.createElement("div");
+          desc.textContent = f.description;
+          desc.style.cssText = "font-size:12px;color:var(--muted);margin:-2px 0 8px";
+          box.appendChild(desc);
+        }
+      });
+    }
+  }
+  box.querySelectorAll(".app-env-current").forEach(function (el) {
+    const key = el.getAttribute("data-env-key") || "";
+    const value = env && env[key] ? String(env[key]) : "";
+    const field = list.find(function (f) { return f.name === key; });
+    el.textContent = value
+      ? "current: " + (field && field.secret ? value.slice(0, 6) + "..." : value)
+      : "(unset)";
+  });
+}
+
 async function refreshStatus() {
   const s = await api("/api/status");
   checkUiVersion(s.uiVersion);
@@ -147,6 +211,7 @@ async function refreshStatus() {
   botUptimeBase = typeof s.uptimeSec === "number" ? Date.now() - s.uptimeSec * 1000 : null;
   if (s.pid) $("uptime").title = "bot process pid " + s.pid;
   const env = s.env || {};
+  renderAppEnvFields(s.appEnv, env);
   $("cur-token").textContent  = env.TELEGRAM_BOT_TOKEN ? "current: " + env.TELEGRAM_BOT_TOKEN.slice(0,8) + "..." : "(unset)";
   $("cur-uid").textContent    = env.ALLOWED_USER_IDS    ? "current: " + env.ALLOWED_USER_IDS : "(unset)";
   $("cur-hf").textContent     = env.LLM_API_KEY         ? "current: " + env.LLM_API_KEY.slice(0,6) + "..." : "(unset)";
@@ -522,11 +587,16 @@ async function saveEnv(e) {
   if ($("f-ollama").value) body.OLLAMA_API_KEY      = $("f-ollama").value;
   if ($("f-neuralwatt").value) body.NEURALWATT_API_KEY = $("f-neuralwatt").value;
   if ($("f-exo").value)    body.EXO_API_KEY         = $("f-exo").value;
+  document.querySelectorAll("#app-env-fields input[data-env-key]").forEach(function (el) {
+    const key = el.getAttribute("data-env-key");
+    if (key && el.value) body[key] = el.value;
+  });
   if (Object.keys(body).length === 0) { toast("nothing to save", true); return; }
   try {
     await api("/api/env", { method: "POST", body: JSON.stringify(body) });
     toast("saved");
     $("f-token").value = $("f-uid").value = $("f-hf").value = $("f-ollama").value = $("f-neuralwatt").value = $("f-exo").value = "";
+    document.querySelectorAll("#app-env-fields input").forEach(function (el) { el.value = ""; });
     await refreshStatus();
   } catch {}
 }
@@ -1156,6 +1226,7 @@ export function buildSettingsHtml(config: UiConfig): string {
     <input id="f-neuralwatt" type="password" placeholder="sk-...">
     <label>Exa search API key <span id="cur-exo" style="float:right"></span></label>
     <input id="f-exo" type="password" placeholder="exa-... (used by exa_search)">
+    <div id="app-env-fields"></div>
     <small>Shortcuts for the most common keys — every other key in <code>.env</code> is editable below.</small>
     <div class="actions">
       <button type="submit">Save credentials</button>

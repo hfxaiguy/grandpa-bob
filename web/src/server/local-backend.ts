@@ -22,6 +22,7 @@ import { createModuleLoader } from "../agent/module-loader";
 import { patternLabel } from "../agent/pattern-path";
 import { createRunWatchdog, DEFAULT_STALE_MS } from "../agent/run-watchdog";
 import { loadEnv, saveEnv, saveModelsJson } from "../settings";
+import { readAppEnvDeclarations } from "./app-env";
 import { parseModels, type ModelRegistry } from "../model-config";
 import {
   BOBSWAP_AI_KEY_ENV,
@@ -1270,6 +1271,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
           // Same shape as the admin's status: the Settings page populates the
           // credentials shortcuts and the all-keys editor from this.
           env: loadEnv(),
+          // Env keys declared by workspace apps (app/<name>/env.json) — the
+          // Settings page renders them as preset fields without BOB knowing
+          // anything app-specific.
+          appEnv: await readAppEnvDeclarations(platform),
         },
       };
     }
