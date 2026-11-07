@@ -2,6 +2,20 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — the Profiles dialog stops listing a profile twice
+
+Opening the dialog while a peer catalog update or a row action also refreshed
+it started two `renderProfileList` runs. Each run cleared the list once, but the
+per-row `profileHandle`/`summarizeWorkspace` await let the slower run resume
+after the newer one had painted, appending its remaining rows again — the same
+profile (e.g. `php`) appeared as two entries with identical actions. Renders now
+carry a generation number and only the newest may append.
+
+- **`web/src/profile-ui.ts`**: `profileListRender` guard checked after the
+  registry read and before every row.
+
+Tests: `npm --prefix web run typecheck`; `npm --prefix web run build`.
+
 ## 2026-11-07 — a finished sync stops saying "syncing"
 
 The toolbar chip and the Profiles peer badge could both sit on "syncing"

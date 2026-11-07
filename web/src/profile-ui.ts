@@ -119,6 +119,8 @@ let pendingSeedCheck: { meta: RemoteSeedMeta; version?: string } | null = null;
 /** Cached top-level app names; the workspace's app folders rarely change. */
 let appNames: string[] | null = null;
 let hiddenProfile = "";
+/** Last started profile-list render; see `renderProfileList`. */
+let profileListRender = 0;
 
 /** The deployment's public/open seed shelf (loaded once per tab). */
 let openSeedShelf: BootstrapSeed | null = null;
@@ -218,14 +220,22 @@ function renderProfileSelect(): void {
 async function renderProfileList(): Promise<void> {
   const list = el<HTMLDivElement>("profile-list");
   if (!list) return;
+  // Renders overlap (dialog open, peer catalog updates, action callbacks) and
+  // this loop awaits per-row workspace summaries. A slower earlier render that
+  // resumes after a newer one cleared the list would append its remaining rows
+  // after the fresh ones, showing the same profile twice. Only the newest
+  // render may touch the list.
+  const render = ++profileListRender;
   const ui = getHooks();
   const registry = await ui.refreshRegistry();
+  if (render !== profileListRender) return;
   const mirror = ui.mirrorStatus();
   const peerStore = ui.peers?.() ?? { version: 1 as const, peers: {} };
   const rows = buildProfileRows(registry.profiles, Object.values(peerStore.peers));
   list.replaceChildren();
 
   for (const row of rows) {
+    if (render !== profileListRender) return;
     const profile = row.local as ProfileRecord | undefined;
     const block = document.createElement("div");
     block.className = "profile-block";
