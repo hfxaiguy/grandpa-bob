@@ -2,6 +2,28 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — a finished sync stops saying "syncing"
+
+The toolbar chip and the Profiles peer badge could both sit on "syncing"
+forever after the workspace was already up to date. The engine used
+`status: "syncing"` for the *result* of a completed round, and the profile
+matrix treated "both sides allow this profile" as a permanent "syncing" badge.
+A completed round now settles on `status: "synced"`; the toolbar shows
+**desktop: synced HH:MM** and the live line reads **synced — in sync**. The
+profile badge reads **synced** with a tooltip that says changes continue in the
+background.
+
+- **`web/src/sync/engine.ts`**: added the settled `synced` state and used it
+  after both the hashmap diff and the ops path.
+- **`web/src/profile-ui.ts`**: the peer matrix badge says `synced` once both
+  sides allow the profile.
+- **`scripts/sync-engine-test.ts`**: a completed round must leave both engines
+  at `synced`, not `syncing`.
+
+Tests: `npm run test:sync`; `npm --prefix web run typecheck`;
+`npm run test:profile-sync`; `npm run test:standalone`;
+`npm --prefix web run build`.
+
 ## 2026-11-07 — paired browsers can name themselves
 
 Both ends of a browser↔browser pair used to show `browser · <hostname>`, so a

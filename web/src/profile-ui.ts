@@ -404,7 +404,10 @@ function renderPeerRows(row: ProfileRow, store: PeerSyncStore): HTMLElement {
     if (peer.online === false) state.textContent = "offline";
     else if (row.remoteOnly) state.textContent = "remote only";
     else if (!entry.present) state.textContent = "not on peer";
-    else if (entry.allowed) state.textContent = "syncing";
+    else if (entry.allowed) {
+      state.textContent = "synced";
+      state.title = "Both devices allow this profile; changes sync in the background.";
+    }
     else if (entry.localAllow && !entry.remoteAllow) state.textContent = "waiting for peer";
     else if (!entry.localAllow && entry.remoteAllow) state.textContent = "peer allows — you denied";
     else state.textContent = "not synced";

@@ -86,6 +86,15 @@ const [wireA, wireB] = FakePeer.pair("wire-a", "wire-b");
 engineA.attach(wireA);
 engineB.attach(wireB);
 
+let statusA = "";
+let statusB = "";
+engineA.onState((state) => {
+  statusA = state.status;
+});
+engineB.onState((state) => {
+  statusB = state.status;
+});
+
 const abs = (platform: typeof platformA, name: string): string =>
   platform.path.join(platform.workspaceRoot, name);
 
@@ -125,6 +134,15 @@ try {
   await waitFor(async () => (await fileIs(platformA, "todo.md", "from B\n")) && (await fileIs(platformB, "notes.md", "from A\n")), "round 1 convergence");
   assert.equal(await readFile(abs(platformA, "todo.md"), "utf8"), "from B\n", "A pulled B's file");
   assert.equal(await readFile(abs(platformB, "notes.md"), "utf8"), "from A\n", "B pulled A's file");
+
+  // ── a completed round settles the badge ───────────────────────────────
+  // "syncing" is a round in flight, not the result. The toolbar says
+  // "desktop: synced HH:MM" from idle/synced + lastSyncAt; leaving the state
+  // at "syncing" made every finished profile look stuck.
+  await waitFor(
+    async () => statusA === "synced" && statusB === "synced",
+    "both engines report a settled sync state",
+  );
 
   // ── first contact merges instead of replacing ─────────────────────────
   // Pairing no longer deletes the browser workspace. Files that exist on one

@@ -127,7 +127,13 @@ export function emptyTransfer(): TransferState {
 }
 
 export interface SyncState {
-  status: "idle" | "connecting" | "verifying" | "syncing" | "error";
+  /**
+   * `synced` is the settled state after a completed round: the maps were
+   * exchanged and any missing bytes landed. `syncing` is reserved for a round
+   * in flight. Keeping them distinct stops the toolbar/profile chip from
+   * saying "syncing…" forever after the workspace is already up to date.
+   */
+  status: "idle" | "connecting" | "verifying" | "syncing" | "synced" | "error";
   detail: string;
   conflicts: string[];
   lastSyncAt: string | null;
@@ -752,7 +758,7 @@ export class SyncEngine {
         envelope.from,
       );
       this.setState({
-        status: "syncing",
+        status: "synced",
         detail: "in sync",
         lastSyncAt: new Date().toISOString(),
       });
@@ -841,7 +847,7 @@ export class SyncEngine {
           await this.applyRemoteWrite(op.path, op.base64, op.lamport ?? 0);
         }
       }
-      this.setState({ status: "syncing", detail: "in sync", lastSyncAt: new Date().toISOString() });
+      this.setState({ status: "synced", detail: "in sync", lastSyncAt: new Date().toISOString() });
       await journal.persist();
     }
   }
