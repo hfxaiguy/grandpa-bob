@@ -329,6 +329,8 @@ interface RunOptions {
   id: number;
   task?: string;
   env?: Record<string, string>;
+  /** App secrets as plain text, keyed `app/name` (Settings → App secrets). */
+  secrets?: Record<string, { text: string; updatedAt: string | null }>;
   pattern?: string;
   remote?: string;
   /** The chat session this run belongs to (the drawer's active key). */
@@ -588,6 +590,29 @@ function installProcessEnv(env: Record<string, string> | undefined): void {
   proc.process.env = { ...(env ?? {}) };
 }
 
+/**
+ * The browser app-secrets store as the tree context's secret surface. Keys are
+ * `app/name`; an app sees only its own entries. This mirrors the Node target's
+ * `context.secret` / `secretText` / `listSecrets`.
+ */
+function appSecretsContext(secrets: RunOptions["secrets"]) {
+  const map = secrets ?? {};
+  const namesIn = (app: string) => Object.keys(map).filter((key) => key.startsWith(`${app}/`));
+  return {
+    listSecrets: (app: string) =>
+      namesIn(app).map((key) => ({
+        name: key.slice(app.length + 1),
+        size: map[key]?.text.length ?? 0,
+        updatedAt: map[key]?.updatedAt ?? null,
+      })),
+    secretText: (app: string, name: string) => map[`${app}/${name}`]?.text ?? null,
+    secret: (app: string, name: string) => {
+      const text = map[`${app}/${name}`]?.text;
+      return text == null ? null : new TextEncoder().encode(text);
+    },
+  };
+}
+
 async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   throwIfStopped(signal);
   installProcessEnv(opts.env);
@@ -741,7 +766,7 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
     logger: withStopLogger(session.logger, signal),
     // Host-owned capabilities for register bodies (`context.trees` is what knit
     // reads and writes through). KAT forwards this verbatim as `runtime.context`.
-    context: { trees: treeContext },
+    context: { trees: treeContext, ...appSecretsContext(opts.secrets) },
     loadTree: (name: string) => loadTreeRef(platform, name),
     // Session memory: a tree invoked as a TOOL keeps its slots across calls
     // within this conversation, keyed (sessionId × tree name) — the same

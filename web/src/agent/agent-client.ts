@@ -33,6 +33,12 @@ export interface AgentRunHooks {
 export interface AgentRunOptions {
   task?: string;
   env?: Record<string, string>;
+  /**
+   * The browser app-secrets store as plain text, keyed `app/name`. The worker
+   * exposes it as the tree runtime context (listSecrets / secretText) so app
+   * trees can read their own secrets in the browser target.
+   */
+  secrets?: Record<string, { text: string; updatedAt: string | null }>;
   pattern?: string;
   remote?: string;
   /** The chat session this run belongs to (per-session continuation state). */

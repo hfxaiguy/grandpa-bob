@@ -561,6 +561,23 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       /* quota/private mode */
     }
   };
+  /**
+   * The secret store as plain text for the agent worker's tree context. Keys
+   * are `app/name`; a value that cannot decode is omitted rather than exposed
+   * as garbage. App trees read only their own app's entries.
+   */
+  const secretTextMap = (): Record<string, { text: string; updatedAt: string | null }> => {
+    const out: Record<string, { text: string; updatedAt: string | null }> = {};
+    for (const [key, entry] of Object.entries(readSecrets())) {
+      try {
+        const bytes = Uint8Array.from(atob(entry.base64), (c) => c.charCodeAt(0));
+        out[key] = { text: new TextDecoder().decode(bytes), updatedAt: entry.updatedAt ?? null };
+      } catch {
+        /* skip an unreadable entry */
+      }
+    }
+    return out;
+  };
   const base64Of = (bytes: Uint8Array): string => {
     let s = "";
     for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
@@ -629,6 +646,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       {
         task: text,
         env: opts.env,
+        secrets: secretTextMap(),
         pattern: activePattern,
         remote: opts.remote,
         chatKey: key,
