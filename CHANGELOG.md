@@ -26,6 +26,45 @@ asks for.
 
 Tests: `npm run test:e2e-live`.
 
+## 2026-11-07 — a relay pairing survives transient relay trouble
+
+A relay-paired phone kept ending up on **"desktop pairing needed: the relay
+session could not reopen (the pairing session is gone …)"**, often minutes
+after pairing again. The desktop's reconnect watcher treated every relay error
+as fatal: one `429`, one `5xx` or one timed-out poll rejected the watcher,
+which disposed the session and stopped its 10-minute channel renewal. The
+channel then expired, and since the tab retried every 20 seconds it repeated
+the toast (and minted a fresh code) forever. Two smaller bugs fed the same
+loop: a failed browser resume left its signaling poller running, so retries
+stacked up until the relay rate-limited the device, and a purged channel was
+retried as if it might come back.
+
+- **`src/bridge/relay.ts`**: `isTerminalRelayError` splits "channel/token is
+  gone" (`401`/`403`/`404`/`410`, or the relay's dead-channel message) from
+  transient failures. The reconnect watcher now backs off and keeps polling on
+  the latter, and a failed handshake attempt keeps watching for the browser's
+  next nonce instead of ending the pairing. Renewal retries 2 minutes after a
+  transient failure (instead of 10) and stops only when the channel is gone;
+  the offer poll likewise retries transient feed errors.
+- **`web/src/sync/transport-webrtc.ts`**: `rtcPeer` tears down the signaling
+  provider and peer connection when the handshake fails or times out, so each
+  20-second resume attempt stops polling instead of leaking a poller.
+- **`web/src/server-link.ts`**, **`web/src/main.ts`**: a resume on a purged
+  relay channel raises `RelaySessionGoneError`; the host pauses retries for
+  that channel until a fresh pairing stores a new one, announces the failure
+  once, and dedupes repeated identical resume errors. A timeout/network error
+  still retries quietly ("the desktop may still be reconnecting").
+- **`src/bridge/peer.ts`**: a terminal relay loss is now logged to the
+  `npm run bob` console, which is the only trace left after the pairing
+  console exits.
+- **`scripts/relay-resilience-test.ts`** (`npm run test:relay-resilience`):
+  classifies terminal vs transient errors, and a fake relay proves the desktop
+  watcher retries after a `500` and still offers with the reconnect nonce.
+
+Tests: `npm run test:relay-resilience`; `npm run test:relay-renew`;
+`npm run test:speech-link`; `npm run test:standalone`; `npx tsc --noEmit`;
+`npm --prefix web run typecheck`; `npm --prefix web run build`.
+
 ## 2026-11-07 — Sync shows every paired device
 
 The Sync dialog's **Live sync** section now has a **Paired devices** list. It

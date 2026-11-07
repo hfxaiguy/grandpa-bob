@@ -252,10 +252,12 @@ channel flow used between two browsers:
    `POST /api/v1/sync/channels/{id}/renew` (live since 2026-11-06; either role
    may call it, no peer action and no code). Repeated renewals keep the pairing
    alive without an absolute cap; the operator's maximum TTL (default 24 h) is
-   the hard bound, and `DELETE`/inactivity ends it. Without the renew route,
-   BobSwap's fixed 30-minute lifetime applies and `npm run pair -- --relay` is
-   needed again. Direct mailbox pairings keep the automatic client-key
-   reconnect below.
+   the hard bound, and `DELETE`/inactivity ends it. A transient relay error
+   (`429`, `5xx`, a timeout) is retried with backoff and does not end the
+   session; only an expired/purged channel or a rejected role token needs a new
+   code. Without the renew route, BobSwap's fixed 30-minute lifetime applies and
+   `npm run pair -- --relay` is needed again. Direct mailbox pairings keep the
+   automatic client-key reconnect below.
 2. In the tab, **Sync… → Pair… → Pair with a code**, select **My desktop /
    server**, and enter the code — no channel id. The dialog shows the active
    profile and, once the channel opens, the mirror + exec capabilities the
@@ -334,7 +336,7 @@ device, where neither side wants to open a mailbox.
 | "sync channels may not be deployed yet" | The BobSwap service lacks `/api/v1/sync/channels…`; use manual paste. |
 | "this relay has no single-code join" | The relay predates code-only pairing; update it, or switch the Pair dialog to **My desktop / server**. Manual paste still works. |
 | "invalid pairing code" | The code is wrong, already spent or older than 10 minutes. Create a new one on the other device. A 429 means the per-IP join rate limit; wait for `Retry-After`. |
-| `BobSwap signal poll: HTTP 404` / "the pairing session is gone" | The browser joined, then the bridge lost the channel — usually `npm run bob` was restarted or the pairing session was closed before approval. Rerun `npm run pair` and use the new code; the desktop console prints the first error (profile mismatch, denial, or session timeout). |
+| `BobSwap signal poll: HTTP 404` / "the pairing session is gone" | The browser joined, then the bridge lost the channel — usually `npm run bob` was restarted, the desktop was offline past the renewals, or the pairing session was closed before approval. The tab announces it once and pauses retries until a fresh pairing; run `npm run pair -- --relay` and use the new code. Transient relay errors (`429`, `5xx`, a timeout) no longer end a live pairing — the desktop backs off and retries, and its console prints the first real error (profile mismatch, denial, or channel loss). |
 | "pairing failed: NetworkError when attempting to fetch resource." / `cannot reach http://…` | The tab could not reach the mailbox. Open the app at `http://localhost:8080` or `http://127.0.0.1:8080` on the machine running `npm run bob`; in **My desktop / server** open **Advanced** and check the mailbox URL (`http://127.0.0.1:8795`), then check `/health` in that tab. A browser on another device cannot reach the loopback mailbox — pair browser↔browser instead. |
 | `origin https://… is not allowed` | The page origin is not on the bridge allowlist. Use the locally served app, or add the exact `https://` origin to `BOB_APP_ORIGINS` and restart `npm run bob`. The default allows loopback and `https://bobkat.hfxaiguy.com`. |
 | Local Network Access prompt / `Permission was denied … loopback address space` | Chrome/Edge blocks a public HTTPS page from reaching `127.0.0.1` until the site is allowed. Allow Local Network Access for the hosted origin in the browser's site settings, then restart `npm run bob` so the bridge sends `Access-Control-Allow-Private-Network: true` on CORS preflights. The app served at `http://localhost:8080` avoids the prompt. |

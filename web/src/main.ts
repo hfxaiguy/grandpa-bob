@@ -61,7 +61,7 @@ import { cloneWorkspace } from "./platform/git-opfs";
 import { applyDatabaseDumps, isDatabaseDumpPath, onDatabaseDumpsWritten } from "./db-sync";
 import { createAutoSync, DEFAULT_INTERVAL_MS } from "./auto-sync";
 import type { MirrorStatus } from "./peer-status";
-import { loadServerLink, resumeServer, type ServerConnection } from "./server-link";
+import { isRelaySessionGone, loadServerLink, resumeServer, type ServerConnection } from "./server-link";
 import { PeerLogShipper, type PeerLogRow } from "./peer-log";
 import { listTreeSources } from "./tree-sources";
 import { resolveTreeEntry } from "./tree-files";
@@ -254,6 +254,14 @@ let serverConnection: ServerConnection | null = null;
 let syncHandle: SyncHandle | null = null;
 let serverConnecting = false;
 let serverRetryTimer: ReturnType<typeof setInterval> | null = null;
+/**
+ * A relay channel the relay has purged: retrying the same channel every 20s
+ * cannot succeed and only repeats the toast. A fresh pairing stores a new
+ * channel id, which lifts this guard.
+ */
+let deadRelayKey: string | null = null;
+/** The last resume error shown, so a 20s retry does not repeat the same toast. */
+let lastResumeError = "";
 /** Streams this tab's run-log rows to the desktop (see web/src/peer-log.ts). */
 let logShipper: PeerLogShipper | null = null;
 /** Detaches the current stream's listeners (a new connection replaces it). */
@@ -347,6 +355,11 @@ async function connectServerPeer(): Promise<boolean> {
   const folder = mirrorFolder() ?? "";
   if (!info || !syncHandle) return false;
   if (lease?.status() !== "primary") return false;
+  // The relay purged this channel (or this is a pre-renewal link): no amount of
+  // retrying can reopen it, and a fresh pairing stores a new channel id that
+  // lifts this guard.
+  const relayKey = info.relay ? (info.relayChannel?.id ?? "legacy") : null;
+  if (relayKey && deadRelayKey === relayKey) return false;
   // A live peer can already be in place while the UI handle was dropped (a
   // transient close deletes it). Re-publish instead of refusing the retry.
   if (serverConnection) {
@@ -388,6 +401,8 @@ async function connectServerPeer(): Promise<boolean> {
     // the authenticated channel. A slow OPFS reconcile must not make a live
     // link look offline (the phone case).
     publishServerConnection(connection);
+    deadRelayKey = null;
+    lastResumeError = "";
     try {
       syncHandle.attachDevice(connection.peer, {
         kind: "desktop",
@@ -426,13 +441,22 @@ async function connectServerPeer(): Promise<boolean> {
     }
     return true;
   } catch (err) {
+    const text = errorText(err);
+    if (relayKey && isRelaySessionGone(err)) {
+      deadRelayKey = relayKey;
+    }
     renderMirrorStatus({
       phase: "error",
-      detail: `pairing needed: ${errorText(err)}`,
+      detail: `pairing needed: ${text}`,
       folder,
       lastSyncAt: null,
     });
-    flashStatus(`desktop pairing needed: ${errorText(err)}`, 10_000);
+    // The retry timer fires every 20s. Flash only when the failure changed, so
+    // one dead channel is announced once instead of spamming the status line.
+    if (text !== lastResumeError) {
+      flashStatus(`desktop pairing needed: ${text}`, 10_000);
+      lastResumeError = text;
+    }
     return false;
   } finally {
     serverConnecting = false;
@@ -1697,6 +1721,9 @@ async function main(): Promise<void> {
   // same slots the boot-time reconnect uses, so ops, the log stream and the
   // retry timer all see it.
   globals.__bobAdoptServer = (connection: ServerConnection): void => {
+    // A fresh pairing replaces any channel the relay had purged.
+    deadRelayKey = null;
+    lastResumeError = "";
     // The pairing dialog just wrote the mirror binding; refresh the cached
     // registry so `mirrorFolder()` and the board see it without a reload.
     void loadRegistry().then((registry) => {

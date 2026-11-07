@@ -169,6 +169,27 @@ export function clearServerLink(profile: string): void {
   }
 }
 
+/**
+ * The relay channel no longer exists (expired, purged or deleted) or its role
+ * token was rejected. Retrying cannot help: only a fresh
+ * `npm run pair -- --relay` mints a new channel.
+ */
+export class RelaySessionGoneError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RelaySessionGoneError";
+  }
+}
+
+/** True when a relay resume failed because the channel itself is gone. */
+export function isRelaySessionGone(err: unknown): err is RelaySessionGoneError {
+  if (err instanceof RelaySessionGoneError) return true;
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return /pairing session is gone|channel is gone or expired|invalid role token|unknown (?:sync )?channel|paired before relay reuse|HTTP (?:401|403|404|410)\b/i.test(
+    message,
+  );
+}
+
 function normalizeUrl(url: string): string {
   const trimmed = String(url ?? "").trim();
   if (!trimmed) throw new Error("server URL is required");
@@ -524,8 +545,23 @@ function negotiate(
   let serverNonce = "";
   let clientNonce = "";
   const timer = setTimeout(() => {
-    if (!settled) reject(new Error("the server did not finish pairing in time"));
+    fail(new Error("the server did not finish pairing in time"));
   }, 5 * 60_000);
+
+  /** Reject once, and close the channel so a failed attempt stops consuming it. */
+  const fail = (err: Error): void => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    try {
+      opts.opened.close();
+    } catch {
+      /* already closed */
+    }
+    reject(err);
+  };
+  const failWith = (err: unknown): void =>
+    fail(err instanceof Error ? err : new Error(String(err)));
 
   const done = (info: ServerLinkInfo): void => {
     if (settled) return;
@@ -542,9 +578,7 @@ function negotiate(
       serverNonce = String(control.nonce ?? "");
       const serverProfile = String(control.profile ?? "");
       if (serverProfile && serverProfile !== "*" && serverProfile !== opts.profile) {
-        settled = true;
-        clearTimeout(timer);
-        reject(
+        fail(
           new Error(
             `this desktop pairing is for browser profile "${serverProfile}", but this tab is "${opts.profile}" — ` +
               `switch profiles, or rerun \`npm run pair -- --profile ${opts.profile}\``,
@@ -564,13 +598,13 @@ function negotiate(
       } else {
         void (async () => {
           if (!opts.info) {
-            reject(new Error("the server asked to resume but this profile is not paired"));
+            fail(new Error("the server asked to resume but this profile is not paired"));
             return;
           }
           clientNonce = crypto.randomUUID();
           const proof = await hmacHex(sha256hex(opts.info.clientKey), serverNonce);
           opts.opened.send({ op: "resume", profile: opts.profile, proof, clientNonce });
-        })().catch(reject);
+        })().catch(failWith);
       }
       return;
     }
@@ -600,18 +634,18 @@ function negotiate(
           exec: Array.isArray(capabilities.exec) ? capabilities.exec.filter((x): x is string => typeof x === "string") : [],
           pairedAt: new Date().toISOString(),
         });
-      })().catch(reject);
+      })().catch(failWith);
       return;
     }
     if (op === "resumed") {
       void (async () => {
         if (!opts.info) {
-          reject(new Error("unexpected resume success"));
+          fail(new Error("unexpected resume success"));
           return;
         }
         const expected = await hmacHex(opts.info.serverKey, clientNonce);
         if (String(control.proof ?? "") !== expected) {
-          reject(new Error("server identity check failed"));
+          fail(new Error("server identity check failed"));
           return;
         }
         const capabilities = (control.capabilities ?? {}) as { mirror?: string; exec?: string[] };
@@ -625,11 +659,11 @@ function negotiate(
             ? capabilities.exec.filter((x): x is string => typeof x === "string")
             : opts.info.exec,
         });
-      })().catch(reject);
+      })().catch(failWith);
       return;
     }
     if (op === "error") {
-      reject(new Error(String(control.message ?? "server error")));
+      fail(new Error(String(control.message ?? "server error")));
     }
   });
 
@@ -725,9 +759,18 @@ async function resumeRelayServer(opts: {
     opts.onSas?.(phrase);
     opened = wrapOpened(peer, phrase, opts.localId);
   } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    if (isRelaySessionGone(err)) {
+      throw new RelaySessionGoneError(
+        `the relay session could not reopen (${detail}) — ` +
+          "run `npm run pair -- --relay` again for a new code",
+      );
+    }
+    // A timeout or network blip is worth retrying; the desktop keeps the
+    // channel alive and waits for the next reconnect request.
     throw new Error(
-      `the relay session could not reopen (${err instanceof Error ? err.message : String(err)}) — ` +
-        "run `npm run pair -- --relay` again for a new code",
+      `the relay session could not reopen (${detail}) — the desktop may still be ` +
+        "reconnecting; keep this tab open, or run `npm run pair -- --relay` again for a new code",
     );
   }
   return new Promise<ServerConnection>((resolve, reject) => {

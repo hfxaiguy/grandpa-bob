@@ -77,6 +77,26 @@ const POLL_MS = 1_500;
 const OPEN_TIMEOUT_MS = 60_000;
 /** Renew well inside the relay's default 30-minute channel lifetime. */
 const RENEW_EVERY_MS = 10 * 60_000;
+/** After a transient renewal failure, try again well before the TTL runs out. */
+const RENEW_RETRY_MS = 2 * 60_000;
+
+/**
+ * A relay failure that ends the pairing: the channel is gone (expired, purged
+ * or deleted) or the role token is no longer accepted. Everything else —
+ * network blips, timeouts, `429` rate limits, `5xx` — is transient, and
+ * tearing the session down for one of those is what turns a short outage into
+ * "the pairing session is gone" half an hour later.
+ */
+export function isTerminalRelayError(err: unknown): boolean {
+  const status = (err as { status?: unknown } | null)?.status;
+  if (typeof status === "number") {
+    return status === 401 || status === 403 || status === 404 || status === 410;
+  }
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return /pairing (?:session|channel) is gone|channel is gone or expired|invalid role token/i.test(
+    message,
+  );
+}
 
 function relayBase(raw: string): string {
   const value = String(raw ?? "").trim().replace(/\/+$/, "");
@@ -433,8 +453,17 @@ export function offerRelayChannel(
           await handle(entry);
         }
       } catch (err) {
-        if (!closed) fail(err instanceof Error ? err : new Error(String(err)));
-        return;
+        if (closed) return;
+        // A dead channel is final; a transient relay/network error is not.
+        // Keep polling until the open deadline instead of failing the offer,
+        // so one rate-limit burst does not abort the handshake.
+        if (isTerminalRelayError(err)) {
+          fail(err instanceof Error ? err : new Error(String(err)));
+          return;
+        }
+        onEvent?.("offer-retry", {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       if (!closed) pollTimer = setTimeout(() => void poll(), POLL_MS);
     };
@@ -505,32 +534,35 @@ export class RelayTransport implements PeerTransport {
   }
 
   /** Ask the relay to extend the channel; the service may not support it yet. */
-  private scheduleRenewal(): void {
+  private scheduleRenewal(delayMs = RENEW_EVERY_MS): void {
     if (this.closed || this.renewUnsupported || this.renewTimer) return;
     this.renewTimer = setTimeout(() => {
       this.renewTimer = null;
       void this.renewNow();
-    }, RENEW_EVERY_MS);
+    }, delayMs);
     this.renewTimer.unref?.();
   }
 
   private async renewNow(): Promise<void> {
     if (this.closed || this.renewUnsupported) return;
+    let renewed = true;
     try {
       const expiresAt = await renewRelayChannel(this.channel);
       if (expiresAt) this.channel.expiresAt = expiresAt;
       this.onEvent?.("renewed", { expiresAt: expiresAt ?? null });
     } catch (err) {
-      const status = (err as { status?: number }).status;
-      if (status === 404 || status === 410) {
-        // Deployment without the renew route (or a dead channel): keep the
-        // old fixed-lifetime behaviour, quietly.
+      if (isTerminalRelayError(err)) {
+        // The channel is gone or the token was rejected: renewal cannot help.
         this.renewUnsupported = true;
+        this.onEvent?.("renew-failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
         return;
       }
-      // Transient (network/429): try again next tick.
+      // Transient (network/429/5xx): retry soon, before the TTL runs out.
+      renewed = false;
     }
-    this.scheduleRenewal();
+    this.scheduleRenewal(renewed ? RENEW_EVERY_MS : RENEW_RETRY_MS);
   }
 
   open(iceServers: unknown[], onEvent?: PeerEvent): Promise<OpenedPeer> {
@@ -556,9 +588,27 @@ export class RelayTransport implements PeerTransport {
   }
 
   private async watchReconnect(): Promise<ReconnectedPeer> {
+    let failures = 0;
     for (;;) {
       if (this.closed) throw new Error("the relay transport is closed");
-      const feed = await relayFeed(this.channel, this.cursor);
+      let feed: { entries: RelaySignal[]; cursor: number };
+      try {
+        feed = await relayFeed(this.channel, this.cursor);
+      } catch (err) {
+        if (this.closed) throw new Error("the relay transport is closed");
+        // Only a dead channel/token ends the pairing. A rate limit, a timeout
+        // or a dropped connection must not: the session has to stay alive so
+        // its renewal keeps the channel open until the tab comes back.
+        if (isTerminalRelayError(err)) throw err;
+        failures += 1;
+        this.onEvent?.("reconnect-retry", {
+          attempt: failures,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await sleep(Math.min(POLL_MS * 2 ** Math.min(failures, 4), 30_000));
+        continue;
+      }
+      failures = 0;
       this.cursor = feed.cursor;
       for (const entry of feed.entries) {
         if (entry.from === "offerer") continue;
@@ -574,10 +624,22 @@ export class RelayTransport implements PeerTransport {
         this.handled.add(nonce);
         const profile =
           typeof entry.payload.profile === "string" ? entry.payload.profile : undefined;
-        const opened = await offerRelayChannel(this.channel, [], this.onEvent, {
-          nonce,
-          after: this.cursor,
-        });
+        let opened: OpenedPeer;
+        try {
+          opened = await offerRelayChannel(this.channel, [], this.onEvent, {
+            nonce,
+            after: this.cursor,
+          });
+        } catch (err) {
+          if (this.closed) throw new Error("the relay transport is closed");
+          if (isTerminalRelayError(err)) throw err;
+          // The browser retries with a fresh nonce; a failed attempt (ICE,
+          // timeout, a peer `bye`) leaves the pairing resumable.
+          this.onEvent?.("reconnect-failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          continue;
+        }
         this.opened = opened;
         return { ...opened, profile };
       }

@@ -446,77 +446,101 @@ export async function rtcPeer(
   // "no ICE servers" (loopback/self-hosted peers).
   const iceServers = opts.iceServers !== undefined ? opts.iceServers : STUN;
   const pc = new RTCPeerConnection({ iceServers });
-  const awaitOpen = (channel: RTCDataChannel): Promise<void> =>
-    new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("data channel never opened")), 20_000);
-      if (channel.readyState === "open") {
-        clearTimeout(timer);
-        resolve();
-        return;
-      }
-      channel.onopen = () => {
-        clearTimeout(timer);
-        resolve();
-      };
-      channel.onerror = () => {
-        clearTimeout(timer);
-        reject(new Error("data channel failed"));
-      };
-    });
-  opts.onState?.("signaling…");
-  let channel: RTCDataChannel;
-  if (opts.createChannel === false) {
-    // Joiner: the channel arrives inside the offer/answer negotiation. The
-    // handler must be registered before the signaling transport touches the
-    // remote description.
-    channel = await new Promise<RTCDataChannel>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("the other side never opened a data channel")), 20_000);
-      pc.ondatachannel = (event) => {
-        clearTimeout(timer);
-        resolve(event.channel);
-      };
-      void provider.connect(pc).catch(reject);
-    });
-  } else {
-    channel = pc.createDataChannel("bob-sync", { ordered: true });
-    await provider.connect(pc);
-  }
-  opts.onState?.("waiting for the data channel…");
-  await awaitOpen(channel);
-  opts.onState?.("data channel open");
-  const peer: SyncPeer = {
-    id: engineId,
-    send(envelope: SyncEnvelope): void {
-      if (channel.readyState !== "open") return;
-      channel.send(JSON.stringify(envelope));
-    },
-    connected: () => channel.readyState === "open" && pc.connectionState !== "closed",
-    onMessage(cb) {
-      channel.onmessage = (event) => {
-        try {
-          cb(JSON.parse(String(event.data)) as SyncEnvelope);
-        } catch {
-          /* skip a torn frame */
-        }
-      };
-    },
-    onClosed(cb) {
-      const fire = (): void => cb();
-      pc.addEventListener("connectionstatechange", () => {
-        if (pc.connectionState === "failed" || pc.connectionState === "closed" || pc.connectionState === "disconnected") fire();
-      });
-      channel.addEventListener("close", fire);
-    },
-    close(): void {
-      try {
-        channel.close();
-        pc.close();
-      } catch {
-        /* already closed */
-      }
-    },
+  // A resume/join that fails before the channel opens must stop its signaling
+  // poller too. The tab retries every 20s; a poller left behind each time
+  // piles up until the relay rate-limits the whole device, which then kills the
+  // desktop's reconnect watcher and expires the pairing.
+  const abort = (): void => {
+    try {
+      provider.close();
+    } catch {
+      /* already closed */
+    }
+    try {
+      pc.close();
+    } catch {
+      /* already closed */
+    }
   };
-  // Every RTC data channel is frame-limited; chunk transparently so file
-  // contents (base64 in `ops`/`file-req` replies) never exceed the wire limit.
-  return { peer: chunkedPeer(peer), phrase: verifyPhrase(pc) };
+  try {
+    const awaitOpen = (channel: RTCDataChannel): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("data channel never opened")), 20_000);
+        if (channel.readyState === "open") {
+          clearTimeout(timer);
+          resolve();
+          return;
+        }
+        channel.onopen = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        channel.onerror = () => {
+          clearTimeout(timer);
+          reject(new Error("data channel failed"));
+        };
+      });
+    opts.onState?.("signaling…");
+    let channel: RTCDataChannel;
+    if (opts.createChannel === false) {
+      // Joiner: the channel arrives inside the offer/answer negotiation. The
+      // handler must be registered before the signaling transport touches the
+      // remote description.
+      channel = await new Promise<RTCDataChannel>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("the other side never opened a data channel")),
+          20_000,
+        );
+        pc.ondatachannel = (event) => {
+          clearTimeout(timer);
+          resolve(event.channel);
+        };
+        void provider.connect(pc).catch(reject);
+      });
+    } else {
+      channel = pc.createDataChannel("bob-sync", { ordered: true });
+      await provider.connect(pc);
+    }
+    opts.onState?.("waiting for the data channel…");
+    await awaitOpen(channel);
+    opts.onState?.("data channel open");
+    const peer: SyncPeer = {
+      id: engineId,
+      send(envelope: SyncEnvelope): void {
+        if (channel.readyState !== "open") return;
+        channel.send(JSON.stringify(envelope));
+      },
+      connected: () => channel.readyState === "open" && pc.connectionState !== "closed",
+      onMessage(cb) {
+        channel.onmessage = (event) => {
+          try {
+            cb(JSON.parse(String(event.data)) as SyncEnvelope);
+          } catch {
+            /* skip a torn frame */
+          }
+        };
+      },
+      onClosed(cb) {
+        const fire = (): void => cb();
+        pc.addEventListener("connectionstatechange", () => {
+          if (pc.connectionState === "failed" || pc.connectionState === "closed" || pc.connectionState === "disconnected") fire();
+        });
+        channel.addEventListener("close", fire);
+      },
+      close(): void {
+        try {
+          channel.close();
+          pc.close();
+        } catch {
+          /* already closed */
+        }
+      },
+    };
+    // Every RTC data channel is frame-limited; chunk transparently so file
+    // contents (base64 in `ops`/`file-req` replies) never exceed the wire limit.
+    return { peer: chunkedPeer(peer), phrase: verifyPhrase(pc) };
+  } catch (err) {
+    abort();
+    throw err;
+  }
 }

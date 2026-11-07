@@ -56,6 +56,7 @@
     "test:speech-link": "tsx scripts/speech-link-test.ts",
     "test:storage-cors": "node scripts/storage-cors-test.mjs",
     "test:relay-renew": "tsx scripts/relay-renew-test.ts",
+    "test:relay-resilience": "tsx scripts/relay-resilience-test.ts",
     "verify:speech": "tsx scripts/speech-verify.ts",
     "test:telegram-bridge": "tsx scripts/telegram-bridge-test.ts",
     "test:emit-value": "tsx scripts/emit-value-test.ts",

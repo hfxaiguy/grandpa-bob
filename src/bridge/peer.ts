@@ -606,7 +606,13 @@ export class PeerSession {
       this.emit("server-frame", { profile: this.profile, pairing: false, relay: true });
       this.emit("resume-requested", { profile: this.profile });
     } catch (err) {
-      this.emit("error", { message: err instanceof Error ? err.message : String(err) });
+      const message = err instanceof Error ? err.message : String(err);
+      this.emit("error", { message });
+      // The pairing console has exited by now; this is the only trace of why a
+      // live relay pairing ended, so put it where `npm run bob` shows it.
+      if (this.transport.kind === "relay") {
+        console.warn(`[bridge] relay pairing "${this.profile}" ended: ${message}`);
+      }
       this.dispose();
     }
   }
