@@ -2,6 +2,21 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — reply to a suspended app from its call card
+
+A paused app could only be answered after opening its tile: the trunk's inline
+app card said **waiting** but carried no input. The card now shows the same
+composer below its messages while that app is the live pause target, so the
+person can answer in place. Only the newest turn and the app named by
+`state.awaiting` draw a reply box; older paused turns keep `awaiting` in their
+record but never grow a second composer.
+
+- **`ui/src/components.tsx`**: `AppCallCard` renders `<Composer>` when the card
+  is expanded, waiting, and the live pause target of the newest turn.
+- **`ui/src/styles.css`**: compact composer spacing inside app cards.
+
+Tests: `npm run test:ui`; `npm run test:app-calls`.
+
 ## 2026-11-07 — sync diagnostics and a readable pairing log
 
 The Sync dialog's transfer row only said e.g. `idle · 0 B · 508 B`, which

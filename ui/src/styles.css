@@ -643,6 +643,12 @@ body.dragging-tile { user-select: none !important; }
 }
 .app-call-msg.has-component { padding: 4px; white-space: normal; }
 .app-call-empty { color: var(--muted); font-size: 12px; font-style: italic; }
+/* A suspended app's reply box follows it into the caller's chat. It sits below
+   the scrollable body so the app's last messages can scroll without moving the
+   box out of reach, and borrows the smaller card's spacing. */
+.app-call > .composer { padding: 6px; }
+.app-call > .composer .icon-btn { padding: 4px 7px; font-size: 13px; }
+.app-call > .composer .composer-row textarea { min-height: 30px; }
 @container (max-width: 330px) {
   .app-call-head { gap: 5px; }
   .app-call-status { display: none; }

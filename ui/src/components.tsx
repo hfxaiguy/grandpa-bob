@@ -473,6 +473,14 @@ function AppCallCard(props: { turn: Turn; call: AppCall; depth?: number }) {
   });
   const empty = () =>
     status() === "running" ? "working…" : status() === "waiting" ? "waiting for a reply" : "no messages";
+  // The paused app's composer follows it into the caller's chat, so a person
+  // reading the trunk can answer without opening the tile. Only the live pause
+  // may draw one: older turns keep `awaiting` in their record, so a re-paused
+  // app would otherwise grow a reply box on every historical card.
+  const replyable = () =>
+    status() === "waiting" &&
+    state.awaiting === props.call.app &&
+    state.turns[state.turns.length - 1]?.turnId === props.turn.turnId;
   return (
     <section
       class="app-call"
@@ -553,6 +561,9 @@ function AppCallCard(props: { turn: Turn; call: AppCall; depth?: number }) {
             </For>
           </Show>
         </div>
+      </Show>
+      <Show when={open() && replyable()}>
+        <Composer app={props.call.app} />
       </Show>
     </section>
   );
