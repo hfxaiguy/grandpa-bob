@@ -1050,11 +1050,13 @@ export class PeerSession {
     const runtime = await this.runtimeForId(id);
     if (!runtime) return null;
     const map = await buildHashmap(runtime.platform, runtime.platform.workspaceRoot);
+    const entries = Object.values(map);
+    const newest = entries.reduce((max, entry) => Math.max(max, entry.mtime), 0);
     return {
       id,
-      files: Object.keys(map).length,
-      bytes: Object.values(map).reduce((sum, entry) => sum + entry.bytes, 0),
-      updatedAt: runtime.profile.createdAt,
+      files: entries.length,
+      bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0),
+      ...(newest > 0 ? { updatedAt: new Date(newest).toISOString() } : {}),
     };
   }
 

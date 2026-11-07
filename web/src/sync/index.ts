@@ -500,12 +500,11 @@ class MultiProfileSync implements SyncHandle {
     if (!target) return null;
     try {
       const summary = await summarizeWorkspace(await profileHandle(target.name));
-      const record = this.catalogEntries().find((entry) => entry.id === id);
       return {
         id,
         files: summary.files,
         bytes: summary.bytes,
-        updatedAt: record?.createdAt || undefined,
+        updatedAt: summary.updatedAt,
       };
     } catch {
       return null;

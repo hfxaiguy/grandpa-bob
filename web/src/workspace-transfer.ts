@@ -216,9 +216,10 @@ export async function importWorkspace(
 /** Recursively count files and total bytes under `root` (for profile info). */
 export async function summarizeWorkspace(
   root?: FileSystemDirectoryHandle,
-): Promise<{ files: number; bytes: number }> {
+): Promise<{ files: number; bytes: number; updatedAt?: string }> {
   let files = 0;
   let bytes = 0;
+  let newest = 0;
   const walk = async (dir: FileSystemDirectoryHandle): Promise<void> => {
     await eachEntry(dir, async (name, handle) => {
       if (name === ".gpb-runlog") return;
@@ -229,10 +230,18 @@ export async function summarizeWorkspace(
       const file = await (await dir.getFileHandle(name)).getFile();
       files++;
       bytes += file.size;
+      // The profile's own createdAt is not "last used": a migrated or
+      // remote-pulled profile can carry an empty/epoch timestamp. The newest
+      // workspace file is the useful freshness signal for the preview.
+      if (file.lastModified > newest) newest = file.lastModified;
     });
   };
   await walk(await archiveRoot(root));
-  return { files, bytes };
+  return {
+    files,
+    bytes,
+    updatedAt: newest > 0 ? new Date(newest).toISOString() : undefined,
+  };
 }
 
 /** Recursively count files under `root` (for display). */

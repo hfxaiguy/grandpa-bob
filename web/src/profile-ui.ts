@@ -455,7 +455,11 @@ async function previewRemoteProfile(row: ProfileRow, peer: PeerProfileCatalog): 
     );
     return;
   }
-  const when = preview.updatedAt ? `\nlast used: ${new Date(preview.updatedAt).toLocaleString()}` : "";
+  const updated = preview.updatedAt ? Date.parse(preview.updatedAt) : Number.NaN;
+  const when =
+    Number.isFinite(updated) && updated > 0
+      ? `\nlast updated: ${new Date(updated).toLocaleString()}`
+      : "";
   if (
     !confirm(
       `Profile "${row.name}" exists only on ${peer.deviceName}.\n\n` +
