@@ -186,7 +186,14 @@ function renderDiagnostics(sync: SyncHandle | null): void {
   if (diag.links.length) {
     peerParts.push(
       diag.links
-        .map((link) => `${link.kind === "desktop" ? "desktop" : "browser"} “${link.deviceName}”${link.ready ? "" : " (handshake)"}`)
+        .map((link) => {
+          const label = `${link.kind === "desktop" ? "desktop" : "browser"} “${link.deviceName}”`;
+          const handshake = link.ready ? "" : " (handshake)";
+          if (!link.profiles.length) return `${label}${handshake}`;
+          const visible = link.profiles.slice(0, 3).join(", ");
+          const extra = link.profiles.length > 3 ? ` +${link.profiles.length - 3}` : "";
+          return `${label}${handshake} [${visible}${extra}]`;
+        })
         .join(", "),
     );
   }
@@ -200,7 +207,7 @@ function renderDiagnostics(sync: SyncHandle | null): void {
 
   const queue = [
     plural(engine.pendingPulls, "pending pull"),
-    plural(engine.pendingRounds, "round"),
+    plural(engine.pendingRounds, "explicit round"),
     plural(engine.queued, "queued frame"),
   ];
   if (engine.chunkTransfers) queue.push(plural(engine.chunkTransfers, "chunked transfer"));
@@ -889,7 +896,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
         const created = el<HTMLElement>("pair-created-wrap");
         if (created) created.hidden = false;
         setText("pair-created-code", channel.code);
-        progress(`code ${channel.code} created — share it with the other browser`);
+        progress("pairing code created — share it with the other browser");
         setStatus("share the 8-digit code with the other device, then wait");
         const pairing = await handle.pairBobSwap({
           baseUrl: swap.baseUrl,
