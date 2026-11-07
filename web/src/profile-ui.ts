@@ -73,6 +73,12 @@ export interface ProfileUiHooks {
   syncMirror(): Promise<void>;
   /** Current desktop-mirror status (null when this profile has none). */
   mirrorStatus(): MirrorStatus | null;
+  /** This browser's peer-facing name (custom or the hostname default). */
+  deviceName?(): string;
+  /** The default label shown when no custom name is set. */
+  defaultDeviceName?(): string;
+  /** Persist and push a new peer-facing name for this browser. */
+  setDeviceName?(name: string): void;
   /** Paired peers + per-profile consent (multi-profile sync). */
   peers?(): PeerSyncStore;
   onPeersChanged?(cb: () => void): () => void;
@@ -622,7 +628,32 @@ function wireProfileManager(): void {
   const seedLabel = el<HTMLElement>("profile-new-seed-label");
   const hint = el<HTMLElement>("profile-create-hint");
   const submit = form?.querySelector<HTMLButtonElement>('button[type="submit"]') ?? null;
+  const deviceInput = el<HTMLInputElement>("device-name");
+  const deviceSave = el<HTMLButtonElement>("device-name-save");
   const SEED_REQUIRED = "pick a seed to seed this workspace from";
+
+  const renderDeviceName = (): void => {
+    const ui = getHooks();
+    if (deviceInput) {
+      deviceInput.value = ui.deviceName?.() ?? "";
+      deviceInput.placeholder = ui.defaultDeviceName?.() ?? "browser · host";
+    }
+  };
+
+  const saveDeviceName = (): void => {
+    const ui = getHooks();
+    ui.setDeviceName?.(deviceInput?.value ?? "");
+    renderDeviceName();
+    const shown = deviceInput?.value.trim() || ui.defaultDeviceName?.() || "the default name";
+    ui.flash(`this browser is now "${shown}"`, 5000);
+  };
+
+  deviceSave?.addEventListener("click", saveDeviceName);
+  deviceInput?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    saveDeviceName();
+  });
 
   // The toolbar status line sits behind the modal backdrop, so every message
   // from this form is repeated in the hint beside the Create button.
@@ -648,6 +679,7 @@ function wireProfileManager(): void {
 
   open?.addEventListener("click", () => {
     if (!dialog) return;
+    renderDeviceName();
     void renderProfileList();
     setCreateHint("");
     syncCreateState();

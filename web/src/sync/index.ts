@@ -26,8 +26,11 @@ import {
   autoLinkProfiles,
   ensureDeviceId,
   effectiveAllow,
+  loadDeviceName,
   loadPeerStore,
+  normalizeDeviceName,
   remapPeerConsent,
+  saveDeviceName,
   savePeerStore,
   upsertPeer,
   type PeerProfileCatalog,
@@ -105,6 +108,10 @@ export interface SyncHandle {
   engine: SyncEngine;
   state(): SyncState;
   onState(cb: (state: SyncState) => void): () => void;
+  /** The human name this browser sends to peers. */
+  deviceName(): string;
+  /** Rename this browser; pushes the new name to every open link. */
+  setDeviceName(name: string): void;
   /** Attach a raw peer to the active profile only (legacy). */
   attach(peer: SyncPeer): void;
   /** Attach a multiplexed device link. */
@@ -176,6 +183,13 @@ export function activeSync(): SyncHandle | null {
   return active;
 }
 
+/** The label a browser uses until the user gives it a name. */
+export function defaultDeviceName(): string {
+  const host =
+    typeof location !== "undefined" && location.hostname ? location.hostname : "";
+  return normalizeDeviceName(host ? `browser · ${host}` : "browser") || "browser";
+}
+
 export async function startSync(
   platform: Platform,
   opts: SyncOptions,
@@ -199,7 +213,7 @@ class MultiProfileSync implements SyncHandle {
   private peerListeners = new Set<() => void>();
   private activeProfile: string;
   private deviceId = ensureDeviceId();
-  private deviceName: string;
+  private selfName: string;
   private current: SyncState = {
     status: "idle",
     detail: "",
@@ -212,11 +226,8 @@ class MultiProfileSync implements SyncHandle {
   constructor(opts: SyncOptions) {
     this.opts = opts;
     this.activeProfile = opts.activeProfile ?? opts.profiles?.[0]?.name ?? "default";
-    this.deviceName =
-      opts.deviceName ??
-      (typeof location !== "undefined" && location.hostname
-        ? `browser · ${location.hostname}`
-        : `browser · ${this.deviceId.slice(0, 8)}`);
+    this.selfName =
+      opts.deviceName ?? (loadDeviceName() || defaultDeviceName());
     const activeTarget =
       this.catalog().find((target) => target.name === this.activeProfile) ?? {
         // Boot fallback for a registry that has not been handed over yet.
@@ -287,6 +298,20 @@ class MultiProfileSync implements SyncHandle {
     return () => this.stateListeners.delete(cb);
   }
 
+  deviceName(): string {
+    return this.selfName;
+  }
+
+  setDeviceName(name: string): void {
+    const normalized = normalizeDeviceName(name);
+    this.selfName = normalized || defaultDeviceName();
+    saveDeviceName(normalized);
+    for (const session of this.sessions.values()) {
+      session.link.setDeviceName(this.selfName);
+    }
+    this.notifyPeers();
+  }
+
   attach(peer: SyncPeer): void {
     this.runtimeFor(this.activeTarget()).engine.attach(peer);
   }
@@ -313,7 +338,7 @@ class MultiProfileSync implements SyncHandle {
     };
     const link = new ProfileLink(peer, {
       deviceId: this.deviceId,
-      deviceName: this.deviceName,
+      deviceName: this.selfName,
       catalog: this.catalogEntries(),
       consent: {},
       defaultProfileId: this.activeTarget().id,

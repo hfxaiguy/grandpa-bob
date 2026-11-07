@@ -14,6 +14,7 @@
 import type { SyncEnvelope, SyncPeer } from "./engine";
 import {
   normalizeCatalog,
+  normalizeDeviceName,
   type ProfileCatalogEntry,
   type ProfilePreview,
 } from "../profile-sync-model";
@@ -151,6 +152,14 @@ export class ProfileLink {
   setConsent(consent: Record<string, boolean>): void {
     this.consent = { ...consent };
     if (this.ready) this.sendConsent();
+  }
+
+  /** Rename this browser and push the new label to the peer. */
+  setDeviceName(name: string): void {
+    const value = normalizeDeviceName(name);
+    if (!value || value === this.opts.deviceName) return;
+    this.opts.deviceName = value;
+    if (this.ready) this.sendCatalog();
   }
 
   /** Send the catalog now (used after a one-time auto-link rewrite). */

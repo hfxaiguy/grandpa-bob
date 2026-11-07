@@ -200,4 +200,32 @@ linkOnRaw.start();
 await tick();
 assert.equal(wrappedCatalogs.length, 1, "a ProfileLink on a controlPeer receives the catalog");
 
+// Renaming a browser pushes the new label to the peer's catalog.
+const [renameWireA, renameWireB] = wire();
+const E = "55555555-5555-4555-8555-555555555555";
+const seenNames: string[] = [];
+const renameA = new ProfileLink(renameWireA, {
+  deviceId: "rename-a",
+  deviceName: "old name",
+  catalog: [{ id: E, name: "centre", createdAt: "2026-05-01T00:00:00.000Z" }],
+  consent: {},
+  peerId: "engine",
+  requirePhrase: false,
+});
+const renameB = new ProfileLink(renameWireB, {
+  deviceId: "rename-b",
+  deviceName: "peer",
+  catalog: [],
+  consent: {},
+  peerId: "engine",
+  requirePhrase: false,
+  onCatalog: (_catalog, _deviceId, deviceName) => seenNames.push(deviceName),
+});
+renameA.start();
+renameB.start();
+await tick();
+renameA.setDeviceName("Kitchen phone");
+await tick();
+assert.equal(seenNames.at(-1), "Kitchen phone", "a rename reaches the peer catalog");
+
 console.log("profile-link: phrase gate, catalog, consent and mux OK");

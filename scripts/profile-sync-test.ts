@@ -11,8 +11,11 @@ import {
   canonicalProfileId,
   defaultLocalConsent,
   effectiveAllow,
+  loadDeviceName,
+  normalizeDeviceName,
   parsePeerStore,
   remapPeerConsent,
+  saveDeviceName,
   upsertPeer,
   type PeerSyncStore,
 } from "../web/src/profile-sync-model.js";
@@ -137,5 +140,18 @@ assert.equal(phoneOnly.name, "phone-only");
 const parsed = parsePeerStore(JSON.parse(JSON.stringify(upserted)));
 assert.equal(parsed.peers.peer1.profiles[0].id, A);
 assert.equal(parsed.peers.peer1.localAllow[A], true);
+
+assert.equal(normalizeDeviceName("  My   phone  "), "My phone", "device names are trimmed and compacted");
+assert.equal(normalizeDeviceName("x".repeat(120)).length, 80, "device names are capped");
+const nameStore = new Map<string, string>();
+const fakeStorage = {
+  getItem: (key: string) => nameStore.get(key) ?? null,
+  setItem: (key: string, value: string) => void nameStore.set(key, value),
+  removeItem: (key: string) => void nameStore.delete(key),
+} as unknown as Storage;
+saveDeviceName("Kitchen phone", fakeStorage);
+assert.equal(loadDeviceName(fakeStorage), "Kitchen phone");
+saveDeviceName("   ", fakeStorage);
+assert.equal(loadDeviceName(fakeStorage), "", "a blank name clears the custom label");
 
 console.log("profile-sync test: all assertions passed");

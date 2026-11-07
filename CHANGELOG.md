@@ -2,6 +2,26 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — paired browsers can name themselves
+
+Both ends of a browser↔browser pair used to show `browser · <hostname>`, so a
+phone and a desktop on the same hosted origin were indistinguishable. The
+Profiles dialog now has a **This browser** name field; the label is stored in
+localStorage and pushed to every open peer link as a catalog update.
+
+- **`web/src/profile-sync-model.ts`**: `bob:device-name`, normalization and
+  load/save helpers.
+- **`web/src/sync/index.ts`**, **`profile-link.ts`**: `SyncHandle.deviceName()`
+  / `setDeviceName()`; a rename re-sends the catalog to each link.
+- **`web/src/profile-ui.ts`**, **`web/index.html`**: the name field and Save
+  action in the Profiles dialog; blank clears back to the hostname default.
+- Tests: `test:profile-sync` covers normalization and storage;
+  `test:profile-link` covers the rename catalog update.
+
+Tests: `npm run test:profile-sync`; `npm run test:profile-link`;
+`npm run typecheck`; `npm --prefix web run typecheck`;
+`npm --prefix web run build`.
+
 ## 2026-11-07 — the phone's speaker sees the live desktop link
 
 Pressing 🔊 on a phone kept reporting **"the relay link is offline"** while

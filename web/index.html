@@ -172,6 +172,9 @@
       .profile-block { padding: 0.35rem 0; border-bottom: 1px solid var(--border); }
       .profile-block:last-child { border-bottom: 0; }
       .profile-block[data-remote-only="true"] { opacity: 0.9; }
+      .device-name-row { display: flex; align-items: flex-end; gap: 0.5rem; margin: 0.35rem 0 0.2rem; }
+      .device-name-row label { flex: 1; margin: 0; }
+      .device-name-row button { flex: none; margin-bottom: 0.3rem; }
       .profile-row { display: flex; justify-content: space-between; gap: 0.8rem; align-items: center; padding: 0.35rem 0; }
       .profile-peers { margin: 0.15rem 0 0.35rem 1.2rem; display: grid; gap: 0.2rem; }
       .profile-peer { display: flex; align-items: center; gap: 0.45rem; font-size: 0.9em; flex-wrap: wrap; }
@@ -278,6 +281,13 @@
     <dialog id="profile-dialog">
       <h3>Workspace profiles</h3>
       <p class="muted">Each profile is a workspace in this browser. A profile can pair with a desktop/server in Sync… → Pair…; the paired folder is its mirror. Switching reloads the tab.</p>
+      <div class="device-name-row">
+        <label>This browser
+          <input id="device-name" placeholder="browser · host" autocomplete="off" />
+        </label>
+        <button id="device-name-save" type="button">Save name</button>
+      </div>
+      <p class="muted">The name paired devices see under each profile. Leave it blank to use the default.</p>
       <h4>Manage profiles</h4>
       <div id="profile-list"></div>
       <h4>Create profile</h4>

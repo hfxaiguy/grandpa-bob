@@ -67,8 +67,13 @@ import { listTreeSources } from "./tree-sources";
 import { resolveTreeEntry } from "./tree-files";
 import { patternLabel } from "./agent/pattern-path";
 import { createHostLease } from "./host-lease";
-import { startSync, activeSync, type SyncHandle } from "./sync";
+import { startSync, activeSync, defaultDeviceName, type SyncHandle } from "./sync";
 import { wireSyncUi } from "./sync-ui";
+import {
+  loadDeviceName,
+  normalizeDeviceName,
+  saveDeviceName,
+} from "./profile-sync-model";
 import { parseSeedMeta, seedFreshness, SEED_CLOCK_TOLERANCE_MS, type SeedMeta } from "./seed-version";
 import type { Platform } from "./platform/types";
 import { needsFreeKey } from "./ai-claim";
@@ -1797,6 +1802,16 @@ async function main(): Promise<void> {
       return serverConnection
         ? { phase: "idle", detail: "connected", folder: bound, lastSyncAt: new Date().toISOString() }
         : { phase: "offline", detail: "pairing needed", folder: bound, lastSyncAt: null };
+    },
+    deviceName: () =>
+      syncHandle?.deviceName() ?? (loadDeviceName() || defaultDeviceName()),
+    defaultDeviceName,
+    setDeviceName: (name) => {
+      const normalized = normalizeDeviceName(name);
+      // A secondary tab has no manager yet; the value still persists and the
+      // promoted tab picks it up when it starts sync.
+      saveDeviceName(normalized);
+      syncHandle?.setDeviceName(normalized);
     },
     peers: () => syncHandle?.peers() ?? { version: 1, peers: {} },
     onPeersChanged: (cb) => syncHandle?.onPeersChanged(cb) ?? (() => undefined),

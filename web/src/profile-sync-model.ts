@@ -56,7 +56,37 @@ export interface PeerSyncStore {
 }
 
 export const DEVICE_ID_KEY = "bob:device-id";
+export const DEVICE_NAME_KEY = "bob:device-name";
 export const PEER_SYNC_KEY = "bob:profile-peers";
+
+/** Human name this browser shows to paired peers (not an identity). */
+export function normalizeDeviceName(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return raw.trim().replace(/\s+/g, " ").slice(0, 80);
+}
+
+export function loadDeviceName(
+  storage: Storage | undefined = globalThis.localStorage,
+): string {
+  try {
+    return normalizeDeviceName(storage?.getItem(DEVICE_NAME_KEY));
+  } catch {
+    return "";
+  }
+}
+
+export function saveDeviceName(
+  name: string,
+  storage: Storage | undefined = globalThis.localStorage,
+): void {
+  const value = normalizeDeviceName(name);
+  try {
+    if (value) storage?.setItem(DEVICE_NAME_KEY, value);
+    else storage?.removeItem(DEVICE_NAME_KEY);
+  } catch {
+    /* private mode: the name lasts for this tab only */
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
