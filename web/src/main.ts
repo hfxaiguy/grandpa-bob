@@ -71,6 +71,7 @@ import { startSync, activeSync, defaultDeviceName, type SyncHandle } from "./syn
 import { wireSyncUi } from "./sync-ui";
 import {
   loadDeviceName,
+  loadPeerStore,
   normalizeDeviceName,
   saveDeviceName,
 } from "./profile-sync-model";
@@ -1813,7 +1814,7 @@ async function main(): Promise<void> {
       saveDeviceName(normalized);
       syncHandle?.setDeviceName(normalized);
     },
-    peers: () => syncHandle?.peers() ?? { version: 1, peers: {} },
+    peers: () => syncHandle?.peers() ?? loadPeerStore(),
     onPeersChanged: (cb) => syncHandle?.onPeersChanged(cb) ?? (() => undefined),
     setProfileConsent: (peerId, profileId, allow) =>
       syncHandle?.setProfileConsent(peerId, profileId, allow),

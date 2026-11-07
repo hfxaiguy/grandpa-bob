@@ -2,6 +2,27 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — Sync shows every paired device
+
+The Sync dialog's **Live sync** section now has a **Paired devices** list. It
+reads the device-wide peer store, so it shows peers that share no profile with
+this browser too: connected devices first, then offline ones by last contact,
+with the short device id and the profiles each device advertises. The same
+section shows the name this browser advertises.
+
+- **`web/src/profile-sync-model.ts`**: `pairedDevices()` flattens and sorts the
+  peer store for the list.
+- **`web/src/profile-ui.ts`**, **`web/index.html`**: the list renders on dialog
+  open and repaints when a peer connects, disconnects or updates its catalog.
+- **`web/src/main.ts`**: a read-only tab falls back to the persisted peer store
+  so the list is complete before that tab takes over the workspace.
+- Tests: `test:profile-sync` covers ordering, blank names and profile names;
+  a one-off headless smoke opened the real dialog with one connected and one
+  offline peer.
+
+Tests: `npm run test:profile-sync`; `npm run test:standalone`;
+`npm --prefix web run typecheck`; `npm --prefix web run build`.
+
 ## 2026-11-07 — the Profiles dialog stops listing a profile twice
 
 Opening the dialog while a peer catalog update or a row action also refreshed

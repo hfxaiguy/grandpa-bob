@@ -479,8 +479,13 @@ after a code + SAS confirmation, both sides exchange a profile catalog and the
 Profiles dialog shows a peer list under each profile. Each profile × peer has
 its own checkbox; both sides must allow it before any bytes move, and
 unchecking either side detaches that profile immediately. Profiles are visible
-as **remote only** until they are previewed and explicitly pulled. A browser
-can **pair with a desktop/server** over the same WebRTC flow; the bridge mirrors
+as **remote only** until they are previewed and explicitly pulled. The
+**Paired devices** section of **Sync… → Live sync** lists every device this
+browser has paired with — connected first, then by last contact, with the
+profile names each device advertises — including peers that share no profile
+with this browser. Name this browser under **Profiles → This browser**; paired
+devices see that label. A browser can **pair with a desktop/server** over the
+same WebRTC flow; the bridge mirrors
 each allowed profile to its own folder (`~/.bobkat/folders/<name>` by default)
 and runs allowlisted exec through the authenticated channel. Profiles have
 their own chats, patterns, run log, git history and board layout.

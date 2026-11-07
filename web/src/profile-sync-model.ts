@@ -357,6 +357,39 @@ export function buildProfileRows(
   });
 }
 
+/** One row in the "paired devices" list. */
+export interface PairedDeviceRow {
+  peerId: string;
+  deviceName: string;
+  online: boolean;
+  lastSeen: string;
+  profiles: ProfileCatalogEntry[];
+}
+
+/**
+ * Every device this browser has paired with, connected first and then by most
+ * recent contact. The peer store is device-wide, so the list spans profiles.
+ */
+export function pairedDevices(store: PeerSyncStore): PairedDeviceRow[] {
+  const seenAt = (iso: string): number => {
+    const parsed = Date.parse(iso);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  return Object.values(store.peers)
+    .map((peer) => ({
+      peerId: peer.peerId,
+      deviceName: normalizeDeviceName(peer.deviceName) || "peer",
+      online: peer.online === true,
+      lastSeen: peer.lastSeen,
+      profiles: [...peer.profiles].sort((a, b) => a.name.localeCompare(b.name)),
+    }))
+    .sort((a, b) => {
+      if (a.online !== b.online) return a.online ? -1 : 1;
+      const recency = seenAt(b.lastSeen) - seenAt(a.lastSeen);
+      return recency || a.deviceName.localeCompare(b.deviceName);
+    });
+}
+
 /** One-time defaults for a freshly paired peer. */
 export function upsertPeer(
   store: PeerSyncStore,

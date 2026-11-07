@@ -175,6 +175,13 @@
       .device-name-row { display: flex; align-items: flex-end; gap: 0.5rem; margin: 0.35rem 0 0.2rem; }
       .device-name-row label { flex: 1; margin: 0; }
       .device-name-row button { flex: none; margin-bottom: 0.3rem; }
+      .paired-device-list { list-style: none; margin: 0.3rem 0 0.5rem; padding: 0; display: grid; gap: 0.35rem; }
+      .paired-device-list[hidden] { display: none; }
+      .paired-device { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem; border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.45rem; }
+      .paired-device-name { font-weight: 600; }
+      .paired-device-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.5px; color: var(--muted); }
+      .paired-device-profiles { flex-basis: 100%; font-size: 12px; overflow-wrap: anywhere; }
+      .paired-device[data-online="true"] .badge { color: #7bc47f; border-color: #7bc47f; }
       .profile-row { display: flex; justify-content: space-between; gap: 0.8rem; align-items: center; padding: 0.35rem 0; }
       .profile-peers { margin: 0.15rem 0 0.35rem 1.2rem; display: grid; gap: 0.2rem; }
       .profile-peer { display: flex; align-items: center; gap: 0.45rem; font-size: 0.9em; flex-wrap: wrap; }
@@ -407,6 +414,10 @@
         </div>
         <progress id="live-transfer-bar" max="100" value="0" hidden></progress>
       </div>
+      <h4>Paired devices <span id="paired-device-count" class="muted"></span></h4>
+      <p class="muted">This browser: <strong id="paired-device-self">—</strong></p>
+      <ul id="paired-device-list" class="paired-device-list" hidden></ul>
+      <p id="paired-device-empty" class="muted">No devices paired yet. Use <strong>Pair…</strong> above.</p>
       <h4>BobSwap</h4>
       <div class="sync-row">
         <button id="swap-settings" type="button" title="Configure BobSwap services and keys">BobSwap…</button>

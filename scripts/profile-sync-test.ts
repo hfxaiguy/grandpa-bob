@@ -13,6 +13,7 @@ import {
   effectiveAllow,
   loadDeviceName,
   normalizeDeviceName,
+  pairedDevices,
   parsePeerStore,
   remapPeerConsent,
   saveDeviceName,
@@ -153,5 +154,43 @@ saveDeviceName("Kitchen phone", fakeStorage);
 assert.equal(loadDeviceName(fakeStorage), "Kitchen phone");
 saveDeviceName("   ", fakeStorage);
 assert.equal(loadDeviceName(fakeStorage), "", "a blank name clears the custom label");
+
+const devices = pairedDevices({
+  version: 1,
+  peers: {
+    offline: {
+      peerId: "offline",
+      deviceName: "  Office   PC ",
+      lastSeen: "2026-01-01T00:00:00.000Z",
+      online: false,
+      profiles: [older],
+      localAllow: {},
+      remoteAllow: {},
+      linkedNames: [],
+      unlinkedIds: [],
+    },
+    online: {
+      peerId: "online",
+      deviceName: "",
+      lastSeen: "2026-01-02T00:00:00.000Z",
+      online: true,
+      profiles: [older, { id: B, name: "phone-only", createdAt: "z" }],
+      localAllow: {},
+      remoteAllow: {},
+      linkedNames: [],
+      unlinkedIds: [],
+    },
+  },
+});
+assert.equal(devices.length, 2, "every paired device is listed, online or not");
+assert.equal(devices[0].peerId, "online", "connected devices sort first");
+assert.equal(devices[0].deviceName, "peer", "a blank name falls back to a label");
+assert.deepEqual(
+  devices[0].profiles.map((entry) => entry.name),
+  ["phone-only", "travel"],
+  "profiles are listed in name order",
+);
+assert.equal(devices[1].deviceName, "Office PC", "device names are normalized");
+assert.deepEqual(pairedDevices({ version: 1, peers: {} }), [], "no pairings means an empty list");
 
 console.log("profile-sync test: all assertions passed");

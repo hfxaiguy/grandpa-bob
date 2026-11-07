@@ -77,6 +77,14 @@ server** — so the code is the only thing to exchange. The relay and desktop
 paths share the same code flow (§6 covers the desktop side); manual paste is
 the no-service fallback.
 
+Below the live-sync row, **Paired devices** lists every device this browser has
+paired with, from the device-wide peer store: connected devices first, then
+offline ones by last contact, with the profile names each device advertises.
+A device appears even when it shares no profile with this browser, so the list
+is the complete pairing record rather than a view of the active profile.
+**Profiles → This browser** names this device; peers see that label in the
+list and in their per-profile peer rows.
+
 While a handshake runs, the dialog shows a live **progress timeline** on each
 end: code created/redeemed, offer/answer exchange, ICE gathering and
 connectivity, data-channel open, then the verification phrase. **Retry

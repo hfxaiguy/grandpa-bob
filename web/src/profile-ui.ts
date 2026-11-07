@@ -53,6 +53,7 @@ import { clearServerLink } from "./server-link";
 import type { MirrorStatus } from "./peer-status";
 import {
   buildProfileRows,
+  pairedDevices,
   type PeerProfileCatalog,
   type PeerSyncStore,
   type ProfilePreview,
@@ -1311,6 +1312,81 @@ export function clearSeedProgress(barId: string): void {
 
 // ── sync menu (collapsed toolbar controls) ───────────────────────────────
 
+/** Compact "when" label; the exact timestamp stays in the element title. */
+function lastSeenLabel(iso: string): string {
+  const when = Date.parse(iso);
+  if (!Number.isFinite(when)) return "never";
+  const delta = Math.max(0, Date.now() - when);
+  if (delta < 60_000) return "just now";
+  const minutes = Math.floor(delta / 60_000);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} d ago`;
+  return new Date(when).toLocaleDateString();
+}
+
+/**
+ * Paint every device in the device-wide peer store. The Profiles dialog shows
+ * peers per profile; this list answers "which devices is this browser paired
+ * with?" even when a device shares no profile or is currently offline.
+ */
+function renderPairedDevices(): void {
+  const ui = getHooks();
+  const list = el<HTMLUListElement>("paired-device-list");
+  const empty = el<HTMLElement>("paired-device-empty");
+  if (!list || !empty) return;
+  const self = el<HTMLElement>("paired-device-self");
+  if (self) {
+    self.textContent = ui.deviceName?.() || ui.defaultDeviceName?.() || "this browser";
+  }
+  const devices = pairedDevices(ui.peers?.() ?? { version: 1, peers: {} });
+  const count = el<HTMLElement>("paired-device-count");
+  if (count) count.textContent = devices.length ? `(${devices.length})` : "";
+  empty.hidden = devices.length > 0;
+  list.hidden = devices.length === 0;
+  list.replaceChildren(
+    ...devices.map((device) => {
+      const item = document.createElement("li");
+      item.className = "paired-device";
+      item.dataset.online = String(device.online);
+      item.title = `device id: ${device.peerId}`;
+
+      const name = document.createElement("strong");
+      name.className = "paired-device-name";
+      name.textContent = device.deviceName;
+
+      const state = document.createElement("span");
+      state.className = "badge";
+      const lastSeen = Date.parse(device.lastSeen);
+      const lastSeenKnown = Number.isFinite(lastSeen);
+      state.textContent = device.online
+        ? "connected"
+        : lastSeenKnown
+          ? `last seen ${lastSeenLabel(device.lastSeen)}`
+          : "offline";
+      if (!device.online && lastSeenKnown) {
+        state.title = new Date(lastSeen).toLocaleString();
+      }
+
+      const id = document.createElement("span");
+      id.className = "paired-device-id";
+      id.textContent = device.peerId.slice(0, 8);
+
+      const profiles = document.createElement("span");
+      profiles.className = "paired-device-profiles muted";
+      profiles.textContent = device.profiles.length
+        ? `${device.profiles.length} profile${device.profiles.length === 1 ? "" : "s"}: ` +
+          device.profiles.map((profile) => profile.name).join(", ")
+        : "no profiles shared yet";
+
+      item.append(name, " ", state, " ", id, profiles);
+      return item;
+    }),
+  );
+}
+
 /**
  * The toolbar's transfer/BobSwap controls live in `#sync-dialog`.
  * Closing it on a launcher click keeps native dialogs from stacking; the
@@ -1319,7 +1395,10 @@ export function clearSeedProgress(barId: string): void {
 function wireSyncDialog(): void {
   const dialog = el<HTMLDialogElement>("sync-dialog");
   if (!dialog) return;
-  el<HTMLButtonElement>("sync-menu")?.addEventListener("click", () => dialog.showModal());
+  el<HTMLButtonElement>("sync-menu")?.addEventListener("click", () => {
+    renderPairedDevices();
+    dialog.showModal();
+  });
   el<HTMLButtonElement>("sync-close")?.addEventListener("click", () => dialog.close());
   dialog.addEventListener(
     "click",
@@ -1487,6 +1566,7 @@ export function wireProfileUi(profileHooks: ProfileUiHooks): void {
   // a box, a preview landed, a link dropped). Repaint only when visible.
   profileHooks.onPeersChanged?.(() => {
     if (el<HTMLDialogElement>("profile-dialog")?.open) void renderProfileList();
+    if (el<HTMLDialogElement>("sync-dialog")?.open) renderPairedDevices();
   });
 
   // Keep the profile picker current after the manager dialog changes it.
