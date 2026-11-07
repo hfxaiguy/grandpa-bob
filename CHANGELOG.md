@@ -2,6 +2,25 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — a phone can see a seed update make progress
+
+The phone layout hides the toolbar's `#status` and `#seed-bar`, so applying a
+seed looked like a dead button: the confirmation closed and nothing happened
+until the reload. The session drawer mirrored the status text, but only if the
+user opened it.
+
+- **`web/index.html`**, **`web/src/main.ts`**: seed applies now report to a
+  fixed mobile-only progress card (label, file count, percentage and bar). It
+  appears as soon as the user confirms, shows an indeterminate bar while the
+  archive downloads, then fills per file in `applySeedArchive`. Desktop keeps
+  the toolbar status and bar unchanged.
+- **`web/src/main.ts`**: both the bundled-seed update and the bound-BobSwap-seed
+  update use the card; it stays at 100% through the short reload delay on
+  success and hides on failure.
+
+Tests: `npm --prefix web run typecheck`, plus a 390 px / 1200 px headless
+Chromium check of the card's visibility.
+
 ## 2026-11-07 — live browser e2e for the paired desktop
 
 Two real-browser checks now exercise the cross-device flows end to end: a real

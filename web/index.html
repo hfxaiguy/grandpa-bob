@@ -57,6 +57,25 @@
       #mirror-status[data-phase="offline"],
       #mirror-status[data-phase="error"] { color: #ffd7a1; border-color: #6a5330; }
       #seed-bar { width: 8rem; height: 0.6rem; }
+      /* The phone layout hides #status and #seed-bar, so a seed update reports
+         here instead: a fixed card the user sees immediately after confirming. */
+      #seed-apply-card {
+        position: fixed; left: 50%; bottom: calc(0.75rem + env(safe-area-inset-bottom));
+        transform: translateX(-50%); z-index: 50;
+        width: min(24rem, calc(100vw - 1.4rem));
+        display: flex; flex-direction: column; gap: 0.45rem;
+        padding: 0.65rem 0.8rem;
+        background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+      }
+      @media (min-width: 641px) { #seed-apply-card { display: none !important; } }
+      .seed-apply-head { display: flex; align-items: center; gap: 0.45rem; min-width: 0; }
+      .seed-apply-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+      .seed-apply-pct {
+        flex: none; color: var(--accent); font-weight: 700;
+        font-variant-numeric: tabular-nums;
+      }
+      #seed-apply-bar { width: 100%; height: 0.5rem; }
       #toolbar button:disabled { opacity: 0.55; cursor: default; }
       #app { flex: 1; min-height: 0; }
 
@@ -268,6 +287,14 @@
       <button id="session-menu" type="button" title="Open sessions and workspace status" hidden>Session</button>
       <span id="status">starting…</span>
       <progress id="seed-bar" max="100" value="0" hidden title="Seed apply progress"></progress>
+    </div>
+    <div id="seed-apply-card" role="status" aria-live="polite" hidden>
+      <div class="seed-apply-head">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="seed-apply-label" class="seed-apply-label">Updating workspace…</span>
+        <span id="seed-apply-pct" class="seed-apply-pct"></span>
+      </div>
+      <progress id="seed-apply-bar" max="1" value="0" aria-label="Seed apply progress"></progress>
     </div>
     <div id="app">
       <div id="boot-splash" class="boot-splash" role="status" aria-live="polite">

@@ -188,7 +188,37 @@ function showStatus(pattern: string): void {
 /** Report per-file seed-write progress in the toolbar bar and status line. */
 function seedApplyProgress(done: number, total: number): void {
   setSeedProgress("seed-bar", done, total);
+  showSeedApplyProgress(`applying ${done}/${total} files…`, done, total);
   setStatus(`applying ${done}/${total} files…`);
+}
+
+/**
+ * The phone layout hides `#status` and `#seed-bar` (the Session drawer mirrors
+ * the status line, but the user should not have to open it mid-update). A
+ * fixed card restates the same progress. `total === 0` is the pre-write phase
+ * (fetching the archive), shown as an indeterminate bar.
+ */
+function showSeedApplyProgress(text: string, done = 0, total = 0): void {
+  const card = document.getElementById("seed-apply-card");
+  if (!card) return;
+  card.hidden = false;
+  const label = document.getElementById("seed-apply-label");
+  if (label) label.textContent = text;
+  const bar = document.getElementById("seed-apply-bar") as HTMLProgressElement | null;
+  if (bar) {
+    if (total > 0) {
+      bar.max = total;
+      bar.value = Math.min(done, total);
+    } else {
+      bar.removeAttribute("value");
+    }
+  }
+  const pct = document.getElementById("seed-apply-pct");
+  if (pct) pct.textContent = total > 0 ? `${Math.round((done / total) * 100)}%` : "";
+}
+
+function hideSeedApplyProgress(): void {
+  document.getElementById("seed-apply-card")?.setAttribute("hidden", "");
 }
 
 /** Show a one-off message, then go back to the storage · pattern line. */
@@ -1313,16 +1343,20 @@ async function applySeedUpdate(meta: SeedMeta): Promise<void> {
     "Update workspace",
   );
   if (!proceed) return;
+  showSeedApplyProgress("updating workspace…");
   try {
     setStatus("updating workspace…");
     const res = await fetch("/seed/workspace.json", { cache: "no-cache" });
     if (!res.ok) throw new Error(`seed not available (${res.status})`);
+    showSeedApplyProgress("downloading workspace…");
     const text = await res.text();
     const archive = JSON.parse(text) as WorkspaceArchive;
     await applySeedArchive(archive, platform.crypto.sha256hex(text), seedApplyProgress);
+    showSeedApplyProgress("workspace updated — reloading…", 1, 1);
     flashStatus("workspace updated — reloading…", 5000);
     setTimeout(() => location.reload(), 1500);
   } catch (err) {
+    hideSeedApplyProgress();
     flashStatus(`workspace update failed: ${errorText(err)}`, 10_000);
   } finally {
     clearSeedProgress("seed-bar");
@@ -1342,10 +1376,13 @@ async function applyBoundSeedUpdate(binding: SeedBinding, version?: string): Pro
     "Update profile",
   );
   if (!proceed) return;
+  showSeedApplyProgress(`fetching ${binding.seedName}…`);
   setStatus("fetching seed…");
+  let applied = false;
   try {
     const fetched = await fetchLatestSeed(service, account, binding.seedName);
     if (!fetched) throw new Error("the newest seed version is unchanged");
+    showSeedApplyProgress(`applying ${fetched.archive.files.length} files…`);
     setStatus(`applying ${fetched.archive.files.length} files…`);
     await applySeedArchive(fetched.archive, fetched.sha256, seedApplyProgress);
     await recordSeedVersion(activeProfile, {
@@ -1354,10 +1391,15 @@ async function applyBoundSeedUpdate(binding: SeedBinding, version?: string): Pro
       createdAt: fetched.archive.createdAt,
       checkedAt: new Date().toISOString(),
     });
+    applied = true;
+    showSeedApplyProgress("seed applied — reloading…", 1, 1);
     flashStatus("seed applied — reloading…", 5000);
     setTimeout(() => location.reload(), 1500);
   } finally {
     clearSeedProgress("seed-bar");
+    // A successful apply keeps the card (at 100%) until the reload replaces the
+    // document; a failure hides it and reports through the status line.
+    if (!applied) hideSeedApplyProgress();
   }
 }
 
