@@ -555,11 +555,17 @@ export async function cancelQueued(turnId: string): Promise<void> {
 /**
  * Stop the running tree. The server aborts model/tool work and unwinds the
  * engine; the turn ends as "stopped" and the previous checkpoint remains.
+ * Everything queued behind it is cleared too.
  */
 export async function stop(): Promise<void> {
   try {
-    const d = await postJSON<{ stopped?: boolean }>("/api/chat/stop", {});
-    if (!d.stopped) toast("nothing is running");
+    const d = await postJSON<{ stopped?: boolean; cleared?: number }>("/api/chat/stop", {});
+    if (d.cleared) {
+      setState("queued", []);
+      toast(`stopped · cleared ${d.cleared} queued message${d.cleared === 1 ? "" : "s"}`);
+    } else if (!d.stopped) {
+      toast("nothing is running");
+    }
   } catch (e) {
     toast(e instanceof Error ? e.message : "stop failed", true);
   }

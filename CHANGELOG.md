@@ -8,9 +8,10 @@ The composer disappeared while a turn was running, so a second thought had
 nothing to type into. It now stays on the tile the running turn was sent to:
 **Send** becomes **Queue**, and the message sits above the composer with a
 cancel button until the server starts it. Queued messages run one at a time as
-each turn settles, queue changes are broadcast, and stop or session delete
-drops the queue. The queue is page state (a reload drops it); the Telegram
-bridge keeps its own durable mailbox.
+each turn settles, queue changes are broadcast, and session delete drops the
+queue. **Stop** clears what is waiting and says how many messages it dropped.
+The queue is page state (a reload drops it); the Telegram bridge keeps its own
+durable mailbox.
 
 - **`web/src/server/local-backend.ts`**: per-session turn queues and one drain
   loop; `/api/chat` returns `{ turnId, queued, position }`, a new
