@@ -63,10 +63,18 @@ pressing it; the button is the manual recovery path (and tells you when no
 peer is connected).
 
 While a round moves files, the same row shows a **transfer line**: direction
-(↑ sending, ↓ receiving, ⇅ both), the pull round's file count, and cumulative
-bytes in each direction. The bar is determinate for a pull round (files are
-pulled one at a time) and indeterminate while serving another peer's requests.
-The Pair dialog shows the same line, so both ends can be watched together.
+(↑ sending, ↓ receiving, ⇅ both), cumulative file counts and bytes in each
+direction, the pull round's progress, and the last path. The bar is determinate
+for a pull round (files are pulled one at a time) and indeterminate while
+serving another peer's requests. The Pair dialog shows the same line, so both
+ends can be watched together.
+
+The **diagnostics** block under the transfer line shows the engine state and
+last completed round, connected transports and device links (with their
+handshake state), pending pulls/rounds/queued frames, journal size (ops,
+tracked paths, tombstones, Lamport clock), and the active profile/device id.
+The values are polled while the Sync dialog is open, because queue depth can
+change inside a round without a state event.
 
 ## 3. Cross-device pairing
 
@@ -90,6 +98,11 @@ end: code created/redeemed, offer/answer exchange, ICE gathering and
 connectivity, data-channel open, then the verification phrase. **Retry
 pairing** replays the last attempt (useful after a transient relay failure or
 a paste mistake) without re-entering the code or blobs.
+
+Under the timeline, **Pairing log** keeps a persistent, readable history of
+every attempt (including failed ones), with timestamps and repeat counts. It
+survives retries and reloads in this browser; pairing codes, tokens and key
+values are redacted. **Copy log** produces the same lines for a bug report.
 
 ### BobSwap REST (automatic, needs a service)
 

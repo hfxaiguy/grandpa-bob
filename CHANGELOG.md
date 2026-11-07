@@ -2,6 +2,37 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — sync diagnostics and a readable pairing log
+
+The Sync dialog's transfer row only said e.g. `idle · 0 B · 508 B`, which
+looked like a failure even when a round had completed normally. The row now
+reports file counts per direction, pull-round progress and the last path, and
+a diagnostics block below it shows the engine state, last completed round,
+connected transports/device links, queue depth, journal stats and the
+active profile/device id. The block is polled while the dialog is open so
+in-flight queue changes are visible.
+
+The Pair dialog also keeps a **Pairing log**: a timestamped, one-line history
+of every attempt (transport status, verification phrase, approval, errors)
+that survives retries and reloads, collapses repeated poll messages, opens
+automatically on failure, and can be copied for a bug report. Pairing codes,
+tokens and key values are redacted before storage. Browser console lines use
+the same `[pair]` text.
+
+- **`web/src/sync/engine.ts`**, **`journal.ts`**: `diagnostics()` snapshots
+  (transports, pending pulls/rounds, inbox, chunk transfers, journal stats).
+- **`web/src/sync/index.ts`**: `SyncHandle.diagnostics()` adds device-link
+  readiness, consented profile names, and known/online device counts.
+- **`web/src/pair-log.ts`**: bounded localStorage model with redaction,
+  repeat collapsing and a plain-text form.
+- **`web/src/sync-ui.ts`**, **`web/index.html`**: diagnostics grid and the
+  Pairing log section (copy/clear).
+- Tests: `test:sync` covers the engine diagnostics; `test:pair-log` covers
+  redaction, dedupe, persistence and bounds.
+
+Tests: `npm run test:sync`; `npm run test:pair-log`; `npm run typecheck`;
+`npm --prefix web run typecheck`; `npm --prefix web run build`.
+
 ## 2026-11-07 — a phone can see a seed update make progress
 
 The phone layout hides the toolbar's `#status` and `#seed-bar`, so applying a

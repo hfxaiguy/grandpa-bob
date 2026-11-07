@@ -17,8 +17,17 @@ import { pairWithServer, type ServerConnection } from "./server-link";
 import { bindDesktopMirror } from "./profiles";
 import { loadStorageServer } from "./settings";
 import { toIceServers } from "./sync/transport-webrtc";
-import type { PendingPairing, SyncHandle } from "./sync";
+import type { PendingPairing, SyncDiagnostics, SyncHandle } from "./sync";
 import { emptyTransfer, type SyncState, type TransferState } from "./sync/engine";
+import {
+  appendPairLog,
+  clearPairLog,
+  formatPairLog,
+  loadPairLog,
+  savePairLog,
+  type PairLogEntry,
+  type PairLogLevel,
+} from "./pair-log";
 
 type SyncGetter = () => SyncHandle | null;
 
@@ -31,9 +40,31 @@ function setText(id: string, text: string): void {
   if (node) node.textContent = text;
 }
 
+function formatWhen(iso: string | null): string {
+  if (!iso) return "never";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "unknown";
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay
+    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })
+    : date.toLocaleString([], {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+}
+
+function plural(count: number, one: string, many = `${one}s`): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
 function statusLine(state: SyncState): string {
-  const conflicts = state.conflicts.length ? ` · ${state.conflicts.length} conflict(s)` : "";
-  return `${state.status}${state.detail ? ` — ${state.detail}` : ""}${conflicts}`;
+  const detail = state.detail ? ` — ${state.detail}` : "";
+  const last = state.lastSyncAt ? ` · last sync ${formatWhen(state.lastSyncAt)}` : " · no completed round yet";
+  const conflicts = state.conflicts.length ? ` · ${plural(state.conflicts.length, "conflict")}` : "";
+  return `${state.status}${detail}${last}${conflicts}`;
 }
 
 const DIRECTION_LABEL: Record<TransferState["direction"], string> = {
@@ -52,25 +83,32 @@ function formatBytes(bytes: number): string {
   return `${(mb / 1024).toFixed(2)} GB`;
 }
 
+/** Human-readable transfer totals: files matter as much as bytes. */
+function transferDetails(t: TransferState): string {
+  const parts: string[] = [];
+  if (t.filesSent || t.sent) {
+    parts.push(`↑ ${plural(t.filesSent, "file")} (${formatBytes(t.sent)})`);
+  }
+  if (t.filesReceived || t.received) {
+    parts.push(`↓ ${plural(t.filesReceived, "file")} (${formatBytes(t.received)})`);
+  }
+  if (!parts.length) parts.push("no file bytes yet");
+  if (t.roundTotal > 0) parts.push(`round ${t.roundDone}/${t.roundTotal}`);
+  if (t.path) parts.push(`last ${t.path}`);
+  return parts.join(" · ");
+}
+
 /** Paint the shared transfer block in the Sync and Pair dialogs. */
 function renderTransfer(stats: TransferState | null): void {
   const t = stats ?? emptyTransfer();
   const active = t.direction !== "idle";
-  const parts: string[] = [];
-  if (t.roundTotal > 0) parts.push(`${t.roundDone}/${t.roundTotal} files`);
-  if (t.sent || t.received) {
-    parts.push(`↓ ${formatBytes(t.received)}`, `↑ ${formatBytes(t.sent)}`);
-  } else {
-    parts.push("no data transfer yet");
-  }
-  if (active && t.path) parts.push(t.path);
 
   for (const prefix of ["live", "pair"]) {
     const wrap = el<HTMLElement>(`${prefix}-transfer`);
     if (!wrap) continue;
     wrap.dataset.direction = t.direction;
     setText(`${prefix}-transfer-dir`, DIRECTION_LABEL[t.direction]);
-    setText(`${prefix}-transfer-text`, parts.join(" · "));
+    setText(`${prefix}-transfer-text`, transferDetails(t));
     const bar = el<HTMLProgressElement>(`${prefix}-transfer-bar`);
     if (!bar) continue;
     const determinate = t.roundTotal > 0;
@@ -83,6 +121,110 @@ function renderTransfer(stats: TransferState | null): void {
       bar.removeAttribute("value");
     }
   }
+}
+
+/** Clipboard with a fallback for non-secure contexts (plain HTTP on a LAN). */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    /* fall through */
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.append(area);
+  area.select();
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    area.remove();
+  }
+}
+
+/** Render the multi-line diagnostics block; null means this tab is not the host. */
+function renderDiagnostics(sync: SyncHandle | null): void {
+  const wrap = el<HTMLElement>("live-diagnostics");
+  if (!wrap) return;
+  if (!sync) {
+    wrap.hidden = true;
+    return;
+  }
+  let diag: SyncDiagnostics;
+  try {
+    diag = sync.diagnostics();
+  } catch (err) {
+    // A broken snapshot should still be visible (and reportable), not hidden
+    // behind a blank block.
+    wrap.hidden = false;
+    setText(
+      "live-diag-status",
+      `diagnostics failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    for (const id of ["peers", "queue", "journal", "transfer", "profile"]) {
+      setText(`live-diag-${id}`, "—");
+    }
+    return;
+  }
+  const state = sync.state();
+  const engine = diag.engine;
+  wrap.hidden = false;
+
+  setText("live-diag-status", statusLine(state));
+
+  const connectedLinks = diag.links.filter((link) => link.ready).length;
+  const peerParts = [
+    diag.links.length
+      ? `${connectedLinks}/${plural(diag.links.length, "device link")} ready`
+      : "no device links",
+    diag.broadcast ? "same-origin tab channel attached" : "no same-origin tab channel",
+  ];
+  if (diag.links.length) {
+    peerParts.push(
+      diag.links
+        .map((link) => `${link.kind === "desktop" ? "desktop" : "browser"} “${link.deviceName}”${link.ready ? "" : " (handshake)"}`)
+        .join(", "),
+    );
+  }
+  if (diag.knownDevices) {
+    peerParts.push(`${diag.onlineDevices}/${plural(diag.knownDevices, "known device")} online`);
+  }
+  const transport =
+    `${plural(engine.connectedPeers, "transport")} ` +
+    `(${engine.heardPeers} responding, ${plural(engine.mapSentPeers, "map")} sent)`;
+  setText("live-diag-peers", `${transport} · ${peerParts.join(" · ")}`);
+
+  const queue = [
+    plural(engine.pendingPulls, "pending pull"),
+    plural(engine.pendingRounds, "round"),
+    plural(engine.queued, "queued frame"),
+  ];
+  if (engine.chunkTransfers) queue.push(plural(engine.chunkTransfers, "chunked transfer"));
+  if (engine.peers > engine.connectedPeers) {
+    queue.push(`${engine.peers - engine.connectedPeers} transport(s) closed`);
+  }
+  setText("live-diag-queue", queue.join(" · "));
+
+  const journal = engine.journal;
+  setText(
+    "live-diag-journal",
+    journal
+      ? `${plural(journal.ops, "op")} · ${plural(journal.paths, "tracked path")} · ` +
+        `${plural(journal.tombstones, "tombstone")} · lamport ${journal.clock}`
+      : "loading the replica journal…",
+  );
+
+  setText(
+    "live-diag-transfer",
+    `${DIRECTION_LABEL[state.transfer.direction]} · ${transferDetails(state.transfer)}`,
+  );
+
+  const device = diag.deviceId ? ` · device ${diag.deviceId.slice(0, 8)}…` : "";
+  setText("live-diag-profile", `${diag.profile} · “${diag.deviceName}”${device}`);
 }
 
 function relayUnreachable(base: string, err: unknown): Error {
@@ -202,8 +344,75 @@ export function wireSyncUi(getSync: SyncGetter): void {
 
   let manual: { accept: (blob: string) => void; done: Promise<string> } | null = null;
 
-  const setStatus = (text: string): void => setText("pair-status", text);
+  const clock = (when: Date | string = new Date()): string => {
+    const date = typeof when === "string" ? new Date(when) : when;
+    if (Number.isNaN(date.getTime())) return "--:--:--";
+    return date.toDateString() === new Date().toDateString()
+      ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })
+      : date.toLocaleString([], {
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        });
+  };
+
+  // ── persistent pairing log ───────────────────────────────────────────
+  // The progress list above is live-only and is cleared by each retry. This log
+  // keeps the readable history (including failures) across retries and reloads.
+  let pairLogEntries: PairLogEntry[] = loadPairLog();
+  const pairLogWrap = el<HTMLDetailsElement>("pair-log-wrap");
+  const pairLogList = el<HTMLOListElement>("pair-log");
+  const pairLogCount = el<HTMLElement>("pair-log-count");
+
+  const renderPairLog = (): void => {
+    if (pairLogWrap) pairLogWrap.hidden = pairLogEntries.length === 0;
+    if (pairLogCount) {
+      pairLogCount.textContent = pairLogEntries.length ? `· ${plural(pairLogEntries.length, "event")}` : "";
+    }
+    if (!pairLogList) return;
+    pairLogList.replaceChildren(
+      ...pairLogEntries.map((entry) => {
+        const row = document.createElement("li");
+        row.dataset.level = entry.level;
+        const at = document.createElement("time");
+        at.dateTime = entry.at;
+        at.textContent = clock(entry.at);
+        const text = document.createElement("span");
+        text.textContent = entry.count > 1 ? `${entry.text} ×${entry.count}` : entry.text;
+        row.append(at, text);
+        return row;
+      }),
+    );
+    pairLogList.scrollTop = pairLogList.scrollHeight;
+  };
+
+  const addPairLog = (level: PairLogLevel, text: string): void => {
+    pairLogEntries = appendPairLog(pairLogEntries, level, text);
+    savePairLog(pairLogEntries);
+    const latest = pairLogEntries[pairLogEntries.length - 1];
+    if (latest?.count === 1) {
+      const line = `[pair] ${latest.text}`;
+      if (level === "error") console.error(line);
+      else if (level === "warn") console.warn(line);
+      else console.info(line);
+    }
+    renderPairLog();
+    if (level === "error" && pairLogWrap) {
+      pairLogWrap.open = true;
+      pairLogWrap.scrollIntoView({ block: "nearest" });
+    }
+  };
+
+  const setStatus = (text: string, level?: PairLogLevel): void => {
+    setText("pair-status", text);
+    if (level) addPairLog(level, text);
+  };
   const setVerify = (phrase: string): void => setText("pair-verify", phrase);
+
+  renderPairLog();
 
   // ── explicit phrase confirmation ─────────────────────────────────────
   // A displayed phrase is not consent. Both ends must press the button before
@@ -226,6 +435,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
       .then(() => {
         progress("verification phrase confirmed");
         progressDone();
+        addPairLog("ok", "connected — profile catalog exchanged");
         setStatus("connected — profile catalog exchanged");
         updateLiveStatus();
       })
@@ -238,10 +448,16 @@ export function wireSyncUi(getSync: SyncGetter): void {
   const showPhraseConfirm = (pairing: PendingPairing, phrase: string): void => {
     pendingPairing = pairing;
     // The gate can reject on timeout/peer mismatch while the user is still
-    // comparing; keep that from surfacing as an unhandled rejection.
-    void pairing.ready.catch(() => undefined);
+    // comparing; keep that from surfacing as an unhandled rejection. Log it
+    // only while this pairing still owns the dialog — after confirm/reject the
+    // handler there reports the outcome.
+    void pairing.ready.catch((err) => {
+      if (pendingPairing !== pairing) return;
+      addPairLog("error", `pairing gate: ${err instanceof Error ? err.message : String(err)}`);
+    });
     setVerify(phrase);
     if (confirmWrap) confirmWrap.hidden = false;
+    addPairLog("info", `verification phrase ${phrase}`);
     progress("verification phrase ready — compare it, then confirm");
     setStatus("compare the phrase on both devices, then press “Phrase matches” on both");
   };
@@ -251,6 +467,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
     pendingPairing = null;
     if (confirmButton) confirmButton.disabled = true;
     if (rejectButton) rejectButton.disabled = true;
+    addPairLog("info", "phrase confirmed locally — waiting for the other side");
     pairing.confirm();
     waitForPairingReady(pairing);
   });
@@ -258,6 +475,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
     const pairing = pendingPairing;
     if (!pairing) return;
     pendingPairing = null;
+    addPairLog("warn", "phrase rejected locally — nothing was exchanged");
     pairing.reject("the phrase does not match");
     hideConfirm();
     progressFailed("phrase rejected — nothing was exchanged");
@@ -281,9 +499,6 @@ export function wireSyncUi(getSync: SyncGetter): void {
   let retryAction: (() => void) | null = null;
   let pairingActive = false;
 
-  const clock = (): string =>
-    new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-
   const renderProgress = (): void => {
     if (!progressList) return;
     progressList.replaceChildren(
@@ -303,7 +518,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
   };
 
   /** Begin an attempt: clear the timeline, wire the manual retry trigger. */
-  const beginPairing = (retry: () => void): void => {
+  const beginPairing = (retry: () => void, label: string): void => {
     pairingActive = true;
     progressLines = [];
     retryAction = retry;
@@ -312,6 +527,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
     setVerify("—");
     if (retryWrap) retryWrap.hidden = false;
     if (retryButton) retryButton.disabled = true;
+    addPairLog("info", `starting ${label} · profile ${activeProfile()}`);
     renderProgress();
   };
 
@@ -322,11 +538,13 @@ export function wireSyncUi(getSync: SyncGetter): void {
     // stacking identical rows.
     if (previous && previous.state === "active" && previous.text === text) {
       previous.at = clock();
+      addPairLog("info", text);
       renderProgress();
       return;
     }
     for (const line of progressLines) if (line.state === "active") line.state = "done";
     progressLines.push({ text, state: "active", at: clock() });
+    addPairLog("info", text);
     renderProgress();
   };
 
@@ -342,6 +560,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
     pairingActive = false;
     for (const line of progressLines) if (line.state === "active") line.state = "done";
     progressLines.push({ text: message, state: "failed", at: clock() });
+    addPairLog("error", message);
     if (retryButton) retryButton.disabled = false;
     renderProgress();
   };
@@ -349,10 +568,10 @@ export function wireSyncUi(getSync: SyncGetter): void {
   retryButton?.addEventListener("click", () => {
     const action = retryAction;
     if (!action) {
-      setStatus("nothing to retry — start a pairing first");
+      setStatus("nothing to retry — start a pairing first", "warn");
       return;
     }
-    setStatus("retrying the last pairing attempt…");
+    setStatus("retrying the last pairing attempt…", "info");
     action();
   });
 
@@ -442,12 +661,36 @@ export function wireSyncUi(getSync: SyncGetter): void {
     if (!sync) {
       setText("live-sync-status", "not running here — this tab is not the workspace host");
       renderTransfer(null);
+      renderDiagnostics(null);
       return;
     }
     const state = sync.state();
     setText("live-sync-status", statusLine(state));
     renderTransfer(state.transfer);
+    renderDiagnostics(sync);
   };
+
+  // The engine only notifies on state changes; queue/pull counters can move
+  // inside a round without one. Poll while the Sync dialog is open.
+  let diagnosticsTimer: number | null = null;
+  const startDiagnosticsTimer = (): void => {
+    updateLiveStatus();
+    if (diagnosticsTimer !== null) return;
+    // Only the diagnostics grid: a manual "no peers connected" status should
+    // stay readable until the next engine event instead of being overwritten.
+    diagnosticsTimer = window.setInterval(() => renderDiagnostics(getSync()), 1_000);
+  };
+  const stopDiagnosticsTimer = (): void => {
+    if (diagnosticsTimer === null) return;
+    window.clearInterval(diagnosticsTimer);
+    diagnosticsTimer = null;
+  };
+  const syncDialog = el<HTMLDialogElement>("sync-dialog");
+  syncDialog?.addEventListener("toggle", () => {
+    if (syncDialog.open) startDiagnosticsTimer();
+    else stopDiagnosticsTimer();
+  });
+  window.addEventListener("pagehide", stopDiagnosticsTimer);
 
   // A manual round covers more than a desktop mirror: paired tabs/devices too.
   const syncNowButton = el<HTMLButtonElement>("live-sync-now");
@@ -497,7 +740,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
   const requireSync = (): SyncHandle | null => {
     const handle = getSync();
     if (!handle) {
-      setStatus("this tab does not host the workspace — take over the workspace first");
+      setStatus("this tab does not host the workspace — take over the workspace first", "warn");
       return null;
     }
     return handle;
@@ -507,7 +750,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
   function startManualOffer(): void {
     const handle = requireSync();
     if (!handle) return;
-    beginPairing(startManualOffer);
+    beginPairing(startManualOffer, "manual offer");
     setVerify("—");
     setStatus("gathering candidates — your pairing blob appears below");
     progress("gathering the offer (all ICE candidates)…");
@@ -539,10 +782,10 @@ export function wireSyncUi(getSync: SyncGetter): void {
     if (!handle) return;
     const offer = (el<HTMLTextAreaElement>("pair-input") as HTMLTextAreaElement)?.value.trim();
     if (!offer) {
-      setStatus("paste the other device's offer blob first");
+      setStatus("paste the other device's offer blob first", "warn");
       return;
     }
-    beginPairing(startManualJoin);
+    beginPairing(startManualJoin, "manual join");
     setVerify("—");
     setStatus("reading their offer…");
     progress("reading their offer…");
@@ -574,12 +817,12 @@ export function wireSyncUi(getSync: SyncGetter): void {
 
   el<HTMLButtonElement>("pair-answer")?.addEventListener("click", () => {
     if (!manual) {
-      setStatus("start an offer first");
+      setStatus("start an offer first", "warn");
       return;
     }
     const answer = (el<HTMLTextAreaElement>("pair-input") as HTMLTextAreaElement)?.value.trim();
     if (!answer) {
-      setStatus("paste the other device's answer blob first");
+      setStatus("paste the other device's answer blob first", "warn");
       return;
     }
     progress("answer pasted — checking it…");
@@ -594,7 +837,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
   const validCode = (): string | null => {
     const code = pairCode();
     if (!/^\d{4}-?\d{4}$/.test(code)) {
-      setStatus("enter the 8-digit pairing code");
+      setStatus("enter the 8-digit pairing code", "warn");
       return null;
     }
     return code;
@@ -605,7 +848,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
     if (!handle) return;
     const code = validCode();
     if (!code) return;
-    beginPairing(startRelayJoin);
+    beginPairing(startRelayJoin, "relay join");
     setVerify("—");
     void (async () => {
       try {
@@ -636,7 +879,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
   const startRelayOffer = (): void => {
     const handle = requireSync();
     if (!handle) return;
-    beginPairing(startRelayOffer);
+    beginPairing(startRelayOffer, "relay offer");
     void (async () => {
       try {
         const swap = relayService();
@@ -672,7 +915,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
     if (!handle) return;
     const code = validCode();
     if (!code) return;
-    beginPairing(startDesktopJoin);
+    beginPairing(startDesktopJoin, "desktop join");
     setVerify("—");
     void (async () => {
       const profile = activeProfile();
@@ -729,6 +972,7 @@ export function wireSyncUi(getSync: SyncGetter): void {
         progress("binding the mirror folder…");
         await bindDesktopMirror(profile, connection.info.mirror);
         progressDone();
+        addPairLog("ok", `mirror bound: ${connection.info.mirror}`);
         if (connection.info.relay) {
           // The desktop renews the relay channel every 10 minutes, so a reload
           // reconnects with a nonce-tagged resume as long as it runs. Adopt
@@ -739,14 +983,17 @@ export function wireSyncUi(getSync: SyncGetter): void {
           };
           if (typeof globals.__bobAdoptServer === "function") globals.__bobAdoptServer(connection);
           else globals.__bobServer = connection;
-          setStatus(
+          const paired =
             `paired over the relay for this tab session · fingerprint ${connection.info.fingerprint} — ` +
-              "reloads reconnect while the desktop keeps the channel renewed (no new code); if the desktop stops, a new code is needed",
-          );
+            "reloads reconnect while the desktop keeps the channel renewed (no new code); if the desktop stops, a new code is needed";
+          addPairLog("ok", paired);
+          setStatus(paired);
           updateLiveStatus();
           return;
         }
-        setStatus(`paired · fingerprint ${connection.info.fingerprint} — reloading…`);
+        const paired = `paired · fingerprint ${connection.info.fingerprint} — reloading…`;
+        addPairLog("ok", paired);
+        setStatus(paired);
         setTimeout(() => location.reload(), 800);
       });
 
@@ -794,9 +1041,28 @@ export function wireSyncUi(getSync: SyncGetter): void {
     else startRelayJoin();
   });
 
+  el<HTMLButtonElement>("pair-log-copy")?.addEventListener("click", () => {
+    const header = `BOB pairing log · ${location.origin} · ${new Date().toISOString()}`;
+    const text = [header, formatPairLog(pairLogEntries)].filter(Boolean).join("\n");
+    void copyText(text).then((ok) => {
+      setStatus(
+        ok ? "pairing log copied" : "could not copy automatically — select the log text manually",
+        ok ? undefined : "warn",
+      );
+    });
+  });
+
+  el<HTMLButtonElement>("pair-log-clear")?.addEventListener("click", () => {
+    pairLogEntries = [];
+    clearPairLog();
+    renderPairLog();
+    setStatus("pairing log cleared");
+  });
+
   el<HTMLButtonElement>("pair-unpair")?.addEventListener("click", () => {
     getSync()?.unpair();
     setVerify("—");
+    addPairLog("warn", "tab-to-tab pairing disconnected (same-origin tabs keep syncing)");
     setStatus("tab-to-tab pairing disconnected (same-origin tabs keep syncing)");
     updateLiveStatus();
   });

@@ -144,6 +144,32 @@
         margin-left: 0.4rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 10.5px; opacity: 0.7;
       }
+      .pair-log-wrap { margin-top: 0.55rem; }
+      .pair-log-wrap summary { color: var(--muted); cursor: pointer; font-size: 12px; }
+      .pair-log-wrap summary:hover { color: var(--fg); }
+      .pair-log {
+        list-style: none; margin: 0.45rem 0 0.3rem; padding: 0.35rem 0.45rem;
+        background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+        max-height: 13rem; overflow: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11px; line-height: 1.45;
+      }
+      .pair-log li { display: flex; gap: 0.45rem; padding: 0.08rem 0; white-space: pre-wrap; }
+      .pair-log li[data-level="ok"] { color: #9fe0a3; }
+      .pair-log li[data-level="warn"] { color: #ffd7a1; }
+      .pair-log li[data-level="error"] { color: #ff9b9b; }
+      .pair-log time { flex: 0 0 auto; color: var(--muted); opacity: 0.8; }
+      .sync-diagnostics {
+        margin: 0.35rem 0 0.2rem; padding: 0.45rem 0.55rem;
+        border: 1px solid var(--border); border-radius: 6px;
+        display: grid; gap: 0.2rem; font-size: 11.5px;
+      }
+      .sync-diagnostics > div { display: flex; align-items: baseline; gap: 0.55rem; }
+      .sync-diagnostics dt {
+        flex: 0 0 5.3rem; color: var(--muted); font-size: 10px; font-weight: 600;
+        letter-spacing: 0.07em; text-transform: uppercase;
+      }
+      .sync-diagnostics dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
       .transfer { margin: 0.45rem 0 0.2rem; }
       .transfer-head {
         display: flex; align-items: baseline; justify-content: space-between;
@@ -441,6 +467,14 @@
         </div>
         <progress id="live-transfer-bar" max="100" value="0" hidden></progress>
       </div>
+      <dl id="live-diagnostics" class="sync-diagnostics" hidden>
+        <div><dt>Status</dt><dd id="live-diag-status">—</dd></div>
+        <div><dt>Peers</dt><dd id="live-diag-peers">—</dd></div>
+        <div><dt>Queue</dt><dd id="live-diag-queue">—</dd></div>
+        <div><dt>Journal</dt><dd id="live-diag-journal">—</dd></div>
+        <div><dt>Transfer</dt><dd id="live-diag-transfer">—</dd></div>
+        <div><dt>Profile</dt><dd id="live-diag-profile">—</dd></div>
+      </dl>
       <h4>Paired devices <span id="paired-device-count" class="muted"></span></h4>
       <p class="muted">This browser: <strong id="paired-device-self">—</strong></p>
       <ul id="paired-device-list" class="paired-device-list" hidden></ul>
@@ -506,6 +540,15 @@
         </div>
         <progress id="pair-transfer-bar" max="100" value="0" hidden></progress>
       </div>
+      <details id="pair-log-wrap" class="pair-log-wrap" hidden>
+        <summary>Pairing log <span id="pair-log-count" class="muted"></span></summary>
+        <p class="muted">Kept on this device only. Pairing codes and keys are redacted; copy it when reporting a pairing problem.</p>
+        <ol id="pair-log" class="pair-log" aria-live="polite"></ol>
+        <div class="row-actions">
+          <button id="pair-log-copy" type="button">Copy log</button>
+          <button id="pair-log-clear" type="button">Clear log</button>
+        </div>
+      </details>
 
       <h4>Manual (no service)</h4>
       <div class="row-actions">

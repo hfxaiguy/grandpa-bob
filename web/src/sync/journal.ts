@@ -101,6 +101,20 @@ export class Journal {
     return this.lamportByPath.get(path) ?? 0;
   }
 
+  /** Counters for the Sync dialog's diagnostics block. */
+  stats(): { ops: number; paths: number; tombstones: number; clock: number } {
+    const lastOp = new Map<string, SyncOp["op"]>();
+    for (const op of this.ops) lastOp.set(op.path, op.op);
+    let tombstones = 0;
+    for (const op of lastOp.values()) if (op === "delete") tombstones++;
+    return {
+      ops: this.ops.length,
+      paths: this.lamportByPath.size,
+      tombstones,
+      clock: this.clock,
+    };
+  }
+
   /** Record one LOCAL mutation: the stamp is strictly newer than anything
    *  known for this path, so a local write causally follows what it saw. */
   recordOp(op: Omit<SyncOp, "lamport" | "at">): SyncOp {

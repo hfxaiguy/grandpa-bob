@@ -140,6 +140,28 @@ export interface SyncState {
   transfer: TransferState;
 }
 
+/** A point-in-time snapshot for the Sync dialog's diagnostics block. */
+export interface SyncEngineDiagnostics {
+  id: string;
+  /** Attached transports (same-origin channel + device profile links). */
+  peers: number;
+  connectedPeers: number;
+  /** Peers that delivered at least one envelope on this connection. */
+  heardPeers: number;
+  mapSentPeers: number;
+  pendingPulls: number;
+  pendingRounds: number;
+  /** Envelopes received but not applied yet. */
+  queued: number;
+  chunkTransfers: number;
+  journal: {
+    ops: number;
+    paths: number;
+    tombstones: number;
+    clock: number;
+  } | null;
+}
+
 type StateListener = (state: SyncState) => void;
 
 const SEGMENT = /(^|\/)([^/]+)$/;
@@ -220,6 +242,30 @@ export class SyncEngine {
     this.listeners.add(cb);
     cb(this.state);
     return () => this.listeners.delete(cb);
+  }
+
+  /** Snapshot for the Sync dialog; cheap enough to poll while it is open. */
+  diagnostics(): SyncEngineDiagnostics {
+    let connectedPeers = 0;
+    let heardPeers = 0;
+    let mapSentPeers = 0;
+    for (const peer of this.peers.values()) {
+      if (peer.peer.connected()) connectedPeers++;
+      if (peer.heard) heardPeers++;
+      if (peer.mapSent) mapSentPeers++;
+    }
+    return {
+      id: this.id,
+      peers: this.peers.size,
+      connectedPeers,
+      heardPeers,
+      mapSentPeers,
+      pendingPulls: this.pendingFile.size,
+      pendingRounds: this.pendingRounds.size,
+      queued: this.inbox.length,
+      chunkTransfers: this.chunks.size,
+      journal: this.journal?.stats() ?? null,
+    };
   }
 
   private setState(patch: Partial<SyncState>): void {

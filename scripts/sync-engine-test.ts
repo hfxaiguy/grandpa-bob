@@ -507,7 +507,15 @@ try {
     "B reports the download direction",
   );
   assert.ok(maxRound.total >= 1 && maxRound.done >= 1, "the pull round reports file progress");
-  console.log("ok  transfer counters and direction");
+  const diagA = engineA.diagnostics();
+  assert.equal(diagA.peers, 1, "diagnostics count the attached transport");
+  assert.equal(diagA.connectedPeers, 1, "diagnostics see the live connection");
+  assert.ok(diagA.journal && diagA.journal.ops >= 1, "diagnostics include journal op counts");
+  assert.ok(diagA.journal.paths >= 1, "diagnostics include the tracked path count");
+  assert.ok(diagA.journal.clock >= 1, "diagnostics include the lamport clock");
+  assert.equal(typeof diagA.pendingPulls, "number", "diagnostics expose pending pulls");
+  assert.equal(typeof diagA.queued, "number", "diagnostics expose the inbox depth");
+  console.log("ok  transfer counters, direction and diagnostics");
 
   // ── a manual round waits for a peer that has spoken ───────────────────
   // The Sync… → Live sync → "Sync now" button uses this: peers that answered

@@ -517,8 +517,11 @@ frame is exchanged. Manual paste remains the no-service fallback. **Sync now**
 in the same row runs an explicit round with every paired peer; the agent worker
 reports its commits,
 so files BOB writes sync without it. A transfer line beside it shows the
-direction and progress (↑ sending, ↓ receiving, file count and bytes) while a
-round moves files. Signaling blobs carry only
+direction, file counts, bytes and round progress while a round moves files,
+and the **diagnostics** block below it reports connected transports, device
+links, queue depth, journal size and the last completed round. The Pair dialog
+keeps a **pairing log** (tokens and pairing codes redacted) across retries and
+reloads, with a copy button for bug reports. Signaling blobs carry only
 WebRTC addressing; workspace bytes travel over the authenticated data channel
 (a paired desktop/server is a peer endpoint and its mirror folder holds a
 copy). Full guide: [docs/pairing-and-sync.md](docs/pairing-and-sync.md).

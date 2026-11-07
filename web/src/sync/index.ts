@@ -10,7 +10,13 @@
  * profile (`engine`, `state`, `syncNow`, `onState`) so boot, the agent and the
  * status chip do not need to know about the matrix.
  */
-import { SyncEngine, emptyTransfer, type SyncPeer, type SyncState } from "./engine";
+import {
+  SyncEngine,
+  emptyTransfer,
+  type SyncEngineDiagnostics,
+  type SyncPeer,
+  type SyncState,
+} from "./engine";
 import type { Platform } from "../platform/types";
 import { createProfilePlatform } from "../platform/browser";
 import { broadcastPeer } from "./transport-broadcast";
@@ -108,6 +114,8 @@ export interface SyncHandle {
   engine: SyncEngine;
   state(): SyncState;
   onState(cb: (state: SyncState) => void): () => void;
+  /** Snapshot for the Sync dialog: peers, queues, journal and transfer state. */
+  diagnostics(): SyncDiagnostics;
   /** The human name this browser sends to peers. */
   deviceName(): string;
   /** Rename this browser; pushes the new name to every open link. */
@@ -155,6 +163,30 @@ export interface DeviceHandle {
   confirmPhrase(): void;
   rejectPhrase(reason?: string): void;
   close(): void;
+}
+
+/** One live device link, as shown in the Sync dialog's diagnostics. */
+export interface SyncLinkDiagnostics {
+  kind: "pair" | "desktop";
+  deviceName: string;
+  deviceId: string;
+  /** The phrase gate (and, for a desktop, the console approval) is done. */
+  ready: boolean;
+  /** Local names of the profiles currently consented on this link. */
+  profiles: string[];
+}
+
+/** Everything the Sync dialog can show without reaching into manager state. */
+export interface SyncDiagnostics {
+  profile: string;
+  deviceId: string;
+  deviceName: string;
+  engine: SyncEngineDiagnostics;
+  /** The same-origin BroadcastChannel is attached (always for the active profile). */
+  broadcast: boolean;
+  links: SyncLinkDiagnostics[];
+  knownDevices: number;
+  onlineDevices: number;
 }
 
 interface ProfileRuntime {
@@ -296,6 +328,37 @@ class MultiProfileSync implements SyncHandle {
     this.stateListeners.add(cb);
     cb(this.current);
     return () => this.stateListeners.delete(cb);
+  }
+
+  diagnostics(): SyncDiagnostics {
+    const runtime = this.runtimes.get(this.activeProfile);
+    const names = new Map(this.catalog().map((target) => [target.id.toLowerCase(), target.name]));
+    const links: SyncLinkDiagnostics[] = [];
+    for (const session of this.sessions.values()) {
+      const peer = this.store.peers[session.key];
+      const profiles = peer
+        ? peer.profiles
+            .filter((entry) => effectiveAllow(peer.localAllow, peer.remoteAllow, entry.id))
+            .map((entry) => names.get(entry.id) ?? entry.name)
+        : [];
+      links.push({
+        kind: session.kind,
+        deviceName: session.deviceName || peer?.deviceName || "peer",
+        deviceId: session.deviceId || session.key,
+        ready: session.link.isReady(),
+        profiles,
+      });
+    }
+    return {
+      profile: this.activeProfile,
+      deviceId: this.deviceId,
+      deviceName: this.selfName,
+      engine: this.engine.diagnostics(),
+      broadcast: runtime?.broadcast?.connected() === true,
+      links,
+      knownDevices: new Set([...Object.keys(this.store.peers), ...this.sessions.keys()]).size,
+      onlineDevices: this.sessions.size,
+    };
   }
 
   deviceName(): string {

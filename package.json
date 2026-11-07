@@ -82,6 +82,7 @@
     "test:db-sync": "tsx scripts/db-sync-test.ts",
     "test:app-store": "tsx scripts/app-store-test.ts",
     "test:peer-log": "tsx scripts/peer-log-test.ts",
+    "test:pair-log": "tsx scripts/pair-log-test.ts",
     "test:browser-sql-guard": "tsx scripts/browser-sql-guard-test.ts",
     "test:exa-browser-wire": "tsx scripts/exa-browser-wire-test.ts",
     "test:coreutils": "tsx scripts/coreutils-test.ts",
