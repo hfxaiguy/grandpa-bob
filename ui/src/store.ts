@@ -571,6 +571,24 @@ export async function stop(): Promise<void> {
   }
 }
 
+/**
+ * Resend the model call that is still in flight. The server aborts only that
+ * request and issues it again; the turn keeps its state, so tools that already
+ * ran are not repeated. Used by the "thinking…" row while a call is waiting.
+ */
+export async function resendCall(): Promise<void> {
+  try {
+    const d = await postJSON<{ resent?: boolean }>("/api/chat/call/resend", {});
+    if (!d.resent) {
+      toast("no model call is waiting right now", true);
+      return;
+    }
+    toast("resending the model call…");
+  } catch (e) {
+    toast(e instanceof Error ? e.message : "could not resend the model call", true);
+  }
+}
+
 /** Resend a turn's input — the manual escape when a turn (or a call inside it)
  *  failed. The engine resumes from its last checkpoint, so work before the
  *  failure is not repeated. */

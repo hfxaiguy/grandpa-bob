@@ -17,6 +17,7 @@ import {
 } from "../web/src/agent/model-retry.ts";
 import type { ModelRegistry } from "../web/src/model-config.ts";
 import { AgentStoppedError } from "../web/src/stop-error.ts";
+import { liveModelCallSignal, resendLiveModelCall } from "../web/src/agent/model-resend.ts";
 
 function httpError(status: number, message = `LLM request failed (${status}): nope`) {
   return Object.assign(new Error(message), { status });
@@ -182,4 +183,42 @@ assert.equal(isRetryableModelError(Object.assign(new Error("stop"), { stopped: t
   assert.equal(calls, 1, "a rejected key is not retried");
 }
 
-console.log("model-retry: classification, backoff, wrapper and non-retryable failures OK");
+// ── 4. manual resend ────────────────────────────────────────────────────
+// The UI's ↻ resend aborts the request in flight through the live-call
+// controller. The retry loop must treat that abort as "issue the same call
+// again", not as a stop or a failed turn, and it must not spend the automatic
+// retry budget on it.
+{
+  let calls = 0;
+  let sawSignal = false;
+  const result = retryModelCall(
+    async () => {
+      calls += 1;
+      if (calls === 1) {
+        const signal = liveModelCallSignal();
+        sawSignal = !!signal;
+        await new Promise((_, reject) => {
+          signal!.addEventListener("abort", () =>
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+          );
+        });
+      }
+      return "reissued";
+    },
+    {
+      // One automatic attempt only: the manual resend must still fit.
+      attempts: 1,
+      sleep: async () => assert.fail("a manual resend must not back off"),
+    },
+  );
+  // Let the first attempt reach its wait, then press resend.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(resendLiveModelCall(), true, "the in-flight call can be resent");
+  assert.equal(await result, "reissued", "the re-issued call returns the answer");
+  assert.equal(calls, 2, "the same call was issued twice");
+  assert.equal(sawSignal, true, "the fetch wrapper can see the call signal");
+  assert.equal(liveModelCallSignal(), undefined, "the controller is cleared after the call");
+  assert.equal(resendLiveModelCall(), false, "there is nothing to resend between calls");
+}
+
+console.log("model-retry: classification, backoff, wrapper, resend and non-retryable failures OK");

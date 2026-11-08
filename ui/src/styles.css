@@ -795,6 +795,24 @@ body.dragging-tile { user-select: none !important; }
   text-overflow: ellipsis;
   max-width: 70ch;
 }
+/* The "thinking…" row carries the manual resend for the in-flight model call.
+   Sits next to the ellipsized text so the control itself never gets clipped. */
+.turn-live .live-resend {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.turn-live .live-resend:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 .turn-live .live-dot {
   flex: none;
   width: 6px;

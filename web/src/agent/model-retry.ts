@@ -15,6 +15,7 @@
 import { callLlm } from "grandma-kat/llm";
 import type { ModelEntry, ModelRegistry } from "../model-config";
 import { AgentStoppedError } from "../stop-error";
+import { beginModelCall, endModelCall, takeModelResend } from "./model-resend";
 
 /** Statuses where another attempt can plausibly succeed. */
 function retryableStatus(status: number): boolean {
@@ -72,6 +73,11 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => set
  * Run `fn` once, and again after a short backoff when it fails with a
  * transient model error. The original error is thrown once the attempts run
  * out (or the failure is not retryable).
+ *
+ * A manual resend aborts the current attempt (through `model-resend`) and
+ * re-issues it immediately. It does not consume the automatic retry budget:
+ * the person asked for this attempt, so one failed request may be followed by
+ * one manual one and still leave the transient budget intact.
  */
 export async function retryModelCall<T>(
   fn: () => Promise<T>,
@@ -80,15 +86,25 @@ export async function retryModelCall<T>(
   const attempts = Math.max(1, Math.floor(opts.attempts ?? 2));
   const base = Math.max(0, opts.baseDelayMs ?? 750);
   const sleep = opts.sleep ?? defaultSleep;
-  for (let attempt = 1; ; attempt++) {
+  let attempt = 1;
+  for (;;) {
     if (opts.signal?.aborted) throw new AgentStoppedError();
+    const call = beginModelCall();
+    let failure: unknown;
     try {
-      return await fn();
+      const value = await fn();
+      endModelCall(call);
+      return value;
     } catch (err) {
-      if (opts.signal?.aborted) throw new AgentStoppedError();
-      if (attempt >= attempts || !isRetryableModelError(err)) throw err;
-      await sleep(base * 2 ** (attempt - 1));
+      failure = err;
     }
+    const resent = takeModelResend(call);
+    endModelCall(call);
+    if (opts.signal?.aborted) throw new AgentStoppedError();
+    if (resent) continue;
+    if (attempt >= attempts || !isRetryableModelError(failure)) throw failure;
+    await sleep(base * 2 ** (attempt - 1));
+    attempt += 1;
   }
 }
 

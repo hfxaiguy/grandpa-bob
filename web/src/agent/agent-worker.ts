@@ -57,6 +57,7 @@ import { resolvePatternPath } from "./pattern-path";
 import { isDroppableContinuationError } from "./resume-guard";
 import { loadBrowserModels } from "./models";
 import { withModelRetry } from "./model-retry";
+import { liveModelCallSignal, resendLiveModelCall } from "./model-resend";
 import { parseModels, type ModelRegistry } from "../model-config";
 import { watchCommits } from "../sync/commit-watch";
 
@@ -139,15 +140,16 @@ function queueDatabaseApply(
 }
 const nativeFetch = globalThis.fetch.bind(globalThis);
 globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const signal = activeStop?.ctrl.signal;
-  if (!signal) return nativeFetch(input, init);
-  if (signal.aborted) return Promise.reject(new AgentStoppedError());
+  const stopSignal = activeStop?.ctrl.signal;
+  if (stopSignal?.aborted) return Promise.reject(new AgentStoppedError());
+  // A manual resend aborts only the current model call; the request wrapper
+  // re-issues it while the turn keeps running. Stop still takes precedence.
+  const callSignal = liveModelCallSignal();
   const requestSignal =
     typeof Request !== "undefined" && input instanceof Request ? input.signal : undefined;
-  return nativeFetch(input, {
-    ...(init ?? {}),
-    signal: mergeSignals(requestSignal, init?.signal, signal),
-  });
+  const signal = mergeSignals(requestSignal, init?.signal, stopSignal, callSignal);
+  if (!signal) return nativeFetch(input, init);
+  return nativeFetch(input, { ...(init ?? {}), signal });
 }) as typeof fetch;
 
 async function getPlatform(): Promise<Platform> {
@@ -873,6 +875,7 @@ self.onmessage = async (ev: MessageEvent) => {
     | (RunOptions & { type: string })
     | LogMessage
     | { type: "stop"; id?: number }
+    | { type: "call-resend"; id: number; runId?: number }
     | { type: "ops-port"; port: MessagePort }
     | { type: "ops-config"; enabled: boolean; allow: string[] }
     | { type: "ops-result"; id: string; output?: string; error?: string }
@@ -962,6 +965,14 @@ self.onmessage = async (ev: MessageEvent) => {
     ) {
       activeStop.ctrl.abort();
     }
+    return;
+  }
+  if (msg.type === "call-resend") {
+    const req = msg as { id: number; runId?: number };
+    const forThisRun =
+      !!activeStop && (typeof req.runId !== "number" || req.runId === activeStop.id);
+    const resent = forThisRun ? resendLiveModelCall() : false;
+    post({ id: req.id, type: "call-resend-result", resent });
     return;
   }
   if (msg.type === "log") {

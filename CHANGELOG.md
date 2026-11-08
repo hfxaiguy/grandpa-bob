@@ -2,6 +2,38 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-08 — resend the model call that is still thinking
+
+A model request can sit on the provider long after the person has run out of
+patience. The chat's `⟳ thinking…` row now carries a `↻ resend` action: it
+aborts only that request and issues the same prompt again, so the turn keeps
+its state and tools that already ran are not repeated. A stop still wins over
+a resend, and the manual retry does not spend the automatic transient-retry
+budget.
+
+- **`ui/src/components.tsx`**, **`ui/src/store.ts`**, **`ui/src/styles.css`**:
+  the resend control beside the live thinking row, backed by
+  `POST /api/chat/call/resend`.
+- **`web/src/server/local-backend.ts`**: the endpoint finds the session's
+  active run and forwards the request to the worker.
+- **`web/src/agent/agent-client.ts`**, **`web/src/agent/agent-worker.ts`**: a
+  `call-resend` message checks the run id, aborts the live request, and
+  reports whether anything was waiting; the worker's fetch wrapper merges the
+  live-call signal into model requests alongside the turn's stop signal.
+- **`web/src/agent/model-resend.ts`** (new): tracks the in-flight attempt and
+  the manual-resend marker.
+- **`web/src/agent/model-retry.ts`**: a manual-resend abort re-issues the same
+  call immediately instead of failing the turn or consuming an automatic
+  retry.
+- **`scripts/model-retry-test.ts`**: drives the abort/retry handshake and
+  asserts the manual path fits inside a one-attempt automatic budget.
+
+Tests: `npm run test:model-retry`; `npm run test:live-tool-row`;
+`npm run test:turn-failure`; `npm run test:chat-queue`;
+`npm run test:standalone`; `npm run typecheck`;
+`npm --prefix web run typecheck`; `npm --prefix ui run typecheck`;
+`npm run build:ui`; `npm --prefix web run build`.
+
 ## 2026-11-07 — workspace apps can declare env presets
 
 Settings → Credentials & .env now renders an **App settings** section for every

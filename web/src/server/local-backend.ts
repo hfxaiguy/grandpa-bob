@@ -1190,6 +1190,16 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         },
       };
     }
+    if (pathname === "/api/chat/call/resend" && method === "POST") {
+      // Abort only the model call in flight; the retry layer re-issues it and
+      // the turn (and its tool side effects) keeps running.
+      const key = await ensureSession();
+      const active = activeRuns.get(key);
+      const resent = active
+        ? await agent.resendCall(active.runId).catch(() => false)
+        : false;
+      return { status: 200, body: { ok: true, resent } };
+    }
     if (pathname === "/api/chat/stop" && method === "POST") {
       const key = await ensureSession();
       const active = activeRuns.get(key);

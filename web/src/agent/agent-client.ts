@@ -75,6 +75,7 @@ export class AgentClient {
   private opsConfig: { enabled: boolean; allow: string[] } = { enabled: false, allow: [] };
   private probePending = new Map<number, { resolve: (value: string) => void; reject: (error: Error) => void }>();
   private dbPending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private resendPending = new Map<number, { resolve: (resent: boolean) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private eventSubs = new Set<(event: unknown) => void>();
   private dumpSubs = new Set<(paths: string[]) => void>();
   private commitSubs = new Set<(paths: string[]) => void>();
@@ -119,7 +120,16 @@ export class AgentClient {
         row?: unknown;
         paths?: unknown;
         mode?: "resumed" | "restored" | "fresh";
+        resent?: boolean;
       };
+      if (msg.type === "call-resend-result") {
+        const pending = this.resendPending.get(msg.id);
+        if (!pending) return;
+        this.resendPending.delete(msg.id);
+        clearTimeout(pending.timer);
+        pending.resolve(msg.resent === true);
+        return;
+      }
       if (msg.type === "ops-probe-result") {
         const probe = this.probePending.get(msg.id);
         if (!probe) return;
@@ -214,6 +224,11 @@ export class AgentClient {
       this.pending.clear();
       for (const p of this.dbPending.values()) p.reject(err);
       this.dbPending.clear();
+      for (const p of this.resendPending.values()) {
+        clearTimeout(p.timer);
+        p.reject(err);
+      }
+      this.resendPending.clear();
     };
   }
 
@@ -326,6 +341,24 @@ export class AgentClient {
    */
   stop(runId?: number): void {
     this.worker.postMessage({ type: "stop", id: runId });
+  }
+
+  /**
+   * Ask the worker to abort and re-issue the model call currently in flight.
+   * `runId` guards against a queued turn taking over between the backend's
+   * lookup and the message reaching the worker. Resolves false when nothing was
+   * waiting (the call settled or a tool is running).
+   */
+  resendCall(runId?: number): Promise<boolean> {
+    const id = this.nextId++;
+    return new Promise<boolean>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (!this.resendPending.delete(id)) return;
+        reject(new Error("resending the model call timed out"));
+      }, 5_000);
+      this.resendPending.set(id, { resolve, reject, timer });
+      this.worker.postMessage({ type: "call-resend", id, runId });
+    });
   }
 
   close(): void {

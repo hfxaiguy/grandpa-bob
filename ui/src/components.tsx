@@ -15,6 +15,7 @@ import {
   send,
   cancelQueued,
   retryTurn,
+  resendCall,
   selectSession,
   newSession,
   deleteSession,
@@ -2235,7 +2236,22 @@ export function Tile(props: { app: AppInfo }) {
                 <div class="turn-live">
                   <div class="live-now">
                     <span class="live-dot" />
-                    <Show when={act().current} fallback={<span class="live-text">{"\u27f3 thinking\u2026"}</span>}>
+                    <Show
+                      when={act().current}
+                      fallback={
+                        <>
+                          <span class="live-text">{"\u27f3 thinking\u2026"}</span>
+                          <button
+                            type="button"
+                            class="live-resend"
+                            title="resend the model call that has not answered yet"
+                            onClick={() => void resendCall()}
+                          >
+                            ↻ resend
+                          </button>
+                        </>
+                      }
+                    >
                       {(cur) => <span class="live-text">{`\u27f3 ${toolLabel(cur().tool, cur().args)}`}</span>}
                     </Show>
                   </div>
