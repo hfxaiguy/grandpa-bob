@@ -2,6 +2,48 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-08 — a desktop restart no longer ends a relay pairing
+
+A BobSwap relay pairing used to live only in the `npm run bob` process: a
+restart stopped the ten-minute renewals, the channel expired within one TTL,
+and the phone's next resume demanded a fresh pairing code. The desktop now
+persists each live channel and restores it on boot. Renewal starts immediately
+(the stored expiry may be minutes away), then the session goes back to waiting
+for the browser's nonce-tagged reconnect. A restart inside the remaining TTL
+costs nothing; a channel the relay reports as expired or purged is pruned
+instead of being renewed forever.
+
+- **`src/bridge/store.ts`**: `relay-channels.json` (0600, atomic write) keeps
+  the relay origin, channel id, role token, profile, auth profile,
+  capabilities, ICE servers and last reported expiry per channel; upsert is
+  keyed by channel id and the file is capped at eight records. Revoking a
+  profile also removes its channels.
+- **`src/bridge/relay.ts`**: `RelayTransport` gained `onRenewed`/`onDead`
+  hooks so persistence can follow a channel's expiry and drop a dead one, plus
+  `renewAhead()` for the first renewal after a restore.
+- **`src/bridge/peer.ts`**: a completed relay pairing is saved once the
+  operator approves it; `PeerManager.resumeRelayChannels()` reloads every
+  stored channel, renews it at once and re-enters the reconnect wait. The
+  reconnect proof profile is recovered from `peers.json`, so a wildcard
+  `pair:*` fingerprint survives the restart.
+- **`src/bridge/peer.ts`** (auth fix): a resume now matches the client-key
+  proof against every saved record before falling back to the active
+  profile's. Device-level pairings mint a new key per approval, so the old
+  profile-first lookup could reject a valid phone after a profile switch or a
+  re-pair under another profile.
+- **`src/bridge/server.ts`**: boot restores stored channels in the background;
+  shutdown disposes their sessions.
+- **`docs/pairing-and-sync.md`**: a relay pairing now survives a restart
+  inside the TTL; only staying down past it (or the phone evicting its stored
+  link) still asks for a code.
+- **`scripts/relay-resume-test.ts`** (new): upsert, immediate renewal on boot,
+  reconnect polling, pruning on `410`, and revoke cleanup against a fake
+  relay.
+
+Tests: `npm run test:relay-resume`; `npm run test:relay-renew`;
+`npm run test:relay-resilience`; `npm run test:relay-reconnect`;
+`npm run test:standalone`; `npm run typecheck`; `npm run build:bridge`.
+
 ## 2026-11-08 — resend the model call that is still thinking
 
 A model request can sit on the provider long after the person has run out of

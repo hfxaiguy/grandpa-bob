@@ -539,6 +539,14 @@ export function offerRelayChannel(
   });
 }
 
+/** Process-side observations of a relay channel's lifetime. */
+export interface RelayTransportHooks {
+  /** The channel's expiry moved (ISO-8601), so a persisted copy can follow it. */
+  onRenewed?(expiresAt: string | undefined): void;
+  /** The channel can never be used again: expired, purged or token rejected. */
+  onDead?(error: Error): void;
+}
+
 /** BobSwap-backed transport used by `PeerSession`. */
 export class RelayTransport implements PeerTransport {
   readonly kind = "relay" as const;
@@ -555,7 +563,10 @@ export class RelayTransport implements PeerTransport {
   private renewTimer: ReturnType<typeof setTimeout> | null = null;
   private renewUnsupported = false;
 
-  constructor(private readonly channel: RelayChannel) {
+  constructor(
+    private readonly channel: RelayChannel,
+    private readonly hooks: RelayTransportHooks = {},
+  ) {
     this.id = channel.id;
     this.profile = channel.profile;
     this.scheduleRenewal();
@@ -578,6 +589,7 @@ export class RelayTransport implements PeerTransport {
       const expiresAt = await renewRelayChannel(this.channel);
       if (expiresAt) this.channel.expiresAt = expiresAt;
       this.onEvent?.("renewed", { expiresAt: expiresAt ?? null });
+      this.hooks.onRenewed?.(expiresAt);
     } catch (err) {
       if (isTerminalRelayError(err)) {
         // The channel is gone or the token was rejected: renewal cannot help.
@@ -585,12 +597,27 @@ export class RelayTransport implements PeerTransport {
         this.onEvent?.("renew-failed", {
           error: err instanceof Error ? err.message : String(err),
         });
+        this.hooks.onDead?.(err instanceof Error ? err : new Error(String(err)));
         return;
       }
       // Transient (network/429/5xx): retry soon, before the TTL runs out.
       renewed = false;
     }
     this.scheduleRenewal(renewed ? RENEW_EVERY_MS : RENEW_RETRY_MS);
+  }
+
+  /**
+   * Renew at once instead of waiting for the first cadence tick. A restored
+   * channel may have only minutes left, and its stored expiry can be stale in
+   * either direction, so the renew call is what decides whether it is alive.
+   */
+  renewAhead(): void {
+    if (this.closed || this.renewUnsupported) return;
+    if (this.renewTimer) {
+      clearTimeout(this.renewTimer);
+      this.renewTimer = null;
+    }
+    void this.renewNow();
   }
 
   open(iceServers: unknown[], onEvent?: PeerEvent): Promise<OpenedPeer> {

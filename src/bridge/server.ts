@@ -86,6 +86,14 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
   const extraOrigins = (options.allowedOrigins ?? []).map((o) => o.replace(/\/$/, ""));
   // Ensure the secrets exist before the CLI tries to read them.
   await adminKey();
+  // Restore relay pairings that outlived the previous process. Renewal and the
+  // reconnect wait run in the background so startup is not blocked on the
+  // network; a dead channel is pruned by its renewal callback.
+  void manager.resumeRelayChannels().catch((err) => {
+    console.warn(
+      `[bridge] relay resume failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
 
   const headersFor = (
     req: http.IncomingMessage,
@@ -361,6 +369,7 @@ export async function configurePeerServer(options: PeerServerOptions = {}): Prom
     manager,
     handle,
     close() {
+      manager.close();
       mailbox.closeAll();
     },
   };

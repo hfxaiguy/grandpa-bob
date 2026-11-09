@@ -252,9 +252,11 @@ channel flow used between two browsers:
    that first profile; `--mirror` / `--mirror-path` choose its folder
    independently. Every other profile defaults to
    `~/.bobkat/folders/<name>`. (`--exec git,make,…` grants ops; `--list` /
-   `--revoke <profile>` manage paired profiles.) Codes and pairing sessions
-   live in the `npm run bob` process: restarting it invalidates any open code,
-   so run `npm run pair` again after a restart.
+   `--revoke <profile>` manage paired profiles.) Codes and pending pairing
+   sessions live in the `npm run bob` process: restarting it invalidates an
+   open code, so run `npm run pair` again after a restart. A *completed* relay
+   pairing is different: it is restored from `~/.bobkat/relay-channels.json`
+   (see below) and survives the restart while the channel's TTL allows.
    Add `--debug` (`npm run pair -- --debug`, or `BOB_PAIR_DEBUG=1`) to trace
    the handshake: waiting for the offer, offer/answer, channel open, control
    `hello`, SAS and the first error.
@@ -271,14 +273,26 @@ channel flow used between two browsers:
    is alive.
    The desktop renews the channel every 10 minutes with
    `POST /api/v1/sync/channels/{id}/renew` (live since 2026-11-06; either role
-   may call it, no peer action and no code). Repeated renewals keep the pairing
-   alive without an absolute cap; the operator's maximum TTL (default 24 h) is
-   the hard bound, and `DELETE`/inactivity ends it. A transient relay error
-   (`429`, `5xx`, a timeout) is retried with backoff and does not end the
-   session; only an expired/purged channel or a rejected role token needs a new
-   code. Without the renew route, BobSwap's fixed 30-minute lifetime applies and
-   `npm run pair -- --relay` is needed again. Direct mailbox pairings keep the
-   automatic client-key reconnect below.
+   may call it, no peer action and no code). Renewal sets `expires_at` to
+   *now + requested TTL* rather than extending the old deadline, so schedule it
+   well inside the remaining lifetime. The operator's maximum TTL (default 24 h,
+   adjustable to 7 days) caps each **request's** `ttl_seconds` — it is not a
+   total lifetime cap. Per BobSwap's contract there is **no absolute lifetime
+   cap**: repeated renewals keep the pairing alive indefinitely, and only
+   `DELETE` or inactivity (nobody renewing) ends it. Renewal works only while
+   the channel is unexpired. A transient relay error (`429`, `5xx`, a timeout)
+   is retried with backoff and does not end the session; only an expired/purged
+   channel or a rejected role token needs a new code. Without the renew route,
+   BobSwap's fixed 30-minute lifetime applies and `npm run pair -- --relay` is
+   needed again.
+   The channel (id, role token, expiry, relay origin and capabilities) is
+   persisted to `~/.bobkat/relay-channels.json`. On boot every stored channel
+   is renewed at once and the desktop goes back to waiting for the browser's
+   nonce-tagged reconnect, so restarting `npm run bob` costs nothing as long as
+   the new process is up inside the remaining TTL. A channel the relay reports
+   as expired or purged is dropped from the file instead of being renewed
+   forever. Direct mailbox pairings keep the automatic client-key reconnect
+   below.
 2. In the tab, **Sync… → Pair… → Pair with a code**, select **My desktop /
    server**, and enter the code — no channel id. The dialog shows the active
    profile and, once the channel opens, the mirror + exec capabilities the
@@ -309,10 +323,26 @@ remains on the channel server; speech-to-text rides the peer channel
 
 ### Permanent phone pairing: a reachable mailbox beats the relay
 
-BobSwap fixes a sync channel's expiry at **30 minutes after the join**, and its
-contract says signal writes and heartbeats do not renew it. So a relay pairing
-is a session, not a durable pairing: reloads reconnect within those 30 minutes
-(nonce-tagged resume), then a new code is required.
+Signal writes and heartbeats do not renew a sync channel — only an explicit
+`/renew` does (live since 2026-11-06). The desktop bridge renews its relay
+channel every 10 minutes and keeps doing so while the phone is away, so the
+channel — and the phone's nonce-tagged resume on reload — can last
+indefinitely. What still ends a relay pairing:
+
+- **The desktop staying down past the remaining TTL.** The channel id, role
+  token, expiry and capabilities are persisted to
+  `~/.bobkat/relay-channels.json`, and a booted `npm run bob` renews every
+  stored channel immediately, so a restart inside the TTL is free. Once the
+  last renewal is older than the TTL, the relay expires the channel and the
+  phone's resume gets a fresh-code error.
+- **The phone's browser evicting its stored resume state.** Mobile browsers
+  evict non-persistent storage aggressively; a tab showing the storage
+  persistence warning can silently lose the channel id and role token.
+
+The **web tab never renews** — `src/bridge/relay.ts` is the only renewal site —
+so a browser↔browser relay pair still lapses at the posted TTL. A direct-mailbox
+pairing additionally survives bridge restarts, because the pinned client key
+lives on disk in `~/.bobkat/peers.json`.
 
 A phone that should stay paired across reloads and backgrounding should use the
 **direct mailbox**, reachable over HTTPS. Tailscale is the least-exposure way to
@@ -357,7 +387,7 @@ device, where neither side wants to open a mailbox.
 | "sync channels may not be deployed yet" | The BobSwap service lacks `/api/v1/sync/channels…`; use manual paste. |
 | "this relay has no single-code join" | The relay predates code-only pairing; update it, or switch the Pair dialog to **My desktop / server**. Manual paste still works. |
 | "invalid pairing code" | The code is wrong, already spent or older than 10 minutes. Create a new one on the other device. A 429 means the per-IP join rate limit; wait for `Retry-After`. |
-| `BobSwap signal poll: HTTP 404` / "the pairing session is gone" | The browser joined, then the bridge lost the channel — usually `npm run bob` was restarted, the desktop was offline past the renewals, or the pairing session was closed before approval. The tab announces it once and pauses retries until a fresh pairing; run `npm run pair -- --relay` and use the new code. Transient relay errors (`429`, `5xx`, a timeout) no longer end a live pairing — the desktop backs off and retries, and its console prints the first real error (profile mismatch, denial, or channel loss). |
+| `BobSwap signal poll: HTTP 404` / "the pairing session is gone" | The browser joined, then the bridge lost the channel — usually the desktop stayed down past the remaining TTL (restarts inside it are resumed from `~/.bobkat/relay-channels.json`), the phone's browser evicted its stored pairing state, or the session was closed before approval. The tab announces it once and pauses retries until a fresh pairing; run `npm run pair -- --relay` and use the new code. Transient relay errors (`429`, `5xx`, a timeout) no longer end a live pairing — the desktop backs off and retries, and its console prints the first real error (profile mismatch, denial, or channel loss). |
 | "pairing failed: NetworkError when attempting to fetch resource." / `cannot reach http://…` | The tab could not reach the mailbox. Open the app at `http://localhost:8080` or `http://127.0.0.1:8080` on the machine running `npm run bob`; in **My desktop / server** open **Advanced** and check the mailbox URL (`http://127.0.0.1:8795`), then check `/health` in that tab. A browser on another device cannot reach the loopback mailbox — pair browser↔browser instead. |
 | `origin https://… is not allowed` | The page origin is not on the bridge allowlist. Use the locally served app, or add the exact `https://` origin to `BOB_APP_ORIGINS` and restart `npm run bob`. The default allows loopback and `https://bobkat.hfxaiguy.com`. |
 | Local Network Access prompt / `Permission was denied … loopback address space` | Chrome/Edge blocks a public HTTPS page from reaching `127.0.0.1` until the site is allowed. Allow Local Network Access for the hosted origin in the browser's site settings, then restart `npm run bob` so the bridge sends `Access-Control-Allow-Private-Network: true` on CORS preflights. The app served at `http://localhost:8080` avoids the prompt. |

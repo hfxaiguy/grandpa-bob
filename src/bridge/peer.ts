@@ -40,6 +40,7 @@ import {
   type OpenedPeer,
   type PeerEvent,
   type PeerTransport,
+  type RelayChannel,
   type SyncRelayOptions,
 } from "./relay.js";
 import { appendPeerLog, handshakePeerLog } from "./peer-log.js";
@@ -47,13 +48,19 @@ import {
   defaultMirrorDir,
   peerJournalDir,
   readPeers,
+  readRelayChannels,
   removePeer,
+  removeRelayChannel,
+  removeRelayChannelsForProfile,
   sameSecret,
   savePeer,
+  saveRelayChannel,
   secretFingerprint,
   serverKey,
+  updateRelayChannelExpiry,
   type PeerCapabilities,
   type PeerRecord,
+  type RelayChannelRecord,
 } from "./store.js";
 import {
   bridgeCatalog,
@@ -340,6 +347,8 @@ export class PeerSession {
     private iceServers: unknown[] = [],
     private onReady?: (session: PeerSession) => void,
     private onClosed?: (session: PeerSession) => void,
+    /** Called once the operator approved a pairing and the peer was saved. */
+    private onPaired?: (session: PeerSession, record: PeerRecord) => void,
   ) {
     this.mode = mode;
     this.profile = transport.profile;
@@ -501,6 +510,7 @@ export class PeerSession {
         this.paired = true;
         this.authed = true;
         this.emit("paired", { profile: this.profile, fingerprint: record.fingerprint });
+        this.onPaired?.(this, record);
       } else {
         if (!reconnectRecord) {
           link.send(controlEnvelope(channelPeerId(this.profile), { op: "error", message: "unknown profile" }));
@@ -560,6 +570,17 @@ export class PeerSession {
     this.dispose();
   }
 
+  /**
+   * Restored relay session (after a process restart): wait on the persisted
+   * channel for the browser's reconnect request, then prove the pinned client
+   * key. Unlike `start()` it never emits a fresh offer on its own.
+   */
+  resumeRelay(): void {
+    if (this.closed || this.reconnecting) return;
+    this.reconnecting = true;
+    void this.reconnectRelay();
+  }
+
   private async reconnectRelay(): Promise<void> {
     try {
       const answer = await (this.transport as RelayTransport).waitForReconnect();
@@ -587,7 +608,14 @@ export class PeerSession {
       });
       link.onClosed(() => this.onLinkClosed());
       this.emit("connected", { sas: this.sas });
-      const proofKey = hmac(await serverKey(), `pair:${this.proofProfile}`);
+      // A restored process no longer holds the proof profile it paired with;
+      // recover it from the saved record so a wildcard (`pair:*`) fingerprint
+      // still matches after a restart.
+      const records = (await readPeers()).peers;
+      const record = records[this.authProfile] ?? records[this.profile];
+      const proofKey = record
+        ? await this.proofKeyFor(record)
+        : hmac(await serverKey(), `pair:${this.proofProfile}`);
       const nonce = randomBytes(16).toString("hex");
       this.pendingNonce = nonce;
       this.pendingProofKey = proofKey;
@@ -610,7 +638,8 @@ export class PeerSession {
       this.emit("error", { message });
       // The pairing console has exited by now; this is the only trace of why a
       // live relay pairing ended, so put it where `npm run bob` shows it.
-      if (this.transport.kind === "relay") {
+      // An orderly shutdown (manager.close) is not worth a warning.
+      if (this.transport.kind === "relay" && !this.closed) {
         console.warn(`[bridge] relay pairing "${this.profile}" ended: ${message}`);
       }
       this.dispose();
@@ -682,14 +711,17 @@ export class PeerSession {
         return;
       }
       if (control.profile !== expectedProfile) return;
-      const records = (await readPeers()).peers;
-      const record =
-        records[this.profile] ??
-        Object.values(records).find((entry) =>
-          sameSecret(String(control.proof ?? ""), hmac(entry.keyHash, this.pendingNonce)),
-        );
-      if (!record) return;
       const proof = String(control.proof ?? "");
+      const records = (await readPeers()).peers;
+      // Device-level pairings mint a key per approval and the browser keeps
+      // only the latest, so authenticate by proof possession first. Looking up
+      // the profile's record first can pick a stale key and reject a valid
+      // device after a profile switch or a re-pair on another profile.
+      const record =
+        Object.values(records).find((entry) =>
+          sameSecret(proof, hmac(entry.keyHash, this.pendingNonce)),
+        ) ?? records[this.profile];
+      if (!record) return;
       if (!sameSecret(proof, hmac(record.keyHash, this.pendingNonce))) {
         this.emit("error", { message: "client key rejected" });
         link.send(controlEnvelope(channelPeerId(this.profile), { op: "error", message: "client key rejected" }));
@@ -1256,6 +1288,9 @@ export class PeerManager {
   private sessions = new Map<string, PeerSession>();
   private liveByProfile = new Map<string, PeerSession>();
   private codes = new Map<string, string>();
+  /** Relay sessions by channel id, so a boot resume never doubles a channel. */
+  private relayByChannel = new Map<string, PeerSession>();
+  private resumingRelay = false;
 
   constructor(private mailbox: Mailbox, private iceServers: unknown[] = []) {}
 
@@ -1323,7 +1358,15 @@ export class PeerManager {
   ): Promise<PairingInfo> {
     const caps = this.capabilitiesFor(profile, capabilities);
     const channel = await createRelayChannel(relay, profile);
-    const transport = new RelayTransport(channel);
+    const transport = new RelayTransport(channel, {
+      onRenewed: (expiresAt) => {
+        void updateRelayChannelExpiry(channel.id, expiresAt).catch(() => undefined);
+      },
+      onDead: (error) => {
+        void removeRelayChannel(channel.id).catch(() => undefined);
+        console.warn(`[bridge] relay channel ${channel.id} ended: ${error.message}`);
+      },
+    });
     const session = new PeerSession(
       transport,
       "pairing",
@@ -1331,9 +1374,100 @@ export class PeerManager {
       channel.iceServers,
       (s) => this.makeLive(s),
       (s) => this.unregister(s),
+      (s, record) => {
+        const saved: RelayChannelRecord = {
+          baseUrl: channel.baseUrl,
+          channelId: channel.id,
+          roleToken: channel.roleToken,
+          profile: s.profile,
+          authProfile: record.profile,
+          capabilities: s.capabilities,
+          iceServers: channel.iceServers,
+          expiresAt: channel.expiresAt,
+          savedAt: new Date().toISOString(),
+        };
+        void saveRelayChannel(saved).catch((err) => {
+          console.warn(
+            `[bridge] could not persist relay channel: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+      },
     );
+    this.relayByChannel.set(channel.id, session);
     this.register(session, channel.code);
     return session.info(channel.code);
+  }
+
+  /**
+   * Reattach to relay channels that outlived the previous process. Renewal
+   * keeps the channel (and the browser's reconnect path) alive; the browser
+   * resumes with the role token it stored at pairing, so no new code is
+   * needed while the channel is unexpired.
+   */
+  async resumeRelayChannels(): Promise<void> {
+    if (this.resumingRelay) return;
+    this.resumingRelay = true;
+    try {
+      const stored = await readRelayChannels();
+      if (!stored.channels.length) return;
+      const peers = (await readPeers()).peers;
+      for (const record of stored.channels) {
+        if (this.relayByChannel.has(record.channelId)) continue;
+        if (!peers[record.authProfile] && !peers[record.profile]) {
+          // The device was revoked or the peer registry was reset: the channel
+          // can never authenticate again, so stop renewing it.
+          await removeRelayChannel(record.channelId).catch(() => undefined);
+          continue;
+        }
+        const channel: RelayChannel = {
+          baseUrl: record.baseUrl,
+          profile: record.profile,
+          id: record.channelId,
+          code: "",
+          roleToken: record.roleToken,
+          role: "offerer",
+          iceServers: record.iceServers,
+          expiresAt: record.expiresAt,
+        };
+        let session: PeerSession | undefined;
+        const transport = new RelayTransport(channel, {
+          onRenewed: (expiresAt) => {
+            void updateRelayChannelExpiry(channel.id, expiresAt).catch(() => undefined);
+          },
+          onDead: (error) => {
+            console.warn(`[bridge] relay pairing "${record.profile}" ended: ${error.message}`);
+            void removeRelayChannel(channel.id).catch(() => undefined);
+            session?.dispose();
+          },
+        });
+        session = new PeerSession(
+          transport,
+          "reconnect",
+          record.capabilities,
+          channel.iceServers,
+          (s) => this.makeLive(s),
+          (s) => this.unregister(s),
+        );
+        session.authProfile = record.authProfile;
+        this.relayByChannel.set(channel.id, session);
+        this.sessions.set(session.id, session);
+        session.done = false;
+        // The stored expiry may be close (or stale): let the renew call decide.
+        transport.renewAhead();
+        session.resumeRelay();
+        console.log(`[bridge] resuming relay pairing "${record.profile}" (${channel.id})`);
+      }
+    } finally {
+      this.resumingRelay = false;
+    }
+  }
+
+  /** Close every session (process shutdown and tests). */
+  close(): void {
+    for (const session of [...this.sessions.values()]) session.dispose();
+    this.sessions.clear();
+    this.liveByProfile.clear();
+    this.relayByChannel.clear();
   }
 
   /** A reconnect channel for an already-paired profile (client-key create). */
@@ -1383,6 +1517,9 @@ export class PeerManager {
     this.liveByProfile.get(profile)?.dispose();
     this.liveByProfile.delete(profile);
     await removePeer(profile);
+    // A persisted relay channel that authenticated this profile is dead too;
+    // otherwise the next boot would keep renewing a channel nobody can use.
+    await removeRelayChannelsForProfile(profile).catch(() => undefined);
     // Re-pairing starts from defaults, not a stale per-device veto.
     const entry = (await listBridgeProfiles()).find((item) => item.name === profile);
     if (entry) await clearBridgeProfileConsent(entry.id);
@@ -1399,6 +1536,9 @@ export class PeerManager {
   private unregister(session: PeerSession): void {
     this.codes.delete(session.id);
     if (this.liveByProfile.get(session.profile) === session) this.liveByProfile.delete(session.profile);
+    for (const [channelId, entry] of this.relayByChannel) {
+      if (entry === session) this.relayByChannel.delete(channelId);
+    }
     if (session.mode === "pairing") {
       // Keep the finished session's events queryable for a minute. `npm run
       // pair` polls every 700ms; deleting immediately races its next poll and

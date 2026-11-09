@@ -60,6 +60,7 @@
     "test:relay-renew": "tsx scripts/relay-renew-test.ts",
     "test:relay-resilience": "tsx scripts/relay-resilience-test.ts",
     "test:relay-reconnect": "tsx scripts/relay-reconnect-test.ts",
+    "test:relay-resume": "tsx scripts/relay-resume-test.ts",
     "verify:speech": "tsx scripts/speech-verify.ts",
     "test:telegram-bridge": "tsx scripts/telegram-bridge-test.ts",
     "test:emit-value": "tsx scripts/emit-value-test.ts",
