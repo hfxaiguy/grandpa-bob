@@ -56,6 +56,8 @@ import {
   speakText,
   speechKey,
   speechBusy,
+  pauseSpeech,
+  resumeSpeech,
   ttsEnabled,
 } from "./store";
 import type { AppInfo, EmitComponent, ProvPiece, ProvWriter, Provenance, RefTarget, Turn, TurnTokens } from "./types";
@@ -1250,6 +1252,8 @@ function Composer(props: { app: string }) {
     setRecording(false);
     recStream?.getTracks().forEach((t) => t.stop());
     recStream = null;
+    // The mic is off: let a reply paused for the recording continue.
+    resumeSpeech();
     const mimeType = rec?.mimeType || "audio/webm";
     const blob = new Blob(recChunks, { type: mimeType });
     const secs = recSecs();
@@ -1278,9 +1282,13 @@ function Composer(props: { app: string }) {
       rec?.stop();
       return;
     }
+    // Do not let the bot read over the person (the mic would pick it up).
+    // Held before the permission prompt, so a late auto-speak also waits.
+    pauseSpeech();
     try {
       recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
+      resumeSpeech();
       toast(`microphone unavailable: ${e instanceof Error ? e.message : e}`, true);
       return;
     }
@@ -1288,13 +1296,23 @@ function Composer(props: { app: string }) {
       ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((t) =>
         MediaRecorder.isTypeSupported(t),
       ) || "";
-    rec = new MediaRecorder(recStream, mime ? { mimeType: mime } : undefined);
-    recChunks = [];
-    rec.ondataavailable = (e) => {
-      if (e.data?.size) recChunks.push(e.data);
-    };
-    rec.onstop = () => void finishRecording();
-    rec.start();
+    try {
+      rec = new MediaRecorder(recStream, mime ? { mimeType: mime } : undefined);
+      recChunks = [];
+      rec.ondataavailable = (e) => {
+        if (e.data?.size) recChunks.push(e.data);
+      };
+      rec.onstop = () => void finishRecording();
+      rec.start();
+    } catch (e) {
+      // No recorder: release the mic and the speech hold.
+      recStream.getTracks().forEach((t) => t.stop());
+      recStream = null;
+      rec = null;
+      resumeSpeech();
+      toast(`could not start recording: ${e instanceof Error ? e.message : e}`, true);
+      return;
+    }
     setRecSecs(0);
     setRecording(true);
     recTimer = setInterval(() => setRecSecs((s) => s + 1), 1000);
@@ -1309,6 +1327,7 @@ function Composer(props: { app: string }) {
       if (rec.state === "recording") rec.stop();
     }
     recStream?.getTracks().forEach((t) => t.stop());
+    if (recording()) resumeSpeech();
   });
 
   // ── file upload: audio streams a transcript; anything else attaches ──

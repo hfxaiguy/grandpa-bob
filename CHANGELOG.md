@@ -2,6 +2,60 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-08 — a runaway turn has a wall-clock budget
+
+The run watchdog already settled a turn that went silent. A loop that keeps
+making new tool calls never goes silent, so it could run forever while the UI
+still said `running`.
+
+- **`web/src/agent/run-watchdog.ts`**: a second `maxMs` budget (default 45
+  minutes) reports a run even while it is active; the report names
+  `expired` vs `silent`.
+- **`web/src/server/local-backend.ts`**: passes `BOB_RUN_MAX_MS` (default
+  `DEFAULT_MAX_MS`) and settles an expired turn with a clear
+  “exceeded its budget” error. The checkpoint is kept, so a retry resumes.
+- **`scripts/run-watchdog-test.ts`**: activity that keeps touching the run
+  cannot keep it past the hard budget.
+
+Tests: `npm run test:run-watchdog`; `npm run typecheck`.
+
+## 2026-11-08 — app helper modules may be `.js`
+
+Knit can now edit an existing `.js` helper (`src/browser.js`, `src/store.js`)
+as well as `.mjs`; the app's root `config.js` and non-JavaScript files stay
+out of the addressable module surface. The tree-file resolver, the module
+listing and the confinement tests share the same rule.
+
+- **`web/src/tree-files.ts`**: `MODULE_SUFFIXES` accepts `.mjs` and `.js`;
+  `config.js` at the app root is not a module.
+- **`web/src/tree-context.ts`**: the module surface is documented as
+  `.mjs`/`.js`.
+- **`scripts/tree-modules-test.ts`**: a nested `.js` module resolves; a
+  `.ts` file and the root `config.js` do not.
+
+Tests: `npm run test:tree-modules`; `npm run test:tree-context`.
+
+## 2026-11-08 — voice recording pauses the bot's voice
+
+Starting a voice recording now pauses the reply the bot is reading aloud, and
+stopping the recording resumes it from the same spot instead of losing it. A
+reply still being synthesized when the mic opens waits too, so the bot's voice
+cannot bleed into the recording (or force the person to talk over it). Sending
+the next message replaces the old clip as before.
+
+- **`ui/src/store.ts`**: `pauseSpeech()` / `resumeSpeech()` hold playback while
+  a recording is active; a clip that finishes synthesis during the hold starts
+  paused, and a resume the browser refuses stops the clip cleanly.
+- **`ui/src/components.tsx`**: the composer's mic pauses on start (releasing the
+  hold if permission is refused or the recorder cannot start) and resumes when
+  the recording stops or the composer unmounts.
+- **`scripts/autospeak-test.ts`**: a paused clip stays put, and a late emit
+  synthesizes but waits for the recording to end before playing.
+- **`docs/services.md`**: the recording/pause behavior is documented.
+
+Tests: `npm run test:autospeak`; `npm --prefix ui run typecheck`;
+`npm run build:ui`.
+
 ## 2026-11-08 — a desktop restart no longer ends a relay pairing
 
 A BobSwap relay pairing used to live only in the `npm run bob` process: a

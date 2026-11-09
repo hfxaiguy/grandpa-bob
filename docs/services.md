@@ -131,6 +131,9 @@ Settings page on the same origin:
   effect on the next 🔊 press (the desktop's `.env` is only the default).
 - The 🔊 button shows **…** while the clip is synthesized (press again to
   cancel), then **⏹** while it plays; errors surface as a toast.
+- Starting a voice recording pauses the clip that is playing (and holds one
+  still being synthesized) so the bot does not read over the person or into the
+  mic; stopping the recording resumes it from the same spot.
 - **Test** probes AssemblyAI with a body-less POST: `404` = key rejected,
   `400`/`422`/2xx = key accepted. Rime keys are verified by the desktop on
   first use; local providers are tested by recording.

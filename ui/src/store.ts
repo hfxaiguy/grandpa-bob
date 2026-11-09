@@ -641,6 +641,11 @@ let currentSpeech: HTMLAudioElement | null = null;
 let currentSpeechUrl: string | null = null;
 /** Bumped on every press so a slow synthesis cannot start after a newer one. */
 let speechToken = 0;
+/** A voice recording owns the mic: playing clips pause and new ones wait, so
+ *  the bot never talks over the person speaking (or into the recording). */
+let speechHeld = false;
+/** The current clip is paused mid-playback and can resume where it left off. */
+let speechPaused = false;
 /** The bubble key currently speaking (null = silent). */
 export const [speechKey, setSpeechKey] = createSignal<string | null>(null);
 /** The bubble key whose clip is still being synthesized (null = idle). */
@@ -673,8 +678,33 @@ function releaseClip(): void {
 export function stopSpeech(): void {
   currentSpeech?.pause();
   currentSpeech = null;
+  speechPaused = false;
   releaseClip();
   setSpeechKey(null);
+}
+
+/**
+ * A voice recording started: pause the reply being read and hold any clip
+ * still being synthesized so it does not start under the recording.
+ */
+export function pauseSpeech(): void {
+  speechHeld = true;
+  // Pause even if the clip has not started yet (play() may still be pending),
+  // so it cannot slip out while the mic is open.
+  if (!currentSpeech) return;
+  currentSpeech.pause();
+  speechPaused = true;
+}
+
+/** The recording ended: resume a paused clip, or let a held one play now. */
+export function resumeSpeech(): void {
+  speechHeld = false;
+  const audio = currentSpeech;
+  if (!audio || !speechPaused) return;
+  speechPaused = false;
+  void audio.play().catch(() => {
+    if (currentSpeech === audio) stopSpeech();
+  });
 }
 
 /**
@@ -700,9 +730,16 @@ export async function speakText(text: string, key?: string): Promise<void> {
   }
   const trimmed = text.trim();
   if (!trimmed) return;
-  // A press on the clip that is playing stops it. A key left over from an
-  // earlier clip (its `ended` never fired) must not swallow the click.
+  // A press on the clip that is playing stops it; while it is paused for a
+  // recording, the press resumes it (or discards it if the mic is still on).
+  // A key left over from an earlier clip (its `ended` never fired) must not
+  // swallow the click.
   if (key && speechKey() === key && currentSpeech) {
+    if (speechPaused) {
+      if (speechHeld) stopSpeech();
+      else resumeSpeech();
+      return;
+    }
     stopSpeech();
     return;
   }
@@ -740,14 +777,27 @@ export async function speakText(text: string, key?: string): Promise<void> {
     const clear = (): void => {
       if (currentSpeech !== audio) return;
       currentSpeech = null;
+      speechPaused = false;
       releaseClip();
       setSpeechKey(null);
     };
     audio.addEventListener("ended", clear);
     audio.src = url;
+    // Synthesis may finish while the mic is open (auto-speak of a late emit):
+    // start paused and let resumeSpeech() play it when the recording stops.
+    if (speechHeld) {
+      speechPaused = true;
+      return;
+    }
     try {
       await audio.play();
     } catch {
+      // A pause triggered by the mic can abort play(); that is not a policy
+      // failure — keep the clip for the recording's end.
+      if (speechHeld) {
+        speechPaused = true;
+        return;
+      }
       clear();
       throw new Error(
         "the browser blocked playback — tap the speaker again once the page is focused",

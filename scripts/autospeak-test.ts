@@ -54,22 +54,40 @@ let synthError: string | null = null;
   },
 };
 
+const audioInstances: FakeAudio[] = [];
 class FakeAudio {
+  paused = true;
+  playCalls = 0;
+  pauseCalls = 0;
+  private current = "";
+  constructor() {
+    audioInstances.push(this);
+  }
   play(): Promise<void> {
+    this.playCalls += 1;
+    this.paused = false;
     return Promise.resolve();
   }
-  pause(): void {}
+  pause(): void {
+    this.pauseCalls += 1;
+    this.paused = true;
+  }
   addEventListener(): void {}
-  set src(_value: string) {}
+  set src(value: string) {
+    // Loading a clip leaves the element paused until play() is called.
+    this.current = value;
+    this.paused = true;
+  }
   get src(): string {
-    return "";
+    return this.current;
   }
 }
 (globalThis as any).Audio = FakeAudio;
 (globalThis as any).URL.createObjectURL = () => "blob:test";
 (globalThis as any).URL.revokeObjectURL = () => {};
 
-const { handleSSE, setState, state } = await import("../ui/src/store.ts");
+const { handleSSE, setState, state, pauseSpeech, resumeSpeech, speakText, stopSpeech } =
+  await import("../ui/src/store.ts");
 
 setState({ active: "web:t", turns: [], apps: [], ready: true, toast: "" });
 
@@ -212,5 +230,34 @@ start("t13", "trunk");
 emit("t13", "blocked reply", "trunk");
 await settle();
 assert.match(state.toast, /auto-speak failed: the browser blocked playback/);
+
+// ── a voice recording pauses playback and holds late replies ──────────────
+synthError = null;
+audioInstances.length = 0;
+await speakText("read this", "hold:1");
+const clip = audioInstances[audioInstances.length - 1];
+assert.equal(clip.playCalls, 2, "the silent unlock then the real clip");
+assert.equal(clip.paused, false);
+
+pauseSpeech();
+assert.equal(clip.pauseCalls, 1);
+assert.equal(clip.paused, true, "the clip is paused, not stopped");
+
+// An emit that finishes synthesizing while the mic is open must not start.
+synthesized.length = 0;
+start("t14", "trunk");
+emit("t14", "arrived during the recording", "trunk");
+await settle();
+assert.deepEqual(synthesized, ["arrived during the recording"]);
+const held = audioInstances[audioInstances.length - 1];
+assert.notEqual(held, clip, "the late reply replaced the paused clip");
+assert.equal(held.playCalls, 1, "only the silent unlock clip started");
+assert.equal(held.paused, true, "the reply waits for the recording to end");
+
+resumeSpeech();
+await settle();
+assert.equal(held.playCalls, 2);
+assert.equal(held.paused, false, "the held reply starts when the recording ends");
+stopSpeech();
 
 console.log("autospeak: ok");
