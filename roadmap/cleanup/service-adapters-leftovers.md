@@ -107,11 +107,15 @@ the pairing alive; the operator maximum TTL is 86400 s by default (adjustable
 deleted is `410`/`404`.
 
 **Client — done:**
-- `RelayTransport` renews every 10 minutes while the channel exists and stores
-  the new `expires_at`.
+- `RelayTransport` asks for a seven-day TTL on each renew and derives the next
+  tick from the returned `expires_at` (a third of the remaining lifetime,
+  capped at once a day: daily at the 7-day cap, every 8 h at the default
+  24-hour operator cap, 10-minute legacy cadence if the relay rejects
+  `ttl_seconds`). It stores the new `expires_at`.
 - `404`/`410` marks renewal unsupported and falls back to the fixed lifetime.
 - The browser no longer refuses to resume on a stale stored expiry.
-- `npm run test:relay-renew` covers parsing, the role token, and the fallback.
+- `npm run test:relay-renew` covers parsing, the role token, TTL request and
+  fallback, cadence derivation, and the older-relay retry.
 
 **Only remaining check:** pair a phone over relay, leave it closed for more than
 30 minutes while the desktop keeps running, then reopen the tab — it should
@@ -140,9 +144,10 @@ CORS). **Estimate:** ~0.5 day.
 - **Cache scope**: the 48 MB TTS cache is per Node process and not persisted.
 - **Rime TTS**: 1,000 chars/request is handled by chunking; 78 voices, four
   languages, $0.03/min on Flex (free tier: $50/mo credit).
-- **Relay lifetime**: renewed every 10 minutes while the desktop runs (live
-  since 2026-11-06), up to the operator maximum TTL (default 24 h); without the
-  renew route, BobSwap's fixed 30-minute lifetime applies (see § 4).
+- **Relay lifetime**: renewed on an adaptive schedule while the desktop runs
+  (live since 2026-11-06) — a week-long TTL requested, daily cadence at most,
+  up to the operator maximum TTL (default 24 h); without the renew route,
+  BobSwap's fixed 30-minute lifetime applies (see § 4).
 - **KittenTTS**: code Apache-2.0, **weights licensed separately** — check the
   model card before shipping; `pip install kittenml` also pulls PyTorch.
 - **No CI**: tests are npm scripts (`test:stt-dispatch`, `test:stt-cloud`,

@@ -39,6 +39,37 @@ Tests: `npm run test:providers`; `npm run test:models`;
 `npm run test:standalone`; `npm run typecheck`;
 `npm --prefix web run typecheck`; `npm run build:web`.
 
+## 2026-11-09 — relay renewal runs daily on a week-long channel
+
+A BobSwap relay channel was renewed every 10 minutes inside the service's
+30-minute default TTL — safe, but 144 renewals a day and no benefit beyond the
+next half hour. Renewal now asks for a seven-day TTL and schedules the next
+call from the returned `expires_at`: a third of the remaining lifetime, capped
+at one day. A week-long channel renews daily with six days of slack for a
+transient failure, a suspended laptop or a desktop restart; the default
+24-hour operator cap renews every 8 hours, and a relay that rejects the
+`ttl_seconds` field retries once without it and keeps the old 10-minute
+cadence. The previous behaviour — `expires_at = now + ttl`, fixed 30-minute
+default — is unchanged for clients that send no TTL.
+
+- **`src/bridge/relay.ts`**: `renewRelayChannel` accepts an optional
+  `ttlSeconds` and sends `{"ttl_seconds": N}`; `renewalDelayMs` derives the
+  next tick from the expiry; `RelayTransport` requests a week, falls back to
+  the default body on `400`/`422`, and drops back to the legacy cadence when
+  the response carries no usable expiry.
+- **`scripts/relay-renew-test.ts`**: pins the TTL body, the 7-day/24-hour/
+  30-minute cadence cases, the missing-expiry fallback, and the older-relay
+  retry without the TTL field.
+- **`docs/pairing-and-sync.md`**, **`README.md`**,
+  **`roadmap/cleanup/service-adapters-leftovers.md`**, **`web/src/sync-ui.ts`**:
+  renewal cadence and its margins updated.
+- **`roadmap/cleanup/bobswap-ttl-max-prompt.md`** (new): prompt asking BobSwap
+  to default its operator maximum TTL to seven days and clamp (not reject)
+  over-limit `ttl_seconds` requests.
+
+Tests: `npm run test:relay-renew`; `npm run test:relay-resilience`;
+`npm run test:relay-reconnect`; `npm run test:relay-resume`; `npm run typecheck`.
+
 ## 2026-11-08 — a runaway turn has a wall-clock budget
 
 The run watchdog already settled a turn that went silent. A loop that keeps

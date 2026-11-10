@@ -271,20 +271,24 @@ channel flow used between two browsers:
    that gets no answer gives up after 30 seconds so the 20-second retry can
    start a fresh generation. Retrying never needs a new code while the channel
    is alive.
-   The desktop renews the channel every 10 minutes with
+   The desktop renews the channel with
    `POST /api/v1/sync/channels/{id}/renew` (live since 2026-11-06; either role
-   may call it, no peer action and no code). Renewal sets `expires_at` to
-   *now + requested TTL* rather than extending the old deadline, so schedule it
-   well inside the remaining lifetime. The operator's maximum TTL (default 24 h,
-   adjustable to 7 days) caps each **request's** `ttl_seconds` — it is not a
-   total lifetime cap. Per BobSwap's contract there is **no absolute lifetime
-   cap**: repeated renewals keep the pairing alive indefinitely, and only
-   `DELETE` or inactivity (nobody renewing) ends it. Renewal works only while
-   the channel is unexpired. A transient relay error (`429`, `5xx`, a timeout)
-   is retried with backoff and does not end the session; only an expired/purged
-   channel or a rejected role token needs a new code. Without the renew route,
-   BobSwap's fixed 30-minute lifetime applies and `npm run pair -- --relay` is
-   needed again.
+   may call it, no peer action and no code), asking for
+   `{"ttl_seconds": 604800}`. Renewal sets `expires_at` to *now + requested
+   TTL* rather than extending the old deadline. The next tick is a third of the
+   returned lifetime, capped at 24 hours: a week-long channel renews once a
+   day with six days of slack, a 24-hour operator cap renews every 8 hours, and
+   a relay that rejects the TTL field retries once without it and keeps the old
+   10-minute cadence. The operator's maximum TTL (default 24 h, adjustable
+   60 s–7 days) caps each **request's** `ttl_seconds` — it is not a total
+   lifetime cap. Per BobSwap's contract there is **no absolute lifetime cap**:
+   repeated renewals keep the pairing alive indefinitely, and only `DELETE` or
+   inactivity (nobody renewing) ends it. Renewal works only while the channel is
+   unexpired. A transient relay error (`429`, `5xx`, a timeout) is retried with
+   backoff and does not end the session; only an expired/purged channel or a
+   rejected role token needs a new code. Without the renew route, BobSwap's
+   fixed 30-minute lifetime applies and `npm run pair -- --relay` is needed
+   again.
    The channel (id, role token, expiry, relay origin and capabilities) is
    persisted to `~/.bobkat/relay-channels.json`. On boot every stored channel
    is renewed at once and the desktop goes back to waiting for the browser's
@@ -325,9 +329,10 @@ remains on the channel server; speech-to-text rides the peer channel
 
 Signal writes and heartbeats do not renew a sync channel — only an explicit
 `/renew` does (live since 2026-11-06). The desktop bridge renews its relay
-channel every 10 minutes and keeps doing so while the phone is away, so the
-channel — and the phone's nonce-tagged resume on reload — can last
-indefinitely. What still ends a relay pairing:
+channel at a third of the reported lifetime — daily on a week-long channel —
+and keeps doing so while the phone is away, so the channel — and the phone's
+nonce-tagged resume on reload — can last indefinitely. What still ends a relay
+pairing:
 
 - **The desktop staying down past the remaining TTL.** The channel id, role
   token, expiry and capabilities are persisted to

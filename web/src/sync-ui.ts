@@ -981,9 +981,10 @@ export function wireSyncUi(getSync: SyncGetter): void {
         progressDone();
         addPairLog("ok", `mirror bound: ${connection.info.mirror}`);
         if (connection.info.relay) {
-          // The desktop renews the relay channel every 10 minutes, so a reload
-          // reconnects with a nonce-tagged resume as long as it runs. Adopt
-          // the live connection now so this pairing does not need a reload.
+          // The desktop renews the relay channel on an adaptive schedule (at
+          // most once a day), so a reload reconnects with a nonce-tagged
+          // resume as long as it runs. Adopt the live connection now so this
+          // pairing does not need a reload.
           const globals = window as unknown as {
             __bobServer?: unknown;
             __bobAdoptServer?: (connection: ServerConnection) => void;

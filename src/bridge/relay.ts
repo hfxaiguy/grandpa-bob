@@ -88,10 +88,37 @@ class SupersededReconnectError extends Error {
     this.name = "SupersededReconnectError";
   }
 }
-/** Renew well inside the relay's default 30-minute channel lifetime. */
-const RENEW_EVERY_MS = 10 * 60_000;
+/**
+ * Ask the relay for a week on every renewal. BobSwap clamps the request to the
+ * operator's maximum TTL (24 h by default, adjustable up to 7 days), so a
+ * shorter cap degrades safely: the returned `expires_at` drives the next tick.
+ */
+const RENEW_TTL_SECONDS = 7 * 24 * 60 * 60;
+/** Never renew less often than once a day, even on a week-long channel. */
+const RENEW_MAX_MS = 24 * 60 * 60_000;
+/** Fixed-lifetime relay: keep the old 10-minute cadence inside 30 minutes. */
+const RENEW_FALLBACK_MS = 10 * 60_000;
 /** After a transient renewal failure, try again well before the TTL runs out. */
 const RENEW_RETRY_MS = 2 * 60_000;
+
+/**
+ * Schedule the next renewal at a third of the remaining lifetime, capped at
+ * one day. A seven-day channel renews daily with six days of slack; a 24-hour
+ * operator cap renews every 8 hours; a fixed 30-minute channel keeps the old
+ * 10-minute cadence. A missing or garbled expiry falls back conservatively
+ * instead of trusting a full interval.
+ */
+export function renewalDelayMs(expiresAt: string | undefined, now = Date.now()): number {
+  const remaining = expiresAt ? Date.parse(expiresAt) - now : NaN;
+  if (!Number.isFinite(remaining) || remaining <= 0) return RENEW_FALLBACK_MS;
+  return Math.max(5_000, Math.min(RENEW_MAX_MS, Math.floor(remaining / 3)));
+}
+
+/** An older relay rejects the optional `ttl_seconds` field. */
+function isUnsupportedTtlError(err: unknown): boolean {
+  const status = (err as { status?: unknown } | null)?.status;
+  return status === 400 || status === 422;
+}
 
 /**
  * A relay failure that ends the pairing: the channel is gone (expired, purged
@@ -239,11 +266,18 @@ export async function createRelayChannel(
  * older deployment answers 404, which callers treat as "not supported" and
  * fall back to the fixed 30-minute lifetime.
  */
-export async function renewRelayChannel(channel: RelayChannel): Promise<string | undefined> {
+export async function renewRelayChannel(
+  channel: RelayChannel,
+  ttlSeconds?: number,
+): Promise<string | undefined> {
+  const ttl =
+    typeof ttlSeconds === "number" && Number.isFinite(ttlSeconds) && ttlSeconds > 0
+      ? Math.floor(ttlSeconds)
+      : undefined;
   const data = await relayFetch(
     channel,
     `/api/v1/sync/channels/${encodeURIComponent(channel.id)}/renew`,
-    { method: "POST", body: JSON.stringify({}) },
+    { method: "POST", body: JSON.stringify(ttl ? { ttl_seconds: ttl } : {}) },
   );
   return typeof data.expires_at === "string" ? data.expires_at : undefined;
 }
@@ -559,9 +593,11 @@ export class RelayTransport implements PeerTransport {
   private cursor = 0;
   private reconnectWait: Promise<ReconnectedPeer> | null = null;
   private handled = new Set<string>();
-  /** Renewal cadence: well inside the relay's 30-minute default lifetime. */
+  /** Renewal cadence, derived from the relay's reported expiry. */
   private renewTimer: ReturnType<typeof setTimeout> | null = null;
   private renewUnsupported = false;
+  /** Stop sending `ttl_seconds` once the relay rejects the field. */
+  private requestTtl = true;
 
   constructor(
     private readonly channel: RelayChannel,
@@ -569,11 +605,11 @@ export class RelayTransport implements PeerTransport {
   ) {
     this.id = channel.id;
     this.profile = channel.profile;
-    this.scheduleRenewal();
+    this.scheduleRenewal(renewalDelayMs(channel.expiresAt));
   }
 
   /** Ask the relay to extend the channel; the service may not support it yet. */
-  private scheduleRenewal(delayMs = RENEW_EVERY_MS): void {
+  private scheduleRenewal(delayMs: number): void {
     if (this.closed || this.renewUnsupported || this.renewTimer) return;
     this.renewTimer = setTimeout(() => {
       this.renewTimer = null;
@@ -584,12 +620,12 @@ export class RelayTransport implements PeerTransport {
 
   private async renewNow(): Promise<void> {
     if (this.closed || this.renewUnsupported) return;
-    let renewed = true;
+    let expiresAt: string | undefined;
     try {
-      const expiresAt = await renewRelayChannel(this.channel);
-      if (expiresAt) this.channel.expiresAt = expiresAt;
-      this.onEvent?.("renewed", { expiresAt: expiresAt ?? null });
-      this.hooks.onRenewed?.(expiresAt);
+      expiresAt = await renewRelayChannel(
+        this.channel,
+        this.requestTtl ? RENEW_TTL_SECONDS : undefined,
+      );
     } catch (err) {
       if (isTerminalRelayError(err)) {
         // The channel is gone or the token was rejected: renewal cannot help.
@@ -600,10 +636,21 @@ export class RelayTransport implements PeerTransport {
         this.hooks.onDead?.(err instanceof Error ? err : new Error(String(err)));
         return;
       }
+      if (this.requestTtl && isUnsupportedTtlError(err)) {
+        // Older relay: retry once without the TTL field, then keep its default
+        // lifetime and the 10-minute cadence instead of ending the pairing.
+        this.requestTtl = false;
+        await this.renewNow();
+        return;
+      }
       // Transient (network/429/5xx): retry soon, before the TTL runs out.
-      renewed = false;
+      this.scheduleRenewal(RENEW_RETRY_MS);
+      return;
     }
-    this.scheduleRenewal(renewed ? RENEW_EVERY_MS : RENEW_RETRY_MS);
+    if (expiresAt) this.channel.expiresAt = expiresAt;
+    this.onEvent?.("renewed", { expiresAt: expiresAt ?? null });
+    this.hooks.onRenewed?.(expiresAt);
+    this.scheduleRenewal(renewalDelayMs(expiresAt));
   }
 
   /**
