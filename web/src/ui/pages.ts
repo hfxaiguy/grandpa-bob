@@ -3,6 +3,8 @@
 // workspace (file browser, tree patterns, app secrets, git sync). Both are
 // rendered by the browser target and hosted in a same-origin iframe.
 
+import { MODEL_PRESETS, presetId } from "../model-presets";
+
 export interface UiConfig {
   port: number;
 }
@@ -217,6 +219,7 @@ async function refreshStatus() {
   $("cur-hf").textContent     = env.LLM_API_KEY         ? "current: " + env.LLM_API_KEY.slice(0,6) + "..." : "(unset)";
   $("cur-ollama").textContent = env.OLLAMA_API_KEY      ? "current: " + env.OLLAMA_API_KEY.slice(0,6) + "..." : "(unset)";
   $("cur-neuralwatt").textContent = env.NEURALWATT_API_KEY ? "current: " + env.NEURALWATT_API_KEY.slice(0,6) + "..." : "(unset)";
+  $("cur-commandcode").textContent = env.COMMAND_CODE_API_KEY ? "current: " + env.COMMAND_CODE_API_KEY.slice(0,6) + "..." : "(unset)";
   $("cur-exo").textContent = env.EXO_API_KEY ? "current: " + env.EXO_API_KEY.slice(0,6) + "..." : "(unset)";
   // Populate the all-keys editor only when it's not holding unsaved edits.
   if (!envRows.length) {
@@ -334,29 +337,13 @@ async function saveAllEnv() {
 // ---- structured model registry editor --------------------------------
 // The form is the primary editor; it builds the exact JSON that gets saved,
 // and the Raw JSON toggle reveals the same text for hand-editing. Provider
-// presets only autofill base URL + protocol — every field stays editable.
-const MODEL_PRESETS = {
-  "ollama-local":  { label: "Ollama (local)",        baseURL: "http://127.0.0.1:11434", protocol: "ollama" },
-  "ollama-cloud":  { label: "Ollama cloud",          baseURL: "https://ollama.com",     protocol: "ollama" },
-  "neuralwatt":    { label: "Neuralwatt",            baseURL: "https://api.neuralwatt.com/v1" },
-  "openai":        { label: "OpenAI",                baseURL: "https://api.openai.com/v1" },
-  "openrouter":    { label: "OpenRouter",            baseURL: "https://openrouter.ai/api/v1" },
-  "llamacpp":      { label: "llama.cpp / LM Studio", baseURL: "http://127.0.0.1:1234/v1" },
-  "custom":        { label: "Custom",                baseURL: "" },
-};
+// presets (web/src/model-presets.ts) only autofill base URL + protocol — every
+// field stays editable.
 let modelRegistry = {};
 
 function escAttr(s) {
   return String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-function presetId(baseURL, protocol) {
-  const b = baseURL || "", p = protocol || "";
-  for (const id in MODEL_PRESETS) {
-    const pr = MODEL_PRESETS[id];
-    if ((pr.baseURL || "") === b && (pr.protocol || "") === p) return id;
-  }
-  return "custom";
 }
 function rawModelsOpen() {
   const w = $("models-raw-wrap");
@@ -586,6 +573,7 @@ async function saveEnv(e) {
   if ($("f-hf").value)     body.LLM_API_KEY         = $("f-hf").value;
   if ($("f-ollama").value) body.OLLAMA_API_KEY      = $("f-ollama").value;
   if ($("f-neuralwatt").value) body.NEURALWATT_API_KEY = $("f-neuralwatt").value;
+  if ($("f-commandcode").value) body.COMMAND_CODE_API_KEY = $("f-commandcode").value;
   if ($("f-exo").value)    body.EXO_API_KEY         = $("f-exo").value;
   document.querySelectorAll("#app-env-fields input[data-env-key]").forEach(function (el) {
     const key = el.getAttribute("data-env-key");
@@ -595,7 +583,7 @@ async function saveEnv(e) {
   try {
     await api("/api/env", { method: "POST", body: JSON.stringify(body) });
     toast("saved");
-    $("f-token").value = $("f-uid").value = $("f-hf").value = $("f-ollama").value = $("f-neuralwatt").value = $("f-exo").value = "";
+    $("f-token").value = $("f-uid").value = $("f-hf").value = $("f-ollama").value = $("f-neuralwatt").value = $("f-commandcode").value = $("f-exo").value = "";
     document.querySelectorAll("#app-env-fields input").forEach(function (el) { el.value = ""; });
     await refreshStatus();
   } catch {}
@@ -1224,6 +1212,8 @@ export function buildSettingsHtml(config: UiConfig): string {
     <input id="f-ollama" type="password" placeholder="ollama-api-key...">
     <label>Neuralwatt API key <span id="cur-neuralwatt" style="float:right"></span></label>
     <input id="f-neuralwatt" type="password" placeholder="sk-...">
+    <label>CommandCode API key <span id="cur-commandcode" style="float:right"></span></label>
+    <input id="f-commandcode" type="password" placeholder="user_... (Provider API key from Command Code Studio)">
     <label>Exa search API key <span id="cur-exo" style="float:right"></span></label>
     <input id="f-exo" type="password" placeholder="exa-... (used by exa_search)">
     <div id="app-env-fields"></div>
@@ -1305,7 +1295,7 @@ export function buildSettingsHtml(config: UiConfig): string {
 
 <div class="card">
   <h2 style="margin-top:0">Models</h2>
-  <p style="margin:4px 0"><small>Named model slots the trees reference (<code>Model("strong")</code>, <code>Model("cheap")</code>). Each slot points at any OpenAI-compatible endpoint (Ollama local/cloud, OpenAI, Neuralwatt, OpenRouter, llama.cpp&hellip;) or native Ollama. Pick a provider preset, choose a model, then <b>Test</b>. Saving applies immediately &mdash; no restart. Keys may use <code>\${ENV}</code> to reference the credentials above, or be pasted literally.</small></p>
+  <p style="margin:4px 0"><small>Named model slots the trees reference (<code>Model("strong")</code>, <code>Model("cheap")</code>). Each slot points at any OpenAI-compatible endpoint (Ollama local/cloud, OpenAI, Neuralwatt, CommandCode, OpenRouter, llama.cpp&hellip;) or native Ollama. Pick a provider preset, choose a model, then <b>Test</b>. Saving applies immediately &mdash; no restart. Keys may use <code>\${ENV}</code> to reference the credentials above, or be pasted literally.</small></p>
   <div id="model-slots">(loading...)</div>
   <datalist id="models-datalist"></datalist>
   <div class="actions">

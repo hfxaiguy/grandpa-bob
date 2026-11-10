@@ -682,14 +682,24 @@ If port 8080 is taken (usually by the admin), stop it or choose another origin:
 ### Models in standalone
 
 The seed carries `models.json` from `web/public/models.standalone.json`: the
-neuralwatt slots (`v4`, `v4.1`) with `cheap → v4` and `strong → v4.1`. Keys are
-`${NEURALWATT_API_KEY}` — paste the key into **Settings → Credentials &
-.env → Neuralwatt API key**; it is stored in this browser profile
-(localStorage), never in the workspace or the seed. For a key without a
-shortcut field, press **+ Add key** — the name goes in the left box, the value
-on the right — then **Save all keys**. The Settings **Models JSON** editor
-overrides the seed file, and the **Test** button probes an endpoint from the
-tab.
+neuralwatt slots (`v4`, `v4.1`) with `cheap → v4` and `strong → v4.1`, plus
+`commandcode` / `commandcode-cheap` on CommandCode's OpenAI-compatible
+Provider API. Neuralwatt keys use `${NEURALWATT_API_KEY}` and CommandCode keys
+use `${COMMAND_CODE_API_KEY}` — paste them into **Settings → Credentials &
+.env** (the corresponding shortcut fields, or **+ Add key** for any other
+name) and **Save all keys**; they are stored in this browser profile
+(localStorage), never in the workspace or the seed. CommandCode uses the same
+API key as the CLI (`~/.commandcode/auth.json`, or create one in
+[Command Code Studio](https://commandcode.ai/studio/)). The Settings **Models
+JSON** editor overrides the seed file, and the **Test** button probes an
+endpoint from the tab. A CommandCode slot can also be added from the Models
+card: pick the **CommandCode** provider preset, choose a model id (for example
+`deepseek/deepseek-v4.1-flash`), and set the key to
+`${COMMAND_CODE_API_KEY}`. Use a model whose `supported_endpoints` includes
+`/chat/completions`; CommandCode's Claude entries only answer on Anthropic's
+`/v1/messages` endpoint, so they cannot be used from this OpenAI-compatible
+client. See [`docs/model-providers.md`](../docs/model-providers.md) for the
+registry fields, all presets and troubleshooting.
 
 When those slots have no usable key, the app offers **BobSwap's free temporary
 AI key** in a load-time dialog (about 25k tokens / 20 requests, OpenAI-

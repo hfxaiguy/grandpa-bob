@@ -2,6 +2,43 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-10 — CommandCode is a selectable model provider
+
+CommandCode's Provider API is OpenAI-compatible at
+`https://api.commandcode.ai/provider/v1`, so BOB can use the same models and
+API key as the CommandCode CLI without a protocol adapter. The Settings editor
+now offers a **CommandCode** preset and a shortcut field for
+`COMMAND_CODE_API_KEY`; the seeded and example registries carry
+`commandcode` / `commandcode-cheap` slots on `deepseek/deepseek-v4.1-flash`
+and `deepseek/deepseek-v4-flash`. A model is only usable here when its
+`supported_endpoints` includes `/chat/completions` — CommandCode's Claude
+models answer on `/v1/messages` only.
+
+- **`web/src/model-presets.ts`** (new): provider presets and `presetId()`,
+  moved out of the page body so Node tests can assert them without a DOM;
+  adds the CommandCode base URL.
+- **`web/src/ui/pages.ts`**: imports the shared presets, renders the
+  CommandCode credential shortcut, and saves/clears `COMMAND_CODE_API_KEY`
+  with the other keys.
+- **`models.example.json`**, **`web/public/models.standalone.json`**: add
+  `commandcode` and `commandcode-cheap` slots keyed by
+  `${COMMAND_CODE_API_KEY}`; the existing `cheap`/`strong` aliases are
+  unchanged.
+- **`docs/model-providers.md`** (new): registry fields, every provider preset,
+  CommandCode setup, the `/chat/completions` limitation, secret handling and a
+  troubleshooting table.
+- **`.env.example`**, **`README.md`**, **`web/README.md`**: document the
+  Provider API root, key source (Command Code Studio or
+  `~/.commandcode/auth.json`), model ids and the `/chat/completions`
+  limitation; link the new provider guide.
+- **`scripts/provider-registry-test.ts`** (new), **`package.json`**: pin the
+  preset, seeded registry, example registry and URL join; `test:models` runs
+  it too.
+
+Tests: `npm run test:providers`; `npm run test:models`;
+`npm run test:standalone`; `npm run typecheck`;
+`npm --prefix web run typecheck`; `npm run build:web`.
+
 ## 2026-11-08 — a runaway turn has a wall-clock budget
 
 The run watchdog already settled a turn that went silent. A loop that keeps

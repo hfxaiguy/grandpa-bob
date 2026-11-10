@@ -19,5 +19,15 @@
     "apiKey": "${NEURALWATT_API_KEY}",
     "model": "glm-5.3",
     "thinking": { "reasoning_effort": "high" }
+  },
+  "commandcode": {
+    "baseURL": "https://api.commandcode.ai/provider/v1",
+    "apiKey": "${COMMAND_CODE_API_KEY}",
+    "model": "deepseek/deepseek-v4.1-flash"
+  },
+  "commandcode-cheap": {
+    "baseURL": "https://api.commandcode.ai/provider/v1",
+    "apiKey": "${COMMAND_CODE_API_KEY}",
+    "model": "deepseek/deepseek-v4-flash"
   }
 }

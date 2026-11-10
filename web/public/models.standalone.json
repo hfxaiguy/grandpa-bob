@@ -11,6 +11,16 @@
     "apiKey": "${NEURALWATT_API_KEY}",
     "transform": "gemma4Thinking"
   },
+  "commandcode": {
+    "baseURL": "https://api.commandcode.ai/provider/v1",
+    "model": "deepseek/deepseek-v4.1-flash",
+    "apiKey": "${COMMAND_CODE_API_KEY}"
+  },
+  "commandcode-cheap": {
+    "baseURL": "https://api.commandcode.ai/provider/v1",
+    "model": "deepseek/deepseek-v4-flash",
+    "apiKey": "${COMMAND_CODE_API_KEY}"
+  },
   "cheap": "v4",
   "strong": "v4.1"
 }

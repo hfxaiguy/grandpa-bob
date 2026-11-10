@@ -393,9 +393,19 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
    OpenAI-compatible endpoints and 10 min on Ollama, and a timed-out call gets
    two attempts before it fails.
    Any OpenAI-compatible endpoint works (OpenAI, OpenRouter, Neuralwatt,
-   llama.cpp, LM Studio, HF router); `protocol: "ollama"` is only for Ollama's
-   native `/api/chat`. The **Test** button probes a slot from the tab.
-   Per-conversation overrides: the cheap/strong pickers in the session panel.
+   CommandCode, llama.cpp, LM Studio, HF router); `protocol: "ollama"` is only
+   for Ollama's native `/api/chat`. The **Test** button probes a slot from the
+   tab. Per-conversation overrides: the cheap/strong pickers in the session
+   panel. For CommandCode, pick the **CommandCode** preset (or set
+   `baseURL: "https://api.commandcode.ai/provider/v1"`) and use the key from
+   [Command Code Studio](https://commandcode.ai/studio/) — the same
+   `COMMAND_CODE_API_KEY` the CLI uses. Model ids include
+   `deepseek/deepseek-v4.1-flash` (strong) and `deepseek/deepseek-v4-flash`
+   (cheap); the live list is at `/provider/v1/models`. Pick a model whose
+   `supported_endpoints` includes `/chat/completions` — CommandCode's Claude
+   models only answer on the Anthropic `/v1/messages` wire, which this LLM
+   client does not speak. Full provider fields, presets and troubleshooting:
+   [`docs/model-providers.md`](docs/model-providers.md).
    With no usable key in the browser workspace, a load-time dialog offers a
    free temporary **BobSwap AI** key (~25k tokens / 20 requests); accepting
    points `v4`/`v4.1` at `https://bobswap.hfxaiguy.com/api/v1/ai` and stores
