@@ -567,6 +567,13 @@ folder (`git -C <folder> remote add …`), but the app no longer surfaces it.
 Step-by-step for both cases (same machine; server ↔ remote browser) and the
 troubleshooting table: [docs/pairing-and-sync.md](docs/pairing-and-sync.md).
 
+A locally hosted profile folder can also be refreshed from the packed seed
+with `npm run seed:unpack -- --force` (add `--target ~/.bobkat/folders/<name>`
+for another profile). It writes only `app/`, `patterns/` and `lib/`, backs up
+the previous copies, and overlays rather than deleting; browser OPFS profiles
+update in the UI instead. See
+[web/README.md](web/README.md#updating-a-locally-hosted-profile-from-the-packed-seed).
+
 ## FAQ
 
 > Answers are current unless a section is explicitly marked **historical**.

@@ -304,6 +304,54 @@ workspace persists on its own. The sidecar `seed/meta.json` records `sha256`
 and `size` beside `createdAt`, so the toolbar can offer an update even when a
 re-pack happens to reuse the same timestamp.
 
+The inverse is available for both kinds of profile. For a **browser profile**,
+**Profiles → Seed… → Update from shipped seed** overlays the bundled snapshot
+onto the active OPFS profile. It is explicit, so it also works on a
+mirror-bound profile (the next sync may merge the mirror back); `?reseed=1`
+re-imports the bundled archive on boot. For a **locally hosted profile**
+(`~/.bobkat/folders/<name>`), use `npm run seed:unpack`.
+
+### Updating a locally hosted profile from the packed seed
+
+`seed:unpack` reads a `WorkspaceArchive` (default
+`web/public/seed/workspace.json`) and writes its `app/`, `patterns/` and `lib/`
+entries into a profile folder (default `~/.bobkat/folders/seed`). Everything
+else — `logs/`, chats, databases, assets, `models.json`, `.git/` — stays with
+the target profile.
+
+```sh
+npm run seed:unpack -- --dry-run              # list files, write nothing
+npm run seed:unpack -- --force                # update ~/.bobkat/folders/seed
+npm run seed:unpack -- --target ~/.bobkat/folders/phone --force
+npm run seed:unpack -- --archive /tmp/workspace.json \
+  --target ~/.bobkat/folders/phone --force
+```
+
+Without `--force` it refuses a target whose `app/`, `patterns/` or `lib/` is
+non-empty. With `--force` it first copies those three directories to
+`.seed-backup-<timestamp>/`, then **overlays** the archive: archive files are
+added or overwritten, while local files the archive does not contain are left
+in place (this is not a clean replacement). `--dry-run` prints the paths and
+exits before any write.
+
+The archive is whatever `make-seed` last packed, so re-pack first if the source
+profile changed. `seed:unpack` only updates the desktop folder; if that folder
+is paired as a profile's mirror, the browser copy picks the changes up on its
+next sync (or use **Update from shipped seed** for the bundled archive).
+
+There is no `seed:pull`/`seed:update` script that fetches a BobSwap shelf
+version into a local folder. Download `/latest` and pass it to `seed:unpack`
+explicitly (omit the key for a public version, and compare the SHA-256 with
+`/latest/meta` or the ETag if you want the same check the browser makes):
+
+```sh
+curl -fsSL \
+  "https://bobswap.hfxaiguy.com/api/v1/<account>/<seed>/latest?key=$BOBSWAP_READ_KEY" \
+  -o /tmp/workspace.json
+npm run seed:unpack -- --archive /tmp/workspace.json \
+  --target ~/.bobkat/folders/<profile> --force
+```
+
 To ship that packed seed to a BobSwap shelf without it drifting, publish the
 exact bytes (from the repo root). The first interactive run asks for the
 account, seed name and upload key (input hidden) and offers to save them in
