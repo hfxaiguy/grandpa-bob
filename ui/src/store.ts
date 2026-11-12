@@ -5,6 +5,7 @@ import { createSignal } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
 import { getJSON, postJSON, postForm, openEventStream } from "./api";
 import { lastTurnFailure } from "./turn-failure";
+import type { TurnFailure } from "./turn-failure";
 import type { AppInfo, PatternInfo, Provenance, QueuedTurn, RefTarget, SessionInfo, Slot, Turn } from "./types";
 import { loadSttConfig, loadTtsConfig, isCloudSttProvider, isCloudTtsProvider, sttKeyFor, ttsKeyFor } from "../../web/src/services/config";
 import { isBrowserSttProvider } from "../../web/src/services/registry";
@@ -100,9 +101,10 @@ export interface UiState {
   bridgeOn: boolean;
   toast: string;
   toastErr: boolean;
-  /** The most recent failure (a failed turn or an unhandled model call), shown
-   *  as a dismissible banner. `retryable` adds the ↻ action. */
-  lastError: { title: string; text: string; retryable: boolean } | null;
+  /** The most recent failure (a parked model call or a failed turn), shown as
+   *  a dismissible banner. `action` says whether ↻ re-issues the call or
+   *  resends the human message from the checkpoint. */
+  lastError: TurnFailure | null;
   /** A hidden tile whose app is active but could not raise because both app
    *  seats are taken; its rail square pulses until opened (or the pulse
    *  times out). */
@@ -583,15 +585,30 @@ export async function resendCall(): Promise<void> {
       toast("no model call is waiting right now", true);
       return;
     }
+    // A parked failure's banner is stale the moment the request is re-issued;
+    // a later failure emits another llm_retry_waiting and re-derives it.
+    if (state.lastError?.action === "call") setState("lastError", null);
     toast("resending the model call…");
   } catch (e) {
     toast(e instanceof Error ? e.message : "could not resend the model call", true);
   }
 }
 
-/** Resend a turn's input — the manual escape when a turn (or a call inside it)
- *  failed. The engine resumes from its last checkpoint, so work before the
- *  failure is not repeated. */
+/** Drop a parked failed call and let its error reach the tree. The turn keeps
+ *  running, so the app can recover or report the failure itself. */
+export async function abandonCall(): Promise<void> {
+  try {
+    const d = await postJSON<{ abandoned?: boolean }>("/api/chat/call/abandon", {});
+    if (state.lastError?.action === "call") setState("lastError", null);
+    if (!d.abandoned) toast("no model call is waiting right now");
+  } catch (e) {
+    toast(e instanceof Error ? e.message : "could not drop the model call", true);
+  }
+}
+
+/** Resend a turn's input — the manual escape when a turn failed. The engine
+ *  resumes from its last checkpoint, so the turn re-runs from the last human
+ *  message; it cannot rewind to the failed call itself. */
 export async function retryTurn(turnId: string): Promise<void> {
   const turn = state.turns.find((t) => t.turnId === turnId);
   if (!turn || !turn.input || turn.status === "running") return;
@@ -1778,11 +1795,11 @@ export function handleSSE(msg: any): void {
           if (t.events.length > MAX_TURN_EVENTS) t.events.splice(0, t.events.length - MAX_TURN_EVENTS);
         }),
       );
-      // A swallowed model-call failure (an app subtree, the context condenser,
-      // a fold, …) has no turn error of its own — surface it the moment it
-      // happens. Re-derive on a later successful call too: a failure grandma-kat
-      // retried successfully must not leave a permanent banner.
-      if (ev?.kind === "llm_error") {
+      // A failed model call — parked for a manual retry, or swallowed by an
+      // app subtree / the context condenser — has no turn error of its own.
+      // Surface it the moment it happens. Re-derive on a later successful
+      // call too: a failure that was retried must not leave a banner.
+      if (ev?.kind === "llm_error" || ev?.kind === "llm_retry_waiting") {
         syncLastError(state.turns);
         if (state.lastError?.title === "MODEL CALL FAILED") {
           toast(`model call failed: ${state.lastError.text}`, true);

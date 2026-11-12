@@ -84,6 +84,7 @@ export class AgentClient {
   private probePending = new Map<number, { resolve: (value: string) => void; reject: (error: Error) => void }>();
   private dbPending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private resendPending = new Map<number, { resolve: (resent: boolean) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  private abandonPending = new Map<number, { resolve: (abandoned: boolean) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private eventSubs = new Set<(event: unknown) => void>();
   private dumpSubs = new Set<(paths: string[]) => void>();
   private commitSubs = new Set<(paths: string[]) => void>();
@@ -129,6 +130,7 @@ export class AgentClient {
         paths?: unknown;
         mode?: "resumed" | "restored" | "fresh";
         resent?: boolean;
+        abandoned?: boolean;
       };
       if (msg.type === "call-resend-result") {
         const pending = this.resendPending.get(msg.id);
@@ -136,6 +138,14 @@ export class AgentClient {
         this.resendPending.delete(msg.id);
         clearTimeout(pending.timer);
         pending.resolve(msg.resent === true);
+        return;
+      }
+      if (msg.type === "call-abandon-result") {
+        const pending = this.abandonPending.get(msg.id);
+        if (!pending) return;
+        this.abandonPending.delete(msg.id);
+        clearTimeout(pending.timer);
+        pending.resolve(msg.abandoned === true);
         return;
       }
       if (msg.type === "ops-probe-result") {
@@ -237,6 +247,11 @@ export class AgentClient {
         p.reject(err);
       }
       this.resendPending.clear();
+      for (const p of this.abandonPending.values()) {
+        clearTimeout(p.timer);
+        p.reject(err);
+      }
+      this.abandonPending.clear();
     };
   }
 
@@ -366,6 +381,23 @@ export class AgentClient {
       }, 5_000);
       this.resendPending.set(id, { resolve, reject, timer });
       this.worker.postMessage({ type: "call-resend", id, runId });
+    });
+  }
+
+  /**
+   * Drop a parked model call. The worker stops waiting for a manual retry and
+   * lets the original failure propagate to the tree, which may recover or end
+   * the turn. Resolves false when nothing was parked.
+   */
+  abandonCall(runId?: number): Promise<boolean> {
+    const id = this.nextId++;
+    return new Promise<boolean>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (!this.abandonPending.delete(id)) return;
+        reject(new Error("dropping the model call timed out"));
+      }, 5_000);
+      this.abandonPending.set(id, { resolve, reject, timer });
+      this.worker.postMessage({ type: "call-abandon", id, runId });
     });
   }
 

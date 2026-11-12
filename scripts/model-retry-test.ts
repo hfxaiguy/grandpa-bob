@@ -17,7 +17,7 @@ import {
 } from "../web/src/agent/model-retry.ts";
 import type { ModelRegistry } from "../web/src/model-config.ts";
 import { AgentStoppedError } from "../web/src/stop-error.ts";
-import { liveModelCallSignal, resendLiveModelCall } from "../web/src/agent/model-resend.ts";
+import { abandonLiveModelCall, liveModelCallSignal, resendLiveModelCall } from "../web/src/agent/model-resend.ts";
 
 function httpError(status: number, message = `LLM request failed (${status}): nope`) {
   return Object.assign(new Error(message), { status });
@@ -221,4 +221,81 @@ assert.equal(isRetryableModelError(Object.assign(new Error("stop"), { stopped: t
   assert.equal(resendLiveModelCall(), false, "there is nothing to resend between calls");
 }
 
-console.log("model-retry: classification, backoff, wrapper, resend and non-retryable failures OK");
+// ── 5. exhausted calls park for a manual retry ──────────────────────────
+// A call whose automatic budget is spent stays the resend target for a short
+// window. The person's ↻ then re-issues the same request, not the turn's
+// human message, and the run keeps its state.
+{
+  let calls = 0;
+  let waited: { error: unknown; attempt: number } | null = null;
+  const result = retryModelCall(
+    async () => {
+      calls += 1;
+      if (calls === 1) throw httpError(529, "LLM request failed (529): overloaded");
+      return "recovered";
+    },
+    {
+      attempts: 1,
+      manualRetryMs: 5_000,
+      onWaiting: (info) => void (waited = info),
+      sleep: async () => assert.fail("the automatic budget is already spent"),
+    },
+  );
+  // Let the first attempt fail and reach the parked wait.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(waited, "the exhausted call announces that it is waiting");
+  assert.equal((waited as { attempt: number }).attempt, 1);
+  assert.equal(resendLiveModelCall(), true, "the parked call is the resend target");
+  assert.equal(await result, "recovered", "the same request is issued again");
+  assert.equal(calls, 2, "the call was retried, not the turn restarted");
+  assert.equal(liveModelCallSignal(), undefined, "the parked controller is released");
+}
+
+// Ignoring the parked call lets the original failure through after the window.
+await assert.rejects(
+  () =>
+    retryModelCall(
+      async () => {
+        throw httpError(503);
+      },
+      { attempts: 1, manualRetryMs: 10 },
+    ),
+  /503/,
+  "an ignored parked call fails the turn with its original error",
+);
+
+// A stop while parked aborts the wait instead of leaving the turn silently
+// running until the window expires.
+{
+  const ctrl = new AbortController();
+  const pending = retryModelCall(
+    async () => {
+      throw httpError(503);
+    },
+    { attempts: 1, manualRetryMs: 10_000, signal: ctrl.signal },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  ctrl.abort();
+  await assert.rejects(() => pending, AgentStoppedError);
+  assert.equal(liveModelCallSignal(), undefined, "a stop releases the parked call");
+}
+
+// Cancelling a parked call releases it without stopping the turn: the tree
+// receives the original failure and can recover or report it.
+{
+  let calls = 0;
+  const pending = retryModelCall(
+    async () => {
+      calls += 1;
+      throw httpError(503);
+    },
+    { attempts: 1, manualRetryMs: 10_000 },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(abandonLiveModelCall(), true, "a parked call can be cancelled");
+  await assert.rejects(() => pending, /503/, "the original failure reaches the tree");
+  assert.equal(calls, 1, "cancelling does not issue another request");
+  assert.equal(liveModelCallSignal(), undefined, "a cancel releases the parked call");
+}
+
+console.log("model-retry: classification, backoff, wrapper, resend, parking, cancel and non-retryable failures OK");

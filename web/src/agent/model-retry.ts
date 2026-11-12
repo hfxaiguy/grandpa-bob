@@ -6,7 +6,9 @@
  * provider can still surface a transient failure after that budget is spent
  * (load-shedding 52x/529, a second timeout, a connection reset between
  * attempts), and the host used to turn that straight into a failed turn. This
- * wrapper gives such a call one more chance before the turn fails.
+ * wrapper gives such a call one more chance before failing; the browser host
+ * also leaves an exhausted call parked for a short manual-retry window, so ↻
+ * can re-issue that request instead of resending the human message.
  *
  * It is deliberately narrow: a stop/cancel, a quota wall, an auth failure and
  * a malformed request are never retried. Retrying those cannot change the
@@ -15,7 +17,13 @@
 import { callLlm } from "grandma-kat/llm";
 import type { ModelEntry, ModelRegistry } from "../model-config";
 import { AgentStoppedError } from "../stop-error";
-import { beginModelCall, endModelCall, takeModelResend } from "./model-resend";
+import {
+  beginModelCall,
+  endModelCall,
+  takeModelAbandon,
+  takeModelResend,
+  type LiveModelCall,
+} from "./model-resend";
 
 /** Statuses where another attempt can plausibly succeed. */
 function retryableStatus(status: number): boolean {
@@ -56,6 +64,16 @@ export function isRetryableModelError(err: unknown): boolean {
   );
 }
 
+/** A failed call that is waiting for the person to press retry. */
+export interface ModelRetryWait {
+  /** The failure the automatic attempts ended on. */
+  error: unknown;
+  /** Which automatic attempt failed (1-based). */
+  attempt: number;
+  /** The model slot the call was resolved to (`strong`, `cheap`, …). */
+  slot?: string;
+}
+
 export interface RetryModelCallOptions {
   /** Total attempts, including the first. Defaults to 2 (one retry). */
   attempts?: number;
@@ -63,11 +81,57 @@ export interface RetryModelCallOptions {
   baseDelayMs?: number;
   /** The turn's stop signal; a stop cancels the wait before the next attempt. */
   signal?: AbortSignal;
+  /**
+   * How long a failed final attempt stays open for a manual retry. The live
+   * call remains the resend target, so the chat's ↻ retry can re-issue exactly
+   * this request without re-running the turn. 0 (the default) fails at once.
+   */
+  manualRetryMs?: number;
+  /** Called once when the automatic attempts are spent and the manual wait starts. */
+  onWaiting?: (wait: ModelRetryWait) => void;
   /** Injected for deterministic tests. */
   sleep?: (ms: number) => Promise<void>;
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Wait on a failed call without releasing it as the resend target. A manual
+ * resend aborts the live call's controller; a stop aborts the turn's signal.
+ */
+type WaitOutcome = "resend" | "abandon" | "timeout" | "stop";
+
+function waitForManualRetry(
+  call: LiveModelCall,
+  signal: AbortSignal | undefined,
+  ms: number,
+): Promise<WaitOutcome> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (outcome: WaitOutcome): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      call.ctrl.signal.removeEventListener("abort", onCallAbort);
+      signal?.removeEventListener("abort", onStop);
+      resolve(outcome);
+    };
+    const onCallAbort = (): void =>
+      finish(call.abandoned ? "abandon" : call.resent ? "resend" : "stop");
+    const onStop = (): void => finish("stop");
+    call.ctrl.signal.addEventListener("abort", onCallAbort, { once: true });
+    signal?.addEventListener("abort", onStop, { once: true });
+    timer = setTimeout(() => finish("timeout"), ms);
+    // A resend/abandon/stop can land between the failure and this wait; the
+    // event listener alone would miss it and hold the turn until the timeout.
+    if (call.ctrl.signal.aborted) {
+      finish(call.abandoned ? "abandon" : call.resent ? "resend" : "stop");
+    } else if (signal?.aborted) {
+      finish("stop");
+    }
+  });
+}
 
 /**
  * Run `fn` once, and again after a short backoff when it fails with a
@@ -76,8 +140,12 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => set
  *
  * A manual resend aborts the current attempt (through `model-resend`) and
  * re-issues it immediately. It does not consume the automatic retry budget:
- * the person asked for this attempt, so one failed request may be followed by
- * one manual one and still leave the transient budget intact.
+ * the person asked for this attempt, so a manual retry starts with a fresh
+ * transient budget.
+ *
+ * With `manualRetryMs`, an exhausted retryable call is not thrown at once: it
+ * stays the resend target for that window, so the person can retry the call
+ * itself instead of restarting the turn from its last human message.
  */
 export async function retryModelCall<T>(
   fn: () => Promise<T>,
@@ -85,6 +153,7 @@ export async function retryModelCall<T>(
 ): Promise<T> {
   const attempts = Math.max(1, Math.floor(opts.attempts ?? 2));
   const base = Math.max(0, opts.baseDelayMs ?? 750);
+  const manualRetryMs = Math.max(0, Math.floor(opts.manualRetryMs ?? 0));
   const sleep = opts.sleep ?? defaultSleep;
   let attempt = 1;
   for (;;) {
@@ -98,13 +167,57 @@ export async function retryModelCall<T>(
     } catch (err) {
       failure = err;
     }
+    if (takeModelAbandon(call)) {
+      endModelCall(call);
+      throw failure;
+    }
     const resent = takeModelResend(call);
-    endModelCall(call);
-    if (opts.signal?.aborted) throw new AgentStoppedError();
-    if (resent) continue;
-    if (attempt >= attempts || !isRetryableModelError(failure)) throw failure;
-    await sleep(base * 2 ** (attempt - 1));
-    attempt += 1;
+    if (resent) {
+      endModelCall(call);
+      if (opts.signal?.aborted) throw new AgentStoppedError();
+      attempt = 1;
+      continue;
+    }
+    if (opts.signal?.aborted) {
+      endModelCall(call);
+      throw new AgentStoppedError();
+    }
+    if (!isRetryableModelError(failure)) {
+      endModelCall(call);
+      throw failure;
+    }
+    if (attempt < attempts) {
+      endModelCall(call);
+      await sleep(base * 2 ** (attempt - 1));
+      attempt += 1;
+      continue;
+    }
+    if (manualRetryMs > 0) {
+      try {
+        opts.onWaiting?.({ error: failure, attempt });
+      } catch {
+        /* a host observer must not kill the call */
+      }
+      call.parked = true;
+      let outcome: WaitOutcome;
+      try {
+        outcome = await waitForManualRetry(call, opts.signal, manualRetryMs);
+      } finally {
+        call.parked = false;
+      }
+      if (outcome === "resend") {
+        takeModelResend(call);
+        endModelCall(call);
+        attempt = 1;
+        continue;
+      }
+      endModelCall(call);
+      if (takeModelAbandon(call)) throw failure;
+      if (outcome === "stop" || opts.signal?.aborted) throw new AgentStoppedError();
+    } else {
+      endModelCall(call);
+    }
+    throw failure;
   }
 }
 
@@ -122,7 +235,14 @@ export function withModelRetry(
     out[name] = {
       ...entry,
       handler: (messages, options) =>
-        retryModelCall(() => callLlm(entry, messages, options), opts),
+        retryModelCall(() => callLlm(entry, messages, options), {
+          ...opts,
+          // The engine knows the prompt, not the model slot; the registry
+          // wrapper does, so a manual retry can say which role failed.
+          onWaiting: opts.onWaiting
+            ? (wait) => opts.onWaiting!({ ...wait, slot: name })
+            : undefined,
+        }),
     } satisfies ModelEntry;
   }
   return out;

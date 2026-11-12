@@ -36,9 +36,9 @@ function turn(patch: Partial<Turn> = {}): Turn {
 // No turn ⇒ nothing to show.
 assert.equal(lastTurnFailure([]), null);
 
-// A hard-failed turn keeps its retry, as before.
+// A hard-failed turn keeps its resend, as before.
 const failed = lastTurnFailure([turn({ status: "error", error: "boom" })]);
-assert.deepEqual(failed, { title: "TURN FAILED", text: "boom", retryable: true });
+assert.deepEqual(failed, { title: "TURN FAILED", text: "boom", retryable: true, action: "turn" });
 
 // A quota wall's fallback buttons replace the blind retry.
 const quota = lastTurnFailure([
@@ -66,7 +66,41 @@ assert.deepEqual(appTimeout, {
   title: "MODEL CALL FAILED",
   text: "LLM request timed out after 0.8s",
   retryable: true,
+  action: "turn",
 });
+
+// A parked call is still running, but ↻ re-issues the exact request instead of
+// resending the human message. This is the bug the parked state exists for.
+const parked = lastTurnFailure([
+  turn({
+    status: "running",
+    events: [
+      ev("llm_start", { child: "select", round: 1 }),
+      ev("llm_retry_waiting", { error: "LLM request failed (529)", slot: "strong", attempt: 2 }),
+    ],
+  }),
+]);
+assert.deepEqual(parked, {
+  title: "MODEL CALL FAILED",
+  text: "LLM request failed (529)",
+  retryable: true,
+  action: "call",
+});
+
+// As soon as anything else happens (here: the retried call succeeds), the
+// parked banner is stale even though the synthetic event remains in the window.
+assert.equal(
+  lastTurnFailure([
+    turn({
+      status: "running",
+      events: [
+        ev("llm_retry_waiting", { error: "LLM request failed (529)" }),
+        ev("llm_call", { child: "select", round: 1 }),
+      ],
+    }),
+  ]),
+  null,
+);
 
 // The transient-retry layer logs the failure and then the successful attempt
 // with the same child + round: that is not a failure the person must act on.

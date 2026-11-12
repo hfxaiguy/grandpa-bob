@@ -57,7 +57,7 @@ import { resolvePatternPath } from "./pattern-path";
 import { isDroppableContinuationError } from "./resume-guard";
 import { loadBrowserModels } from "./models";
 import { withModelRetry } from "./model-retry";
-import { liveModelCallSignal, resendLiveModelCall } from "./model-resend";
+import { abandonLiveModelCall, liveModelCallSignal, resendLiveModelCall } from "./model-resend";
 import { parseModels, type ModelRegistry } from "../model-config";
 import { watchCommits } from "../sync/commit-watch";
 
@@ -734,7 +734,28 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
             handler: async () => ({ content: `mock: ${task}` }),
           },
         },
-    { signal },
+    {
+      signal,
+      // Keep an exhausted call retryable for a few minutes: the chat's ↻
+      // action then re-issues THIS request instead of resending the human
+      // message and re-running everything from the turn's checkpoint.
+      manualRetryMs: 5 * 60_000,
+      onWaiting: (wait) => {
+        const message = wait.error instanceof Error ? wait.error.message : String(wait.error);
+        post({
+          id: opts.id,
+          type: "event",
+          event: {
+            kind: "llm_retry_waiting",
+            branch_path: "",
+            iteration: 0,
+            scope_id: null,
+            content: { error: message, slot: wait.slot ?? null, attempt: wait.attempt },
+            ts: Date.now(),
+          },
+        });
+      },
+    },
   );
   const modelCatalog = modelCatalogOf(models);
 
@@ -908,6 +929,7 @@ self.onmessage = async (ev: MessageEvent) => {
     | LogMessage
     | { type: "stop"; id?: number }
     | { type: "call-resend"; id: number; runId?: number }
+    | { type: "call-abandon"; id: number; runId?: number }
     | { type: "ops-port"; port: MessagePort }
     | { type: "ops-config"; enabled: boolean; allow: string[] }
     | { type: "ops-result"; id: string; output?: string; error?: string }
@@ -1005,6 +1027,14 @@ self.onmessage = async (ev: MessageEvent) => {
       !!activeStop && (typeof req.runId !== "number" || req.runId === activeStop.id);
     const resent = forThisRun ? resendLiveModelCall() : false;
     post({ id: req.id, type: "call-resend-result", resent });
+    return;
+  }
+  if (msg.type === "call-abandon") {
+    const req = msg as { id: number; runId?: number };
+    const forThisRun =
+      !!activeStop && (typeof req.runId !== "number" || req.runId === activeStop.id);
+    const abandoned = forThisRun ? abandonLiveModelCall() : false;
+    post({ id: req.id, type: "call-abandon-result", abandoned });
     return;
   }
   if (msg.type === "log") {

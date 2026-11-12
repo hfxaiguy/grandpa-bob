@@ -15,6 +15,8 @@ import {
   toggleStream,
   dismissError,
   retryLast,
+  resendCall,
+  abandonCall,
   smallScreen,
 } from "./store";
 
@@ -156,10 +158,11 @@ export function App() {
   // the only visible entry point; the count matches the header's event count
   // (one line per event — turn dividers are not events).
   const streamEvents = createMemo(() => state.turns.reduce((n, t) => n + (t.events?.length ?? 0), 0));
-  // The store derives this beside the failure itself: a hard-failed turn and a
-  // completed turn with an unhandled model call both keep their input, so both
-  // can be resent. A quota wall is not retryable (the fallback buttons are the
-  // right action; a plain retry would just hit the same 402).
+  // The store derives this beside the failure itself: a parked model call and
+  // a failed turn both keep an action. ↻ retries the call when it is still
+  // parked; only when the turn itself failed does it resend the message from
+  // the last checkpoint. A quota wall is not retryable (the fallback buttons
+  // are the right action; a plain retry would just hit the same 402).
   const canRetry = () => !!state.lastError?.retryable;
 
   onMount(() => {
@@ -243,12 +246,28 @@ export function App() {
             </div>
             <div class="err-actions">
               <Show when={canRetry()}>
-                <button class="err-retry" onClick={() => void retryLast()}>
-                  ↻ retry
+                <button
+                  class="err-retry"
+                  title={
+                    err().action === "call"
+                      ? "re-issue the model call that failed (the turn keeps its state)"
+                      : "send this message again from the session's last checkpoint"
+                  }
+                  onClick={() => void (err().action === "call" ? resendCall() : retryLast())}
+                >
+                  {err().action === "call" ? "↻ retry call" : "↻ resend message"}
                 </button>
               </Show>
-              <button class="err-dismiss" onClick={() => dismissError()}>
-                dismiss
+              <button
+                class="err-dismiss"
+                title={
+                  err().action === "call"
+                    ? "drop this failed call and let the tree handle the error"
+                    : "hide this failure"
+                }
+                onClick={() => void (err().action === "call" ? abandonCall() : dismissError())}
+              >
+                {err().action === "call" ? "cancel" : "dismiss"}
               </button>
             </div>
           </div>

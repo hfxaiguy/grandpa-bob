@@ -1221,6 +1221,17 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         : false;
       return { status: 200, body: { ok: true, resent } };
     }
+    if (pathname === "/api/chat/call/abandon" && method === "POST") {
+      // Drop a parked failed call: the worker stops waiting for a manual
+      // retry and the original failure reaches the tree, which may recover or
+      // end the turn. The turn itself keeps running.
+      const key = await ensureSession();
+      const active = activeRuns.get(key);
+      const abandoned = active
+        ? await agent.abandonCall(active.runId).catch(() => false)
+        : false;
+      return { status: 200, body: { ok: true, abandoned } };
+    }
     if (pathname === "/api/chat/stop" && method === "POST") {
       const key = await ensureSession();
       const active = activeRuns.get(key);

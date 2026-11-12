@@ -433,10 +433,11 @@ function AppCallCard(props: { turn: Turn; call: AppCall; depth?: number }) {
   const [open, setOpen] = createSignal(true);
   const status = () => props.call.status;
   const info = () => state.apps.find((a) => a.name === props.call.app);
-  // A failed app call has no retry of its own inside the engine, and its
-  // failure can end the turn with a normal-looking reply. Offer the same
-  // checkpoint resend as the banner, right where the error is visible. Only the
-  // newest turn can be restarted (older turns would jump the conversation).
+  // A failed app call is past the parked model-call window: the engine cannot
+  // rewind to that call once the tree caught the error, so the only remaining
+  // action is resending the message from the turn's checkpoint. Offer it right
+  // where the error is visible. Only the newest turn can be restarted (older
+  // turns would jump the conversation).
   const retryable = () =>
     props.call.failed &&
     props.turn.status !== "running" &&
@@ -511,10 +512,10 @@ function AppCallCard(props: { turn: Turn; call: AppCall; depth?: number }) {
           <button
             type="button"
             class="app-call-retry"
-            title="retry this failed call (resumes the turn from its checkpoint)"
+            title="send this message again from the turn's checkpoint (the app call re-runs)"
             onClick={() => void retryTurn(props.turn.turnId)}
           >
-            ↻ retry
+            ↻ resend
           </button>
         </Show>
         <button

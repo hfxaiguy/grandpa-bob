@@ -2,6 +2,48 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-12 — ↻ retries the failed model call, not the human message
+
+An LLM call that exhausted its automatic retries used to fail the turn/request
+at once. The banner still offered ↻, but the only thing the host could do was
+send the last human message again from the session's pre-turn checkpoint,
+re-running tools and starting a new turn bubble. The button promised a call
+retry and delivered a message resend.
+
+A retryable call now stays parked as the live resend target for five minutes
+after the automatic budget is spent. The worker posts `llm_retry_waiting` with
+the failure, the banner offers **↻ retry call**, and that action re-issues the
+same request — the turn keeps its state and tools that already ran are not
+repeated. If the window expires (or a stop lands), the original failure
+surfaces as before. When a failure is already past the parked window, the
+banner and inline app card say **↻ resend message** and name the checkpoint
+behavior instead of implying a call retry.
+
+- **`web/src/agent/model-retry.ts`**: `manualRetryMs` parks an exhausted
+  retryable call, keeps its controller registered for `resendLiveModelCall`,
+  and treats a stop as `AgentStoppedError`; `onWaiting` reports the failure and
+  slot. Non-retryable failures still throw immediately.
+- **`web/src/agent/agent-worker.ts`**: opts into the five-minute window and
+  streams `llm_retry_waiting` as a turn event.
+- **`ui/src/turn-failure.ts`**, **`ui/src/store.ts`**, **`ui/src/app.tsx`**:
+  the banner's action is `call` (resend the parked request) or `turn` (send the
+  message again from the checkpoint), with matching labels/titles.
+  `resendCall()` clears the parked banner; a later `llm_call` clears any stale
+  one. While parked, the dismiss button becomes **cancel** and drops the call
+  through `POST /api/chat/call/abandon`, letting the tree handle the failure.
+- **`web/src/agent/agent-client.ts`**, **`web/src/server/local-backend.ts`**:
+  forward the `call-abandon` control message to the worker.
+- **`ui/src/components.tsx`**: the inline app-call action is now labelled
+  **↻ resend** because, once the tree caught the error, only the turn can run
+  again.
+
+Tests: `npm run test:model-retry` (parking, manual call retry, timeout, stop,
+cancel); `npm run test:turn-failure` (call vs turn action, stale parked banner);
+`npm run test:standalone`; `npm run test:chat-queue`;
+`npm run test:live-tool-row`; `npm run test:run-watchdog`;
+`npm run test:web-restore`; `npm run typecheck`;
+`npm --prefix web run typecheck`; `npm --prefix ui run typecheck`.
+
 ## 2026-11-12 — Files can see: `files.vision` and declared model capability
 
 The seed workspace gains a `files.vision` sub-app: give it one workspace image

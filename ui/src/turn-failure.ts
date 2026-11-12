@@ -18,8 +18,14 @@ import type { Turn } from "./types";
 export interface TurnFailure {
   title: string;
   text: string;
-  /** The banner offers ↻ retry: the failed turn has an input to resend. */
+  /** The banner offers ↻: the failed call is parked, or the turn can be resent. */
   retryable: boolean;
+  /**
+   * What ↻ does. `call` re-issues the exact model request that failed (the
+   * turn keeps its state and tools that already ran are not repeated); `turn`
+   * sends the human message again from the session's last checkpoint.
+   */
+  action: "call" | "turn";
 }
 
 function eventKey(content: Record<string, unknown> | null | undefined): string | null {
@@ -68,6 +74,21 @@ export function lastTurnFailure(turns: Turn[]): TurnFailure | null {
       title: last.fallback?.length ? "MODEL OUT OF CREDIT" : "TURN FAILED",
       text: last.error || "the turn failed",
       retryable: !!last.input && !last.fallback?.length,
+      action: "turn",
+    };
+  }
+  // An exhausted retryable call parks instead of failing the turn (see
+  // model-retry.ts). The host appends this event while the request is still
+  // the resend target, so ↻ can re-issue it exactly — no human message resent.
+  const events = last.events ?? [];
+  const parked = events[events.length - 1];
+  if (parked?.kind === "llm_retry_waiting") {
+    const message = parked.content?.error;
+    return {
+      title: "MODEL CALL FAILED",
+      text: typeof message === "string" && message.trim() ? message : "a model call failed",
+      retryable: true,
+      action: "call",
     };
   }
   const modelError = unhandledLlmError(last);
@@ -75,7 +96,8 @@ export function lastTurnFailure(turns: Turn[]): TurnFailure | null {
   return {
     title: "MODEL CALL FAILED",
     text: modelError,
-    // A running turn cannot be retried yet; its banner appears without ↻.
+    // A running turn cannot be resent yet; its banner appears without ↻.
     retryable: last.status !== "running" && !!last.input,
+    action: "turn",
   };
 }
