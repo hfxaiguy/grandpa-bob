@@ -387,8 +387,11 @@ registered as a built-in definition and forwarded `ctx`; do not add it as a
 6. **LLM backend** — the Models card (settings page) edits a registry of named
    slots: `cheap` (routing + direct answers) and `strong` (the tool-using
    loop). Each entry has `baseURL`, `apiKey` (browser-local, never in the
-   workspace), `model`, and optional `transform`/`protocol`/`thinking`.
-   Optional call bounds are `timeout` and `idleTimeout` (milliseconds) and
+   workspace), `model`, and optional `transform`/`protocol`/`thinking`/`vision`.
+   Set `vision: true` only on a slot whose endpoint accepts image content parts;
+   BOB publishes each slot's `model` and `vision` flag to trees as the
+   `model_catalog` memory slot (no keys or URLs). Optional call bounds are
+   `timeout` and `idleTimeout` (milliseconds) and
    `retries` (attempts): the whole-call deadline defaults to 2 min on
    OpenAI-compatible endpoints and 10 min on Ollama, and a timed-out call gets
    two attempts before it fails.

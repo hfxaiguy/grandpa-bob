@@ -22,6 +22,11 @@ export interface DirEntry {
 /** The subset of `fs/promises` the shared core uses. */
 export interface FileSystem {
   readFile(path: string, encoding?: "utf8"): Promise<string>;
+  /**
+   * Read a file as raw bytes. Optional because some adapters are text-only;
+   * tools that need exact bytes (images, git objects) check for it.
+   */
+  readFileBytes?(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: string | Uint8Array): Promise<void>;
   mkdir(path: string, opts: { recursive: boolean }): Promise<void>;
   readdir(path: string, opts: { withFileTypes: true }): Promise<DirEntry[]>;

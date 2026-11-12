@@ -119,6 +119,18 @@ export function browserTools(platform: Platform, opts: BrowserToolOptions = {}):
           limit: a.limit === undefined ? undefined : Number(a.limit),
         }),
     },
+    read_image: {
+      description:
+        "Read a workspace image as a data URL for a vision model. Returns " +
+        "{ ok: true, path, mime, bytes, dataUrl } or { ok: false, error }. " +
+        "Supports .png, .jpg, .jpeg, .webp and .gif up to 20 MiB.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string", description: "Workspace-relative image path" } },
+        required: ["path"],
+      },
+      execute: async (a) => await files.readImage(String(a.path ?? "")),
+    },
     write_file: {
       description: "Create or overwrite a file.",
       parameters: {

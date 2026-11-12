@@ -20,7 +20,7 @@ import { emitValue, type EmitComponent } from "../util/emit-text";
 import type { TurnTokens } from "../web-log-types";
 import { createModuleLoader } from "../agent/module-loader";
 import { patternLabel } from "../agent/pattern-path";
-import { createRunWatchdog, DEFAULT_STALE_MS } from "../agent/run-watchdog";
+import { createRunWatchdog, DEFAULT_MAX_MS, DEFAULT_STALE_MS } from "../agent/run-watchdog";
 import { loadEnv, saveEnv, saveModelsJson } from "../settings";
 import { readAppEnvDeclarations } from "./app-env";
 import { parseModels, type ModelRegistry } from "../model-config";
@@ -71,6 +71,8 @@ export interface BackendOptions {
   serverModels?: boolean;
   /** Browser-level CDP socket for the browser_* tools (?cdp=…). */
   cdp?: string;
+  /** Loopback discovery route for that socket (?cdpInfo=…). */
+  cdpInfo?: string;
   /**
    * Gate before every agent turn (chat message, upload). Returns a
    * user-facing error message, or null to allow the turn. The single-host
@@ -182,6 +184,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   const configuredStaleMs = Number(opts.env.BOB_RUN_STALE_MS);
   const runStaleMs =
     Number.isFinite(configuredStaleMs) && configuredStaleMs > 0 ? configuredStaleMs : DEFAULT_STALE_MS;
+  /** Hard wall-clock cap, for a loop that keeps making new calls forever. */
+  const configuredMaxMs = Number(opts.env.BOB_RUN_MAX_MS);
+  const runMaxMs =
+    Number.isFinite(configuredMaxMs) && configuredMaxMs > 0 ? configuredMaxMs : DEFAULT_MAX_MS;
   const subscribers = new Set<(msg: EventMessage) => void>();
   let activePattern = opts.initialPattern || "trunk";
   let modelsJson = opts.modelsJson ?? "";
@@ -596,7 +602,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
   };
 
   /** Reports turns that stopped emitting events; each run settles itself. */
-  const watchdog = createRunWatchdog({ staleMs: runStaleMs });
+  const watchdog = createRunWatchdog({ staleMs: runStaleMs, maxMs: runMaxMs });
 
   async function runTurn(
     turnId: string,
@@ -655,6 +661,11 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         serverModels: opts.serverModels,
         modelOverrides: sessionModels.get(key),
         cdp: opts.cdp,
+        cdpInfo: opts.cdpInfo,
+        // True when this message is resuming an app's pause rather than the
+        // trunk's own. The trunk's overhearer gates on it; the app name is not
+        // needed, and the host is the only authority for it.
+        nested: awaitingBefore != null && awaitingBefore !== "trunk",
       },
       {
         onEvent: (event) => {
@@ -696,20 +707,27 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     activeRuns.set(key, { turnId, runId: running.runId });
     broadcast({ type: "turn_start", turnId, session: key, input: text, inputApp: record.inputApp ?? "trunk", ts: record.startedAt, awaiting: null });
     /**
-     * A run silent for `runStaleMs` is wedged, not thinking. Settle it here —
-     * stop the worker, persist an error marker and flip the UI — because the
-     * `await running` below may never resolve. The checkpoint survives, so the
-     * retry button resumes the tree.
+     * A run silent for `runStaleMs`, or alive past `runMaxMs`, is wedged or
+     * looping. Settle it here — stop the worker, persist an error marker and
+     * flip the UI — because the `await running` below may never resolve. The
+     * checkpoint survives, so the retry button resumes the tree.
      */
-    const settleStuck = async (): Promise<void> => {
+    const settleStuck = async (reason: "silent" | "expired"): Promise<void> => {
       if (record.status !== "running") return;
       record.status = "error";
-      const silence =
-        runStaleMs >= 60_000 ? `${Math.round(runStaleMs / 60_000)}m` : `${Math.max(1, Math.round(runStaleMs / 1000))}s`;
+      const duration = (ms: number) =>
+        ms >= 60_000 ? `${Math.round(ms / 60_000)}m` : `${Math.max(1, Math.round(ms / 1000))}s`;
       record.error =
-        `the run went silent for ${silence} — marked stuck. ` +
-        "Its session checkpoint is kept, so sending a new message resumes it.";
+        reason === "expired"
+          ? `the run exceeded its ${duration(runMaxMs)} budget without finishing — marked stuck. ` +
+            "Its session checkpoint is kept, so sending a new message resumes it."
+          : `the run went silent for ${duration(runStaleMs)} — marked stuck. ` +
+            "Its session checkpoint is kept, so sending a new message resumes it.";
       record.endedAt = Date.now();
+      // The checkpoint is kept, so the next message resumes where this turn
+      // paused. Keep the app it was headed for: the trunk's `nested` gate and
+      // the input box both read this value.
+      record.awaiting = record.inputApp ?? "trunk";
       const active = activeRuns.get(key);
       if (active?.turnId === turnId) {
         try { agent.stop(active.runId); } catch { /* worker gone */ }
@@ -721,7 +739,7 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       // on this page until the write lands.
       broadcast({
         type: "turn_end", turnId, status: "error", error: record.error, output: "",
-        buttons: [], emits: [], awaiting: null, tokens: record.tokens ?? null, ts: record.endedAt,
+        buttons: [], emits: [], awaiting: record.awaiting, tokens: record.tokens ?? null, ts: record.endedAt,
       });
       if (relay) relayToPhone(relay, `Something went wrong: ${record.error}`);
       persistTurn(key, record, active?.runId ?? 0).catch((err) => {
@@ -731,10 +749,10 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     watchdog.start({
       key,
       turnId,
-      onStale: () => {
+      onStale: (reason) => {
         // settleStuck persists and broadcasts; a failure there must not become
         // an unhandled rejection behind the still-running turn.
-        void settleStuck().catch((err) => {
+        void settleStuck(reason).catch((err) => {
           console.warn("run watchdog: could not settle stuck turn", err);
         });
       },
@@ -791,8 +809,11 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
         record.status = "error";
         record.error = err instanceof Error ? err.message : String(err);
         record.endedAt = Date.now();
+        // A failed turn keeps its checkpoint, so the next message resumes the
+        // app it paused in; keep that identity for the trunk's `nested` gate.
+        record.awaiting = record.inputApp ?? "trunk";
         await persistTurn(key, record, running.runId);
-        broadcast({ type: "turn_end", turnId, status: "error", error: record.error, output: "", buttons: [], emits: [], awaiting: null, tokens: record.tokens ?? null, ts: record.endedAt });
+        broadcast({ type: "turn_end", turnId, status: "error", error: record.error, output: "", buttons: [], emits: [], awaiting: record.awaiting, tokens: record.tokens ?? null, ts: record.endedAt });
         if (relay) relayToPhone(relay, `Something went wrong: ${record.error ?? "error"}`);
       }
     } finally {

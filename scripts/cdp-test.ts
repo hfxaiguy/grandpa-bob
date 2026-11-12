@@ -29,6 +29,8 @@ class FakeSocket {
   static failNext = false;
   /** Fail every handshake (BrowserCdp retries, so `failNext` alone recovers). */
   static failAll = false;
+  /** Fail only URLs containing this marker (stale-URL discovery test). */
+  static failFor = "";
   url: string;
   readyState = 0;
   sent: SentMessage[] = [];
@@ -40,7 +42,7 @@ class FakeSocket {
     this.url = url;
     FakeSocket.last = this;
     queueMicrotask(() => {
-      if (FakeSocket.failAll || FakeSocket.failNext) {
+      if (FakeSocket.failAll || FakeSocket.failNext || (FakeSocket.failFor && url.includes(FakeSocket.failFor))) {
         FakeSocket.failNext = false;
         this.emit("error", {});
         return;
@@ -265,6 +267,36 @@ const connect = (): Promise<BrowserCdp> =>
   const withSession = ws.sent.filter((m) => m.sessionId === "s1");
   assert.ok(withSession.length >= 4, "handles/listeners/calls carry the session id");
   await client.close();
+}
+
+// ── stale websocket: discover the new browser URL after a restart ───────
+{
+  const stale = "ws://test/devtools/browser/stale-discovery";
+  const fresh = "ws://test/devtools/browser/fresh-discovery";
+  const originalFetch = globalThis.fetch;
+  let probes = 0;
+  FakeSocket.failFor = "stale-discovery";
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    probes += 1;
+    assert.equal(String(url), "http://test/cdp-info");
+    return new Response(JSON.stringify({ webSocketDebuggerUrl: fresh }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const client = await BrowserCdp.connect(stale, {
+      WebSocketImpl: FakeSocket as unknown as WebSocketCtor,
+      discoverUrl: "http://test/cdp-info",
+      retryDelayMs: 0,
+    });
+    assert.equal(probes, 1, "the discovery route was asked once");
+    assert.equal(FakeSocket.last?.url, fresh, "the fresh browser socket is used");
+    await client.close();
+  } finally {
+    globalThis.fetch = originalFetch;
+    FakeSocket.failFor = "";
+  }
 }
 
 // ── connection failure carries the fix ──────────────────────────────────

@@ -19,6 +19,8 @@
 #   BOB_PROFILE_DIR=%LOCALAPPDATA%\Bobkat\chrome-profile
 #   BOB_BROWSER_HEADLESS=1   no window (prints the URL only)
 #   BOB_NO_OPEN=1            print the URL instead of opening it
+#   BOB_CDP_INFO=…           optional bridge discovery route; when set, the
+#                            page can re-find Chrome after a restart
 $ErrorActionPreference = "Stop"
 
 $AppUrl = if ($env:BOB_APP_URL) { $env:BOB_APP_URL } else { "https://bobkat.hfxaiguy.com" }
@@ -86,6 +88,9 @@ if (-not $version.webSocketDebuggerUrl) {
 
 $separator = if ($AppUrl.Contains("?")) { "&" } else { "?" }
 $Target = "$AppUrl$separator`cdp=$($version.webSocketDebuggerUrl)"
+if ($env:BOB_CDP_INFO) {
+  $Target = "$Target&cdpInfo=$($env:BOB_CDP_INFO)"
+}
 
 if ($env:BOB_NO_OPEN -eq "1" -or $env:BOB_BROWSER_HEADLESS -eq "1") {
   Write-Output $Target

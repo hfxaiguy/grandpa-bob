@@ -11,7 +11,9 @@
  *      detached with the dedicated profile and --remote-allow-origins;
  *   2. reads the browser WebSocket URL from /json/version (Node has no CORS);
  *   3. opens the app in the desktop browser — FireDragon by default — with
- *      ?cdp=<that url>, which the page persists and hands to the agent worker.
+ *      ?cdp=<that url>&cdpInfo=<the bridge discovery route>, which the page
+ *      persists and hands to the agent worker. After a Chrome restart the page
+ *      re-finds the new websocket through that route.
  *
  * FireDragon is Firefox-based and has no CDP endpoint, so it is only the
  * *display* browser; the automation Chrome stays in the background (no window
@@ -41,6 +43,8 @@ import path from "node:path";
 const PORT = Number(process.env.CDP_PORT || 9222);
 const HOST = "127.0.0.1";
 const BASE = `http://${HOST}:${PORT}`;
+const BRIDGE_PORT = Number(process.env.BOB_CHANNEL_PORT || process.env.STORAGE_PORT || 8795);
+const CDP_INFO_URL = process.env.BOB_CDP_INFO_URL || `http://${HOST}:${BRIDGE_PORT}/api/browser/cdp`;
 const STATE_DIR = process.env.BROWSER_STATE_DIR || path.join(os.homedir(), ".grandma-browser");
 const PROFILE_DIR =
   process.env.BROWSER_PROFILE_DIR || path.join(os.homedir(), ".grandma-browser", "chrome-profile");
@@ -235,6 +239,7 @@ const url = new URL(app);
 if (NO_CDP) {
   // Tool-less open: clear any persisted ?cdp so a stale socket is not reused.
   url.searchParams.set("cdp", "");
+  url.searchParams.set("cdpInfo", "");
   console.log(`app:  ${app}`);
   console.log("cdp:  disabled (BOB_NO_CDP=1)");
   console.log(`param: ${url.search}  (clears a saved endpoint)`);
@@ -254,8 +259,12 @@ if (NO_CDP) {
     throw new Error(`Chrome answered on ${BASE} but reported no webSocketDebuggerUrl`);
   }
   url.searchParams.set("cdp", wsUrl);
+  // A browser restart changes the browser websocket UUID. The page asks this
+  // loopback bridge route for the current one before giving up.
+  url.searchParams.set("cdpInfo", CDP_INFO_URL);
   console.log(`app:  ${app}`);
   console.log(`cdp:  ${wsUrl}`);
+  console.log(`info: ${CDP_INFO_URL}`);
   console.log(`param: ${url.search}`);
   console.log(`bob:  ${url.toString()}`);
   openUrl(url.toString());

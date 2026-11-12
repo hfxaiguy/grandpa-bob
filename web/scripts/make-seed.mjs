@@ -58,6 +58,10 @@ const out = path.resolve(here, "..", "public", "seed", "workspace.json");
 const KEEP_DIRS = new Set(["app", "patterns", "lib"]);
 
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", "tmp", "logs", ".commandcode"]);
+// `app/knit/work/` is knit's scratch working copy (specs, generated modules),
+// not part of the shipped app. Packing it would ship one-off drafts and make
+// every seed build carry stale targets.
+const SKIP_REL_DIRS = new Set(["app/knit/work"]);
 const SKIP_FILE = /\.(db|db-wal|db-shm|sqlite|sqlite3|log)$/i;
 
 // Mirrors grandma-kat's SqliteLogger schema (src/logger.mjs CREATE_TABLES).
@@ -99,7 +103,7 @@ async function walk(dir, rel) {
     const full = path.join(dir, entry.name);
     const childRel = rel ? `${rel}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue;
+      if (SKIP_DIRS.has(entry.name) || SKIP_REL_DIRS.has(childRel)) continue;
       await walk(full, childRel);
     } else if (entry.isFile()) {
       if (SKIP_FILE.test(childRel)) continue;

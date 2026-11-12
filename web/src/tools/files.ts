@@ -5,6 +5,24 @@ import type { Platform } from "../platform/types.js";
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", "tmp"]);
 const MAX_READ_CHARS = 100_000;
 const MAX_LIST_ENTRIES = 400;
+/** Vision endpoints usually cap a request well below this; keep the payload sane. */
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const IMAGE_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+};
+
+/** Base64 without Node's Buffer (this file is shared by the browser target). */
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
 
 function isHighSurrogate(code: number): boolean {
   return code >= 0xd800 && code <= 0xdbff;
@@ -129,6 +147,50 @@ export class FileTools {
     if (!st) throw new Error(`not found: ${rel}`);
     if (st.isDirectory()) throw new Error(`not a file: ${rel} (use list_files)`);
     return fs.readFile(abs, "utf8");
+  }
+
+  /**
+   * Read one workspace image as a data URL for a vision model. This is a
+   * separate tool because read_file is a UTF-8 text read: routing image bytes
+   * through it would corrupt them. Returns a result object instead of throwing
+   * on user errors (missing/unsupported/oversized file), so a tree can report
+   * the failure without aborting its whole flow.
+   */
+  async readImage(rel: string): Promise<Record<string, unknown>> {
+    const { fs, path } = this.platform;
+    const abs = this.resolve(rel);
+    const st = await fs.stat(abs).catch(() => null);
+    if (!st) return { ok: false, error: `not found: ${rel}` };
+    if (!st.isFile()) return { ok: false, error: `not a file: ${rel} (read_image reads image files)` };
+    const mime = IMAGE_MIME[path.extname(abs).toLowerCase()];
+    if (!mime) {
+      return {
+        ok: false,
+        error: `unsupported image type: ${rel} — use .png, .jpg, .jpeg, .webp, or .gif`,
+      };
+    }
+    if (!fs.readFileBytes) {
+      return { ok: false, error: "this target cannot read image bytes" };
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = await fs.readFileBytes(abs);
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    if (bytes.length > MAX_IMAGE_BYTES) {
+      return {
+        ok: false,
+        error: `image is ${bytes.length} bytes; the limit is ${MAX_IMAGE_BYTES} (20 MiB)`,
+      };
+    }
+    return {
+      ok: true,
+      path: toRel(this.workspace, abs),
+      mime,
+      bytes: bytes.length,
+      dataUrl: `data:${mime};base64,${toBase64(bytes)}`,
+    };
   }
 
   async writeFile(rel: string, content: string): Promise<string> {

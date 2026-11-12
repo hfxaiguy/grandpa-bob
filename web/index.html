@@ -397,7 +397,7 @@
 
     <dialog id="seed-dialog">
       <h3><span id="seed-dialog-title">Seed source</span><span id="seed-profile-suffix"> — <span id="seed-profile-name"></span></span></h3>
-      <p id="seed-dialog-hint" class="muted">Bind this profile to a seed on a BobSwap service. Updates appear in the toolbar; the run log and chat history are kept.</p>
+      <p id="seed-dialog-hint" class="muted">Bind this profile to a seed on a BobSwap service. Updates appear in the toolbar; the run log and chat history are kept. <strong>Update from shipped seed</strong> overlays the bundled snapshot this app was built with, even on a mirror-bound profile.</p>
       <div class="grid">
         <label id="seed-service-label">Service<select id="seed-service"></select></label>
         <label id="seed-base-url-label">Service URL<input id="seed-base-url" placeholder="https://bobswap.example.com" /></label>
@@ -410,6 +410,7 @@
       <div class="row-actions">
         <button id="seed-save" type="button">Save</button>
         <button id="seed-check" type="button">Check now</button>
+        <button id="seed-shipped" type="button" hidden title="Overlay the bundled snapshot this app shipped with; the run log and chat history are kept.">Update from shipped seed</button>
         <button id="seed-apply" type="button" hidden>Apply update</button>
         <button id="seed-publish" type="button">Publish this profile</button>
         <button id="seed-unbind" type="button">Unbind</button>

@@ -2,6 +2,84 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-12 — Files can see: `files.vision` and declared model capability
+
+The seed workspace gains a `files.vision` sub-app: give it one workspace image
+path (or `{ path, question }`) and a vision-capable model describes what is
+actually visible. The tree reads bytes through a new host `read_image` tool and
+sends an OpenAI-style `image_url` content part; it never round-trips an image
+through UTF-8 text and never writes a file.
+
+Capability is declared, not guessed. A `models.json` slot may carry
+`"vision": true | false`; BOB builds `model_catalog` from the live registry
+(after per-conversation overrides, without keys or URLs) and seeds it as root
+memory. The app refuses before spending a call when its declared slot is
+explicitly `vision: false`, names the exact `models.json` fix, and still tries
+when an older host reports no catalog.
+
+- **`web/src/tools/files.ts`**: `readImage()` — binary-safe data URL for
+  `.png`/`.jpg`/`.jpeg`/`.webp`/`.gif`, 20 MiB cap, structured
+  `{ ok:false, error }` for user errors instead of a thrown abort.
+- **`web/src/platform/{types,memory}.ts`**, **`src/platform/node.ts`**: an
+  optional `readFileBytes` on the filesystem seam (OPFS and desktop already
+  had it).
+- **`web/src/agent/browser-tools.ts`**, **`web/src/tool-guides.ts`**: expose
+  `read_image` and teach the model that image data belongs in an `image_url`
+  part, not in text.
+- **`web/src/model-config.ts`**: parse and document `vision` as a boolean.
+- **`web/src/agent/agent-worker.ts`**: publish `model_catalog`
+  (`{ slot: { model, vision } }`) on fresh and resumed runs.
+- **`web/src/ui/pages.ts`**, **`docs/model-providers.md`**, **`README.md`**:
+  the Settings vision checkbox and the registry contract.
+- **Seed workspace** (`~/.bobkat/folders/seed`): `app/files/app/vision/` with
+  its README, tests and changelog; the parent Files prompt points image
+  requests there; `AGENTS.md` documents `model_catalog`; `web/public/seed`
+  re-packed.
+
+Tests: `npm test` in `app/files` (12 pass, including 6 for `files.vision`);
+`npm run test:platform`; `npm run test:models`; `npm run test:standalone`;
+`npm run test:tree-scope`; `npm run test:tree-context`; `npm run typecheck`;
+`npm --prefix web run typecheck`.
+
+## 2026-11-11 — the host tells the trunk when a message resumes an app
+
+`runTurn` already knew where the next message was headed (`awaitingBefore`,
+from the previous turn's `tree_suspend`). It now passes that fact to the agent
+as `nested`; the worker seeds it into the tree runtime (`memory.nested`) for a
+resumed app pause, and `false` for a fresh knit or the trunk's own delivery.
+The trunk gates its overhearer on it, so it no longer depends on an app writing
+a marker slot around its `Human()`.
+
+- `web/src/server/local-backend.ts`: `nested: awaitingBefore != null &&
+  awaitingBefore !== "trunk"` on every run.
+- `web/src/agent/agent-client.ts`: `AgentRunOptions.nested`.
+- `web/src/agent/agent-worker.ts`: `RunOptions.nested`; the resume path seeds
+  `{ guide, nested }`, and the fresh/delivery paths seed `nested: false`.
+
+## 2026-11-10 — update from the shipped seed
+
+The bundled seed is now reachable from the UI and the seed profile can be
+restored from it.
+
+- **`web/index.html` / `web/src/profile-ui.ts`**: **Profiles → Seed…** gains
+  **Update from shipped seed** for the active profile. It overlays
+  `/seed/workspace.json`, keeps the run log and chat history, and works even
+  when the automatic offer is suppressed for a mirror-bound profile (the
+  confirm text says the mirror may bring its files back).
+- **`web/src/main.ts`**: the hook fetches `/seed/meta.json` and calls the
+  existing `applySeedUpdate`; a mirror-bound profile gets the extra warning.
+- **`web/scripts/unpack-seed.mjs`** + `npm run seed:unpack`: the inverse of
+  `make-seed`. It writes the archive's `app/`, `patterns/` and `lib/` into the
+  desktop seed profile, backs up the existing directories to
+  `.seed-backup-<timestamp>/`, and refuses to overwrite without `--force`.
+- **`web/scripts/make-seed.mjs`**: `app/knit/work/` (scratch specs and generated
+  modules) is no longer packed into the shipped seed.
+- Re-packed `web/public/seed` from `~/.bobkat/folders/seed` so the button
+  applies the current app code, not the Nov 7 snapshot.
+
+Tests: `npm run typecheck`; `npm run build:web`; `npm run seed:unpack --
+--dry-run`; a temp-target `--force` round-trip (backup + 241 files).
+
 ## 2026-11-10 — CommandCode is a selectable model provider
 
 CommandCode's Provider API is OpenAI-compatible at
@@ -69,6 +147,29 @@ default — is unchanged for clients that send no TTL.
 
 Tests: `npm run test:relay-renew`; `npm run test:relay-resilience`;
 `npm run test:relay-reconnect`; `npm run test:relay-resume`; `npm run typecheck`.
+
+## 2026-11-08 — browser tools recover after a Chrome restart
+
+A Chrome restart changes the browser websocket UUID (`/devtools/browser/<id>`)
+that the page was opened with; every browser tool then failed with
+“cannot connect to ws://…” until the page was reopened with a fresh `?cdp=`.
+
+- **`web/scripts/chrome.mjs`**: the launcher now also passes
+  `?cdpInfo=http://127.0.0.1:<bridge>/api/browser/cdp`.
+- **`src/cdp-discovery.ts`**: a loopback bridge route probes Chrome's
+  CORS-gated `/json/version` server-side and returns the current
+  `webSocketDebuggerUrl` to an allowed app origin.
+- **`web/src/agent/cdp.ts`**: `BrowserCdp.connect` takes `discoverUrl`; on a
+  failed handshake it asks the route once, retries the fresh socket, and caches
+  it for later verbs.
+- **`web/src/settings.ts` / `main.ts` / `agent-*.ts` / `local-backend.ts`**:
+  `?cdpInfo` is persisted and passed through to the worker.
+- **`scripts/cdp-test.ts`** and **`scripts/cdp-discovery-test.ts`**: a stale
+  UUID discovers the fresh one; the route handles CORS, foreign origins,
+  preflight and Chrome-down.
+
+Tests: `npm run test:cdp`; `npm run test:cdp-discovery`; `npm run typecheck`;
+`npm run build:web`.
 
 ## 2026-11-08 — a runaway turn has a wall-clock budget
 

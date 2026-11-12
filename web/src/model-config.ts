@@ -77,6 +77,12 @@ export type ModelEntry = {
   /** Optional reasoning level / thinking controls for this model slot. */
   thinking?: ModelThinking;
   /**
+   * True when the endpoint/model accepts image content parts. BOB exposes this
+   * to trees through the `model_catalog` root memory slot; it is declared, not
+   * inferred from the model id, because provider routing changes capability.
+   */
+  vision?: boolean;
+  /**
    * Whole-call deadline in ms (connect, headers and body). grandma-kat defaults
    * to 2 min on OpenAI-compatible endpoints and 10 min on Ollama. A value that
    * exceeds the deadline fails with `llm_timeout` and is retried once.
@@ -139,6 +145,12 @@ function normalizeEntry(raw: unknown, name: string, env: EnvMap): ModelEntry {
   }
   if (r.protocol === "ollama") {
     entry.protocol = "ollama";
+  }
+  if (r.vision !== undefined) {
+    if (typeof r.vision !== "boolean") {
+      throw new Error(`models.json: entry "${name}" field "vision" must be a boolean`);
+    }
+    entry.vision = r.vision;
   }
   // Call bounds are forwarded to grandma-kat verbatim. Without this a
   // models.json `timeout`/`idleTimeout`/`retries` was silently dropped by the

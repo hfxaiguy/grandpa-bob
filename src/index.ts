@@ -29,6 +29,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Bot } from "grammy";
 import { config } from "./config.js";
+import { handleCdpDiscovery } from "./cdp-discovery.js";
 import { createBot, sendChannelText } from "./bot.js";
 import { checkStt } from "./stt.js";
 import {
@@ -120,6 +121,10 @@ const ALLOWED_ORIGINS = (process.env.BOB_APP_ORIGINS ?? DEFAULT_APP_ORIGINS)
   .split(",")
   .map((s) => s.trim().replace(/\/$/, ""))
   .filter(Boolean);
+
+/** Chrome's remote-debugging port used by the browser tools. */
+const CDP_DEBUG_PORT = Number(process.env.CDP_PORT || 9222);
+
 /** STUN/TURN advertised to remote browsers (JSON array of RTCIceServer). */
 const ICE_SERVERS = (() => {
   const raw = process.env.BOB_ICE_SERVERS?.trim();
@@ -369,6 +374,10 @@ async function main(): Promise<void> {
     }
     const pathname = url.pathname;
     if (peerServer?.handle(req, res, url)) return;
+    if (pathname === "/api/browser/cdp") {
+      void handleCdpDiscovery(req, res, { allowedOrigins: ALLOWED_ORIGINS, port: CDP_DEBUG_PORT });
+      return;
+    }
     if (pathname === "/healthz" || pathname.startsWith("/api/")) {
       void handleTelegram(req, res, url, bot);
       return;
@@ -396,6 +405,7 @@ async function main(): Promise<void> {
     console.log(`[channel] http://${CHANNEL_HOST}:${CHANNEL_PORT} — peer mailbox + telegram API`);
     console.log(`[channel] bridge root: ${bridgeRoot}`);
     console.log(`[channel] allowed origins: ${ALLOWED_ORIGINS.join(", ")}`);
+    console.log(`[channel] cdp discovery: http://${CHANNEL_HOST}:${CHANNEL_PORT}/api/browser/cdp`);
     if (CHANNEL_HOST !== HOST) {
       console.warn("[channel] peer mailbox is exposed beyond loopback — put HTTPS in front of it");
     }

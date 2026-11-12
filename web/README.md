@@ -409,9 +409,18 @@ script does both: it starts Chrome with a debug port and
 `--remote-allow-origins` (and no startup window — the automation window appears
 when a tool first opens a page), then opens the app in **FireDragon** (or the
 first installed FireDragon/Firefox, or `BOB_BROWSER_BIN`) with the browser-level
-WebSocket URL in `?cdp=…` (persisted in localStorage). The app is the hosted
+WebSocket URL in `?cdp=…` and the loopback discovery route in `?cdpInfo=…`
+(both persisted in localStorage). The app is the hosted
 `https://bobkat.hfxaiguy.com` by default; set `BOB_APP_LOCAL=1` to load the
 local admin on `ADMIN_PORT` instead.
+
+A Chrome restart changes the browser websocket UUID. On a failed handshake the
+worker asks the `?cdpInfo=` route for the current socket and reconnects, so a
+tab survives Chrome being restarted without reopening `npm run chrome` (the
+route is served by `npm run bob` on the bridge port). A hosted-only user who
+does not run the bridge still re-runs the connect script after a Chrome
+restart; `BOB_CDP_INFO` lets that script point at a bridge discovery route
+when one is available.
 
 FireDragon is Firefox-based and has no CDP endpoint, so it is only the display
 browser — the automation Chrome stays in the background. The four tools drive
@@ -424,6 +433,7 @@ BOB_BROWSER_BIN=/usr/bin/firefox npm run chrome # choose the display browser
 BOB_NO_CDP=1 npm run chrome                     # no Chrome; browser_* tools off
 BOB_NO_OPEN=1 npm run chrome                    # print the URL and ?cdp= parameter only
 BOB_APP_URL=http://127.0.0.1:8080 npm run chrome  # explicit app URL
+BOB_CDP_INFO=http://127.0.0.1:8795/api/browser/cdp npm run chrome  # custom discovery route
 ```
 
 It reuses a Chrome already listening on the port, prints the URL and the

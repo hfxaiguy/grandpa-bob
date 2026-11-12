@@ -236,3 +236,23 @@ function transform(source: string, fileUrl: string): TransformResult {
 
   return { code: out, specs };
 }
+
+/**
+ * Parse-check one ESM source with the same transform the runtime loader uses.
+ * `new Function` compiles the transformed code without executing it, so a
+ * syntax error is caught here instead of at the first load whose side effects
+ * may already have run. Import resolution and runtime errors are not checked.
+ */
+export function checkModuleSyntax(
+  source: string,
+  fileUrl = "file:///module.mjs",
+): { ok: true } | { ok: false; message: string } {
+  try {
+    const { code } = transform(String(source ?? ""), fileUrl);
+    // Compile only — never call the function.
+    new Function("require", "module", "exports", "__gk", code);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}

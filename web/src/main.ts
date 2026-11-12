@@ -24,7 +24,9 @@ import {
   loadTelegramChannel,
   loadModelsJson,
   loadCdp,
+  loadCdpInfo,
   saveCdp,
+  saveCdpInfo,
 } from "./settings";
 import {
   buildWorkspaceArchive,
@@ -109,11 +111,16 @@ function profileCatalogKey(registry: ProfileRegistry | null): string {
     .join("\n");
 }
 
-// The launcher (`npm run chrome`) opens the app with ?cdp=<browser ws url>;
-// persist it so a plain reload keeps the browser tools connected. An explicit
-// empty value (BOB_NO_CDP=1) clears a previously persisted socket instead.
+// The launcher (`npm run chrome`) opens the app with ?cdp=<browser ws url>
+// and ?cdpInfo=<loopback discovery route>; persist both so a plain reload
+// keeps the browser tools connected and can recover after Chrome restarts. An
+// explicit empty value (BOB_NO_CDP=1) clears a previously persisted socket.
 const configuredCdp = params.get("cdp") ?? loadCdp();
 if (params.has("cdp")) saveCdp(configuredCdp);
+// The launcher also passes the loopback discovery route; persist it so a
+// reload can re-find a browser socket after Chrome restarts.
+const configuredCdpInfo = params.get("cdpInfo") ?? loadCdpInfo();
+if (params.has("cdpInfo")) saveCdpInfo(configuredCdpInfo);
 
 const statusEl = document.getElementById("status")!;
 const setStatus = (text: string): void => {
@@ -1334,12 +1341,32 @@ async function confirmAction(title: string, message: string, confirmLabel: strin
   });
 }
 
+/** Explicitly overlay the bundled snapshot this app shipped with, even when the
+ *  automatic offer is suppressed (a mirror-bound or git-cloned profile). */
+async function applyShippedSeedUpdate(): Promise<void> {
+  let meta: SeedMeta | null = null;
+  try {
+    const res = await fetch("/seed/meta.json", { cache: "no-cache" });
+    if (res.ok) meta = parseSeedMeta(await res.json());
+  } catch {
+    /* seed is optional */
+  }
+  if (!meta) throw new Error("the shipped seed metadata is not available");
+  await applySeedUpdate(meta);
+}
+
 async function applySeedUpdate(meta: SeedMeta): Promise<void> {
+  const mirror = mirrorFolder();
+  const mirrorNote = mirror
+    ? `\n\nThis profile mirrors the desktop folder "${mirror}", so its next sync may bring those files back. ` +
+      "Update the mirror too if you want the two copies to match."
+    : "";
   const proceed = await confirmAction(
     "Workspace update",
     `Update the browser workspace to the seed built ${new Date(meta.createdAt).toLocaleString()}?\n\n` +
       "Files are overlaid; the run log and chat history are preserved. " +
-      "Saved walk positions reset once. The page reloads afterwards.",
+      "Saved walk positions reset once. The page reloads afterwards." +
+      mirrorNote,
     "Update workspace",
   );
   if (!proceed) return;
@@ -1825,6 +1852,7 @@ async function main(): Promise<void> {
     modelsJson: loadModelsJson(),
     serverModels,
     cdp: configuredCdp,
+    cdpInfo: configuredCdpInfo,
     beforeTurn,
     telegramUrl: loadTelegramChannel(),
     telegramProfile: () => `opfs:${activeProfile}`,
@@ -1864,6 +1892,7 @@ async function main(): Promise<void> {
       );
     },
     applySeedUpdate: (binding, _meta, version) => applyBoundSeedUpdate(binding, version),
+    applyShippedSeed: () => applyShippedSeedUpdate(),
     buildActiveArchive,
     syncMirror: async () => {
       if (!syncHandle) throw new Error("this tab does not host the workspace");

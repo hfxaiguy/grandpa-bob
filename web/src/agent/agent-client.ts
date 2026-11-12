@@ -54,6 +54,14 @@ export interface AgentRunOptions {
   modelOverrides?: Record<string, string>;
   /** Browser-level CDP socket passed by `npm run chrome` (?cdp=…). */
   cdp?: string;
+  /** Loopback discovery route for that socket (?cdpInfo=…). */
+  cdpInfo?: string;
+  /**
+   * True when this message resumes an app's pause rather than the trunk's own
+   * turn. The host is the authority for it (the previous turn's `awaiting`);
+   * the trunk seeds it as `nested` and its overhearer gates on that.
+   */
+  nested?: boolean;
 }
 
 interface Pending {

@@ -6,10 +6,10 @@
 // the thin, guarded surface. A tree is ONE file — saving writes its
 // `.prod.mjs` in place; there is no draft copy and no separate spec file.
 //
-// Child modules are the other half: a tree's helper `.mjs` files (site_walk,
-// tools, src/*) are ordinary code, editable in place through loadModule/
-// saveModule. The guards are the same shape (hash-checked before writing) and
-// the path is resolved inside the app's folder by tree-files.ts.
+// Child modules are the other half: a tree's helper `.mjs`/`.js` files
+// (site_walk, tools, src/*) are ordinary code, editable in place through
+// loadModule/saveModule. The guards are the same shape (hash-checked before
+// writing) and the path is resolved inside the app's folder by tree-files.ts.
 //
 // This is the browser counterpart of the Node `tree-context.ts` removed with
 // the Node agent host. Its `node:*` imports resolve to the web shims, so it
@@ -26,6 +26,7 @@ import {
   type TreeKind,
 } from "./tree-files.js";
 import { listAppTrees, listPatterns } from "./tree-sources.js";
+import { checkModuleSyntax } from "./agent/module-loader.js";
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
@@ -89,6 +90,11 @@ export interface TreeContext {
     /** Relative to the app folder, when it resolved. */
     file: string | null;
   }>;
+
+  /** Parse-check module JavaScript in the host, without executing it. */
+  checkModule(args: { source: string }): Promise<
+    { ok: true } | { ok: false; message: string }
+  >;
 
   /** Write one existing child module in place, hash-guarded. Throws when the
    *  module is outside the app folder or no longer matches `base_hash`. */
@@ -212,6 +218,12 @@ export function makeTreeContext(
       if (!resolved) return { exists: false, source: "", hash: null, file: null };
       const source = await readFile(resolved.abs, "utf8");
       return { exists: true, source, hash: sha256(source), file: resolved.module };
+    },
+
+    async checkModule({ source }) {
+      const text = String(source ?? "");
+      if (!text.trim()) return { ok: false, message: "empty module — there is nothing to check" };
+      return checkModuleSyntax(text);
     },
 
     async saveModule({ name, module, base_hash, source }) {

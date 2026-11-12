@@ -1,14 +1,14 @@
 /**
  * Child-module guards — the shared half of in-place tree-module editing.
  *
- * A tree's helper `.mjs` files (site_walk, tools, src/*) are ordinary code,
- * not trees. The addressability + confinement rules live in the shared
- * `web/src/tree-files.ts` (the browser worker imports the same module), so
- * this test drives them directly:
+ * A tree's helper `.mjs`/`.js` files (site_walk, tools, src/browser.js) are
+ * ordinary code, not trees. The addressability + confinement rules live in the
+ * shared `web/src/tree-files.ts` (the browser worker imports the same module),
+ * so this test drives them directly:
  *
  *   1. listModuleFiles names only real child modules: top-level and nested,
- *      never the tree file, node_modules, hidden files, symlinks or a
- *      sub-app's own folder.
+ *      never the tree file, node_modules, hidden files, symlinks, app config
+ *      or a sub-app's own folder.
  *   2. resolveModuleEntry returns null for the tree file, a missing module,
  *      a `..` escape, an absolute path, or a symlink planted in the app.
  *   3. modulePathFor rejects every unsafe shape by construction.
@@ -34,6 +34,8 @@ const outside = path.join(root, "outside.mjs");
 await fs.writeFile(path.join(app, "tree.prod.mjs"), "// ## demo: app/demo/tree.prod.mjs\nexport default 1;\n");
 await fs.writeFile(path.join(app, "site_walk.mjs"), "export const walk = () => 1;\n");
 await fs.writeFile(path.join(app, "src", "ingest.mjs"), "export const ingest = () => 2;\n");
+await fs.writeFile(path.join(app, "src", "browser.js"), "export const parse = () => 2;\n");
+await fs.writeFile(path.join(app, "config.js"), "export const config = {};\n");
 await fs.writeFile(path.join(app, "node_modules", "dep.mjs"), "export const dep = 3;\n");
 await fs.writeFile(path.join(app, ".hidden.mjs"), "export const h = 4;\n");
 await fs.writeFile(path.join(app, "app", "child", "deep.mjs"), "export const d = 5;\n");
@@ -43,14 +45,18 @@ await fs.symlink(outside, path.join(app, "link.mjs"));
 try {
   // 1. listing
   const mods = await listModuleFiles(root, "demo");
-  assert.deepEqual(mods, ["site_walk.mjs", "src/ingest.mjs"], "only real child modules are listed");
+  assert.deepEqual(mods, ["site_walk.mjs", "src/browser.js", "src/ingest.mjs"], "only real child modules are listed");
 
   // 2. resolution
   const resolved = await resolveModuleEntry(root, "demo", "site_walk.mjs");
   assert.ok(resolved, "a real module resolves");
   assert.equal(resolved.file, path.join("app", "demo", "site_walk.mjs"));
   assert.match(await fs.readFile(path.join(root, resolved.file), "utf8"), /walk/);
+  const jsModule = await resolveModuleEntry(root, "demo", "src/browser.js");
+  assert.ok(jsModule, "a .js helper module resolves");
+  assert.equal(jsModule.file, path.join("app", "demo", "src", "browser.js"));
   assert.equal(await resolveModuleEntry(root, "demo", "tree.prod.mjs"), null, "a tree file is not a child module");
+  assert.equal(await resolveModuleEntry(root, "demo", "config.js"), null, "app config is not a child module");
   assert.equal(await resolveModuleEntry(root, "demo", "nope.mjs"), null, "a missing module resolves null");
   assert.equal(await resolveModuleEntry(root, "demo", "link.mjs"), null, "a symlink escape is not addressable");
   assert.equal(await resolveModuleEntry(root, "nope", "x.mjs"), null, "an unknown app resolves null");
@@ -66,7 +72,9 @@ try {
   rejects("src/.cache/x.mjs");
   rejects("node_modules/dep.mjs");
   rejects("app/child/deep.mjs");
+  rejects("src/browser.ts");
   assert.ok(modulePathFor("demo", "src/ingest.mjs"), "nested src modules are addressable");
+  assert.ok(modulePathFor("demo", "src/browser.js"), "nested .js helper modules are addressable");
 
   console.log("tree-modules: shared guards passed");
 } finally {

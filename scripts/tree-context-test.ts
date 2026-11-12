@@ -92,6 +92,21 @@ try {
   });
   assert.equal((await ctx.load({ name: "../escape", kind: "app" })).exists, false);
 
+  // ── module syntax check ────────────────────────────────────────────────
+  assert.deepEqual(
+    await ctx.checkModule({ source: "export const walk = () => 1;\n" }),
+    { ok: true },
+    "a valid child module compiles",
+  );
+  const broken = await ctx.checkModule({ source: "export const walk = ;\n" });
+  assert.equal(broken.ok, false, "a syntax error is reported");
+  assert.ok("message" in broken && broken.message.length > 0, "the syntax error carries a message");
+  assert.deepEqual(
+    await ctx.checkModule({ source: "  \n" }),
+    { ok: false, message: "empty module — there is nothing to check" },
+    "empty source is rejected",
+  );
+
   // ── tree saves ─────────────────────────────────────────────────────────
   const saved = await ctx.save({
     name: "demo",

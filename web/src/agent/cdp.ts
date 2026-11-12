@@ -4,7 +4,7 @@
  * The Node target drives Chrome through /json/list + page sockets. A worker
  * cannot: /json/* is CORS-gated and Chrome 111+ rejects WebSocket upgrades
  * whose Origin it does not allow. So this client connects to the
- * BROWSER-level socket (`/devtools/browser/<id>`), which the launcher script
+ * Browser-level socket (`/devtools/browser/<id>`), which the launcher script
  * (`npm run chrome`) hands to the page as `?cdp=…`, and does everything over
  * flat sessions:
  *
@@ -13,6 +13,10 @@
  *   Target.attachToTarget  { flatten: true } -> a sessionId
  *   Runtime.evaluate / Runtime.callFunctionOn / DOMDebugger.getEventListeners
  *                          with that sessionId
+ *
+ * A Chrome restart changes that UUID. `connect()` can take a `discoverUrl`
+ * (the loopback bridge route passed as `?cdpInfo=…`) and retries the fresh
+ * websocket it reports instead of treating the stale URL as a dead browser.
  *
  * The evaluate/unwrap/retry semantics mirror the workspace app's cdp.js on
  * purpose: the snippets in app/browser/src/*.js are shared between targets.
@@ -33,6 +37,27 @@ export interface CdpConnectOptions {
   connectAttempts?: number;
   /** Delay between handshake attempts. Defaults to 1s. */
   retryDelayMs?: number;
+  /**
+   * Loopback URL that returns the current Chrome browser websocket as
+   * `{ webSocketDebuggerUrl }` (the bridge `/api/browser/cdp` route). When a
+   * handshake fails, the client asks this once and retries the fresh socket.
+   */
+  discoverUrl?: string;
+}
+
+/** A fresh websocket URL per original endpoint, learned after a reconnect. */
+const refreshedUrls = new Map<string, string>();
+
+/** Ask the loopback bridge for the current browser socket. */
+async function discoverBrowserUrl(url: string): Promise<string | null> {
+  const res = await fetch(url, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(2500),
+  });
+  if (!res.ok) return null;
+  const body = (await res.json()) as { webSocketDebuggerUrl?: unknown };
+  const ws = typeof body?.webSocketDebuggerUrl === "string" ? body.webSocketDebuggerUrl.trim() : "";
+  return /^wss?:\/\//.test(ws) ? ws : null;
 }
 
 export interface CdpTarget {
@@ -146,14 +171,31 @@ export class BrowserCdp {
   static async connect(url: string, opts: CdpConnectOptions = {}): Promise<BrowserCdp> {
     const attempts = Math.max(1, opts.connectAttempts ?? 3);
     const retryDelayMs = opts.retryDelayMs ?? 1_000;
+    const original = url;
+    let target = refreshedUrls.get(original) ?? url;
+    let discovered = false;
     let lastError: unknown;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
-        return await BrowserCdp.connectOnce(url, opts);
+        const client = await BrowserCdp.connectOnce(target, opts);
+        if (target !== original) refreshedUrls.set(original, target);
+        return client;
       } catch (err) {
         lastError = err;
         // A bad URL/implementation will never heal; do not storm it.
         if ((err as { permanent?: boolean })?.permanent) throw err;
+        // A browser restart changes the browser websocket UUID. Ask the local
+        // bridge once for the current one and retry it instead of hammering
+        // the dead URL.
+        if (!discovered && opts.discoverUrl) {
+          discovered = true;
+          const fresh = await discoverBrowserUrl(opts.discoverUrl).catch(() => null);
+          if (fresh && fresh !== target) {
+            target = fresh;
+            refreshedUrls.set(original, fresh);
+            continue;
+          }
+        }
         if (attempt < attempts - 1) await sleep(retryDelayMs);
       }
     }

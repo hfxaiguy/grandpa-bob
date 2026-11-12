@@ -222,6 +222,23 @@ function describeModels(models: Record<string, { baseURL?: string; model?: strin
   return slots.length ? slots.join(", ") : "(no models configured)";
 }
 
+/**
+ * The non-secret model metadata trees can rely on. It rides root memory as
+ * `model_catalog`, next to `tool_catalog`, after per-conversation overrides —
+ * so a tree can ask "is the slot I declared able to see images?" without
+ * parsing models.json or guessing from a model id.
+ */
+function modelCatalogOf(
+  models: ModelRegistry,
+): Record<string, { model: string; vision: boolean }> {
+  return Object.fromEntries(
+    Object.entries(models).map(([slot, entry]) => [
+      slot,
+      { model: entry.model, vision: entry.vision === true },
+    ]),
+  );
+}
+
 /** Firefox says "NetworkError…", Chrome "Failed to fetch", Node "fetch failed". */
 function isNetworkError(message: string): boolean {
   return /NetworkError|Failed to fetch|fetch failed|Load failed|ECONNREFUSED|ENOTFOUND/i.test(message);
@@ -344,6 +361,10 @@ interface RunOptions {
   modelOverrides?: Record<string, string>;
   /** Browser-level CDP socket the launcher passed in as ?cdp=… */
   cdp?: string;
+  /** Loopback discovery route for that socket, passed as ?cdpInfo=… */
+  cdpInfo?: string;
+  /** True when this message resumes an app's pause (the host's `awaiting`). */
+  nested?: boolean;
 }
 
 interface Session {
@@ -715,6 +736,7 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
         },
     { signal },
   );
+  const modelCatalog = modelCatalogOf(models);
 
   const onEmit = (value: unknown): void => post({ id: opts.id, type: "emit", value });
   const toolsMap: Record<string, unknown> = {
@@ -734,7 +756,7 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
   // app/browser's tools spawn Chrome from Node, which a worker cannot do.
   // Replace them with the native CDP implementations (or, without a ?cdp=
   // endpoint, a stub that says how to start the local Chrome).
-  Object.assign(toolsMap, await browserCdpTools(platform, { cdp: opts.cdp, signal }));
+  Object.assign(toolsMap, await browserCdpTools(platform, { cdp: opts.cdp, cdpInfo: opts.cdpInfo, signal }));
   // One discovery pass feeds the tree-tool map, the guide filter and the
   // parent/sub-app scoping below.
   const apps = await listAppTrees(platform.workspaceRoot).catch(() => []);
@@ -790,7 +812,9 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
     // the engine loads that parent through `loadTree`.
     const pattern = scopeTreeTools(await loadPattern(platform, patternPath), apps, null);
     let out = (await withModelContext(models, () =>
-      knit(pattern, { ...runtime, memory: { guide } }),
+      // A fresh knit starts at the trunk's own start_input, so the delivery is
+      // never nested. The host's `nested` belongs to a resumed app pause.
+      knit(pattern, { ...runtime, memory: { guide, nested: false, model_catalog: modelCatalog } }),
     )) as typeof res;
     if (out.status === "waiting") {
       // Keep the pause visible to the stop path even before this turn re-pauses:
@@ -800,7 +824,13 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
       if (task) {
         throwIfStopped(signal);
         out = (await withModelContext(models, () =>
-          resume(out.continuation!, { ...runtime, humanInput: task }),
+          // The first delivery into a freshly knit tree lands on the trunk's
+          // own pause, so it is never nested either.
+          resume(out.continuation!, {
+            ...runtime,
+            memory: { guide, nested: false, model_catalog: modelCatalog },
+            humanInput: task,
+          }),
         )) as typeof res;
         session.continuation = out.status === "waiting" ? out.continuation! : "";
       } else {
@@ -826,7 +856,9 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
       res = (await withModelContext(models, () =>
         resume(session.continuation, {
           ...runtime,
-          memory: { guide },
+          // The host knows where this message was headed: `nested` is true
+          // only when it is resuming a paused app, never the trunk's own turn.
+          memory: { guide, nested: opts.nested === true, model_catalog: modelCatalog },
           humanInput: task,
         }),
       )) as typeof res;

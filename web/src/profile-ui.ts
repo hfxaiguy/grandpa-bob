@@ -70,6 +70,8 @@ export interface ProfileUiHooks {
   refreshRegistry(): Promise<ProfileRegistry>;
   /** Pull a binding's newest seed into the ACTIVE profile (banner path). */
   applySeedUpdate(binding: SeedBinding, meta: RemoteSeedMeta, version?: string): Promise<void>;
+  /** Overlay the bundled snapshot (the seed this app shipped with) onto the ACTIVE profile. */
+  applyShippedSeed?(): Promise<void>;
   /** Archive whatever workspace BOB currently operates on. */
   buildActiveArchive(): Promise<WorkspaceArchive>;
   /** Run the active profile's desktop mirror now. */
@@ -1019,6 +1021,13 @@ function setSeedDialogChrome(title: string, profileName: string): void {
   }
   const save = el<HTMLButtonElement>("seed-save");
   if (save) save.textContent = binding ? "Save seed source" : "Save service";
+  const shipped = el<HTMLButtonElement>("seed-shipped");
+  if (shipped) {
+    // The shipped snapshot is overlaid on the ACTIVE profile only: the dialog
+    // may be opened from another profile's row, and that profile is not the
+    // workspace this tab hosts.
+    shipped.hidden = !binding || !profileName || profileName !== getHooks().activeProfile();
+  }
   const hint = el<HTMLElement>("seed-dialog-hint");
   if (hint) {
     hint.textContent = binding
@@ -1238,6 +1247,18 @@ function wireSeedDialog(): void {
       .catch((err) => setSeedStatus(`save failed: ${errorText(err)}`));
   });
   el<HTMLButtonElement>("seed-check")?.addEventListener("click", () => void checkSeedNow());
+  el<HTMLButtonElement>("seed-shipped")?.addEventListener("click", () => {
+    const ui = getHooks();
+    if (!ui.applyShippedSeed) {
+      setSeedStatus("the shipped seed is not available in this build");
+      return;
+    }
+    setSeedStatus("updating from the shipped seed…");
+    void ui
+      .applyShippedSeed()
+      .then(() => setSeedStatus(""))
+      .catch((err) => setSeedStatus(`shipped seed update failed: ${errorText(err)}`));
+  });
   el<HTMLSelectElement>("seed-service")?.addEventListener("change", () => {
     const service = serviceForSeedSource(el<HTMLSelectElement>("seed-service")?.value);
     if (service) fillServiceFields(service);

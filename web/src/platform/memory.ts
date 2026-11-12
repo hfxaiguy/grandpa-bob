@@ -44,6 +44,13 @@ export function createMemoryFs(): FileSystem {
       if (typeof node.data === "string" || node.data === undefined) return node.data ?? "";
       return new TextDecoder().decode(node.data);
     },
+    async readFileBytes(p) {
+      const node = nodes.get(normalize(p));
+      if (!node) throw new Error(`not found: ${p}`);
+      if (node.type === "dir") throw new Error(`is a directory: ${p}`);
+      if (typeof node.data === "string") return new TextEncoder().encode(node.data);
+      return node.data ?? new Uint8Array();
+    },
     async writeFile(p, data) {
       const abs = normalize(p);
       ensureDir(parent(abs));

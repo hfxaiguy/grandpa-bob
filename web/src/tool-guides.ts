@@ -87,6 +87,16 @@ export const HOST_GUIDES: HostGuide[] = [
       "read_json over read_file whenever the file is JSON.",
   },
   {
+    tools: ["read_image"],
+    guide:
+      "READING AN IMAGE: read_image({ path }) returns { ok, path, mime, bytes, dataUrl } " +
+      "for .png/.jpg/.jpeg/.webp/.gif files up to 20 MiB, or { ok:false, error }. Pass the " +
+      "dataUrl to a vision-capable model as an image_url content part — never paste it into " +
+      "text. read_file corrupts binary files; use read_image for image content. Check the " +
+      "model's capability in the host's model_catalog before calling it; a slot is usable " +
+      "for images only when its entry is marked vision: true.",
+  },
+  {
     tools: ["copy_file"],
     guide:
       "COPYING FILES: copy_file({ from, to }) copies bytes exactly — use it for binary files " +

@@ -59,6 +59,7 @@ export function loadBranch(): string {
 }
 
 const CDP_KEY = "bob:cdp";
+const CDP_INFO_KEY = "bob:cdp-info";
 
 /** Browser-level CDP socket handed over by `npm run chrome` (?cdp=…). */
 export function loadCdp(): string {
@@ -73,6 +74,24 @@ export function saveCdp(url: string): void {
   try {
     if (url) localStorage.setItem(CDP_KEY, url);
     else localStorage.removeItem(CDP_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/** Loopback bridge route that reports the current Chrome socket (?cdpInfo=…). */
+export function loadCdpInfo(): string {
+  try {
+    return localStorage.getItem(CDP_INFO_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveCdpInfo(url: string): void {
+  try {
+    if (url) localStorage.setItem(CDP_INFO_KEY, url);
+    else localStorage.removeItem(CDP_INFO_KEY);
   } catch {
     // ignore
   }

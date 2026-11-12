@@ -371,6 +371,7 @@ function slotCard(name, entry) {
     '<div class="row" style="gap:8px;flex-wrap:wrap">' +
       '<label style="flex:2;min-width:160px">model<input class="ms-model" type="text" list="models-datalist" value="' + escAttr(entry.model || "") + '" placeholder="model id"></label>' +
       '<label style="flex:1;min-width:130px">protocol<select class="ms-protocol"><option value=""' + (!entry.protocol ? " selected" : "") + '>OpenAI-compatible</option><option value="ollama"' + (entry.protocol === "ollama" ? " selected" : "") + '>Ollama native</option></select></label>' +
+      '<label style="flex:0 0 auto;display:flex;align-items:center;gap:6px">vision<input class="ms-vision" type="checkbox"' + (entry.vision === true ? " checked" : "") + "></label>" +
     "</div>" +
     '<label>API key<input class="ms-key" type="text" value="' + escAttr(entry.apiKey || "") + '" placeholder="\${ENV_VAR} or literal key"></label>' +
     '<div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">' +
@@ -396,7 +397,7 @@ function slotCard(name, entry) {
   // obvious which fields matter (readSlot returns the alias string).
   const aliasInput = card.querySelector(".ms-alias");
   const aliasFields = card.querySelectorAll(
-    ".ms-preset,.ms-base,.ms-model,.ms-protocol,.ms-key,.ms-transform,.ms-reasoning,.ms-think,.ms-think-options",
+    ".ms-preset,.ms-base,.ms-model,.ms-protocol,.ms-key,.ms-transform,.ms-reasoning,.ms-think,.ms-think-options,.ms-vision",
   );
   const syncAliasMode = () => {
     const on = !!aliasInput.value.trim();
@@ -428,6 +429,7 @@ function readSlot(card) {
   const key = v(".ms-key"); if (key) entry.apiKey = key;
   const proto = v(".ms-protocol"); if (proto) entry.protocol = proto;
   const tf = v(".ms-transform"); if (tf) entry.transform = tf;
+  if (card.querySelector(".ms-vision").checked) entry.vision = true;
   const thinking = {};
   const thReasoning = v(".ms-reasoning");
   if (thReasoning) thinking.reasoning_effort = thReasoning;
@@ -1295,7 +1297,7 @@ export function buildSettingsHtml(config: UiConfig): string {
 
 <div class="card">
   <h2 style="margin-top:0">Models</h2>
-  <p style="margin:4px 0"><small>Named model slots the trees reference (<code>Model("strong")</code>, <code>Model("cheap")</code>). Each slot points at any OpenAI-compatible endpoint (Ollama local/cloud, OpenAI, Neuralwatt, CommandCode, OpenRouter, llama.cpp&hellip;) or native Ollama. Pick a provider preset, choose a model, then <b>Test</b>. Saving applies immediately &mdash; no restart. Keys may use <code>\${ENV}</code> to reference the credentials above, or be pasted literally.</small></p>
+  <p style="margin:4px 0"><small>Named model slots the trees reference (<code>Model("strong")</code>, <code>Model("cheap")</code>). Each slot points at any OpenAI-compatible endpoint (Ollama local/cloud, OpenAI, Neuralwatt, CommandCode, OpenRouter, llama.cpp&hellip;) or native Ollama. Pick a provider preset, choose a model, then <b>Test</b>. Tick <b>vision</b> only when the model accepts image inputs &mdash; trees read it from <code>model_catalog</code>. Saving applies immediately &mdash; no restart. Keys may use <code>\${ENV}</code> to reference the credentials above, or be pasted literally.</small></p>
   <div id="model-slots">(loading...)</div>
   <datalist id="models-datalist"></datalist>
   <div class="actions">

@@ -11,7 +11,7 @@
  * Run: npm run test:run-watchdog
  */
 import assert from "node:assert/strict";
-import { createRunWatchdog, DEFAULT_STALE_MS } from "../web/src/agent/run-watchdog.ts";
+import { createRunWatchdog, DEFAULT_MAX_MS, DEFAULT_STALE_MS } from "../web/src/agent/run-watchdog.ts";
 
 let now = 1_000;
 const fired: string[] = [];
@@ -110,4 +110,20 @@ try {
 }
 
 assert.ok(DEFAULT_STALE_MS >= 10 * 60_000, "the default exceeds Ollama's 10-minute call budget");
+assert.ok(DEFAULT_MAX_MS >= 30 * 60_000, "the hard budget is generous enough for a long lookup");
+
+// ── 7. a hard wall-clock budget catches a run that keeps touching ───────
+let maxNow = 0;
+const maxFired: string[] = [];
+const wdMax = createRunWatchdog({ staleMs: 10_000, maxMs: 20_000, now: () => maxNow });
+wdMax.start({ key: "web:max", turnId: "tmax", onStale: (reason) => maxFired.push(reason) });
+maxNow += 9_000;
+wdMax.touch("web:max", "tmax");
+maxNow += 9_000;
+wdMax.touch("web:max", "tmax");
+maxNow += 2_000;
+wdMax.check();
+assert.deepEqual(maxFired, ["expired"], "activity cannot keep a run past its wall-clock budget");
+wdMax.stop();
+
 console.log("run-watchdog: all assertions passed");

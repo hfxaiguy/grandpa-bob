@@ -9,7 +9,8 @@
  *
  * The launcher (`npm run chrome`) starts Chrome with --remote-allow-origins
  * and passes the browser websocket in `?cdp=…`; tools connect there and work
- * over flat sessions:
+ * over flat sessions. It also passes `?cdpInfo=…`, a loopback bridge route that
+ * returns the current websocket after Chrome restarts (the old UUID is stale).
  *
  *   Target.getTargets      instead of GET /json/list
  *   Target.createTarget    instead of PUT /json/new
@@ -151,9 +152,10 @@ function unavailableTools(reason: string): Record<string, KatTool> {
 
 export async function browserCdpTools(
   platform: Platform,
-  { cdp, signal }: { cdp?: string; signal?: AbortSignal } = {},
+  { cdp, cdpInfo, signal }: { cdp?: string; cdpInfo?: string; signal?: AbortSignal } = {},
 ): Promise<Record<string, KatTool>> {
   const endpoint = String(cdp ?? "").trim();
+  const discoverUrl = String(cdpInfo ?? "").trim();
 
   // One dedicated tab per run. Every verb opens a fresh socket, but they all
   // attach to this targetId, so a failed navigation (or the user switching
@@ -180,7 +182,7 @@ export async function browserCdpTools(
     try {
       const targetId = await workTab;
       if (!targetId) return; // no tab of ours: never touch the user's newest tab
-      const client = await BrowserCdp.connect(endpoint);
+      const client = await BrowserCdp.connect(endpoint, { discoverUrl });
       try {
         const { sessionId } = await client.pageSession(targetId);
         await settleWithin(
@@ -248,7 +250,7 @@ export async function browserCdpTools(
         "dedicated work tab (a tab is opened when none exists).",
     async withPage(fn) {
       if (!endpoint) throw new Error(NOT_CONNECTED);
-      const client = await BrowserCdp.connect(endpoint);
+      const client = await BrowserCdp.connect(endpoint, { discoverUrl });
       let call: PageCall | null = null;
       const onPageStop = (): void => {
         if (call) void recycle(call);

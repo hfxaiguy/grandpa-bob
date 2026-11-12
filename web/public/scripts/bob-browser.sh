@@ -18,6 +18,8 @@
 #   BOB_PROFILE_DIR=~/.bobkat/chrome-profile
 #   BOB_BROWSER_HEADLESS=1       no window (prints the URL only)
 #   BOB_NO_OPEN=1                print the URL instead of opening it
+#   BOB_CDP_INFO=…               optional bridge discovery route; when set, the
+#                                page can re-find Chrome after a restart
 set -eu
 
 APP="${1:-https://bobkat.hfxaiguy.com}"
@@ -110,6 +112,9 @@ case "$APP" in
   *\?*) TARGET="$APP&cdp=$WS" ;;
   *) TARGET="$APP?cdp=$WS" ;;
 esac
+if [ -n "${BOB_CDP_INFO:-}" ]; then
+  TARGET="$TARGET&cdpInfo=$BOB_CDP_INFO"
+fi
 
 if [ "${BOB_NO_OPEN:-0}" = "1" ] || [ "${BOB_BROWSER_HEADLESS:-0}" = "1" ]; then
   printf '%s\n' "$TARGET"

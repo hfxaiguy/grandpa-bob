@@ -17,12 +17,13 @@
 // There is no draft copy, no version snapshot, and no separate `.spec.md`.
 // An app's agent-facing `## Guide` lives in its README.
 //
-// A child module is any existing `.mjs` inside an app folder (site_walk.mjs,
-// tools.mjs, src/*.mjs). It is ordinary JavaScript the tree imports, not a
-// tree: it has no notation spec and cannot be loaded as a target. Editing one
-// is a confined write — the resolved path must stay inside that app's folder
-// (symlinks resolved), and nested `app/` folders belong to sub-apps, not to
-// the parent. See modulePathFor/resolveModuleEntry/listModuleFiles below.
+// A child module is any existing `.mjs` or `.js` inside an app folder
+// (site_walk.mjs, tools.mjs, src/*.mjs, src/browser.js). It is ordinary
+// JavaScript the tree imports, not a tree: it has no notation spec and cannot
+// be loaded as a target. Editing one is a confined write — the resolved path
+// must stay inside that app's folder (symlinks resolved), and nested `app/`
+// folders belong to sub-apps, not to the parent. See modulePathFor/
+// resolveModuleEntry/listModuleFiles below.
 
 import { access, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
@@ -33,8 +34,10 @@ export const TREE_FILE = "tree";
 export const PROD_SUFFIX = ".prod.mjs";
 
 /** A child module: ordinary JavaScript inside an app folder, imported by its
- *  tree. Only `.mjs` files are addressable — config, JSON and assets are not
- *  authoring targets. */
+ *  tree. Only `.mjs` and `.js` files are addressable — JSON, assets and the
+ *  app's root `config.js` are not authoring targets. */
+export const MODULE_SUFFIXES = [".mjs", ".js"] as const;
+/** The default suffix for a bare module name. */
 export const MODULE_SUFFIX = ".mjs";
 
 /** One path segment of a child module. Rejects "", "." and ".." (so `..`
@@ -244,8 +247,9 @@ function appFolderFor(logical: string): string {
 export function modulePathFor(logical: string, module: string): string | null {
   if (!/^[A-Za-z0-9._-]+$/.test(logical)) return null;
   const rel = String(module ?? "").trim().replace(/\\/g, "/");
-  if (!rel || path.isAbsolute(rel) || !rel.endsWith(MODULE_SUFFIX)) return null;
+  if (!rel || path.isAbsolute(rel) || !MODULE_SUFFIXES.some((suffix) => rel.endsWith(suffix))) return null;
   if (rel.endsWith(PROD_SUFFIX)) return null; // a tree file is not a child module
+  if (rel === "config.js") return null; // app config is not a helper module
   const segments = rel.split("/");
   if (segments.some((s) => !MODULE_SEGMENT_RE.test(s))) return null;
   if (segments.some((s) => s === "node_modules" || s === APP_DIR)) return null;
@@ -310,8 +314,9 @@ export async function listModuleFiles(workspaceDir: string, logical: string): Pr
       if (entry.isDirectory()) {
         if (entry.name === APP_DIR) continue; // a sub-app is its own target
         await walk(path.join(dirAbs, entry.name), rel);
-      } else if (entry.isFile() && entry.name.endsWith(MODULE_SUFFIX)) {
+      } else if (entry.isFile() && MODULE_SUFFIXES.some((suffix) => entry.name.endsWith(suffix))) {
         if (entry.name.endsWith(PROD_SUFFIX)) continue; // the tree itself
+        if (!prefix && entry.name === "config.js") continue; // app config, not a helper
         if (MODULE_SEGMENT_RE.test(entry.name)) files.push(rel);
       }
     }

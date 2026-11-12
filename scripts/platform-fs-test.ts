@@ -52,6 +52,27 @@ await assert.rejects(() => files.copyFile("notes/copy.txt", "notes/copied.txt"),
 await files.copyFile("notes/copy.txt", "notes/copied.txt", true);
 assert.equal(await files.readFile("notes/copied.txt"), "copy me");
 
+// read_image returns a data URL without a UTF-8 round-trip, and refuses a
+// non-image extension instead of handing the model arbitrary bytes.
+const pixel = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+await platform.fs.writeFile(platform.path.join(platform.workspaceRoot, "notes/pixel.png"), pixel);
+const image = await files.readImage("notes/pixel.png");
+assert.equal(image.ok, true);
+assert.equal(image.path, "notes/pixel.png");
+assert.equal(image.mime, "image/png");
+assert.equal(image.bytes, pixel.length);
+assert.match(String(image.dataUrl), /^data:image\/png;base64,/);
+assert.deepEqual(
+  Buffer.from(String(image.dataUrl).split(",")[1], "base64"),
+  Buffer.from(pixel),
+);
+await platform.fs.writeFile(platform.path.join(platform.workspaceRoot, "notes/not-an-image.txt"), "text");
+assert.deepEqual(await files.readImage("notes/not-an-image.txt"), {
+  ok: false,
+  error: "unsupported image type: notes/not-an-image.txt — use .png, .jpg, .jpeg, .webp, or .gif",
+});
+assert.deepEqual(await files.readImage("notes/nope.png"), { ok: false, error: "not found: notes/nope.png" });
+
 // the workspace sandbox still rejects escapes
 await assert.rejects(() => files.writeFile("../escape.txt", "nope"), /escapes workspace/);
 await assert.rejects(() => files.readFile("../../etc/passwd"), /escapes workspace/);

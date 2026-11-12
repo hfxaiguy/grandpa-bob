@@ -17,17 +17,26 @@
  */
 export const DEFAULT_STALE_MS = 15 * 60_000;
 export const DEFAULT_CHECK_MS = 30_000;
+/**
+ * A hard wall-clock budget for one turn. A productive run can last a long time,
+ * but a loop that keeps making new (and useless) tool calls never goes silent,
+ * so the silence check alone cannot catch it. This is the backstop.
+ */
+export const DEFAULT_MAX_MS = 45 * 60_000;
+
+export type WatchdogReason = "silent" | "expired";
 
 export interface WatchdogRun {
   /** Session key the run belongs to (one in-flight run per session). */
   key: string;
   turnId: string;
-  /** Called once, when the run has shown no activity for `staleMs`. */
-  onStale: () => void;
+  /** Called once, when the run is silent or exceeds its wall-clock budget. */
+  onStale: (reason: WatchdogReason) => void;
 }
 
 interface LiveRun extends WatchdogRun {
   lastActivityAt: number;
+  startedAt: number;
 }
 
 export interface RunWatchdog {
@@ -45,6 +54,8 @@ export interface RunWatchdog {
 export interface RunWatchdogOptions {
   /** Silence before a run is reported stale. Default {@link DEFAULT_STALE_MS}. */
   staleMs?: number;
+  /** Wall-clock budget for one run. Default {@link DEFAULT_MAX_MS}. */
+  maxMs?: number;
   /** How often to sweep. Default {@link DEFAULT_CHECK_MS}. */
   checkMs?: number;
   /** Injectable clock and timers so tests are deterministic. */
@@ -55,8 +66,10 @@ export interface RunWatchdogOptions {
 
 export function createRunWatchdog(opts: RunWatchdogOptions = {}): RunWatchdog {
   const staleOpt = opts.staleMs ?? 0;
+  const maxOpt = opts.maxMs ?? 0;
   const checkOpt = opts.checkMs ?? 0;
   const staleMs = Number.isFinite(staleOpt) && staleOpt > 0 ? staleOpt : DEFAULT_STALE_MS;
+  const maxMs = Number.isFinite(maxOpt) && maxOpt > 0 ? maxOpt : DEFAULT_MAX_MS;
   const checkMs = Number.isFinite(checkOpt) && checkOpt > 0 ? checkOpt : DEFAULT_CHECK_MS;
   const now = opts.now ?? (() => Date.now());
   const startTimer = opts.setInterval ?? ((fn, ms) => setInterval(fn, ms));
@@ -69,10 +82,12 @@ export function createRunWatchdog(opts: RunWatchdogOptions = {}): RunWatchdog {
     // Snapshot so an onStale handler that starts another run cannot mutate the
     // iteration.
     for (const [key, run] of [...runs]) {
-      if (at - run.lastActivityAt < staleMs) continue;
+      const silent = at - run.lastActivityAt >= staleMs;
+      const expired = at - run.startedAt >= maxMs;
+      if (!silent && !expired) continue;
       runs.delete(key);
       try {
-        run.onStale();
+        run.onStale(expired ? "expired" : "silent");
       } catch (err) {
         console.warn("run watchdog: stale handler failed", err);
       }
@@ -81,7 +96,7 @@ export function createRunWatchdog(opts: RunWatchdogOptions = {}): RunWatchdog {
 
   return {
     start(run) {
-      runs.set(run.key, { ...run, lastActivityAt: now() });
+      runs.set(run.key, { ...run, lastActivityAt: now(), startedAt: now() });
       if (!timer) timer = startTimer(check, checkMs);
     },
     touch(key, turnId) {

@@ -33,6 +33,7 @@ overridden in the session panel; aliases let one slot serve several names.
 | `apiKey` | Bearer token. `${ENV_VAR}` is interpolated from browser settings (standalone) or `.env` (admin-served page); a missing variable becomes an empty string. |
 | `protocol` | Omit for OpenAI-compatible APIs. Set `"ollama"` only for Ollama's native `/api/chat`. |
 | `transform` | Optional response transform. `gemma4Thinking` strips Gemma channel tags. |
+| `vision` | `true` when the endpoint/model accepts OpenAI-style image content parts. Trees read it from the `model_catalog` root memory slot; absence means "not reported", not false. Declare it rather than inferring from the model id, because provider routing changes capability. |
 | `thinking.reasoning_effort` | Sent as `reasoning_effort` on OpenAI-compatible calls. |
 | `timeout` | Whole-call deadline in ms. Defaults: 2 min OpenAI-compatible, 10 min Ollama. |
 | `idleTimeout` | Max gap between body bytes before the call is treated as stalled. |

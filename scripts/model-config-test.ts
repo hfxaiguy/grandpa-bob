@@ -19,6 +19,19 @@ assert.equal(registry.cheap.transform, BUILTIN_TRANSFORMS.gemma4Thinking, "wires
 assert.equal(registry.strong.protocol, undefined);
 assert.equal(registry.strong.apiKey, "no-key");
 assert.match(registry.strong.baseURL, /localhost:11434/);
+assert.equal(registry.strong.vision, undefined, "vision is absent unless declared");
+const vision = parseModels(
+  JSON.stringify({
+    sighted: { baseURL: "x", model: "y", vision: true },
+    blind: { baseURL: "x", model: "y", vision: false },
+  }),
+);
+assert.equal(vision.sighted.vision, true);
+assert.equal(vision.blind.vision, false);
+assert.throws(
+  () => parseModels(JSON.stringify({ m: { baseURL: "x", model: "y", vision: "yes" } })),
+  /"vision" must be a boolean/,
+);
 
 // Missing env leaves an empty string, not the literal placeholder.
 const missing = parseModels(JSON.stringify({ m: { baseURL: "x", model: "y", apiKey: "${NOT_SET}" } }), {});
