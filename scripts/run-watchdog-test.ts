@@ -126,4 +126,35 @@ wdMax.check();
 assert.deepEqual(maxFired, ["expired"], "activity cannot keep a run past its wall-clock budget");
 wdMax.stop();
 
+// ── 8. a parked run waits for a person, not the clock ────────────────────
+let parkNow = 0;
+const parkFired: string[] = [];
+const wdPark = createRunWatchdog({ staleMs: 10_000, maxMs: 20_000, now: () => parkNow });
+wdPark.start({ key: "web:park", turnId: "tp", onStale: (reason) => parkFired.push(reason) });
+parkNow = 1_000;
+wdPark.park("web:park", "tp");
+// Far past both the silence and wall-clock budgets: still not reported.
+parkNow = 3_600_000;
+wdPark.check();
+assert.deepEqual(parkFired, [], "a parked run is exempt from stale and expired");
+// Unpark starts both clocks again, and the parked hour is excluded from the
+// wall-clock budget rather than counting as a runaway turn.
+wdPark.unpark("web:park", "tp");
+parkNow += 9_999;
+wdPark.check();
+assert.deepEqual(parkFired, [], "unparking resets the silence clock");
+parkNow += 1;
+wdPark.check();
+assert.deepEqual(parkFired, ["silent"], "a run that stays idle after unparking trips the stale check");
+wdPark.stop();
+
+// park/unpark for a different turn is ignored, like touch/finish.
+const wdParkId = createRunWatchdog({ staleMs: 10_000, now: () => parkNow });
+wdParkId.start({ key: "web:park2", turnId: "tp2", onStale: (reason) => parkFired.push(reason) });
+wdParkId.park("web:park2", "someone-else");
+parkNow += 10_000;
+wdParkId.check();
+assert.deepEqual(parkFired.at(-1), "silent", "a foreign park cannot keep a run alive");
+wdParkId.stop();
+
 console.log("run-watchdog: all assertions passed");

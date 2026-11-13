@@ -736,10 +736,10 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
         },
     {
       signal,
-      // Keep an exhausted call retryable for a few minutes: the chat's ↻
-      // action then re-issues THIS request instead of resending the human
-      // message and re-running everything from the turn's checkpoint.
-      manualRetryMs: 5 * 60_000,
+      // Keep an exhausted call retryable until the person acts. The run
+      // watchdog is parked while this wait is in progress (see local-backend),
+      // so a phone tab that was backgrounded does not get marked stuck.
+      manualRetryMs: Number.POSITIVE_INFINITY,
       onWaiting: (wait) => {
         const message = wait.error instanceof Error ? wait.error.message : String(wait.error);
         post({
@@ -755,6 +755,22 @@ async function handleRun(opts: RunOptions, signal: AbortSignal): Promise<void> {
           },
         });
       },
+      // The wait is over (retry, cancel, timeout, stop): let the host restart
+      // the watchdog before the next request, so a retry that hangs is still
+      // covered by the normal stuck-run detection.
+      onResumed: () =>
+        post({
+          id: opts.id,
+          type: "event",
+          event: {
+            kind: "llm_retry_resumed",
+            branch_path: "",
+            iteration: 0,
+            scope_id: null,
+            content: {},
+            ts: Date.now(),
+          },
+        }),
     },
   );
   const modelCatalog = modelCatalogOf(models);

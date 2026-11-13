@@ -669,8 +669,18 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
       },
       {
         onEvent: (event) => {
-          watchdog.touch(key, turnId);
           const ev = event as { kind?: string; content?: Record<string, unknown>; scope_id?: number | null; branch_path?: string; ts?: number };
+          // A parked model call is an intentional wait, not a wedged run:
+          // suspend the watchdog until the call resolves. A resumed marker is
+          // purely a watchdog signal — the person does not need an event row.
+          if (ev.kind === "llm_retry_resumed") {
+            watchdog.unpark(key, turnId);
+            watchdog.touch(key, turnId);
+            return;
+          }
+          if (ev.kind === "llm_retry_waiting") watchdog.park(key, turnId);
+          else watchdog.unpark(key, turnId);
+          watchdog.touch(key, turnId);
           addTurnTokens(record, ev);
           const app = tagEventApp(apps, ev);
           // Stream the push the tracker returns (the node paths a write landed

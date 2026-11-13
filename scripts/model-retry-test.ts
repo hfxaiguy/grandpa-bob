@@ -227,6 +227,8 @@ assert.equal(isRetryableModelError(Object.assign(new Error("stop"), { stopped: t
 // human message, and the run keeps its state.
 {
   let calls = 0;
+  let waits = 0;
+  let resumed = 0;
   let waited: { error: unknown; attempt: number } | null = null;
   const result = retryModelCall(
     async () => {
@@ -237,7 +239,13 @@ assert.equal(isRetryableModelError(Object.assign(new Error("stop"), { stopped: t
     {
       attempts: 1,
       manualRetryMs: 5_000,
-      onWaiting: (info) => void (waited = info),
+      onWaiting: (info) => {
+        waits += 1;
+        waited = info;
+      },
+      onResumed: () => {
+        resumed += 1;
+      },
       sleep: async () => assert.fail("the automatic budget is already spent"),
     },
   );
@@ -248,6 +256,8 @@ assert.equal(isRetryableModelError(Object.assign(new Error("stop"), { stopped: t
   assert.equal(resendLiveModelCall(), true, "the parked call is the resend target");
   assert.equal(await result, "recovered", "the same request is issued again");
   assert.equal(calls, 2, "the call was retried, not the turn restarted");
+  assert.equal(waits, 1, "the wait is announced once");
+  assert.equal(resumed, 1, "the host is told when the wait ends");
   assert.equal(liveModelCallSignal(), undefined, "the parked controller is released");
 }
 
@@ -284,17 +294,25 @@ await assert.rejects(
 // receives the original failure and can recover or report it.
 {
   let calls = 0;
+  let resumed = 0;
   const pending = retryModelCall(
     async () => {
       calls += 1;
       throw httpError(503);
     },
-    { attempts: 1, manualRetryMs: 10_000 },
+    {
+      attempts: 1,
+      manualRetryMs: Number.POSITIVE_INFINITY,
+      onResumed: () => {
+        resumed += 1;
+      },
+    },
   );
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(abandonLiveModelCall(), true, "a parked call can be cancelled");
+  assert.equal(abandonLiveModelCall(), true, "an indefinitely parked call can be cancelled");
   await assert.rejects(() => pending, /503/, "the original failure reaches the tree");
   assert.equal(calls, 1, "cancelling does not issue another request");
+  assert.equal(resumed, 1, "cancelling restarts the host watchdog");
   assert.equal(liveModelCallSignal(), undefined, "a cancel releases the parked call");
 }
 

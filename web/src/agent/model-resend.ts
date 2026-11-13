@@ -6,9 +6,9 @@
  * layer, though: `retryModelCall` parks each attempt behind a controller, the
  * worker's fetch wrapper merges that controller's signal into the request, and
  * a resend aborts the request and re-issues the same call without failing the
- * turn. An exhausted retryable call stays the target for a short window, so the
- * same handshake retries that call instead of restarting the human's turn. A
- * stop and a resend therefore travel the same abort path, but only a resend is
+ * turn. An exhausted retryable call stays the target until the person acts, so
+ * the same handshake retries that call instead of restarting the human's turn.
+ * A stop and a resend therefore travel the same abort path, but only a resend is
  * retried.
  *
  * Kept free of worker globals so the retry test can exercise the handshake.

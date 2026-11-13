@@ -39,21 +39,29 @@ send the last human message again from the session's pre-turn checkpoint,
 re-running tools and starting a new turn bubble. The button promised a call
 retry and delivered a message resend.
 
-A retryable call now stays parked as the live resend target for five minutes
-after the automatic budget is spent. The worker posts `llm_retry_waiting` with
-the failure, the banner offers **↻ retry call**, and that action re-issues the
+A retryable call now stays parked as the live resend target after the
+automatic budget is spent. The worker posts `llm_retry_waiting` with the
+failure, the banner offers **↻ retry call**, and that action re-issues the
 same request — the turn keeps its state and tools that already ran are not
-repeated. If the window expires (or a stop lands), the original failure
-surfaces as before. When a failure is already past the parked window, the
-banner and inline app card say **↻ resend message** and name the checkpoint
-behavior instead of implying a call retry.
+repeated. The wait is indefinite: a phone tab that was backgrounded or lost
+its connection stays retryable until the person retries, cancels, or stops.
+The run watchdog is parked for the duration (and excludes the parked time
+from the turn's wall-clock budget), so an intentional wait is not reported as
+a stuck run. When a failure is already past the parked state, the banner and
+inline app card say **↻ resend message** and name the checkpoint behavior
+instead of implying a call retry.
 
 - **`web/src/agent/model-retry.ts`**: `manualRetryMs` parks an exhausted
-  retryable call, keeps its controller registered for `resendLiveModelCall`,
-  and treats a stop as `AgentStoppedError`; `onWaiting` reports the failure and
-  slot. Non-retryable failures still throw immediately.
-- **`web/src/agent/agent-worker.ts`**: opts into the five-minute window and
-  streams `llm_retry_waiting` as a turn event.
+  retryable call (`Infinity` waits for a person), keeps its controller
+  registered for `resendLiveModelCall`, and treats a stop as
+  `AgentStoppedError`; `onWaiting` reports the failure and slot. Non-retryable
+  failures still throw immediately.
+- **`web/src/agent/agent-worker.ts`**: opts into the indefinite wait and
+  streams `llm_retry_waiting` / `llm_retry_resumed` as control events.
+- **`web/src/agent/run-watchdog.ts`**, **`web/src/server/local-backend.ts`**:
+  a parked run is exempt from the silence and wall-clock checks; parked time is
+  excluded from the budget. `llm_retry_resumed` restarts the clocks before the
+  retry request starts, so a retry that hangs is still caught normally.
 - **`ui/src/turn-failure.ts`**, **`ui/src/store.ts`**, **`ui/src/app.tsx`**:
   the banner's action is `call` (resend the parked request) or `turn` (send the
   message again from the checkpoint), with matching labels/titles.
@@ -66,10 +74,11 @@ behavior instead of implying a call retry.
   **↻ resend** because, once the tree caught the error, only the turn can run
   again.
 
-Tests: `npm run test:model-retry` (parking, manual call retry, timeout, stop,
-cancel); `npm run test:turn-failure` (call vs turn action, stale parked banner);
-`npm run test:standalone`; `npm run test:chat-queue`;
-`npm run test:live-tool-row`; `npm run test:run-watchdog`;
+Tests: `npm run test:model-retry` (parking indefinitely, manual call retry,
+finite-window fallback, stop, cancel); `npm run test:turn-failure` (call vs
+turn action, stale parked banner); `npm run test:run-watchdog` (parked runs
+are exempt and the parked period is excluded); `npm run test:standalone`;
+`npm run test:chat-queue`; `npm run test:live-tool-row`;
 `npm run test:web-restore`; `npm run typecheck`;
 `npm --prefix web run typecheck`; `npm --prefix ui run typecheck`.
 

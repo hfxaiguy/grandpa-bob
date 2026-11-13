@@ -7,8 +7,8 @@
  * (load-shedding 52x/529, a second timeout, a connection reset between
  * attempts), and the host used to turn that straight into a failed turn. This
  * wrapper gives such a call one more chance before failing; the browser host
- * also leaves an exhausted call parked for a short manual-retry window, so ↻
- * can re-issue that request instead of resending the human message.
+ * also leaves an exhausted call parked until the person acts, so ↻ can
+ * re-issue that request instead of resending the human message.
  *
  * It is deliberately narrow: a stop/cancel, a quota wall, an auth failure and
  * a malformed request are never retried. Retrying those cannot change the
@@ -84,11 +84,17 @@ export interface RetryModelCallOptions {
   /**
    * How long a failed final attempt stays open for a manual retry. The live
    * call remains the resend target, so the chat's ↻ retry can re-issue exactly
-   * this request without re-running the turn. 0 (the default) fails at once.
+   * this request without re-running the turn. 0 (the default) fails at once;
+   * `Infinity` keeps it parked until the person retries, cancels, or stops.
    */
   manualRetryMs?: number;
   /** Called once when the automatic attempts are spent and the manual wait starts. */
   onWaiting?: (wait: ModelRetryWait) => void;
+  /**
+   * Called when the manual wait ends — retry, cancel, timeout, or stop. The
+   * host uses it to resume its run watchdog before the next request starts.
+   */
+  onResumed?: () => void;
   /** Injected for deterministic tests. */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -122,7 +128,9 @@ function waitForManualRetry(
     const onStop = (): void => finish("stop");
     call.ctrl.signal.addEventListener("abort", onCallAbort, { once: true });
     signal?.addEventListener("abort", onStop, { once: true });
-    timer = setTimeout(() => finish("timeout"), ms);
+    // A finite window falls back to the original failure; Infinity waits for
+    // a person (the host parks the run watchdog so it is not called stuck).
+    if (Number.isFinite(ms)) timer = setTimeout(() => finish("timeout"), ms);
     // A resend/abandon/stop can land between the failure and this wait; the
     // event listener alone would miss it and hold the turn until the timeout.
     if (call.ctrl.signal.aborted) {
@@ -144,8 +152,9 @@ function waitForManualRetry(
  * transient budget.
  *
  * With `manualRetryMs`, an exhausted retryable call is not thrown at once: it
- * stays the resend target for that window, so the person can retry the call
- * itself instead of restarting the turn from its last human message.
+ * stays the resend target for that window (or indefinitely when the value is
+ * `Infinity`), so the person can retry the call itself instead of restarting
+ * the turn from its last human message.
  */
 export async function retryModelCall<T>(
   fn: () => Promise<T>,
@@ -204,6 +213,11 @@ export async function retryModelCall<T>(
         outcome = await waitForManualRetry(call, opts.signal, manualRetryMs);
       } finally {
         call.parked = false;
+        try {
+          opts.onResumed?.();
+        } catch {
+          /* a host observer must not kill the call */
+        }
       }
       if (outcome === "resend") {
         takeModelResend(call);

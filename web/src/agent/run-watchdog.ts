@@ -8,7 +8,9 @@
  *
  * The watchdog is deliberately dumb. Each run carries a last-activity
  * timestamp; a run that goes silent for `staleMs` is reported once through its
- * `onStale` callback, and the host decides how to stop and settle it.
+ * `onStale` callback, and the host decides how to stop and settle it. A run
+ * parked on a failed model call is excluded entirely: waiting for a person is
+ * not a wedge, and the parked time does not count toward the turn's budget.
  */
 
 /**
@@ -37,12 +39,22 @@ export interface WatchdogRun {
 interface LiveRun extends WatchdogRun {
   lastActivityAt: number;
   startedAt: number;
+  /** Set while a failed model call waits for a manual retry. */
+  parkedAt: number | null;
 }
 
 export interface RunWatchdog {
   start(run: WatchdogRun): void;
   /** Mark activity for a run; ignored when the turn/session is not tracked. */
   touch(key: string, turnId: string): void;
+  /**
+   * A model call failed and the run is waiting for the person to retry,
+   * cancel, or stop. Suspend both the silence and wall-clock checks; the time
+   * spent parked is excluded from the budget when the run unpauses.
+   */
+  park(key: string, turnId: string): void;
+  /** The parked call resolved; restart the clocks. */
+  unpark(key: string, turnId: string): void;
   /** Stop tracking a run that settled normally (or was already reported). */
   finish(key: string, turnId: string): void;
   /** Report stale runs now; exposed for tests and load-time sweeps. */
@@ -82,6 +94,9 @@ export function createRunWatchdog(opts: RunWatchdogOptions = {}): RunWatchdog {
     // Snapshot so an onStale handler that starts another run cannot mutate the
     // iteration.
     for (const [key, run] of [...runs]) {
+      // Waiting for a person is not a wedge: the host parked the run when the
+      // call exhausted its automatic retries. Retry/cancel/stop unpark it.
+      if (run.parkedAt != null) continue;
       const silent = at - run.lastActivityAt >= staleMs;
       const expired = at - run.startedAt >= maxMs;
       if (!silent && !expired) continue;
@@ -96,13 +111,28 @@ export function createRunWatchdog(opts: RunWatchdogOptions = {}): RunWatchdog {
 
   return {
     start(run) {
-      runs.set(run.key, { ...run, lastActivityAt: now(), startedAt: now() });
+      runs.set(run.key, { ...run, lastActivityAt: now(), startedAt: now(), parkedAt: null });
       if (!timer) timer = startTimer(check, checkMs);
     },
     touch(key, turnId) {
       const run = runs.get(key);
       if (!run || run.turnId !== turnId) return;
       run.lastActivityAt = now();
+    },
+    park(key, turnId) {
+      const run = runs.get(key);
+      if (!run || run.turnId !== turnId || run.parkedAt != null) return;
+      run.parkedAt = now();
+    },
+    unpark(key, turnId) {
+      const run = runs.get(key);
+      if (!run || run.turnId !== turnId || run.parkedAt == null) return;
+      const at = now();
+      // Exclude the parked period from the wall-clock budget; a person taking
+      // their time is not a runaway loop.
+      run.startedAt += at - run.parkedAt;
+      run.lastActivityAt = at;
+      run.parkedAt = null;
     },
     finish(key, turnId) {
       const run = runs.get(key);
