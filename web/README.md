@@ -297,6 +297,20 @@ npm run smoke      # headless end-to-end check against :8080
 `npm run make-seed` turns a desktop profile folder (default
 `$BOB_WORKSPACE/folders/seed`; `BOB_WORKSPACE` defaults to `~/.bobkat`) into
 `web/public/seed/workspace.json`.
+`web/public/seed/` is generated and gitignored. Because a clean checkout (the
+hosted deployment) has no local archive, the web build fills it before Vite
+runs: a valid local `public/seed/workspace.json` wins, otherwise
+`web/scripts/prepare-seed.mjs` downloads the newest public archive named by
+`web/public/seed-bootstrap.json` (`BOB_SEED_URL` overrides the URL,
+`BOB_SEED_ARCHIVE` pins a local file). After the build,
+`web/scripts/verify-seed.mjs` checks `dist/seed/workspace.json` and
+`dist/seed/meta.json` and fails if they are missing or mismatched — so a
+bundle cannot silently ship without the archive the button needs. The app also
+requests those two files with the bundle's build tag (`?v=…`), so a CDN-cached
+404 from before the deploy cannot hide the new archive.
+`npm run seed:fetch` refreshes from the shelf even when a local seed exists;
+`BOB_SKIP_SEED_BUNDLE=1` builds without one for forks that have no shelf.
+
 On first load the app first tries the public shelf named by
 `web/public/seed-bootstrap.json` (see below), then imports the bundled archive
 into OPFS (`?reseed=1` forces the bundled re-import). After that the browser
@@ -663,10 +677,11 @@ If the newest version is private, the service is offline, or the pull exceeds
 and `?bootstrap-url=<origin>` override the file for one tab; `npm run
 smoke:bootstrap` uses them to point a fresh browser at a fake public service,
 then repeats with the shelf private to check the bundled fallback. Forks that
-do not publish to BobSwap can delete the file. The shelf must expose `/latest`
-anonymously: mark the seed **public latest** in the BobSwap dashboard (future
-uploads included), or mark the individual newest version public — no read key
-is shipped.
+do not publish to BobSwap can delete the file and build with
+`BOB_SKIP_SEED_BUNDLE=1` (or ship a local `make-seed` archive). The shelf must
+expose `/latest` anonymously: mark the seed **public latest** in the BobSwap
+dashboard (future uploads included), or mark the individual newest version
+public — no read key is shipped.
 
 - The **BobSwap…** dialog stores the service URL, account and API keys in this
   browser's localStorage (`bob:swap`); **Seed…** only asks which service and the

@@ -5,7 +5,10 @@
   "type": "module",
   "description": "Browser target: grandpa-bob running entirely in a tab (OPFS + WASM SQLite, no backend).",
   "scripts": {
+    "prebuild": "node scripts/prepare-seed.mjs",
     "build": "vite build",
+    "postbuild": "node scripts/verify-seed.mjs",
+    "seed:fetch": "node scripts/prepare-seed.mjs --force",
     "preview": "vite preview",
     "standalone": "node scripts/serve.mjs",
     "smoke": "node smoke.mjs",

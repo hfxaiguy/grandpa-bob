@@ -2,6 +2,35 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-12 — the web bundle always carries a seed
+
+The hosted app offered **Update from shipped seed**, but clicking it failed
+with "seed metadata is not available": `web/public/seed/` is generated and
+gitignored, so a build from a clean checkout had no archive and `/seed/meta.json`
+returned 404. The button could never work on a deployed origin.
+
+- **`web/scripts/prepare-seed.mjs`** (prebuild): keeps a valid local
+  `public/seed/workspace.json`, rewrites a stale `meta.json`, and otherwise
+  downloads the newest public archive named by `public/seed-bootstrap.json`.
+  `BOB_SEED_URL` overrides the URL and `BOB_SEED_ARCHIVE` pins a local file for
+  an offline build; `BOB_SKIP_SEED_BUNDLE=1` opts out.
+- **`web/scripts/verify-seed.mjs`** (postbuild): fails the build when
+  `dist/seed/workspace.json` or `dist/seed/meta.json` is missing or does not
+  match the archive, so a bundle cannot silently lose its seed.
+- **`web/scripts/seed-bundle.mjs`**: shared archive validation, hashing and
+  sidecar generation; also requires `workspace/patterns/trunk.prod.mjs`.
+- **`web/src/main.ts`**: the bundled-seed requests carry this build's timestamp
+  (`?v=…`), so a CDN-cached 404 from before the deploy cannot hide the newly
+  shipped archive.
+- **`web/package.json`** / root **`package.json`**: `prebuild`, `postbuild`
+  and `npm run seed:fetch` (force a fresh copy from the shelf). The seed
+  directory stays generated and ignored, so no 2.8 MB archive is committed and
+  local `make-seed` output still wins over the shelf.
+
+Tests: `npm run build:web` with the local archive (248 files, 2.7 MiB,
+verified); `node web/scripts/prepare-seed.mjs` with `public/seed` moved aside
+(fetched 243 files from `personal/trunk`, then restored the local copy).
+
 ## 2026-11-12 — ↻ retries the failed model call, not the human message
 
 An LLM call that exhausted its automatic retries used to fail the turn/request

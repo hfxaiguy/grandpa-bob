@@ -625,6 +625,20 @@ async function applySeedArchive(
   return stamp;
 }
 
+/**
+ * The bundled seed's URLs, tied to this bundle's build time. A deploy that
+ * adds `/seed/` after an earlier 404 can otherwise be hidden by a CDN cache
+ * entry for the bare path; the query makes this build's archive a fresh URL.
+ */
+declare const __BUILD_TIME__: string;
+const SEED_BUILD_TAG =
+  typeof __BUILD_TIME__ === "string" && __BUILD_TIME__
+    ? encodeURIComponent(__BUILD_TIME__)
+    : "";
+function shippedSeedUrl(file: "meta.json" | "workspace.json"): string {
+  return `/seed/${file}${SEED_BUILD_TAG ? `?v=${SEED_BUILD_TAG}` : ""}`;
+}
+
 /** Remember the shelf a fresh profile was pulled from, so it keeps following it. */
 async function bindBootstrapSeed(
   bootstrap: BootstrapSeed,
@@ -709,7 +723,7 @@ async function seedWorkspace(root: string): Promise<void> {
   if (bootstrap && (await pullBootstrapSeed(bootstrap))) return;
 
   try {
-    const res = await fetch("/seed/workspace.json", { cache: "no-cache" });
+    const res = await fetch(shippedSeedUrl("workspace.json"), { cache: "no-cache" });
     if (!res.ok) return;
     const text = await res.text();
     const archive = JSON.parse(text) as WorkspaceArchive;
@@ -1149,7 +1163,7 @@ async function checkSeedUpdate(): Promise<void> {
 
   let meta: SeedMeta | null = null;
   try {
-    const res = await fetch("/seed/meta.json", { cache: "no-cache" });
+    const res = await fetch(shippedSeedUrl("meta.json"), { cache: "no-cache" });
     if (!res.ok) return;
     meta = parseSeedMeta(await res.json());
   } catch {
@@ -1346,7 +1360,7 @@ async function confirmAction(title: string, message: string, confirmLabel: strin
 async function applyShippedSeedUpdate(): Promise<void> {
   let meta: SeedMeta | null = null;
   try {
-    const res = await fetch("/seed/meta.json", { cache: "no-cache" });
+    const res = await fetch(shippedSeedUrl("meta.json"), { cache: "no-cache" });
     if (res.ok) meta = parseSeedMeta(await res.json());
   } catch {
     /* seed is optional */
@@ -1373,7 +1387,7 @@ async function applySeedUpdate(meta: SeedMeta): Promise<void> {
   showSeedApplyProgress("updating workspace…");
   try {
     setStatus("updating workspace…");
-    const res = await fetch("/seed/workspace.json", { cache: "no-cache" });
+    const res = await fetch(shippedSeedUrl("workspace.json"), { cache: "no-cache" });
     if (!res.ok) throw new Error(`seed not available (${res.status})`);
     showSeedApplyProgress("downloading workspace…");
     const text = await res.text();
