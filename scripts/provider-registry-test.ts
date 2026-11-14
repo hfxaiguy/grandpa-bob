@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { parseModels } from "../web/src/model-config.js";
-import { MODEL_PRESETS, presetId } from "../web/src/model-presets.js";
+import { MODEL_PRESETS, presetId } from "../ui/src/model-presets.js";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 

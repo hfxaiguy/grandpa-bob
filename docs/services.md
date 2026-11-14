@@ -151,7 +151,7 @@ Settings page on the same origin:
   `synthesizeWithProvider`
 - `src/bridge/peer.ts` — `stt-run` / `tts-run` ops
 - `ui/src/store.ts` — `transcribeBlob` routing + `speakText`
-- `web/src/ui/pages.ts` — the Settings → Speech card
+- `ui/src/settings-view.tsx` — the Settings → Speech card
 - `scripts/kitten-tts-server.py` — the local TTS service; `scripts/tts-up.mjs`
   picks an interpreter with `kittenml` (venv at `~/.bobkat/tts-venv` via `uv`)
 

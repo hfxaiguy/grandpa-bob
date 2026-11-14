@@ -98,7 +98,7 @@ async function main() {
     // 4. Sync back to the desktop and inspect the real folder.
     await clickSyncNow(page);
     const mirrored = await waitFile(
-      path.join(stateDir, "folders", "default", "patterns", "browser-roundtrip.mjs"),
+      path.join(stateDir, "folders", "default", "patterns", "browser-roundtrip.prod.mjs"),
       90_000,
     );
     assert(

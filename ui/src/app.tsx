@@ -1,14 +1,17 @@
 /** App shell: toolbar + tiled grid + global stream + session drawer. */
-import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import logo from "./assets/logo.webp";
 import logoMark from "./assets/logo-mark.webp";
 import { buildInfo } from "./build-info";
 import { EventModal, GlobalStream, HiddenRail, RailCard, RefModal, SessionPanel, Tiles, WorkspaceUpload } from "./components";
+import { SettingsView } from "./settings-view";
+import { FilesView } from "./files-view";
 import {
   init,
   orderedApps,
   state,
   stop,
+  refreshTtsEnabled,
   toggleHidden,
   toggleSub,
   toggleMachine,
@@ -58,15 +61,17 @@ function TilesMenu() {
 
 /**
  * The phone toolbar folds upload, tiles and stream/machine (plus the workspace
- * files page link) into one list, so those controls keep their behavior without
- * making the wrapped toolbar several rows taller. Desktop keeps the direct
- * buttons; the shell toolbar hosts the phone's Session button beside Sync….
+ * files page in the standalone UI) into one list, so those controls keep their
+ * behavior without making the wrapped toolbar several rows taller. Desktop
+ * keeps the direct buttons; the shell toolbar hosts the phone's Session button
+ * beside Sync….
  */
 function SettingsMenu(props: { events: number; onSession: () => void }) {
   const [open, setOpen] = createSignal(false);
   // The browser shell hosts a Session button beside Sync… on a phone. The
   // standalone UI has no shell, so keep the action in this menu there.
   const shellSession = !!document.getElementById("session-menu");
+  const shellSettings = !!document.getElementById("settings-menu");
   let wrap: HTMLDivElement | undefined;
   // WorkspaceUpload keeps the hidden picker + destination drawer mounted even
   // while the menu is closed, so the file dialog's onChange still lands.
@@ -139,6 +144,19 @@ function SettingsMenu(props: { events: number; onSession: () => void }) {
           >
             files page
           </button>
+          <Show when={!shellSettings}>
+            <button
+              type="button"
+              class="menu-row menu-action"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                window.dispatchEvent(new Event("bob:show-settings"));
+              }}
+            >
+              settings page
+            </button>
+          </Show>
           <div class="menu-section">tiles</div>
           <TileToggles />
         </div>
@@ -148,8 +166,11 @@ function SettingsMenu(props: { events: number; onSession: () => void }) {
   );
 }
 
-export function App() {
+function ChatApp() {
   const [showSession, setShowSession] = createSignal(false);
+  // The browser shell owns the Settings button. The standalone UI has no
+  // shell, so surface the same view from the chat toolbar/menu instead.
+  const shellSettings = !!document.getElementById("settings-menu");
   // The grid tiles are the apps; the trunk docks along the bottom of the same
   // grid, spanning every column — it is the board's home conversation.
   const apps = createMemo(() => orderedApps().filter((a) => a.name !== "trunk"));
@@ -166,6 +187,9 @@ export function App() {
   const canRetry = () => !!state.lastError?.retryable;
 
   onMount(() => {
+    // Settings is an in-place view now: returning to chat must re-read the TTS
+    // switch saved there, without a page load.
+    refreshTtsEnabled();
     // The browser shell's Session button lives in its own toolbar, above this
     // app. It asks the mounted chat to open the same drawer as the direct
     // desktop button.
@@ -226,6 +250,15 @@ export function App() {
               >
                 files
               </button>
+              <Show when={!shellSettings}>
+                <button
+                  type="button"
+                  class="link-btn"
+                  onClick={() => window.dispatchEvent(new Event("bob:show-settings"))}
+                >
+                  settings
+                </button>
+              </Show>
             </>
           }
         >
@@ -323,12 +356,60 @@ export function App() {
 
       <EventModal />
       <RefModal />
+    </div>
+  );
+}
 
+type View = "chat" | "settings" | "files";
+
+/**
+ * The app router. Settings and workspace Files are in-page views, not iframe
+ * documents: switching views keeps one Solid tree, one transport shim and one
+ * toast host. The shell toolbar asks for them with `bob:show-*` events.
+ */
+export function App() {
+  const [view, setView] = createSignal<View>("chat");
+
+  // The shell's phone Session button belongs to the chat view. Mirror the
+  // router state onto it (the in-view "← chat" nav does not go through an
+  // event, so a host-side listener would miss it).
+  createEffect(() => {
+    const sessionButton = document.getElementById("session-menu") as HTMLButtonElement | null;
+    if (sessionButton) sessionButton.hidden = view() !== "chat";
+  });
+
+  onMount(() => {
+    const showChat = () => setView("chat");
+    const showSettings = () => setView("settings");
+    const showFiles = () => setView("files");
+    window.addEventListener("bob:show-settings", showSettings);
+    window.addEventListener("bob:show-files", showFiles);
+    window.addEventListener("bob:show-chat", showChat);
+    onCleanup(() => {
+      window.removeEventListener("bob:show-settings", showSettings);
+      window.removeEventListener("bob:show-files", showFiles);
+      window.removeEventListener("bob:show-chat", showChat);
+    });
+  });
+
+  return (
+    <>
+      <Switch>
+        <Match when={view() === "settings"}>
+          <SettingsView onChat={() => setView("chat")} onFiles={() => setView("files")} />
+        </Match>
+        <Match when={view() === "files"}>
+          <FilesView onChat={() => setView("chat")} onSettings={() => setView("settings")} />
+        </Match>
+        <Match when={view() === "chat"}>
+          <ChatApp />
+        </Match>
+      </Switch>
       <Show when={state.toast}>
         <div class="toast" classList={{ err: state.toastErr }}>
           {state.toast}
         </div>
       </Show>
-    </div>
+    </>
   );
 }

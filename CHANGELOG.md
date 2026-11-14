@@ -2,6 +2,59 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-14 — Settings and workspace Files are Solid views
+
+The last server-rendered HTML pages are gone. Settings and Files now render as
+in-place views of the same Solid tree as the chat board, so there is no iframe,
+no injected fetch shim for a second document, and no template-string script
+that the TypeScript compiler cannot see. Navigation stays in-page: the shell's
+**Settings** button and the chat's `bob:show-settings` / `bob:show-files`
+events switch views without changing the URL.
+
+- **`ui/src/settings-view.tsx`**: status/services/uptime, credentials and the
+  full `.env` editor, app env presets, speech (STT/TTS keys and auto-speak
+  scope), the model-slot editor (presets, aliases, vision, Test, raw JSON,
+  free-key claim), logs and access help.
+- **`ui/src/files-view.tsx`**: file browser (download/delete/multi-upload),
+  pattern list/editor, app-secret upload + nested key/value editor + import,
+  and workspace commit/pull/push.
+- **`ui/src/app.tsx`**: one router for chat, settings and files; the toast host
+  lives above the switch so admin views get the same feedback. Returning to
+  chat re-reads the TTS switch saved in Settings.
+- **`ui/src/model-presets.ts`**: moved from `web/src` next to its only consumer;
+  Node checks import it from there.
+- **`web/src/ui-host.ts` / `web/src/server/shim.ts`**: mount the Solid app
+  directly and install the shim once; the settings iframe and `SHIM_SCRIPT`
+  injection are removed. `web/src/ui/pages.ts` is deleted.
+- **`web/src/server/local-backend.ts`**: the app-secret vars endpoint accepts
+  the editor's `{key,value}` and `{set}` merge shapes (not just whole-document
+  replacement), app-secret manifests expose `fields` hints, and pattern
+  read/write/delete use `patterns/<name>.prod.mjs` so View and New pattern work
+  from the Files view.
+- **`web/scripts/browser-smoke.mjs`**: opens Settings, checks the seeded
+  slots render, adds a model, round-trips Raw JSON, saves a `.env` key, uploads
+  through the Files card, saves/deletes a pattern, and returns to chat.
+
+Tests: `npm run test:models`; `npm run test:standalone`; `npm run typecheck`;
+`npm --prefix ui run typecheck`; `npm --prefix web run typecheck`;
+`npm run test:ui`; `npm run build:web`; browser smoke in mobile emulation.
+
+## 2026-11-14 — Settings → Models renders again (and Add model works)
+
+The provider-preset refactor moved `MODEL_PRESETS` / `presetId` out of the
+settings page script and into an import, but that page is a classic inline
+script with no module scope. In the iframe both names were undefined, so the
+first `renderModelSlots()` threw. `loadModels()` swallowed the error (the model
+list stayed on "(loading...)" with no slots), and **+ Add model** aborted after
+updating the registry but before rendering the new card — the button looked
+dead.
+
+The server now inlines the presets as data plus the small matcher, so the page
+is self-contained again. `npm run test:providers` asserts the inlined presets
+match `model-presets.ts`, resolves every preset, and would fail if the inline
+block goes missing; a mobile-width browser check confirmed six seeded slots
+render and **+ Add model** appends a seventh.
+
 ## 2026-11-12 — the web bundle always carries a seed
 
 The hosted app offered **Update from shipped seed**, but clicking it failed

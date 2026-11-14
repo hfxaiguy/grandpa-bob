@@ -1,9 +1,9 @@
 /**
  * Browser target entry point.
  *
- * Renders the *exact* Node admin pages (src/ui/pages.ts) inside an iframe and
- * serves their /api/* calls from an in-browser backend (AgentClient + Platform)
- * via a fetch/EventSource shim.
+ * Mounts the Solid app (chat board + in-place Settings/Files views) and serves
+ * its /api/* calls from an in-browser backend (AgentClient + Platform) via a
+ * fetch/EventSource shim.
  *
  * The workspace always lives in the tab's OPFS sandbox. A desktop profile is
  * an OPFS profile with a synced folder on the machine running the storage
@@ -1876,10 +1876,10 @@ async function main(): Promise<void> {
   // keeps moving instead of resetting when it mounts and restores the session.
   (window as unknown as { __bobBootFloor?: number }).__bobBootFloor = CHAT_BOOT_FLOOR;
   bootProgress("loading the chat…", CHAT_BOOT_FLOOR);
-  // Settings is an in-page view; normalize any stray path (an old /settings
-  // bookmark) back to "/" so there is no separate page URL.
+  // Settings and Files are in-page views now; normalize any stray path (an old
+  // /settings bookmark) back to "/" so there is no separate page URL.
   if (location.pathname !== "/") history.replaceState({}, "", "/");
-  hostUi(backend, appEl, { port: 8080 });
+  hostUi(backend, appEl);
   wireWorkspaceTransfer();
   wireProfileUi({
     activeProfile: () => activeProfile,

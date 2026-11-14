@@ -1,13 +1,14 @@
 /**
- * In-browser implementation of the admin UI's /api surface.
+ * In-browser implementation of the app's /api surface.
  *
- * The shared UI (src/ui/pages.ts) was written against admin.ts's HTTP API. In
- * the browser target there is no server, so this maps those same requests onto
- * the AgentClient + Platform. Run it behind the fetch/EventSource shim
- * (./shim) so the exact Node UI runs unchanged.
+ * The Solid UI (chat, Settings and Files views) calls `/api/*`; in the browser
+ * target there is no server, so this maps those same requests onto the
+ * AgentClient + Platform. Run it behind the fetch/EventSource shim (./shim) so
+ * the exact same views work whether the page is served by the admin or by a
+ * plain static host.
  *
- * Endpoints with no browser equivalent (restart-bot, telegram, transcribe,
- * sync, log, env) return a 501 with a clear message; the UI degrades.
+ * Endpoints with no browser equivalent (restart-bot, telegram, sync, log, env)
+ * return a 501 with a clear message; the UI degrades.
  */
 import type { AgentClient } from "../agent/agent-client";
 import type { Platform } from "../platform/types";
@@ -36,9 +37,10 @@ import { AgentStoppedError, isAgentStopped } from "../stop-error";
 import type { LogRow, SessionSummary } from "../agent/log-store";
 
 /**
- * Cross-realm safe checks. The settings page runs in an iframe and hands its
- * FormData/File objects to this backend across realms, where `instanceof`
- * against the parent window's constructors is always false.
+ * Cross-realm safe checks. FormData/File objects may cross a realm boundary
+ * when a caller (for example a sandboxed component iframe) hands them to this
+ * backend, where `instanceof` against the parent window's constructors is
+ * always false.
  */
 const isFormData = (value: unknown): value is FormData =>
   !!value &&
@@ -49,6 +51,37 @@ const isFile = (value: unknown): value is File =>
   !!value &&
   typeof (value as File).arrayBuffer === "function" &&
   typeof (value as File).name === "string";
+
+/** A dotted field key accepted by the app-secret key/value editor. */
+function validSecretFieldKey(key: string): boolean {
+  return /^[A-Za-z0-9_.-]+$/.test(key) && !key.startsWith(".") && !key.endsWith(".") && !key.includes("..");
+}
+
+/** Set a dotted path on a plain object, creating intermediate objects. */
+function setSecretPath(obj: Record<string, unknown>, key: string, value: unknown): void {
+  const parts = key.split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const part = parts[i];
+    if (!cur[part] || typeof cur[part] !== "object" || Array.isArray(cur[part])) cur[part] = {};
+    cur = cur[part] as Record<string, unknown>;
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
+/** Remove a dotted path from a plain object. */
+function deleteSecretPath(obj: Record<string, unknown>, key: string): void {
+  const parts = key.split(".");
+  let cur: Record<string, unknown> | undefined = obj;
+  for (let i = 0; i < parts.length - 1 && cur; i += 1) {
+    const next: unknown = cur[parts[i]];
+    cur =
+      next && typeof next === "object" && !Array.isArray(next)
+        ? (next as Record<string, unknown>)
+        : undefined;
+  }
+  if (cur) delete cur[parts[parts.length - 1]];
+}
 
 export interface BackendResponse {
   status: number;
@@ -1532,31 +1565,48 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     }
     if (pathname.startsWith("/api/patterns/") && method === "GET") {
       const name = decodeURIComponent(pathname.slice("/api/patterns/".length));
-      try {
-        const content = await platform.fs.readFile(platform.path.join(platform.workspaceRoot, "patterns", `${name}.mjs`), "utf8");
-        return { status: 200, body: { name, content } };
-      } catch {
-        return { status: 404, body: { error: "not found" } };
+      const base = name.replace(/\.prod\.mjs$/, "").replace(/\.mjs$/, "");
+      // The workspace's runnable patterns are `*.prod.mjs`; accept a legacy
+      // `.mjs` file too so old hand-written trees stay viewable.
+      for (const file of [`${base}.prod.mjs`, `${base}.mjs`]) {
+        try {
+          const content = await platform.fs.readFile(
+            platform.path.join(platform.workspaceRoot, "patterns", file),
+            "utf8",
+          );
+          return { status: 200, body: { name: base, content } };
+        } catch {
+          /* try the next spelling */
+        }
       }
+      return { status: 404, body: { error: "not found" } };
     }
     if (pathname === "/api/patterns" && method === "POST") {
       const parsed = parseBody(body) as { name?: string; content?: string };
       if (!parsed.name || typeof parsed.content !== "string") {
         return { status: 400, body: { error: "name and content required" } };
       }
-      const file = platform.path.join(platform.workspaceRoot, "patterns", `${parsed.name.replace(/\.mjs$/, "")}.mjs`);
+      const base = parsed.name.replace(/\.prod\.mjs$/, "").replace(/\.mjs$/, "");
+      const file = platform.path.join(platform.workspaceRoot, "patterns", `${base}.prod.mjs`);
       await platform.fs.mkdir(platform.path.dirname(file), { recursive: true });
       await platform.fs.writeFile(file, parsed.content);
-      return { status: 200, body: { ok: true, name: parsed.name } };
+      return { status: 200, body: { ok: true, name: base } };
     }
     if (pathname.startsWith("/api/patterns/") && method === "DELETE") {
       const name = decodeURIComponent(pathname.slice("/api/patterns/".length));
-      try {
-        await platform.fs.rm(platform.path.join(platform.workspaceRoot, "patterns", `${name}.mjs`));
-        return { status: 200, body: { ok: true } };
-      } catch (err) {
-        return { status: 404, body: { error: String(err) } };
+      const base = name.replace(/\.prod\.mjs$/, "").replace(/\.mjs$/, "");
+      let removed = false;
+      for (const file of [`${base}.prod.mjs`, `${base}.mjs`]) {
+        try {
+          await platform.fs.rm(platform.path.join(platform.workspaceRoot, "patterns", file));
+          removed = true;
+        } catch {
+          /* absent spelling */
+        }
       }
+      return removed
+        ? { status: 200, body: { ok: true } }
+        : { status: 404, body: { error: "pattern not found" } };
     }
 
     // ── models (browser settings; keys never touch the workspace) ─────────
@@ -1721,14 +1771,34 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
                 ? (raw as { secrets: unknown[] }).secrets
                 : [];
             for (const item of list) {
-              const it = item as { name?: unknown; description?: unknown; contentType?: unknown };
+              const it = item as {
+                name?: unknown;
+                description?: unknown;
+                contentType?: unknown;
+                fields?: unknown;
+              };
               if (typeof it?.name !== "string") continue;
               const hit = stored[`${appEntry.name}/${it.name}`];
+              const fields =
+                it.fields && typeof it.fields === "object" && !Array.isArray(it.fields)
+                  ? (it.fields as Record<string, unknown>)
+                  : undefined;
               secrets.push({
                 app: appEntry.name,
                 name: it.name,
                 description: typeof it.description === "string" ? it.description : "",
-                contentType: typeof it.contentType === "string" ? it.contentType : null,
+                // The stored blob's type wins over the manifest hint; a JSON
+                // secret saved through the vars endpoint must open the
+                // key/value editor even when its manifest is sparse.
+                contentType:
+                  hit?.contentType ?? (typeof it.contentType === "string" ? it.contentType : null),
+                // Manifest hints for the key/value editor. Values here are
+                // placeholders, not stored secret bytes.
+                fields: fields
+                  ? Object.fromEntries(
+                      Object.entries(fields).map(([key, hint]) => [key, String(hint ?? "")]),
+                    )
+                  : undefined,
                 present: !!hit,
                 size: hit ? Math.floor((hit.base64.length * 3) / 4) : 0,
                 updatedAt: hit?.updatedAt ?? null,
@@ -1763,13 +1833,63 @@ export function createLocalBackend(opts: BackendOptions): LocalBackend {
     if (pathname === "/api/secrets/vars" && method === "POST") {
       const appName = search.get("app") ?? "";
       const secretName = search.get("name") ?? "";
-      const value = parseBody<{ value?: unknown }>(body).value;
-      if (!value || typeof value !== "object" || Array.isArray(value)) {
-        return { status: 400, body: { error: "value must be an object" } };
+      const parsed = parseBody<{ value?: unknown; key?: unknown; set?: unknown }>(body);
+      const map = readSecrets();
+      const storeKey = `${appName}/${secretName}`;
+      // `key`+`value` saves ONE field, `set` saves several, both merged into
+      // the stored JSON so fields not named are left alone. Without either,
+      // the legacy `value` object replaces the whole document.
+      const merge =
+        typeof parsed.key === "string" ||
+        (parsed.set != null && typeof parsed.set === "object" && !Array.isArray(parsed.set));
+      let value: Record<string, unknown>;
+      if (merge) {
+        const patch: Record<string, string | null> = {};
+        if (typeof parsed.key === "string") {
+          patch[parsed.key] = parsed.value === null ? null : String(parsed.value ?? "");
+        } else {
+          for (const [key, val] of Object.entries(parsed.set as Record<string, unknown>)) {
+            patch[key] = val === null ? null : String(val ?? "");
+          }
+        }
+        const keys = Object.keys(patch);
+        if (!keys.length) return { status: 400, body: { error: "no fields to save" } };
+        const bad = keys.find((key) => !validSecretFieldKey(key));
+        if (bad) return { status: 400, body: { error: `invalid key: ${bad}` } };
+
+        let current: Record<string, unknown> = {};
+        const existing = map[storeKey];
+        if (existing) {
+          try {
+            const decoded = new TextDecoder().decode(
+              Uint8Array.from(atob(existing.base64), (c) => c.charCodeAt(0)),
+            );
+            const parsedExisting = JSON.parse(decoded) as unknown;
+            if (!parsedExisting || typeof parsedExisting !== "object" || Array.isArray(parsedExisting)) {
+              throw new Error("not a JSON object");
+            }
+            current = parsedExisting as Record<string, unknown>;
+          } catch {
+            return {
+              status: 409,
+              body: { error: "the stored secret is not JSON — replace it instead" },
+            };
+          }
+        }
+        for (const [key, val] of Object.entries(patch)) {
+          if (val === null) deleteSecretPath(current, key);
+          else setSecretPath(current, key, val);
+        }
+        value = current;
+      } else {
+        const replaced = parsed.value;
+        if (!replaced || typeof replaced !== "object" || Array.isArray(replaced)) {
+          return { status: 400, body: { error: "value must be an object" } };
+        }
+        value = replaced as Record<string, unknown>;
       }
       const text = JSON.stringify(value, null, 2);
-      const map = readSecrets();
-      map[`${appName}/${secretName}`] = {
+      map[storeKey] = {
         contentType: "application/json",
         base64: base64Of(new TextEncoder().encode(text)),
         updatedAt: new Date().toISOString(),

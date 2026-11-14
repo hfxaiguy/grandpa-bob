@@ -47,6 +47,9 @@ const chrome = spawn(
     "--disable-dev-shm-usage",
     "--no-first-run",
     "--no-default-browser-check",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--remote-allow-origins=*",
     `--remote-debugging-port=${PORT}`,
     `--user-data-dir=${PROFILE}`,
     "about:blank",
@@ -137,7 +140,7 @@ const res = await evaluate(`(async () => {
   const root = await window.__bobWorkspaceTransfer.profileRoot();
   const ws = await root.getDirectoryHandle("workspace");
   const patterns = await ws.getDirectoryHandle("patterns");
-  const file = await (await patterns.getFileHandle("browser-smoke.mjs")).getFile();
+  const file = await (await patterns.getFileHandle("browser-smoke.prod.mjs")).getFile();
   return JSON.stringify({ status: r.status, text: await file.text() });
 })()`);
 const parsed = JSON.parse(res);
@@ -193,6 +196,167 @@ if (probed.status !== 200 || !probed.hasOk || !probed.models) {
   cleanup(5);
 }
 console.log("✓ model endpoint test answers from the page");
+
+// App-secret vars merge: the key/value editor saves one field or a set without
+// dropping the others. The backend used to accept only a whole-object replace.
+const secretMerge = await evaluate(`(async () => {
+  const backend = window.__bobBackend;
+  await backend.ready;
+  const q = new URLSearchParams({ app: "smoke", name: "creds" });
+  await backend.request("POST", "/api/secrets/vars", q, JSON.stringify({ set: { "auth.token": "one", user: "alice" } }));
+  await backend.request("POST", "/api/secrets/vars", q, JSON.stringify({ key: "auth.token", value: "two" }));
+  const stored = JSON.parse(localStorage.getItem("bob:secrets") || "{}")["smoke/creds"];
+  const parsed = JSON.parse(atob(stored.base64));
+  return JSON.stringify(parsed);
+})()`);
+let secret = null;
+try { secret = JSON.parse(String(secretMerge)); } catch { /* reported below */ }
+if (!secret || secret.auth?.token !== "two" || secret.user !== "alice") {
+  console.error("app-secret field merge failed", secretMerge);
+  console.log(exceptions.join("\n"));
+  cleanup(5);
+}
+console.log("✓ app-secret field merge keeps untouched keys");
+
+// Settings and Files are Solid views now: open them from the shell event,
+// check the seeded model slots, add one, round-trip Raw JSON, browse the
+// workspace, and come back to chat without an iframe or a reload.
+const adminViews = await evaluate(`(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  window.dispatchEvent(new Event("bob:show-settings"));
+  for (let i = 0; i < 100 && !document.querySelector(".slot-card"); i++) await wait(100);
+  const slotsBefore = document.querySelectorAll(".slot-card").length;
+  if (!slotsBefore) return "settings: no slots";
+  const title = document.querySelector(".admin-title")?.textContent;
+  const sessionHiddenInSettings = document.getElementById("session-menu")?.hidden === true;
+  Array.from(document.querySelectorAll("button")).find((b) => b.textContent.includes("Add model"))?.click();
+  const slotsAfter = document.querySelectorAll(".slot-card").length;
+  if (slotsAfter !== slotsBefore + 1) return "settings: add model did nothing";
+  const raw = Array.from(document.querySelectorAll("button")).find((b) => b.textContent.trim() === "Raw JSON");
+  raw?.click();
+  const rawOpen = !!document.querySelector(".admin-page textarea");
+  raw?.click();
+  const formBack = !!document.querySelector(".slot-card");
+
+  // The .env editor saves a newly added key through the same view.
+  Array.from(document.querySelectorAll("button")).find((b) => b.textContent.includes("Add key"))?.click();
+  const keys = document.querySelectorAll(".env-key");
+  const vals = document.querySelectorAll(".env-val");
+  const keyInput = keys[keys.length - 1];
+  const valInput = vals[vals.length - 1];
+  keyInput.value = "SMOKE_ENV";
+  keyInput.dispatchEvent(new Event("input", { bubbles: true }));
+  valInput.value = "hello-env";
+  valInput.dispatchEvent(new Event("input", { bubbles: true }));
+  Array.from(document.querySelectorAll("button")).find((b) => b.textContent.includes("Save all keys"))?.click();
+  let envSaved = "";
+  for (let i = 0; i < 80; i++) {
+    const toast = document.querySelector(".toast")?.textContent || "";
+    if (toast.includes("saved")) { envSaved = toast; break; }
+    await wait(100);
+  }
+  const status = await window.__bobBackend.request("GET", "/api/status", new URLSearchParams(), null);
+  const envValue = status.body?.env?.SMOKE_ENV || "";
+
+  window.dispatchEvent(new Event("bob:show-files"));
+  for (let i = 0; i < 120; i++) {
+    if (document.querySelector(".file-row") && document.querySelector(".pattern-row")) break;
+    await wait(100);
+  }
+  const fileRows = document.querySelectorAll(".file-row").length;
+  const patternRows = document.querySelectorAll(".pattern-row").length;
+  const filesTitle = document.querySelector(".admin-title")?.textContent;
+  Array.from(document.querySelectorAll(".pattern-row button")).find((b) => b.textContent.trim() === "View")?.click();
+  let code = false;
+  for (let i = 0; i < 80; i++) {
+    code = !!document.querySelector(".admin-page textarea")?.value.includes("export default");
+    if (code) break;
+    await wait(100);
+  }
+
+  // Upload through the Files card (not the header picker).
+  const fileInput = document.querySelector('.admin-page input[type="file"]');
+  const dt = new DataTransfer();
+  dt.items.add(new File(["files view upload\\n"], "files-view-smoke.txt", { type: "text/plain" }));
+  fileInput.files = dt.files;
+  fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+  let uploaded = false;
+  for (let i = 0; i < 100; i++) {
+    if (Array.from(document.querySelectorAll(".file-name")).some((el) => el.textContent.includes("files-view-smoke.txt"))) {
+      uploaded = true;
+      break;
+    }
+    await wait(100);
+  }
+
+  // New pattern → list → delete.
+  Array.from(document.querySelectorAll("button")).find((b) => b.textContent.trim() === "Cancel")?.click();
+  Array.from(document.querySelectorAll("button")).find((b) => b.textContent.trim() === "New pattern")?.click();
+  const nameInput = document.querySelector('.admin-page input[placeholder="my-pattern"]');
+  nameInput.value = "smoke-ui-pattern";
+  nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+  const codeArea = document.querySelector(".admin-page textarea");
+  codeArea.value = "export default {};\\n";
+  codeArea.dispatchEvent(new Event("input", { bubbles: true }));
+  Array.from(document.querySelectorAll("button")).find((b) => b.textContent.trim() === "Save pattern")?.click();
+  let patternSaved = false;
+  for (let i = 0; i < 100; i++) {
+    if (Array.from(document.querySelectorAll(".pattern-row")).some((el) => el.textContent.includes("smoke-ui-pattern"))) {
+      patternSaved = true;
+      break;
+    }
+    await wait(100);
+  }
+  window.confirm = () => true;
+  const row = Array.from(document.querySelectorAll(".pattern-row")).find((el) => el.textContent.includes("smoke-ui-pattern"));
+  Array.from(row?.querySelectorAll("button") || []).find((b) => b.textContent.trim() === "Delete")?.click();
+  let patternDeleted = false;
+  for (let i = 0; i < 100; i++) {
+    if (!Array.from(document.querySelectorAll(".pattern-row")).some((el) => el.textContent.includes("smoke-ui-pattern"))) {
+      patternDeleted = true;
+      break;
+    }
+    await wait(100);
+  }
+
+  window.dispatchEvent(new Event("bob:show-chat"));
+  for (let i = 0; i < 120; i++) {
+    if (!document.querySelector(".admin-page") && document.querySelector(".tiles")) break;
+    await wait(100);
+  }
+  return JSON.stringify({
+    title, slotsBefore, slotsAfter, rawOpen, formBack, envSaved, envValue,
+    filesTitle, fileRows, patternRows, code, uploaded, patternSaved, patternDeleted,
+    sessionHiddenInSettings,
+    sessionShownInChat: document.getElementById("session-menu")?.hidden === false,
+    chat: !document.querySelector(".admin-page") && !!document.querySelector(".tiles"),
+  });
+})()`);
+const views = JSON.parse(String(adminViews));
+if (
+  views.title !== "settings" ||
+  views.slotsAfter !== views.slotsBefore + 1 ||
+  !views.rawOpen ||
+  !views.formBack ||
+  !String(views.envSaved).includes("saved") ||
+  views.envValue !== "hello-env" ||
+  views.filesTitle !== "files" ||
+  views.fileRows < 1 ||
+  views.patternRows < 1 ||
+  !views.code ||
+  !views.uploaded ||
+  !views.patternSaved ||
+  !views.patternDeleted ||
+  !views.sessionHiddenInSettings ||
+  !views.sessionShownInChat ||
+  !views.chat
+) {
+  console.error("Solid Settings/Files views failed", adminViews);
+  console.log(exceptions.join("\n"));
+  cleanup(5);
+}
+console.log("✓ Settings/Files render as Solid views, add a model and return to chat");
+
 
 // Header upload button: picker → folder prompt → file lands in the workspace.
 const upload = await evaluate(`(async () => {
@@ -258,7 +422,7 @@ const transfer = await evaluate(`(async () => {
   const archive = JSON.parse(blobText);
   if (archive.version !== 1 || !Array.isArray(archive.files)) return "exported archive has the wrong shape";
   const paths = archive.files.map((f) => f.path);
-  if (!paths.includes("workspace/patterns/browser-smoke.mjs")) return "export is missing a live workspace file";
+  if (!paths.includes("workspace/patterns/browser-smoke.prod.mjs")) return "export is missing a live workspace file";
 
   // Merge import: one new file lands, the existing pattern stays.
   const restored = await hook.importWorkspace({
@@ -269,7 +433,7 @@ const transfer = await evaluate(`(async () => {
   const root = await hook.profileRoot();
   const ws = await root.getDirectoryHandle("workspace");
   const imported = await (await (await ws.getFileHandle("smoke-import.txt")).getFile()).text();
-  const kept = await (await (await ws.getDirectoryHandle("patterns")).getFileHandle("browser-smoke.mjs")).getFile();
+  const kept = await (await (await ws.getDirectoryHandle("patterns")).getFileHandle("browser-smoke.prod.mjs")).getFile();
 
   let rejected = false;
   try { hook.validateWorkspaceArchive({ version: 2, createdAt: "", files: [] }); } catch { rejected = true; }
@@ -319,7 +483,15 @@ const chat = await evaluate(`(async () => {
     }
     await new Promise((res) => setTimeout(res, 250));
   }
-  return "turn timeout";
+  const fin = await backend.request("GET", "/api/turns", new URLSearchParams(), null);
+  const ses = await backend.request("GET", "/api/session", new URLSearchParams(), null);
+  const last = (fin.body?.turns || []).at(-1);
+  return "turn timeout:" + JSON.stringify({
+    status: last?.status,
+    events: last?.events?.length ?? 0,
+    active: ses.body?.active,
+    turns: (fin.body?.turns || []).length,
+  });
 })()`);
 if (!String(chat).startsWith("{\"ok\":true")) {
   console.error("session turn failed:", chat);

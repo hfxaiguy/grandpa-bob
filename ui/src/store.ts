@@ -668,8 +668,8 @@ export const [speechKey, setSpeechKey] = createSignal<string | null>(null);
 /** The bubble key whose clip is still being synthesized (null = idle). */
 export const [speechBusy, setSpeechBusy] = createSignal<string | null>(null);
 /** Global TTS switch (Settings → Speech) for the 💬/🔊 UI. Re-read when the
- *  chat remounts (Settings is an in-place iframe, not a page load); the voice
- *  paths below read the saved config directly so a change applies at once. */
+ *  chat view mounts after an in-place Settings visit; the voice paths below
+ *  read the saved config directly so a change applies at once. */
 export const [ttsEnabled, setTtsEnabled] = createSignal(loadTtsConfig().enabled !== false);
 export function refreshTtsEnabled(): void {
   setTtsEnabled(loadTtsConfig().enabled !== false);

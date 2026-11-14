@@ -1,5 +1,5 @@
-// Provider presets for the Settings → Models slot editor. Kept out of
-// `ui/pages.ts` so Node checks can assert the list without a DOM: presets only
+// Provider presets for the Settings → Models slot editor. Kept in a plain
+// module so Node checks can assert the list without a DOM: presets only
 // autofill the base URL and protocol, and every field stays editable.
 //
 // CommandCode exposes its Provider API under `/provider/v1`; grandma-kat

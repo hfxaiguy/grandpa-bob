@@ -165,7 +165,7 @@ async function main() {
     assert(created === 200, `the refreshed tab created a pattern (HTTP ${created})`);
     await clickSyncNow(page);
     const mirrored = await waitFile(
-      path.join(stateDir, "folders", "default", "patterns", "after-refresh.mjs"),
+      path.join(stateDir, "folders", "default", "patterns", "after-refresh.prod.mjs"),
       90_000,
     );
     assert(

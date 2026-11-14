@@ -1,10 +1,9 @@
 /**
- * Transport shim: overrides `fetch` and `EventSource` so the UI's `/api/*`
- * calls are served by the in-browser backend instead of a server.
+ * Transport shim: overrides `fetch` and `EventSource` so the Solid UI's
+ * `/api/*` calls are served by the in-browser backend instead of a server.
  *
- * Installed two ways: directly in the top window (the tiled app mounts there)
- * and injected as a classic script into the settings iframe. Both run this
- * same function, so the two hosts behave identically.
+ * Installed once in the top window by the browser target. Settings/Files are
+ * views of the same Solid tree now, so no second document needs its own shim.
  */
 export function installShim(target: Window): void {
   const win = target as Window & { __bobBackend?: unknown; __bobBackendReady?: Promise<void> };
@@ -80,6 +79,3 @@ export function installShim(target: Window): void {
   }
   (win as unknown as { EventSource: unknown }).EventSource = LocalEventSource;
 }
-
-/** Classic-script form, injected into an iframe's <head>. */
-export const SHIM_SCRIPT = `(${installShim.toString()})(window);`;
